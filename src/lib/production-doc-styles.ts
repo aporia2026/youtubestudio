@@ -301,41 +301,54 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       // output look like a textbook instead of a storybook.
       'FORBIDDEN: textbook-style labeled diagrams — do NOT draw arrows pointing to written labels that name parts of the scene ("Huge Slab of Snow", "Dangerous Slope", "Unsuspecting Campers"). That kind of annotation is a chart, not a story panel. Captions, scene labels, and time stamps are rendered SEPARATELY on top by the player as yellow bubble overlays — the picture itself should not contain those annotations. Speech bubbles for character dialogue ARE allowed (e.g. a character saying "Fascinating" in a cartoon balloon). NOT photorealistic, NOT 3D rendered, NOT anime, NOT manga.',
     built_in_refs: [
-      { filename: '01-composite-cartoon-book-with-framed-real-photo.jpg', mime_type: 'image/jpeg' },
-      { filename: '02-pure-illustration-cartoon-building-pale-blue.jpg',  mime_type: 'image/jpeg' },
-      { filename: '03-lone-stick-figure-frowning.jpg',                    mime_type: 'image/jpeg' },
-      // #04 + #10 swapped 2026-05-25 from generic character poses to
-      // raised-arm-no-hand frames after the first test render produced
-      // a giant detailed waving hand. The model's prior for "waving =
-      // anatomical hand" overrode the text negatives — only a visual
-      // ref of the no-hand pose actually overrides it.
-      { filename: '04-stick-figure-raised-arm-no-hand-angry.jpg',         mime_type: 'image/jpeg' },
-      { filename: '05-color-composition-globe-with-computer-callouts.jpg',mime_type: 'image/jpeg' },
-      { filename: '06-object-network-laptops-arrows.jpg',                 mime_type: 'image/jpeg' },
-      // Refs 07, 08, 11 were dropped in commit eb25c18 ("stop WANNACRY
-      // bleed") because they stayed too subject-coded after text
-      // removal (deleted-files X icon, padlocked TV, globe text overlay).
-      // Files removed from public/style-refs/Doodle-explainer-2/; the
-      // catalog originally kept the gap and that left the i2i loader
-      // 500-ing on every cell when the route tried to read non-existent
-      // files. Numbering gap preserved so existing motif comments and
-      // the fix script's `--only N` indexing stay aligned.
-      { filename: '09-yellow-bubble-text-standalone-within-hours.jpg',    mime_type: 'image/jpeg' },
-      { filename: '10-stick-figure-raised-arm-no-hand-calm.jpg',          mime_type: 'image/jpeg' },
-      { filename: '12-stick-figure-single-red-accent.jpg',                mime_type: 'image/jpeg' },
-      { filename: '13-framed-real-photo-pure-centrifuges.jpg',            mime_type: 'image/jpeg' },
+      // ORDER MATTERS. Atlas i2i caps at 4 refs/call and the dispatcher
+      // takes the FIRST 4 entries from this array. Positions 1-4 are the
+      // four style pillars — face anatomy, body anatomy + no-hand rule,
+      // typography, framed-photo composition — picked as PURE style
+      // anchors with minimum subject content (refs teach style, not
+      // content; the prompt invents subjects). Positions 5-9 are legacy
+      // refs kept on disk for reference but never sent to Atlas; they
+      // remain documented here so future curation rounds can see what
+      // was previously bundled. See plan
+      // _plans/2026-05-28-doodle-2-authenticity-round.md (R1).
+      //
+      // Curation history:
+      // - Refs 01 + 02 moved to _review-not-doodle-2/ 2026-05-28 after
+      //   the same book + building + bloody painting trio appeared in
+      //   nearly every scene of every video. #01 was a COMPOSITE (book
+      //   + framed bloody painting); #02 was a lone blue building. Both
+      //   ranked in the top-4 and bled their subjects into every output.
+      // - Refs 07, 08, 11 were dropped in commit eb25c18 ("stop WANNACRY
+      //   bleed") because they stayed too subject-coded after text
+      //   removal (deleted-files X, padlocked TV, globe text overlay).
+      // - Refs 04, 09, 13 were regenerated 2026-05-28 via Atlas GPT
+      //   Image 2 t2i ($0.036 for all 4 candidates, ref-01 candidate
+      //   rejected — see scripts/generate-doodle-2-ref-candidates.ts).
+      // - Numbering gap (missing 07, 08, 11) preserved so the fix
+      //   script's `--only N` indexing stays aligned with motif comments.
+      //
+      // The four style pillars. Catalog = truth: this list is exactly
+      // what Atlas sees. Legacy refs (03, 05, 06, 10, 12) remain on disk
+      // at public/style-refs/Doodle-explainer-2/ for future curation
+      // rounds but are no longer registered. Position order is locked
+      // in case Atlas ever drops below 4 input slots — first slot is
+      // the most-loaded.
       { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
+      { filename: '04-stick-figure-neutral-pointing-no-hand.jpg',         mime_type: 'image/jpeg' },
+      { filename: '09-yellow-bubble-text-standalone-highlight.jpg',       mime_type: 'image/jpeg' },
+      { filename: '13-framed-real-photo-sunlit-forest.jpg',               mime_type: 'image/jpeg' },
     ],
     // Updated 2026-05-27: switched to Atlas i2i per user direction
     // "default for everything to be gpt 2 atlas, not just for edits".
-    // Atlas i2i caps at 4 refs vs Kie's 14 — the dispatcher
-    // auto-truncates the 14 bundled refs to 4 per call. The earlier
-    // plan rejected this trade-off (motif breadth), but the new
-    // trimmed suffix (commits c5b3538 + 84745ae) now carries the
-    // color + framed-photo + realistic-object vocabulary in text,
-    // partially compensating for the lost visual anchors. Unifies the
-    // provider with the variant edit path (Atlas GPT Image 2 Edit)
-    // and cuts base-image cost ~73%.
+    // Atlas i2i caps at 4 refs vs Kie's 14 — the catalog above is now
+    // exactly 4 refs (trimmed 2026-05-28 from a 9-ref bundle after
+    // confirming positions 5-9 were never sent). The earlier plan
+    // rejected this trade-off (motif breadth), but the trimmed suffix
+    // (commits c5b3538 + 84745ae) now carries the color + framed-photo
+    // + realistic-object vocabulary in text, partially compensating
+    // for the lost visual anchors. Unifies the provider with the
+    // variant edit path (Atlas GPT Image 2 Edit) and cuts base-image
+    // cost ~73%.
     preferred_cloud_model: 'gpt-image-2-atlas-i2i',
     mixing_rules: [
       '== STYLE REFERENCE: PAINT EXPLAINER ==',
@@ -364,14 +377,18 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       '    + add 1 → SAME close-up, ADD a stitched wound across the forehead with red bruise tint',
       '    + add 2 → SAME close-up (with wound), ADD red "Impossible" text appearing to the right of the head',
       '',
-      'Three groups, 8 total rows of video, in 12 seconds. That density is the actual Paint Explainer style. A 10-minute video at this density would have ~60+ variant groups.',
+      'Three groups, 8 total rows of video, in 12 seconds. That is the maximum density observed in the reference video. The TARGET density for our docs is lower — see below.',
       '',
-      'HARD COUNT REQUIREMENT — the doc MUST contain variant groups at this rate (raised after measuring the reference video frame-by-frame):',
-      '  • Docs of 30-60 rows total → at least 10 variant groups',
-      '  • Docs of 60-100 rows total → at least 20 variant groups',
-      '  • Docs of 100+ rows total → at least 35 variant groups',
+      'TARGET RATIO — ~40% of rows belong to variant groups, ~60% are fresh compositions. Variant groups are the texture of the video, not the backbone. The pacing should breathe: held shots that evolve, interleaved with new compositions that reset the camera.',
       '',
-      'If you finish the doc with FEWER variant groups than that, re-read the script and find sequences you missed. Variant groups are CHEAPER per row than independent rows (~$0.011 vs ~$0.04 via Atlas Edit) so they\'re a strict win even if you\'re uncertain. The right question is "what is the ONE small thing I can add to keep the same composition for the next beat?" — not "should I make a new scene?"',
+      '  • A variant group is 2-4 contiguous rows sharing the same composition with ONE additive delta per row.',
+      '  • A fresh composition is a single row that introduces a new camera, new location, new character, or new subject focus.',
+      '  • For a typical 60-100 row doc, expect ~10-15 variant groups covering ~25-40 of the rows; the remaining ~40-50 rows are fresh.',
+      '  • For longer docs (100+ rows), scale proportionally.',
+      '',
+      'Don\'t force variants where they don\'t belong. Don\'t avoid them when 2-3 consecutive narration beats naturally share a held subject. Use the TRIGGER criteria below to decide per script section. If the ratio after first pass is well off ~40%, re-read the script for missed opportunities (too few variants) or for forced ones to break apart (too many).',
+      '',
+      'Cost note: variant groups are CHEAPER per row than independent rows (~$0.011 vs ~$0.04 via Atlas Edit), so erring slightly above 40% costs nothing. Erring well above 60% makes the video feel mechanical and same-y; erring well below 25% loses the evolving-picture feel that defines the style.',
       '',
       'Valid additive deltas (any of these is one variant):',
       '  • Add a small prop to the scene ("add a red question mark above the figure\'s head", "add a stone knife next to the flints", "add a small green virus splat next to the character")',
@@ -416,6 +433,8 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       '',
       'The reference style is SIMPLE drawings (not detailed illustration), COLORFUL (multi-color per frame), and FLEXIBLE (composition adapts to the beat). Be open-minded — sometimes one character, sometimes a group; sometimes white background, sometimes a colored sky or a real photo backdrop; sometimes a close-up portrait, sometimes a wide landscape. There is NO single template. The constant is: hand-drawn-feeling lines, soft color fills, generous breathing room, the beat\'s ONE focal idea clear.',
       '',
+      'REFS TEACH STYLE, YOU INVENT SUBJECTS. The 4 reference images bundled with this style teach the model what doodle_explainer_2 looks like — line weight, character anatomy, framing, typography, and the framed-real-photo composition. They do NOT tell you what each scene should contain. INVENT fresh subjects per beat from the script. If two consecutive shots feel like the same picture, the second one is wrong — change the camera, change the subject, change the composition. Every shot answers "what is this beat about?" with a different visual answer than the shot before it. The viewer should never feel like they\'re watching the same picture restated.',
+      '',
       'Stay BALANCED — not locked to single-subject minimalism (which made earlier outputs feel empty), not crammed full of figures and props (which made the "1959" output feel like a garage sale). Pick the element count that serves the narration beat, no more.',
       '',
       '== COMPOSITION — ELEMENT COUNT IS THE BALANCE LEVER ==',
@@ -445,6 +464,38 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       '  • The same pattern applied to yellow callouts: a yellow callout label with red/orange arrows pointing FROM the label TO a part of the scene ("AVALANCHE JUST STARTING ↘"). The "FINAL TENSION" output did this — DON\'T. Yellow callouts are FLOATING labels (rendered by the player as overlays), not pointers.',
       '  • An "infographic" or "schematic" layout — anything that looks like a textbook explanation.',
       '  • 10+ characters / props scattered randomly across the frame. Pick 1-3 and let the rest breathe.',
+      '',
+      '== REALISM — GROUND THE STORY IN REALITY ==',
+      '',
+      'We tell stories from real life. Competitor channels in this genre lean heavily on realism to make their videos feel authentic and professional, and we do the same. Realism has TWO pillars in this style. The general stick-figure doodle look STAYS DOMINANT — realism is additive texture, not a replacement style.',
+      '',
+      '--- PILLAR 1: REAL PHOTOGRAPHS COMPOSITED INTO SCENES ---',
+      '',
+      'TRIGGER a real-photo composition (Pattern A or Pattern B below) on EVERY one of these:',
+      '  • Named person (historical figure, scientist, celebrity, witness, perpetrator, victim, expert)',
+      '  • Named place (city, country, building, landmark, region, specific location)',
+      '  • Named brand, product, organization, company, agency',
+      '  • Named event with photographic record (war, disaster, launch, ceremony, attack, rescue)',
+      '  • Specific dated object that has a strong real-world referent (e.g. a particular vintage TV set, a specific model of car, an iconic piece of equipment)',
+      '',
+      'Pattern A — FULL REAL-PHOTO BACKGROUND, cartoon foreground. The real photo fills the frame; ONE stick-figure character or ONE small cartoon prop sits on top of it. Use for setting establishment ("this happened at the Pentagon", "the witnesses gathered outside the courthouse"). Set `overlay_stock_terms` to the relevant search query (e.g. "Pentagon aerial 1970s", "courthouse steps").',
+      '',
+      'Pattern B — FRAMED REAL PHOTO inside a doodle scene. A thin black wobbly rounded-rectangle frame (~8px corner radius) contains the real photo; the framed photo sits next to or beside cartoon elements. Ref #13 (framed sunlit forest) is the style anchor for this composition. Use when the scene is about a named entity AND a character\'s reaction in the same beat ("the witness described seeing this" with a framed photo of the actual location next to a startled stick figure).',
+      '',
+      'CADENCE FLOOR: at minimum one real-photo beat for every 8-12 rows. A factual / historical / news script that mentions many named entities can sit closer to one per 4-6 rows. If you finish the doc and a named person, place, brand, or event passed through without a real-photo composition, you missed it — go back and add it. NEVER skip `overlay_stock_terms` on a row that mentions a named entity.',
+      '',
+      '--- PILLAR 2: SPECIFIC, NAMED REAL-WORLD PROPS IN CARTOON FORM ---',
+      '',
+      'When the script calls for a prop, NAME the specific real-world referent in the `ai_image_prompt`. Generic shapes feel like stock clipart; named specific objects feel deliberate.',
+      '',
+      'BAD (generic, feels generated): "a phone", "a notebook", "a car", "a weapon", "a computer", "a camera", "a watch"',
+      'GOOD (specific, feels researched): "a Bakelite rotary phone with a coiled black cord", "a yellow legal pad with handwritten notes in blue ballpoint", "a 1973 olive-green Pontiac with a vinyl roof", "a Colt 1911 service pistol", "a beige IBM 5150 with a green monochrome monitor", "a Polaroid SX-70 instant camera", "a Casio digital watch with a black plastic band"',
+      '',
+      'The prop is STILL DRAWN IN THE DOODLE STYLE — thick wobbly black ink outlines, flat color fills, no photorealism, no 3D rendering. We are not switching to realism; we are giving the LLM (and viewer) a specific real-world reference so the doodled prop is recognizable instead of generic.',
+      '',
+      'WHEN TO BE SPECIFIC vs. GENERIC: be specific when the prop carries the narrative weight of the beat ("she picked up the phone" → name the phone). Stay generic when the prop is background dressing ("books on a shelf" can stay "books on a shelf"). Roughly: if the camera would linger on it for >0.5s, name it.',
+      '',
+      'PERIOD ACCURACY: when the script is set in a specific decade or era, the named props should match that era. A 1970s scene gets a rotary phone, not an iPhone. A 1990s scene gets a CRT computer monitor, not a flat panel. Use the script\'s temporal context to drive the prop choice.',
       '',
       '== ARROWS — TIGHT RULES ==',
       '',
@@ -639,6 +690,120 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     // 'bake': small black text in the image corner instead of the chunky
     // yellow bubble). Pinning the doc-level default here removes the need
     // for the LLM or the user to flip ~131 toggles by hand.
+    default_on_screen_text_mode: 'overlay',
+  },
+  /**
+   * Paint Explainer V1 — motion-driven sibling of doodle_explainer_2.
+   *
+   * Same hand-drawn aesthetic family (white canvas, wobbly black outlines,
+   * big open red mouths, yellow comic-bold labels), but the renderer
+   * treats each row as a static AI base + procedural motion overlays
+   * rather than a static still. Variants come from code-driven Remotion
+   * components animating layers on top of one base — no per-variant
+   * re-generation — so the viewer reads each shot as one scene that
+   * lives, not a sequence of redrawn frames that flicker.
+   *
+   * Three new ProductionRow fields drive this:
+   *   - `character_id`      — recurring-character cache key
+   *   - `shot_kind`         — 'static' | 'motion' | 'hard_cut'
+   *   - `motion_beats[]`    — code-side overlays (mouth_swap, label_pop, …)
+   *
+   * Plus one doc-level field: `paint_explainer_v1_character_cache`.
+   *
+   * Full architecture, cost model, PR breakdown, settings audit, and
+   * security plan live in
+   * `_plans/2026-05-28-paint-explainer-v1-architecture.md`. The
+   * upstream viability test that gated this plan is at
+   * `_plans/2026-05-28-paint-explainer-v1-viability-test.md`.
+   *
+   * Phased delivery — DO NOT EXPECT FULL MOTION RENDERING UNTIL PR 5:
+   *   - PR 1 (this entry): style registration + schema fields +
+   *     atlas-mouth-removal helper. Renderer falls back to static behaviour
+   *     for any row whose `shot_kind` is unset OR whose Remotion
+   *     component isn't wired yet.
+   *   - PR 2: <ScribbleDraw>, <LabelPopOn>, alignment-JSON viseme wiring.
+   *   - PR 3: pacing (LLM emits 2× shot count) + hard cuts.
+   *   - PR 4: real-photo cadence to 50% on factual rows.
+   *   - PR 5: <PropSlideIn>, <MicroWiggle>, vision-pass anchor resolver.
+   *   - PR 6: polish + optional retrofit onto doodle_explainer_2.
+   *
+   * Refs: borrowed from doodle_explainer_2's bundle (Atlas i2i caps at
+   * 4 inputs). Curated for paint_explainer_v1: one close-up character
+   * (mouth-swap target), one expressive full-body, one yellow-label
+   * example, one framed-photo composite. Paint-Explainer-specific refs
+   * can replace these later once the user curates a dedicated set.
+   */
+  {
+    id: 'paint_explainer_v1',
+    label: 'Paint Explainer V1',
+    description: 'Motion-driven explainer modelled on the Paint Explainer YouTube genre — same hand-drawn family as Doodle Explainer 2, but each shot ships as a static base + Remotion procedural motion overlays (mouth-swap, label pop-on, prop slide-in, scribble draw-on) rather than a static still.',
+    ai_image_suffix: [
+      'Hand-drawn doodle in the Paint Explainer style — pure white canvas,',
+      'thick uneven black ink outlines (intentional wobble, not vector-clean),',
+      'flat fills only with no shading or texture, generous negative space.',
+      'Stick-figure character anatomy: large round white head, simple oval-shape',
+      'eyes (filled black), eyebrows as thin angled lines for emotion, big open',
+      'red-interior mouth (deep red ~#E53E3E with thick black outline), stick',
+      'limbs with rounded mitten hands and oval feet. Saturated accents used',
+      'sparingly: goldenrod yellow for labels, sky blue for backgrounds, brown',
+      'for period scenes, black-only for space. No gradients except on cosmic',
+      'phenomena (sun, fire, explosions). No shadows on characters or props.',
+      'No labelled diagrams. Single focal idea per frame. Real photos, when',
+      'present, framed inside a thin black rounded-corner rectangle (~8px',
+      'radius), never floating to the edge.',
+    ].join(' '),
+    built_in_refs: [
+      // Curated subset from doodle_explainer_2's bundle. Atlas i2i caps at 4
+      // refs; the four picked here cover the four visual pillars of the
+      // genre: character close-up (mouth swap target), expressive full body,
+      // yellow-label typography, framed real-photo composition.
+      // Swapped 2026-05-28: ref #01 (composite book + bloody painting) was
+      // moved to _review-not-doodle-2/ after it bled into every doodle_2
+      // output; #13 (framed real-photo pure centrifuges) carries the same
+      // framed-photo pillar without the loud subject anchors.
+      // Filenames updated 2026-05-28 in lockstep with the doodle_explainer_2
+      // ref refresh — same three slots (04, 09, 13) were swapped for fresh
+      // style-neutral candidates generated via Atlas t2i. paint_explainer_v1
+      // shares the bundle so it inherits the upgrades for free.
+      { filename: '14-close-up-character-face.jpg', mime_type: 'image/jpeg' },
+      { filename: '04-stick-figure-neutral-pointing-no-hand.jpg', mime_type: 'image/jpeg' },
+      { filename: '09-yellow-bubble-text-standalone-highlight.jpg', mime_type: 'image/jpeg' },
+      { filename: '13-framed-real-photo-sunlit-forest.jpg', mime_type: 'image/jpeg' },
+    ],
+    // Refs above live under public/style-refs/Doodle-explainer-2/ (shared
+    // with doodle_explainer_2). When a dedicated Paint-Explainer-v1 ref
+    // bundle is curated, move these to public/style-refs/Paint-explainer-v1/
+    // and update the loader resolution in `loadStyleReferences`.
+    preferred_cloud_model: 'gpt-image-2-atlas-i2i',
+    mixing_rules: [
+      'This is the Paint Explainer V1 style — a sibling of Doodle Explainer 2 with the same hand-drawn aesthetic, but the renderer animates each shot through Remotion procedural overlays instead of generating per-variant still images. Treat every row as a static AI base + a list of motion_beats; the motion is what carries the shot.',
+      '',
+      'PACING — Target median shot length 2.5–3.0 seconds (NOT the 3–5s used by Doodle Explainer 2). For a 5-minute video that means ~100–120 rows, roughly double the row count of an equivalent Doodle Explainer 2 doc. Short, snappy beats. Hold no shot longer than ~5 seconds.',
+      '',
+      'CHARACTERS — The narrator-mascot is the recurring centerpiece. Identify it on the first row it appears and set `character_id: "explainer-base"` (or another stable slug if the script names them). Reuse the SAME `character_id` on every subsequent row that shows the same character. The image-gen pipeline keys a per-video cache by this id so the base + mouth-removed pair gets generated once and reused. Named guests get their own ids (e.g. `character_id: "napoleon"`). Rows without a recurring character leave `character_id` undefined.',
+      '',
+      'SHOT KIND — Set `shot_kind: "motion"` on character rows where motion_beats are emitted; `shot_kind: "hard_cut"` on the first row after a topic change to signal a snap cut with no transition; `shot_kind: "static"` (or undefined) on held title cards, full-bleed real photos, and section dividers.',
+      '',
+      'MOTION BEATS — Emit `motion_beats[]` on rows where the renderer should animate. Cap at 8 beats per row (server-side enforced). Kinds:',
+      '  • `mouth_swap` — character talking; renderer cycles closed/mid/open mouth states. Use when the row has a character speaking. Beat covers the row\'s talking duration. Anchor is auto-mouth (the renderer calibrates).',
+      '  • `scribble_draw` — base image reveals as a stroke-by-stroke drawing-in-progress. Use for "this is the thing being explained" reveal moments. Typical duration 1000–1500ms.',
+      '  • `label_pop` — yellow comic-bold bubble label scale-pops on for emphasis. `payload.text` is the word/phrase. Anchor is `auto-eyes` (above the character) OR a specific xPct/yPct on environment shots.',
+      '  • `prop_slide` — separate transparent prop slides in from offscreen. `payload.propPromptHint` describes the prop for the image-gen pipeline to generate ahead of render.',
+      '  • `micro_wiggle` — ambient transform on character body, runs continuously during character shots when no other motion is active.',
+      '  • `real_photo_punch` — real photo composited inside the thin black rounded frame, punches in with overshoot.',
+      '',
+      'REAL-PHOTO MIX — Target ~50% of factual rows carrying a real-photo overlay (NOT the ~25% of Doodle Explainer 2). Trigger `overlay_stock_terms` on EVERY named person, place, brand, product, or event in the script. Pattern A (full background) and Pattern B (inset frame) both apply; the renderer composites with the thin black rounded frame automatically when style is paint_explainer_v1.',
+      '',
+      'AI IMAGE PROMPT — Same rules as Doodle Explainer 2: pure stick-figure doodle, no labelled diagrams, no baked-in text, white background, leave empty space where real-photo overlays will land.',
+      '',
+      'PHASED ROLLOUT — Until PR 5 ships, the renderer may not yet support every motion_beats kind. Unrecognised kinds are skipped silently (the row still renders the static base + Ken Burns as before). Emit motion_beats anyway — they serve as forward-compatible production-doc data.',
+    ].join('\n'),
+    allow_overlay_stock: true,
+    origin: 'built-in',
+    // Same yellow-bubble LowerThird visual as doodle_explainer_2 — the
+    // renderer's existing variant='doodle-yellow' branch in SceneRouter
+    // is style-agnostic on the OST mode, so paint_explainer_v1 inherits
+    // it for free as long as default_on_screen_text_mode is 'overlay'.
     default_on_screen_text_mode: 'overlay',
   },
 ]);

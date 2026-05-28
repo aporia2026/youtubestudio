@@ -29,6 +29,7 @@ import { loadStyleReferences } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
 import { generateAtlasEdit } from './../atlas-cloud-images';
+import { generateMouthRemovedBase } from '../atlas-mouth-removal';
 import { cropTo16x9AndUpload } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
 import {
@@ -69,6 +70,15 @@ export interface PipelineImageRow {
   variant_index?: number;
   variant_edit_prompt?: string;
   variant_derives_from_previous?: boolean;
+  // ─── paint_explainer_v1 (2026-05-28) ──────────────────────────────
+  // Inline subset of the full MotionBeat / character fields defined on
+  // ProductionRow in src/remotion/utils.ts. Re-stated here (not imported)
+  // because remotion/utils.ts pulls React-only deps unsafe for this
+  // server-only module. The shape must stay in sync with the upstream
+  // type — pipeline runs would silently miss new beat kinds otherwise.
+  character_id?: string;
+  motion_beats?: Array<{ kind: string }>;
+  mouth_removed_url?: string;
 }
 
 /** Doc-level fields the helper needs to dispatch correctly. */
@@ -77,6 +87,16 @@ export interface PipelineImageDoc {
   style_preset?: string;
   on_screen_text_mode_default?: 'bake' | 'overlay' | 'none';
   section_title_layout_default?: 'overlay' | 'letterbox';
+  // ─── paint_explainer_v1 (2026-05-28) ──────────────────────────────
+  // Per-doc cache of recurring-character mouth-removed bases, keyed by
+  // PipelineImageRow.character_id. Same shape as
+  // ProductionDoc.paint_explainer_v1_character_cache — re-stated here
+  // for the same reason as above (no React imports in server code).
+  paint_explainer_v1_character_cache?: Record<string, {
+    base_url: string;
+    mouth_removed_url?: string;
+    anchors?: Partial<Record<'auto-mouth' | 'auto-center' | 'auto-eyes', { xPct: number; yPct: number }>>;
+  }>;
 }
 
 /**
@@ -299,6 +319,102 @@ export async function generateVariantImage(args: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn('[pipeline image-gen variant] failed', { detail: msg.slice(0, 200) });
+    return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
+  }
+}
+
+/**
+ * Generate the mouth-removed variant of a paint_explainer_v1 character
+ * base. Used by the Remotion `<MouthSwap>` overlay as the bottom layer
+ * onto which procedural mouth-state PNGs are composited.
+ *
+ * Pipeline: Atlas Edit (mouth-removal prompt) → center-crop to 16:9 →
+ * Recraft upscale → R2 mirror. Mirrors `generateVariantImage`'s
+ * cleanup chain exactly so the mouth-removed PNG ends up at the same
+ * resolution + aspect as the row's `image_url` base, which is critical
+ * for the `<MouthSwap>` overlay to register pixel-perfectly with the
+ * underlying eyes / eyebrows / head outline.
+ *
+ * Stateless: the caller (stage handler one layer above this module) is
+ * responsible for:
+ *   1. Reading `ProductionDoc.paint_explainer_v1_character_cache`
+ *      before calling, to skip duplicates when the same character_id
+ *      already has a generated pair in this doc.
+ *   2. Writing the returned URL into both the cache AND the row's
+ *      `mouth_removed_url` field after a successful call.
+ *   3. Emitting `[paint-explainer-v1 atlas-mouth-removed]` cost
+ *      telemetry tagged with row_id + character_id (per §13 of
+ *      `_plans/2026-05-28-paint-explainer-v1-architecture.md`).
+ *
+ * Never throws — returns `{ error }` so the stage handler can either
+ * skip the mouth-swap motion beat (rendering the static base) or fail
+ * the row depending on policy.
+ *
+ * Cost: ~$0.011 (Atlas Edit) + ~$0.0025 (Recraft upscale) ≈ $0.014.
+ * Reported as $0.011 in the return value to match the variant path's
+ * accounting (Recraft is rolled into the system-wide upscale budget
+ * tracked separately in cost telemetry).
+ */
+export async function generateMouthRemovedForCharacter(args: {
+  baseImageUrl: string;
+  characterId: string;
+}): Promise<PipelineImageResult> {
+  const t0 = Date.now();
+  const { baseImageUrl, characterId } = args;
+  if (!baseImageUrl.trim()) {
+    return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+  if (!characterId.trim()) {
+    return { error: 'empty_character_id', durationMs: Date.now() - t0, costUsd: 0 };
+  }
+
+  try {
+    const removal = await generateMouthRemovedBase(baseImageUrl);
+    // Same crop+upscale+mirror chain as `generateVariantImage`. The
+    // mouth-removed PNG must end up at the same 16:9 aspect and post-
+    // upscale resolution as the row's `image_url` base so the Remotion
+    // `<MouthSwap>` overlay lines up with the underlying face.
+    const croppedUrl = await cropTo16x9AndUpload(removal.url, 'prodoc-images-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
+    let mouthRemovedUrl = upscale.url;
+    try {
+      const imgRes = await fetch(upscale.url);
+      if (imgRes.ok) {
+        const contentType = imgRes.headers.get('content-type') || 'image/png';
+        const buffer = Buffer.from(await imgRes.arrayBuffer());
+        const ext = contentType.includes('png') ? 'png' : 'jpg';
+        const randomSuffix = Math.random().toString(36).slice(2, 10);
+        const bucket = getImagesBucket();
+        const r2Key = `prodoc-images/${Date.now()}-pipe-mouth-removed-${randomSuffix}.${ext}`;
+        await uploadToBucket(bucket, r2Key, buffer, contentType);
+        mouthRemovedUrl = await getDownloadUrlForBucket(
+          bucket,
+          r2Key,
+          process.env.R2_IMAGES_PUBLIC_URL,
+        );
+      }
+    } catch (uploadErr) {
+      logger.warn('[pipeline image-gen mouth-removed] R2 mirror failed, using upscale URL', {
+        detail: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+      });
+    }
+    logger.info('[pipeline image-gen mouth-removed] succeeded', {
+      character_id: characterId,
+      predict_ms: removal.predictTimeMs,
+      cost_usd: 0.011,
+    });
+    return {
+      imageUrl: mouthRemovedUrl,
+      durationMs: Date.now() - t0,
+      modelUsed: 'openai/gpt-image-2/edit',
+      costUsd: 0.011,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn('[pipeline image-gen mouth-removed] failed', {
+      character_id: characterId,
+      detail: msg.slice(0, 200),
+    });
     return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
   }
 }

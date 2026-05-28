@@ -12,6 +12,7 @@ import { IconScene } from '../scenes/IconScene';
 import { ScreenMockupScene } from '../scenes/ScreenMockupScene';
 import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
+import { MotionScene } from '../scenes/MotionScene';
 import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
 import { RealImageOverlay } from '../components/RealImageOverlay';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
@@ -440,7 +441,34 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
   // mapping lives here (one site, one mapping table) rather than
   // inside each scene component so adding a future built-in with its
   // own on-screen-text treatment is a single-line change.
-  const lowerThirdVariant = config.styleId === 'doodle_explainer_2' ? 'doodle-yellow' : 'default';
+  //
+  // paint_explainer_v1 (2026-05-28) inherits the doodle-yellow variant
+  // — it's the same yellow comic-bold bubble visual the genre uses for
+  // every label, and the LowerThird's per-row OST text doubles as the
+  // simplest implementation of <LabelPopOn> until that component lands
+  // in PR 2. Adding a new variant per style is a one-line change here.
+  const lowerThirdVariant =
+    config.styleId === 'doodle_explainer_2' || config.styleId === 'paint_explainer_v1'
+      ? 'doodle-yellow'
+      : 'default';
+
+  // paint_explainer_v1 motion routing — runs BEFORE the sceneType
+  // switch because motion is a paint_explainer_v1-specific path that
+  // supersedes the default b-roll rendering. Falls through to the
+  // sceneType switch when shotKind is undefined / 'static' / 'hard_cut'
+  // so non-paint_explainer_v1 docs are unaffected (rule 2 — additive
+  // routing, no regression on existing styles).
+  if (shot.shotKind === 'motion') {
+    return (
+      <MotionScene
+        {...props}
+        shotIndex={shotIndex}
+        suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds}
+        lowerThirdVariant={lowerThirdVariant}
+      />
+    );
+  }
+
   switch (shot.sceneType) {
     case 'title-card':
       return <TitleCardScene {...props} />;

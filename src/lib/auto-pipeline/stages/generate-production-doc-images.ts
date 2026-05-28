@@ -44,6 +44,7 @@ import { logger } from '../../logger';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import {
   generateBaseImage,
+  generateMouthRemovedForCharacter,
   generateVariantImage,
   type PipelineImageDoc,
   type PipelineImageRow,
@@ -51,8 +52,23 @@ import {
 
 /** Max rows to attempt per tick. Sized so the worst-case Atlas i2i
  *  latency (~30 s) × 8 rows = ~240 s stays under the Vercel 300 s
- *  function timeout with headroom for the per-tick DB read/write. */
-const ROWS_PER_TICK = 8;
+ *  function timeout with headroom for the per-tick DB read/write.
+ *
+ *  paint_explainer_v1 docs use a smaller budget because each character
+ *  base may chain into an extra ~40 s Atlas Edit call for the mouth-
+ *  removed variant. 4 × 30 s base + 4 × 40 s mouth-removed = 280 s, under
+ *  the 300 s timeout with the same headroom margin. */
+const ROWS_PER_TICK_DEFAULT = 8;
+const ROWS_PER_TICK_PAINT_EXPLAINER_V1 = 4;
+
+/** Hard cap on how many fresh Atlas mouth-removal calls a single tick
+ *  can run. Most paint_explainer_v1 ticks generate at most 1–2 new
+ *  characters (recurring mascot + occasional guest); 3 leaves headroom
+ *  for an unusual cast-introduction tick. After this cap, character
+ *  base rows that need a mouth-removed still get their base persisted
+ *  — they're picked up next tick because their `mouth_removed_url`
+ *  is still empty. */
+const MAX_MOUTH_REMOVED_PER_TICK = 3;
 
 /** Per-job hard cost cap. Read from env so Vercel can override
  *  without a redeploy. Defaults to $10 — generous for typical 30-row
@@ -154,8 +170,12 @@ export async function handleGenerateProductionDocImages(
   //    work (across all future ticks) would blow the ceiling. The
   //    cap counts only spend this STAGE has accrued; we estimate
   //    using the same conservative numbers the manual UI surfaces
-  //    ($0.04 / base, $0.011 / variant edit).
-  const COST_PER_BASE = 0.04;
+  //    ($0.04 / base, $0.011 / variant edit). For paint_explainer_v1,
+  //    base rows that are character shots also incur ~$0.011 for the
+  //    mouth-removed companion call; we add a $0.01 buffer per base
+  //    rather than parse motion_beats here — conservative for the cap.
+  const isPaintExplainerV1 = doc.style_preset === 'paint_explainer_v1';
+  const COST_PER_BASE = isPaintExplainerV1 ? 0.05 : 0.04;
   const COST_PER_VARIANT = 0.011;
   const remainingCostUsd =
     baseIndicesToGen.length * COST_PER_BASE +
@@ -181,9 +201,12 @@ export async function handleGenerateProductionDocImages(
   //    then variants whose source is ready (or will be ready
   //    in-tick). Order is stable: base index ascending, then variant
   //    index ascending.
+  const rowsPerTick = isPaintExplainerV1
+    ? ROWS_PER_TICK_PAINT_EXPLAINER_V1
+    : ROWS_PER_TICK_DEFAULT;
   const plan: Array<{ index: number; kind: 'base' | 'variant' }> = [];
   for (const idx of baseIndicesToGen) {
-    if (plan.length >= ROWS_PER_TICK) break;
+    if (plan.length >= rowsPerTick) break;
     plan.push({ index: idx, kind: 'base' });
   }
   // Track which row indices will have image_url by the time variants
@@ -193,7 +216,7 @@ export async function handleGenerateProductionDocImages(
   // next tick (avoids reading-while-writing the same doc structure).
   const inFlightBaseIndices = new Set(plan.map((p) => p.index));
   for (const idx of variantIndicesToGen) {
-    if (plan.length >= ROWS_PER_TICK) break;
+    if (plan.length >= rowsPerTick) break;
     const variant = doc.rows[idx];
     const sourceIdx = resolveSourceRowIndex(variant, doc);
     if (sourceIdx === -1) continue;
@@ -212,6 +235,10 @@ export async function handleGenerateProductionDocImages(
   let succeeded = 0;
   let failed = 0;
   let tickCostUsd = 0;
+  let mouthRemovedThisTick = 0;
+  let mouthRemovedSucceeded = 0;
+  let mouthRemovedSkipped = 0;
+  let mouthRemovedFailed = 0;
   for (const item of plan) {
     const row = doc.rows[item.index];
     const result =
@@ -228,6 +255,82 @@ export async function handleGenerateProductionDocImages(
       // tick see the new image_url when checking their source.
       doc.rows[item.index].image_url = result.imageUrl;
       succeeded += 1;
+
+      // ─── paint_explainer_v1 mouth-removed chain ──────────────────
+      // Runs only on base rows in a paint_explainer_v1 doc whose row
+      // carries a `character_id` AND emits a `mouth_swap` motion beat.
+      // Per-tick capped at MAX_MOUTH_REMOVED_PER_TICK so the Vercel
+      // 300 s budget stays intact even when this tick happens to
+      // contain several never-before-seen characters. Rows that hit
+      // the cap have their base persisted but no `mouth_removed_url`
+      // — they're picked up next tick (image_url present + motion
+      // beats present but no mouth_removed_url = unfinished work).
+      if (
+        item.kind === 'base'
+        && isPaintExplainerV1
+        && needsMouthRemoved(row)
+        && row.character_id
+      ) {
+        const cache = doc.paint_explainer_v1_character_cache ?? {};
+        const characterId = row.character_id;
+        const cached = cache[characterId];
+        if (cached?.mouth_removed_url) {
+          // Cache hit — character already generated earlier in this
+          // doc (possibly even earlier in this same tick). Reuse the
+          // URL; no Atlas call, no cost.
+          doc.rows[item.index].mouth_removed_url = cached.mouth_removed_url;
+          mouthRemovedSucceeded += 1;
+          logger.info('[paint-explainer-v1 atlas-mouth-removed] cache hit', {
+            pipeline_video_id: video.id,
+            row_index: item.index,
+            character_id: characterId,
+          });
+        } else if (mouthRemovedThisTick >= MAX_MOUTH_REMOVED_PER_TICK) {
+          // Per-tick cap reached. The base is persisted; the next
+          // tick will re-enter the stage (mouth_removed_url still
+          // unset) and pick this row up. Logged so the cron tail
+          // shows why a row was deferred.
+          mouthRemovedSkipped += 1;
+          logger.info('[paint-explainer-v1 atlas-mouth-removed] deferred to next tick', {
+            pipeline_video_id: video.id,
+            row_index: item.index,
+            character_id: characterId,
+            cap: MAX_MOUTH_REMOVED_PER_TICK,
+          });
+        } else {
+          const mrResult = await generateMouthRemovedForCharacter({
+            baseImageUrl: result.imageUrl,
+            characterId,
+          });
+          tickCostUsd += mrResult.costUsd;
+          mouthRemovedThisTick += 1;
+          if (mrResult.imageUrl) {
+            doc.rows[item.index].mouth_removed_url = mrResult.imageUrl;
+            cache[characterId] = {
+              base_url: result.imageUrl,
+              mouth_removed_url: mrResult.imageUrl,
+              anchors: cached?.anchors,
+            };
+            doc.paint_explainer_v1_character_cache = cache;
+            mouthRemovedSucceeded += 1;
+            logger.info('[paint-explainer-v1 atlas-mouth-removed] generated', {
+              pipeline_video_id: video.id,
+              row_index: item.index,
+              character_id: characterId,
+              duration_ms: mrResult.durationMs,
+              cost_usd: mrResult.costUsd,
+            });
+          } else {
+            mouthRemovedFailed += 1;
+            logger.warn('[paint-explainer-v1 atlas-mouth-removed] failed', {
+              pipeline_video_id: video.id,
+              row_index: item.index,
+              character_id: characterId,
+              error: mrResult.error,
+            });
+          }
+        }
+      }
     } else {
       failed += 1;
       logger.warn('auto-pipeline: production-doc-images row failed', {
@@ -260,13 +363,24 @@ export async function handleGenerateProductionDocImages(
 
   // 8) Decide: more work remaining → advance to SAME stage (cron
   //    re-claims next tick); all done → advance to thumbnail.
+  //    paint_explainer_v1 character rows whose base is generated but
+  //    whose mouth-removed companion hasn't been generated yet
+  //    ALSO count as remaining — they got deferred by the per-tick
+  //    cap and must come back next tick.
   const stillRemaining =
     doc.rows.some((r) => {
-      if (r.image_url?.trim()) return false;
-      const prompt = (r.ai_image_prompt ?? '').trim();
-      const variantIdx = r.variant_index ?? 0;
-      if (variantIdx === 0) return prompt.length > 0;
-      return Boolean(r.variant_edit_prompt?.trim());
+      if (!r.image_url?.trim()) {
+        const prompt = (r.ai_image_prompt ?? '').trim();
+        const variantIdx = r.variant_index ?? 0;
+        if (variantIdx === 0) return prompt.length > 0;
+        return Boolean(r.variant_edit_prompt?.trim());
+      }
+      // Base / variant image already generated. For paint_explainer_v1,
+      // also check whether a mouth-removed companion is still pending.
+      if (isPaintExplainerV1 && needsMouthRemoved(r) && r.character_id && !r.mouth_removed_url?.trim()) {
+        return true;
+      }
+      return false;
     });
 
   logger.info('auto-pipeline: production-doc-images tick complete', {
@@ -277,6 +391,12 @@ export async function handleGenerateProductionDocImages(
     tick_cost_usd: tickCostUsd,
     cumulative_cost_usd: alreadySpentUsd + tickCostUsd,
     still_remaining: stillRemaining,
+    // paint_explainer_v1 mouth-removed sub-stage telemetry. All zero
+    // on non-paint_explainer_v1 docs.
+    mouth_removed_attempted: mouthRemovedThisTick,
+    mouth_removed_succeeded: mouthRemovedSucceeded,
+    mouth_removed_skipped: mouthRemovedSkipped,
+    mouth_removed_failed: mouthRemovedFailed,
   });
 
   return {
@@ -284,6 +404,21 @@ export async function handleGenerateProductionDocImages(
     nextStage: stillRemaining ? 'generating_production_doc_images' : 'generating_thumbnail',
     costUsd: tickCostUsd,
   };
+}
+
+/** True when a paint_explainer_v1 row would benefit from a mouth-
+ *  removed companion image: it carries at least one motion beat whose
+ *  kind is `mouth_swap`. Other motion-beat kinds (label_pop,
+ *  scribble_draw, prop_slide, …) animate over the original base and
+ *  don't need the mouth-removed variant.
+ *
+ *  Defensive: returns false on missing/empty motion_beats so non-
+ *  paint_explainer_v1 rows always short-circuit even if some other
+ *  code path accidentally calls this helper. */
+function needsMouthRemoved(row: PipelineImageRow): boolean {
+  const beats = row.motion_beats;
+  if (!Array.isArray(beats) || beats.length === 0) return false;
+  return beats.some((b) => b?.kind === 'mouth_swap');
 }
 
 /** Find the row index of a variant's SOURCE — base for parallel

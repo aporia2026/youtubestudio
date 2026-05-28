@@ -664,7 +664,87 @@ export interface ProductionRow {
    *  is unset. Undefined ⇒ fall through to the doc-level
    *  `variants_chained_by_default`. */
   group_variant_chain_default?: 'parallel' | 'chained';
+
+  // ─── paint_explainer_v1 (2026-05-28): procedural motion ────────────
+  //
+  // Additive, optional, only meaningful when the doc's `style_preset`
+  // is `paint_explainer_v1`. All four fields are absent on every other
+  // style and on legacy docs. See
+  // `_plans/2026-05-28-paint-explainer-v1-architecture.md`.
+
+  /** Stable identifier for a recurring character. Two rows that share
+   *  `character_id` reuse the same generated base image and mouth-removed
+   *  variant — character persistence is what keeps the per-video cost
+   *  under the $1 ceiling (§6 of the plan). Null / undefined ⇒ this row
+   *  gets a fresh base, not a recurring entity. Set by the LLM during
+   *  doc generation; the image-gen pipeline keys
+   *  `ProductionDoc.paint_explainer_v1_character_cache` by this value. */
+  character_id?: string;
+
+  /** Renderer routing for the paint_explainer_v1 style.
+   *  - `'static'` (default ⇒ same as the rest of the codebase): Ken Burns
+   *    or still, current behaviour.
+   *  - `'motion'`: render Layer 1 procedural overlays from `motion_beats`
+   *    over the base image (mouth-swap, label-pop, prop-slide, …).
+   *  - `'hard_cut'`: signal that this shot enters as a snap cut from the
+   *    previous, no transition. */
+  shot_kind?: 'static' | 'motion' | 'hard_cut';
+
+  /** Procedural motion overlays this row's `<MotionScene>` should run.
+   *  Each beat's timing is relative to row start (ms); when the project
+   *  has alignment JSON, the renderer may re-map `mouth_swap` and
+   *  `label_pop` startMs to word/phoneme boundaries before applying.
+   *  Capped server-side at 8 beats per row to bound the renderer cost
+   *  (rule 13 — defense-in-depth against LLM hallucination). */
+  motion_beats?: MotionBeat[];
+
+  /** R2 URL of the Atlas-Edit-cleaned base where the character's mouth
+   *  has been erased, ready for the `<MouthSwap>` overlay to composite
+   *  procedural mouth states on top. Populated by the image-gen pipeline
+   *  the first time a character shot is generated in this doc (NOT
+   *  LLM-emitted). Shared across every row in the doc that carries the
+   *  same `character_id` via
+   *  `ProductionDoc.paint_explainer_v1_character_cache`. */
+  mouth_removed_url?: string;
 }
+
+/** A single procedural motion overlay attached to a paint_explainer_v1
+ *  row. The Remotion renderer maps `kind` to a component
+ *  (`<MouthSwap>`, `<LabelPopOn>`, …) and the rest of the fields drive
+ *  that component's animation. */
+export interface MotionBeat {
+  kind:
+    | 'mouth_swap'      // procedural mouth states (closed/mid/open) cycled
+    | 'scribble_draw'   // SVG stroke-reveal over the base image
+    | 'label_pop'       // yellow comic-sans bubble label, scale-in with overshoot
+    | 'prop_slide'      // transparent prop PNG slides in from offscreen
+    | 'micro_wiggle'    // ambient ±1° / ±2px transform on character
+    | 'real_photo_punch'; // real photo punches in inside a thin black rounded frame
+  /** Milliseconds from the row's start when the beat begins. The renderer
+   *  may rebase this to a word/phoneme onset when alignment JSON is
+   *  available; the absolute value here is the fallback / floor. */
+  startMs: number;
+  durationMs: number;
+  /** Anchor position on the 1920×1080 canvas. Required for `label_pop`
+   *  and `prop_slide`; ignored by mouth_swap (auto-mouth) and
+   *  micro_wiggle (no anchor). The anchor resolver runs at render time
+   *  — see §5 of the architecture plan. */
+  anchor?: MotionAnchor;
+  /** Kind-specific payload. Schema is open here so future motion kinds
+   *  can add fields without a migration. Validated server-side at row
+   *  ingest per kind. */
+  payload?: {
+    text?: string;           // label_pop
+    assetUrl?: string;       // prop_slide
+    propPromptHint?: string; // prop_slide (used by image-gen, not renderer)
+  };
+}
+
+export type MotionAnchor =
+  | { kind: 'auto-mouth' }            // resolved against the character's calibrated mouth position
+  | { kind: 'auto-center' }           // base-image center
+  | { kind: 'auto-eyes' }             // resolved via vision-pass on the base
+  | { kind: 'specific'; xPct: number; yPct: number }; // explicit %, 0–100
 
 // ─── Phase 3 helpers ────────────────────────────────────────────────
 //
@@ -984,6 +1064,26 @@ export interface ProductionDoc {
    *  voiceover's runtime. Default 0 (no fade). Capped at 10s by the
    *  editor UI. */
   voiceover_fade_out_ms?: number;
+
+  /** paint_explainer_v1 (2026-05-28): per-video cache of recurring-character
+   *  base images, keyed by `ProductionRow.character_id`. Populated by the
+   *  image-gen pipeline the first time a character is generated in this doc,
+   *  then reused across every row that shares the same `character_id`.
+   *
+   *  This cache is what keeps the per-video cost under the $1 ceiling: a
+   *  recurring mascot used in 40 of 60 shots pays for one base + one
+   *  mouth-removed pair instead of 40 of each. See §6 of
+   *  `_plans/2026-05-28-paint-explainer-v1-architecture.md`.
+   *
+   *  Undefined on legacy docs and on docs not using paint_explainer_v1. */
+  paint_explainer_v1_character_cache?: Record<string, {
+    base_url: string;
+    mouth_removed_url?: string;
+    /** Cached vision-pass result for this base, indexed by the anchor
+     *  kind. Saves the per-shot Gemini Flash call when the same character
+     *  appears across many rows. Undefined until the first lookup. */
+    anchors?: Partial<Record<'auto-mouth' | 'auto-center' | 'auto-eyes', { xPct: number; yPct: number }>>;
+  }>;
 }
 
 export interface RowImageState {
@@ -1621,6 +1721,20 @@ export function productionDocToVideoConfig(
       muted: row.muted,
       playbackRate: row.playback_rate,
       transitionInId: row.transition_in,
+      // paint_explainer_v1 (2026-05-28). All four fields are
+      // pass-through from the row; the renderer's SceneRouter inspects
+      // `shotKind` to decide whether to mount `<MotionScene>`. Absent
+      // ⇒ renderer behaves exactly as before. Cast `motion_beats`
+      // through `unknown` because the row interface lives in
+      // remotion/utils.ts (this file) and references the full
+      // `MotionBeat` type, while the renderer-side VideoShot type
+      // re-states a structurally-equivalent shape (no React-only
+      // helpers carried through); a direct assignment confuses TS into
+      // thinking the shapes diverge even though they don't.
+      shotKind: row.shot_kind,
+      motionBeats: row.motion_beats as VideoShot['motionBeats'],
+      mouthRemovedUrl: row.mouth_removed_url,
+      characterId: row.character_id,
       // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });

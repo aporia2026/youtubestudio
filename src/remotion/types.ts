@@ -279,6 +279,54 @@ export interface VideoShot {
   // never threaded into VideoShot because the renderer doesn't care
   // about edit history, and carrying it here would force a string-vs-
   // structured-object conversion at the boundary for no gain.
+
+  // ─── paint_explainer_v1 (2026-05-28) ─────────────────────────────
+  //
+  // Renderer-side mirror of ProductionRow's motion fields. Plumbed
+  // through `productionDocToVideoConfig` so SceneRouter can route to
+  // `<MotionScene>` when `shotKind === 'motion'`, and that scene can
+  // mount the right Remotion overlays per `motionBeats[]`. All four
+  // fields are optional; absent ⇒ render exactly as before (rule 2 —
+  // additive only, no regression on doodle_explainer_2). See
+  // `_plans/2026-05-28-paint-explainer-v1-architecture.md`.
+
+  /** Renderer routing hint. `'motion'` mounts `<MotionScene>` over the
+   *  base image; `'hard_cut'` signals snap-cut entry (no fade);
+   *  `'static'` (or undefined) uses the current Ken-Burns-or-still path. */
+  shotKind?: 'static' | 'motion' | 'hard_cut';
+
+  /** Procedural motion overlays for this shot. Same shape as
+   *  `ProductionRow.motion_beats`. Unrecognised kinds are skipped
+   *  silently by MotionScene so future motion-beat kinds can ship
+   *  through the LLM before the renderer supports them. */
+  motionBeats?: Array<{
+    kind: string;
+    startMs: number;
+    durationMs: number;
+    anchor?:
+      | { kind: 'auto-mouth' }
+      | { kind: 'auto-center' }
+      | { kind: 'auto-eyes' }
+      | { kind: 'specific'; xPct: number; yPct: number };
+    payload?: {
+      text?: string;
+      assetUrl?: string;
+      propPromptHint?: string;
+    };
+  }>;
+
+  /** R2 URL of the mouth-removed companion of `imageUrl`, used as the
+   *  bottom layer by `<MouthSwap>`. Populated by the image-gen pipeline
+   *  for paint_explainer_v1 character shots whose row carries a
+   *  `character_id` and a `mouth_swap` motion beat. Absent when the
+   *  pipeline hasn't generated it yet (a later tick picks it up) OR
+   *  when the shot doesn't need one. */
+  mouthRemovedUrl?: string;
+
+  /** Stable character identifier (mirrors `ProductionRow.character_id`).
+   *  Renderer doesn't act on this field — carried through to telemetry
+   *  so per-character render counts grep cleanly. */
+  characterId?: string;
 }
 
 // ─── Video Config ──────────────────────────────────────────────────────────────
