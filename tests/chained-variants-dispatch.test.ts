@@ -4,6 +4,7 @@ import {
   composeVariantEditRequest,
   getBaseRow,
   getPreviousVariantRow,
+  resolveVariantChainMode,
 } from '@/remotion/utils';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 
@@ -17,7 +18,6 @@ import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 function makeRow(opts: Partial<ProductionRow> & { script_text: string }): ProductionRow {
   return {
     timecode: '0:00',
-    script_text: opts.script_text,
     visual_type: 'Animation',
     visual_description: 'desc',
     stock_search_terms: '',
@@ -154,6 +154,34 @@ describe('composeVariantEditRequest — chained variants (Phase 1.7)', () => {
     }
   });
 
+  it('honors the per-group default `group_variant_chain_default = chained` when the variant own flag is unset (R5)', () => {
+    // The base row sets the group default to chained; the variant
+    // row leaves its own flag unset. The dispatcher should resolve
+    // to chained anyway via tier 2 of the three-tier priority.
+    const baseChained = { ...baseRow, group_variant_chain_default: 'chained' as const };
+    const v2Inherits = { ...v2Parallel };
+    delete (v2Inherits as Partial<ProductionRow>).variant_derives_from_previous;
+    const docInherit = makeDoc([baseChained, v1Row, v2Inherits]);
+    const prepared = composeVariantEditRequest(docInherit, v2Inherits, 'https://r2/v1.png');
+    expect(prepared.kind).toBe('ready');
+    if (prepared.kind === 'ready') {
+      expect(prepared.request.prompt).toContain(CHAINED_VARIANT_IDENTITY_ANCHOR);
+    }
+  });
+
+  it('per-variant flag still wins over the per-group default (tier 1 > tier 2)', () => {
+    // Base says chained; this variant explicitly opts out. The
+    // dispatcher should respect the per-variant override.
+    const baseChained = { ...baseRow, group_variant_chain_default: 'chained' as const };
+    const v2OptOut: ProductionRow = { ...v2Parallel, variant_derives_from_previous: false };
+    const docOverride = makeDoc([baseChained, v1Row, v2OptOut]);
+    const prepared = composeVariantEditRequest(docOverride, v2OptOut, 'https://r2/base.png');
+    expect(prepared.kind).toBe('ready');
+    if (prepared.kind === 'ready') {
+      expect(prepared.request.prompt).not.toContain(CHAINED_VARIANT_IDENTITY_ANCHOR);
+    }
+  });
+
   it('CHAINED_VARIANT_IDENTITY_ANCHOR mentions the load-bearing identity guarantees', () => {
     // The anchor is the load-bearing anti-drift signal. If a future
     // refactor weakens these phrases, the chained-variants quality
@@ -162,5 +190,64 @@ describe('composeVariantEditRequest — chained variants (Phase 1.7)', () => {
     expect(CHAINED_VARIANT_IDENTITY_ANCHOR).toContain('ORIGINAL base');
     expect(CHAINED_VARIANT_IDENTITY_ANCHOR).toContain('face, hair, clothing');
     expect(CHAINED_VARIANT_IDENTITY_ANCHOR).toMatch(/pose|motion|expression/);
+  });
+});
+
+// ─── Phase 1.7 R5 — `resolveVariantChainMode` three-tier priority ────────────
+
+describe('resolveVariantChainMode — three-tier priority (Phase 1.7 R5)', () => {
+  const base: ProductionRow = makeRow({
+    script_text: 'base', group_id: 'g1', variant_index: 0, ai_image_prompt: 'base scene',
+  });
+  const baseGroupChained: ProductionRow = { ...base, group_variant_chain_default: 'chained' };
+  const baseGroupParallel: ProductionRow = { ...base, group_variant_chain_default: 'parallel' };
+  const variantUnset: ProductionRow = makeRow({
+    script_text: 'v', group_id: 'g1', variant_index: 2, variant_edit_prompt: 'X',
+  });
+  const variantTrue: ProductionRow = { ...variantUnset, variant_derives_from_previous: true };
+  const variantFalse: ProductionRow = { ...variantUnset, variant_derives_from_previous: false };
+
+  it('tier 1 wins — per-variant true → chained', () => {
+    expect(resolveVariantChainMode(makeDoc([base, variantTrue]), variantTrue, base)).toBe('chained');
+  });
+
+  it('tier 1 wins — per-variant false → parallel even when group says chained', () => {
+    expect(
+      resolveVariantChainMode(makeDoc([baseGroupChained, variantFalse]), variantFalse, baseGroupChained),
+    ).toBe('parallel');
+  });
+
+  it('tier 2 — base.group_variant_chain_default = chained, variant unset → chained', () => {
+    expect(
+      resolveVariantChainMode(makeDoc([baseGroupChained, variantUnset]), variantUnset, baseGroupChained),
+    ).toBe('chained');
+  });
+
+  it('tier 2 — base.group_variant_chain_default = parallel beats doc-level chained', () => {
+    expect(
+      resolveVariantChainMode(
+        makeDoc([baseGroupParallel, variantUnset], { variants_chained_by_default: true }),
+        variantUnset,
+        baseGroupParallel,
+      ),
+    ).toBe('parallel');
+  });
+
+  it('tier 3 — doc.variants_chained_by_default = true, both upper tiers unset → chained', () => {
+    expect(
+      resolveVariantChainMode(
+        makeDoc([base, variantUnset], { variants_chained_by_default: true }),
+        variantUnset,
+        base,
+      ),
+    ).toBe('chained');
+  });
+
+  it('default — all three tiers unset → parallel', () => {
+    expect(resolveVariantChainMode(makeDoc([base, variantUnset]), variantUnset, base)).toBe('parallel');
+  });
+
+  it('returns parallel when baseRow is undefined and no doc-level default', () => {
+    expect(resolveVariantChainMode(makeDoc([variantUnset]), variantUnset, undefined)).toBe('parallel');
   });
 });

@@ -70,6 +70,14 @@ export interface PipelineImageRow {
   variant_index?: number;
   variant_edit_prompt?: string;
   variant_derives_from_previous?: boolean;
+  /** Phase 1.7 R5 — per-group default for chain mode. Set on the BASE
+   *  row (variant_index === 0) only. The auto-pipeline dispatcher
+   *  resolves a variant's effective chain mode via the three-tier
+   *  priority: this variant's `variant_derives_from_previous` →
+   *  the base's `group_variant_chain_default` → the doc's
+   *  `variants_chained_by_default`. Same shape as the canonical
+   *  field on ProductionRow in src/remotion/utils.ts. */
+  group_variant_chain_default?: 'parallel' | 'chained';
   // ─── paint_explainer_v1 (2026-05-28) ──────────────────────────────
   // Inline subset of the full MotionBeat / character fields defined on
   // ProductionRow in src/remotion/utils.ts. Re-stated here (not imported)
@@ -107,6 +115,11 @@ export interface PipelineImageDoc {
     base_url: string;
     first_seen_row_index: number;
   }>;
+  /** Phase 1.7 R5 — doc-level default for chain mode. Tier 3 in the
+   *  three-tier resolution; only applies when neither the variant's
+   *  own flag nor the base row's `group_variant_chain_default` is
+   *  set. Same shape as the canonical field on ProductionDoc. */
+  variants_chained_by_default?: boolean;
 }
 
 /**
@@ -248,16 +261,33 @@ export async function generateVariantImage(args: {
   // variant's image; parallel variants edit the group's base. Falls
   // back to the base when chaining is requested but the previous
   // variant is missing (defensive).
+  //
+  // Phase 1.7 R5: three-tier chain resolution (variant own flag →
+  // base's group_variant_chain_default → doc's
+  // variants_chained_by_default → parallel). Mirrors
+  // `resolveVariantChainMode` in src/remotion/utils.ts so the
+  // auto-pipeline and manual editor route variants identically.
+  const baseRow = doc.rows.find(
+    (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+  );
+  let resolvedChainMode: 'parallel' | 'chained' = 'parallel';
+  if (typeof row.variant_derives_from_previous === 'boolean') {
+    resolvedChainMode = row.variant_derives_from_previous ? 'chained' : 'parallel';
+  } else if (baseRow?.group_variant_chain_default === 'chained') {
+    resolvedChainMode = 'chained';
+  } else if (baseRow?.group_variant_chain_default === 'parallel') {
+    resolvedChainMode = 'parallel';
+  } else if (doc.variants_chained_by_default === true) {
+    resolvedChainMode = 'chained';
+  }
   let sourceRow: PipelineImageRow | undefined;
-  if (row.variant_derives_from_previous && variantIdx > 1) {
+  if (resolvedChainMode === 'chained' && variantIdx > 1) {
     sourceRow = doc.rows.find(
       (r) => r.group_id === groupId && (r.variant_index ?? 0) === variantIdx - 1,
     );
   }
   if (!sourceRow) {
-    sourceRow = doc.rows.find(
-      (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
-    );
+    sourceRow = baseRow;
   }
   if (!sourceRow) {
     return { error: 'source_row_not_found', durationMs: Date.now() - t0, costUsd: 0 };
@@ -274,14 +304,13 @@ export async function generateVariantImage(args: {
   // the heavy lifting).
   const trimmedInstruction = editInstruction.replace(/\.\s*$/, '');
   let composedPrompt = `${trimmedInstruction}. Keep everything else in the image identical to the input.`;
-  // Phase 1.7 (chained variants) — when this variant edits from the
-  // previous variant (not the base), append the identity anchor so
-  // Atlas Edit doesn't compound style drift across V1 → V2 → V3. Same
-  // wording as the manual editor's composeVariantEditRequest for
-  // behaviour parity. Spec:
-  // _plans/2026-05-28-doodle-2-chained-variants.md (R4).
-  const isChainedFromPrevious =
-    row.variant_derives_from_previous === true && variantIdx > 1;
+  // Phase 1.7 R5 (chained variants) — when this variant edits from
+  // the previous variant (not the base), append the identity anchor
+  // so Atlas Edit doesn't compound style drift across V1 → V2 → V3.
+  // The chain decision uses the same three-tier resolution as the
+  // manual editor (see above). Spec:
+  // _plans/2026-05-28-doodle-2-chained-variants.md (R4 + R5).
+  const isChainedFromPrevious = resolvedChainMode === 'chained' && variantIdx > 1;
   if (isChainedFromPrevious) {
     const { CHAINED_VARIANT_IDENTITY_ANCHOR } = await import('../../remotion/utils');
     composedPrompt += ` ${CHAINED_VARIANT_IDENTITY_ANCHOR}`;

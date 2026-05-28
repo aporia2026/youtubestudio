@@ -821,6 +821,41 @@ export function getPreviousVariantRow(
 export const CHAINED_VARIANT_IDENTITY_ANCHOR =
   'Keep the character\'s face, hair, clothing, and overall identity EXACTLY identical to the ORIGINAL base of this scene — only the pose, motion, or expression progresses from the previous frame.';
 
+/** Resolve the effective chain mode for a variant row.
+ *
+ *  Three-tier priority (highest wins):
+ *    1. The variant row's own `variant_derives_from_previous` (per-row
+ *       override). When defined, it wins outright.
+ *    2. The base row's `group_variant_chain_default` ('parallel' |
+ *       'chained'). When set, it covers every variant in the group
+ *       whose own flag is unset.
+ *    3. The doc's `variants_chained_by_default` (boolean). When `true`,
+ *       chained is the default; when `false` or unset, parallel.
+ *
+ *  Variant 1 is structurally always "parallel" for dispatch purposes
+ *  (no previous variant to chain from); the resolver returns the
+ *  declared mode regardless so the editor can still surface the
+ *  group default on a single-variant group.
+ *
+ *  Phase 1.7 R5: gives the manual editor's `generateVariantImage` AND
+ *  `composeVariantEditRequest` a single source of truth for chain
+ *  resolution, replacing the prior code paths that only consulted
+ *  tier 1. */
+export function resolveVariantChainMode(
+  doc: ProductionDoc,
+  variantRow: ProductionRow,
+  baseRow: ProductionRow | undefined,
+): 'parallel' | 'chained' {
+  if (typeof variantRow.variant_derives_from_previous === 'boolean') {
+    return variantRow.variant_derives_from_previous ? 'chained' : 'parallel';
+  }
+  const groupMode = baseRow?.group_variant_chain_default;
+  if (groupMode === 'chained') return 'chained';
+  if (groupMode === 'parallel') return 'parallel';
+  if (doc.variants_chained_by_default === true) return 'chained';
+  return 'parallel';
+}
+
 /** True when `row` is part of a variant group (has both fields set).
  *  Treats malformed rows (group_id without variant_index, or vice
  *  versa) as standalone so the renderer doesn't crash on bad data. */
@@ -952,17 +987,23 @@ export function composeVariantEditRequest(
       ? `${basePrompt}\n\nEDIT (apply this change to the input image, keep everything else identical): ${editInstruction}`
       : `EDIT (apply this change to the input image): ${editInstruction}`;
   }
-  // Phase 1.7 (chained variants) — when this variant edits from the
-  // PREVIOUS variant's image (not the base), append the identity
+  // Phase 1.7 R5 (chained variants) — when this variant edits from
+  // the PREVIOUS variant's image (not the base), append the identity
   // anchor so Atlas Edit doesn't compound style drift across V1 → V2
   // → V3. Each Edit step adds ~5% drift; without the anchor a V3
   // chain can drift ~14% from the canonical base. The anchor
   // explicitly tells the model to preserve the ORIGINAL base's
   // character identity while letting the pose/motion progress.
-  // Spec: _plans/2026-05-28-doodle-2-chained-variants.md (R4).
+  //
+  // Resolves through the three-tier priority (variant own flag →
+  // base's group_variant_chain_default → doc.variants_chained_by_default
+  // → parallel) via `resolveVariantChainMode` so the per-group toggle
+  // surfaced in the editor (R5) actually drives dispatch even when
+  // the variant row itself has no override set.
+  // Spec: _plans/2026-05-28-doodle-2-chained-variants.md (R4 + R5).
   const variantIdx = variantRow.variant_index ?? 0;
-  const isChainedFromPrevious =
-    variantRow.variant_derives_from_previous === true && variantIdx > 1;
+  const chainMode = resolveVariantChainMode(doc, variantRow, base);
+  const isChainedFromPrevious = chainMode === 'chained' && variantIdx > 1;
   if (isChainedFromPrevious) {
     composedPrompt += ` ${CHAINED_VARIANT_IDENTITY_ANCHOR}`;
   }

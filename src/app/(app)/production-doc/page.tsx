@@ -92,6 +92,7 @@ import {
   getVariantGroup,
   getBaseRow,
   composeVariantEditRequest,
+  resolveVariantChainMode,
   MAX_VARIANTS_PER_GROUP,
   type ImageSaliencyMap,
 } from '@/remotion/utils';
@@ -2680,7 +2681,14 @@ function ProductionDocPage() {
     let sourceRowIndex = baseRowIndex;
     let sourceLabel: 'base' | 'previous-variant' = 'base';
     const currentVariantIdx = variantRow.variant_index ?? 0;
-    if (variantRow.variant_derives_from_previous && currentVariantIdx > 1) {
+    // Phase 1.7 R5 — three-tier chain resolution (variant own flag →
+    // base's group_variant_chain_default → doc.variants_chained_by_default).
+    // The per-variant flag still wins when set; otherwise the
+    // per-group toggle on the base row drives dispatch. Without this,
+    // the editor's per-group control (added in R5) had no effect on
+    // existing variants whose own field was unset.
+    const chainMode = resolveVariantChainMode(activeDoc, variantRow, base);
+    if (chainMode === 'chained' && currentVariantIdx > 1) {
       const previousVariant = activeDoc.rows.find(
         (r) =>
           r.group_id === groupId &&
@@ -10048,6 +10056,61 @@ function ProductionDocPage() {
                                     >
                                       ⏺ base · {groupSize - 1} variant{groupSize - 1 === 1 ? '' : 's'}
                                     </span>
+                                    {/* Phase 1.7 (chained variants) R5 — per-group
+                                        chain mode toggle. 3-state cycle:
+                                          auto (inherits doc default)
+                                          → parallel (siblings — V_n edits base)
+                                          → chained (additive — V_n edits V_n-1)
+                                          → auto
+                                        Sets `group_variant_chain_default` on this
+                                        base row. The setting governs (a) the
+                                        default value of `variant_derives_from_previous`
+                                        for new variants added via "+ Add variant"
+                                        and (b) the dispatch routing for existing
+                                        variants whose own field is unset. Per-
+                                        variant chip toggle on individual variants
+                                        always wins. Spec:
+                                        _plans/2026-05-28-doodle-2-chained-variants.md (R5). */}
+                                    {(() => {
+                                      const groupMode = row.group_variant_chain_default;
+                                      const cycleTo: 'parallel' | 'chained' | undefined =
+                                        groupMode === undefined ? 'parallel'
+                                        : groupMode === 'parallel' ? 'chained'
+                                        : undefined;
+                                      const label =
+                                        groupMode === 'chained' ? '⛓ chained'
+                                        : groupMode === 'parallel' ? '∥ parallel'
+                                        : '∿ auto';
+                                      const bg =
+                                        groupMode === 'chained' ? 'rgba(168,85,247,0.18)'
+                                        : groupMode === 'parallel' ? 'rgba(255,255,255,0.04)'
+                                        : 'rgba(120,120,120,0.10)';
+                                      const fg =
+                                        groupMode === 'chained' ? 'var(--accent-purple-bright)'
+                                        : groupMode === 'parallel' ? 'var(--text-secondary)'
+                                        : 'var(--text-muted)';
+                                      const border =
+                                        groupMode === 'chained' ? '1px solid rgba(168,85,247,0.45)'
+                                        : groupMode === 'parallel' ? '1px solid var(--border)'
+                                        : '1px dashed var(--border)';
+                                      const title =
+                                        groupMode === 'chained'
+                                          ? 'Group default: CHAINED. New variants in this group start as `variant_derives_from_previous: true` (additive frame-by-frame). Click to switch to AUTO (inherit doc default).'
+                                          : groupMode === 'parallel'
+                                          ? 'Group default: PARALLEL. New variants edit this base independently (siblings). Click to switch to CHAINED.'
+                                          : 'Group default: AUTO. Inherits the doc-level "Chained variants by default" toggle. Click to override to PARALLEL.';
+                                      return (
+                                        <button
+                                          type="button"
+                                          onClick={() => updateRow(i, { group_variant_chain_default: cycleTo })}
+                                          className="text-[10px] px-1.5 py-0.5 rounded"
+                                          style={{ background: bg, color: fg, border, cursor: 'pointer' }}
+                                          title={title}
+                                        >
+                                          {label}
+                                        </button>
+                                      );
+                                    })()}
                                     {canAddVariant && (
                                       <button
                                         type="button"
