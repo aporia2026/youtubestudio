@@ -514,6 +514,8 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       '- EVERY subsequent row with the same character_id: pipeline calls Atlas Edit on the cached base with the new scene as the edit prompt (cheaper $0.011 AND preserves the character\'s face, hair, body, and clothing identical to the cached base).',
       '- Result: same George — same face, same hair, same shirt and suspenders — across every scene he appears in, regardless of how many rows apart.',
       '',
+      'The output JSON schema below treats `character_id` as an OPTIONAL per-row field — emit it as `"character_id": "<slug>"` on every qualifying row; omit the key entirely on non-qualifying rows.',
+      '',
       'RULES for emitting `character_id`:',
       '- Use a 1-3 word lowercase-with-dashes slug tied to content: "george", "jennie", "louis-as-adult", "napoleon", "the-mailman", "scientist-1".',
       '- Set it on EVERY row featuring that character — including variant rows (variants still need character_id even though their `ai_image_prompt` is empty; the cache key still applies).',

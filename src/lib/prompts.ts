@@ -2358,8 +2358,23 @@ When the chosen style's mixing_rules ABOVE describe variant groups (a base + N d
 
 Only emit variant groups when the chosen style's mixing_rules explicitly permit them AND the script has multiple consecutive narration beats hitting one visual moment. Default = no group_id, no variant_index, no variant_edit_prompt.
 
+### OPTIONAL — character-continuity field
+
+When the chosen style's mixing_rules ABOVE define recurring named characters (e.g. doodle_explainer_2), add this ONE optional field to every row that features a recurring character. Omit it on rows without a recurring character (one-off, anonymous, or no-people rows).
+
+\`\`\`json
+{
+  "...": "all the core fields above",
+  "character_id": "george"
+}
+\`\`\`
+
+  - \`character_id\` — a short lowercase-with-dashes slug naming the character (e.g. \`"george"\`, \`"jennie"\`, \`"louis-as-adult"\`). The SAME slug appears on EVERY row showing that character, including variant rows inside a group_id. This is what lets the server reuse the same base image (via Atlas Edit) across rows so the character looks identical across non-consecutive shots. See the chosen style's CHARACTERS section for slug rules and a worked example.
+
+Only emit \`character_id\` when the chosen style's mixing_rules explicitly describe recurring characters AND the script actually has at least one named character who appears on multiple rows. Default = omit.
+
 ABSOLUTE RULES:
-- Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields are OPTIONAL and only appear on grouped rows — they're additive, never replace core fields)
+- Every row has all ${allowOverlay ? '11' : '8'} core fields (variant fields and \`character_id\` are OPTIONAL — they're additive, never replace core fields)
 - script_text is verbatim from the script — never paraphrase
 - ai_image_prompt is 35–55 words (the scene body only) for every non-Talking Head / non-Screen Recording / non-Title-Card row
 - Do NOT append the style suffix to ai_image_prompt — it is attached automatically by the server after generation
