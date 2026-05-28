@@ -327,16 +327,28 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       // - Numbering gap (missing 07, 08, 11) preserved so the fix
       //   script's `--only N` indexing stays aligned with motif comments.
       //
-      // The four style pillars. Catalog = truth: this list is exactly
-      // what Atlas sees. Legacy refs (03, 05, 06, 10, 12) remain on disk
-      // at public/style-refs/Doodle-explainer-2/ for future curation
-      // rounds but are no longer registered. Position order is locked
-      // in case Atlas ever drops below 4 input slots — first slot is
-      // the most-loaded.
+      // The style pillars. Catalog = truth: this list is exactly
+      // what Atlas sees. Legacy refs (03, 05, 06, 10, 12) remain on
+      // disk at public/style-refs/Doodle-explainer-2/ for future
+      // curation rounds but are no longer registered. Position order is
+      // locked in case Atlas ever drops below 4 input slots — first
+      // slot is the most-loaded.
+      //
+      // Phase 1.6 (Bug 4): the framed-forest ref (13) was relocated to
+      // _review-not-doodle-2/ after Sodder QA b30b8d1e showed it
+      // bleeding into unrelated scenes (rows 16, 17, 21) — Atlas
+      // treated it as a content reference, stamping the forest into
+      // the investigator desk + close-up + final-shot rows. The
+      // "realistic photo can integrate into the cartoon" signal is
+      // still carried by the mixing_rules prose (PILLAR 1) and the
+      // ai_image_suffix's framed-photo language; the visual demo is
+      // queued for a follow-up round where we curate a subject-
+      // neutral realistic photo replacement (textured paper,
+      // abstract brushwork close-up, etc.). Memory rule:
+      // feedback_refs_teach_style_only.md.
       { filename: '14-close-up-character-face.jpg',                       mime_type: 'image/jpeg' },
       { filename: '04-stick-figure-neutral-pointing-no-hand.jpg',         mime_type: 'image/jpeg' },
       { filename: '09-yellow-bubble-text-standalone-highlight.jpg',       mime_type: 'image/jpeg' },
-      { filename: '13-framed-real-photo-sunlit-forest.jpg',               mime_type: 'image/jpeg' },
     ],
     // Updated 2026-05-27: switched to Atlas i2i per user direction
     // "default for everything to be gpt 2 atlas, not just for edits".
@@ -845,14 +857,20 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       // moved to _review-not-doodle-2/ after it bled into every doodle_2
       // output; #13 (framed real-photo pure centrifuges) carries the same
       // framed-photo pillar without the loud subject anchors.
-      // Filenames updated 2026-05-28 in lockstep with the doodle_explainer_2
-      // ref refresh — same three slots (04, 09, 13) were swapped for fresh
-      // style-neutral candidates generated via Atlas t2i. paint_explainer_v1
-      // shares the bundle so it inherits the upgrades for free.
+      // Filenames updated 2026-05-28 in lockstep with the
+      // doodle_explainer_2 ref refresh — same three slots (04, 09,
+      // 13) were swapped for fresh style-neutral candidates generated
+      // via Atlas t2i. paint_explainer_v1 shares the bundle so it
+      // inherits the upgrades for free.
+      //
+      // Phase 1.6 (Bug 4): the framed-forest ref (13) was dropped from
+      // BOTH styles in lockstep — paint_explainer_v1 inherited the
+      // same content-bleed risk from sharing the bundle. See the
+      // matching note in the doodle_explainer_2 catalog above for the
+      // full reasoning.
       { filename: '14-close-up-character-face.jpg', mime_type: 'image/jpeg' },
       { filename: '04-stick-figure-neutral-pointing-no-hand.jpg', mime_type: 'image/jpeg' },
       { filename: '09-yellow-bubble-text-standalone-highlight.jpg', mime_type: 'image/jpeg' },
-      { filename: '13-framed-real-photo-sunlit-forest.jpg', mime_type: 'image/jpeg' },
     ],
     // Refs above live under public/style-refs/Doodle-explainer-2/ (shared
     // with doodle_explainer_2). When a dedicated Paint-Explainer-v1 ref
