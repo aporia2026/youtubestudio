@@ -53,6 +53,7 @@ import {
   pickLabelColourFor,
   resolveCellBackgrounds,
   shiftPaletteLightness,
+  shiftPaletteSaturation,
   PALETTE_RAINBOW,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
 import { buildBaseSvg } from '@/lib/thumbnail-formats/flex-icon-grid-composer';
@@ -1582,8 +1583,8 @@ describe('Phase 4.16 — per-cell rotation', () => {
 // ─── Phase 4.17 — JSON round-trip ───────────────────────────────────────────
 
 describe('Phase 4.22 — shiftPaletteLightness', () => {
-  it('lightens by the requested delta', () => {
-    // #808080 is HSL(0, 0%, 50%). +20 should land at L=70% = #b3b3b3.
+  it('lightens by the requested delta when headroom is ample', () => {
+    // #808080 is HSL(0, 0%, 50%). +20 has 45 headroom, so full +20 applies → L=70%.
     const next = shiftPaletteLightness(['#808080'], 20);
     const rgb = parseHex(next[0]);
     expect(rgb).not.toBeNull();
@@ -1605,6 +1606,50 @@ describe('Phase 4.22 — shiftPaletteLightness', () => {
   it('preserves the array length', () => {
     const next = shiftPaletteLightness(['#ff0000', '#00ff00', '#0000ff'], 8);
     expect(next).toHaveLength(3);
+  });
+  // Phase 4.23: saturation companion.
+  it('Phase 4.23 — shiftPaletteSaturation increases saturation when headroom is ample', () => {
+    // #c87878 is a desaturated red (S ≈ 41 %); +10 has room and
+    // pulls it toward a more saturated red.
+    const before = parseHex('#c87878');
+    const next = shiftPaletteSaturation(['#c87878'], 10);
+    const after = parseHex(next[0]);
+    expect(before).not.toBeNull();
+    expect(after).not.toBeNull();
+    if (before && after) {
+      // R should stay similar or grow (the dominant hue);
+      // G + B should drop (further from grey).
+      expect(after.g).toBeLessThan(before.g);
+      expect(after.b).toBeLessThan(before.b);
+    }
+  });
+  it('Phase 4.23 — shiftPaletteSaturation clamps at 0 / 100', () => {
+    // Fully saturated #ff0000 with +50 stays #ff0000.
+    const up = shiftPaletteSaturation(['#ff0000'], 50);
+    expect(up[0]).toBe('#ff0000');
+    // Already desaturated #808080 with -50 stays grey.
+    const down = shiftPaletteSaturation(['#808080'], -50);
+    const rgb = parseHex(down[0]);
+    if (rgb) {
+      expect(rgb.r).toBe(rgb.g);
+      expect(rgb.g).toBe(rgb.b);
+    }
+  });
+  // Phase 4.23: spread preservation.
+  it('Phase 4.23 — preserves relative spread when one colour is near the clamp', () => {
+    // #f0f0f0 ≈ L 94%; #808080 = L 50%. Spread = 44.
+    // +20 lightens; near-white has headroom = 95 - 94 = 1. So
+    // effectiveDelta = 1; both shift by +1. New L's ≈ 95 and 51 → spread 44.
+    const next = shiftPaletteLightness(['#f0f0f0', '#808080'], 20);
+    const a = parseHex(next[0]);
+    const b = parseHex(next[1]);
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    if (a && b) {
+      // Light grey grew by ~1; mid-grey also grew by ~1. The
+      // CHANNEL difference between them stays close to the original.
+      expect(a.r - b.r).toBeGreaterThanOrEqual(0x6c);
+    }
   });
 });
 

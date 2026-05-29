@@ -58,6 +58,7 @@ import {
   paletteColours,
   resolveCellBackgrounds,
   shiftPaletteLightness,
+  shiftPaletteSaturation,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
 import {
   DEFAULT_STICKER_STYLE,
@@ -349,6 +350,12 @@ export function FlexIconGridPanel({
   // sessionStorage so navigating to another project and back keeps
   // the clipboard — the previous per-mount-only behaviour was a
   // common surprise. SSR-safe init checks `typeof window`.
+  // Phase 4.23: track the clipboard's source format version (or
+  // `null` when none was recorded — legacy / in-memory). Surfaced as
+  // a one-shot toast at paste time when the version is newer than
+  // this client knows, so the user is informed that paste may have
+  // dropped fields the parser didn't recognise.
+  const clipboardVersionRef = useRef<string | null>(null);
   const [cellClipboard, setCellClipboardState] = useState<Omit<FlexIconCell, 'index'> | null>(() => {
     if (typeof window === 'undefined') return null;
     try {
@@ -362,15 +369,13 @@ export function FlexIconGridPanel({
       // raw-cell path keeps existing sessions importable.
       if (parsed && typeof parsed === 'object' && 'cell' in (parsed as Record<string, unknown>)) {
         const env = parsed as { formatVersion?: unknown; cell: unknown };
-        if (
-          typeof env.formatVersion === 'string' &&
-          !KNOWN_FORMAT_VERSIONS_SET.has(env.formatVersion)
-        ) {
-          // Don't toast at init time (would surprise the user on
-          // mount), just log so devtools surface the mismatch.
-          console.info(
-            `[flex-icon-grid] clipboard advertises unknown format ${env.formatVersion}; reading as best-effort.`,
-          );
+        if (typeof env.formatVersion === 'string') {
+          clipboardVersionRef.current = env.formatVersion;
+          if (!KNOWN_FORMAT_VERSIONS_SET.has(env.formatVersion)) {
+            console.info(
+              `[flex-icon-grid] clipboard advertises unknown format ${env.formatVersion}; will warn at paste time.`,
+            );
+          }
         }
         return env.cell as Omit<FlexIconCell, 'index'>;
       }
@@ -385,6 +390,10 @@ export function FlexIconGridPanel({
   // shapes (see the init reducer).
   const setCellClipboard = (next: Omit<FlexIconCell, 'index'> | null) => {
     setCellClipboardState(next);
+    // Phase 4.23: writes from this client are always at the current
+    // export version, so a fresh copy clears any stale version tag
+    // from a previous (cross-client) read.
+    clipboardVersionRef.current = next === null ? null : EXPORT_FORMAT_VERSION;
     if (typeof window === 'undefined') return;
     try {
       if (next === null) window.sessionStorage.removeItem(CELL_CLIPBOARD_KEY);
@@ -397,6 +406,20 @@ export function FlexIconGridPanel({
       // state still works for this session.
     }
   };
+
+  /** Phase 4.23: one-shot paste-time warning if the clipboard was
+   *  written by a client with a newer-than-known format version.
+   *  Resets the tracked version after warning so a chain of pastes
+   *  from the same clipboard only nags once per fresh read. */
+  function warnIfClipboardVersionUnknown() {
+    const version = clipboardVersionRef.current;
+    if (version && !KNOWN_FORMAT_VERSIONS_SET.has(version)) {
+      toast.message(
+        `Clipboard was written by format ${version}; this client knows ${KNOWN_FORMAT_LATEST}. Some pasted fields may have been ignored.`,
+      );
+      clipboardVersionRef.current = null;
+    }
+  }
 
   // Workspace-registered fonts (Phase 4.8b). Fetched eagerly so the
   // chip row inside the custom-font picker shows up immediately
@@ -421,6 +444,13 @@ export function FlexIconGridPanel({
   // 12 gives dense grids enough variety to avoid the adjacency
   // fallback. Local UI state — not persisted.
   const [randomPaletteCount, setRandomPaletteCount] = useState<number>(8);
+  // Phase 4.23: snapshot of the palette as it stood before the first
+  // Lighten / Darken / Saturate / Desaturate adjustment. Set on the
+  // first adjust click; cleared when the user picks a preset chip or
+  // Random (those are "fresh starts"). Lets the panel render a
+  // "Restore palette" chip that returns to the snapshot — a cleaner
+  // path than asking the user to remember which preset they were on.
+  const [paletteBaseline, setPaletteBaseline] = useState<PaletteSpec | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -666,6 +696,7 @@ export function FlexIconGridPanel({
    */
   function pasteCell(targetIndex: number) {
     if (!cellClipboard) return;
+    warnIfClipboardVersionUnknown();
     // Full replace — not a merge — so the target picks up every
     // field from the clipboard (including UNSET fields that should
     // clear existing overrides on the target). Spreading the
@@ -700,6 +731,7 @@ export function FlexIconGridPanel({
    */
   function pasteCellStyle(targetIndex: number) {
     if (!cellClipboard) return;
+    warnIfClipboardVersionUnknown();
     updateCell(targetIndex, {
       shape: cellClipboard.shape,
       ring: cellClipboard.ring,
@@ -1190,7 +1222,13 @@ export function FlexIconGridPanel({
               <button
                 key={opt.label}
                 type="button"
-                onClick={() => updateConfig({ palette: opt.value })}
+                onClick={() => {
+                  // Phase 4.23: picking a preset is a fresh start,
+                  // so drop any captured adjust baseline so the
+                  // Restore chip doesn't dangle past its useful life.
+                  updateConfig({ palette: opt.value });
+                  setPaletteBaseline(null);
+                }}
                 style={chipStyle(active)}
               >
                 <PaletteSwatchRow spec={opt.value} />
@@ -1276,6 +1314,10 @@ export function FlexIconGridPanel({
                 palette: { type: 'custom', colors },
                 paletteShuffleOffset: 0,
               });
+              // Phase 4.23: Random is a fresh start — drop any
+              // captured adjust baseline so the Restore chip
+              // doesn't offer a path back to a now-stale palette.
+              setPaletteBaseline(null);
             }}
             style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
             title={`Generate a fresh random palette of ${randomPaletteCount} colours (locked cells unaffected)`}
@@ -1284,37 +1326,63 @@ export function FlexIconGridPanel({
             <span aria-hidden="true">✦</span>
             Random
           </button>
-          {[5, 8, 12].map((count) => (
-            <button
-              key={count}
-              type="button"
-              aria-pressed={randomPaletteCount === count}
-              onClick={() => setRandomPaletteCount(count)}
-              style={{
-                ...chipStyle(randomPaletteCount === count),
-                paddingLeft: 8,
-                paddingRight: 8,
-                fontSize: 11,
-                opacity: 0.85,
-              }}
-              title={`Use ${count} colours for Random`}
-              aria-label={`Random palette count: ${count}`}
-            >
-              {count}
-            </button>
-          ))}
-          {/* Phase 4.22: lighten / darken the active palette by 8
-              percentage points of HSL lightness per click. Pure +
-              repeatable — five lighten then five darken returns
-              very close to the starting colours. Switches the
-              palette to `custom` since we're rewriting colours; the
-              named-preset chip becomes inactive until the user
-              picks one again. Locked cells with explicit
-              `backgroundColor` are unaffected (palette engine
-              skips them entirely). */}
+          {/* Phase 4.23: count chips visually distinguished from
+              the palette chips: bordered radio-group style, mono
+              digits, narrower padding. Makes it clear at a glance
+              that they're NUMERIC modifiers for the Random button,
+              not palette choices. */}
+          <div
+            role="radiogroup"
+            aria-label="Random palette count"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0,
+              borderRadius: 6,
+              border: '1px solid #2a2a2e',
+              padding: 2,
+              background: '#0e0e10',
+            }}
+          >
+            {[5, 8, 12].map((count) => {
+              const active = randomPaletteCount === count;
+              return (
+                <button
+                  key={count}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setRandomPaletteCount(count)}
+                  style={{
+                    background: active ? '#2563eb' : 'transparent',
+                    color: active ? '#fafafa' : '#a1a1aa',
+                    border: 'none',
+                    padding: '3px 8px',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: 11,
+                    fontWeight: active ? 700 : 500,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                  }}
+                  title={`Use ${count} colours for Random`}
+                  aria-label={`Random palette count: ${count}`}
+                >
+                  {count}
+                </button>
+              );
+            })}
+          </div>
+          {/* Phase 4.22 → 4.23: lighten / darken the active palette
+              by 8 percentage points of HSL lightness per click. Each
+              adjustment captures the pre-adjust palette as the
+              baseline (only on the FIRST adjustment of a run) so
+              "Restore palette" can return to it. Locked cells with
+              explicit `backgroundColor` are unaffected — the palette
+              engine skips them entirely. */}
           <button
             type="button"
             onClick={() => {
+              if (paletteBaseline === null) setPaletteBaseline(config.palette);
               const current = paletteColours(config.palette);
               const next = shiftPaletteLightness(current, 8);
               updateConfig({ palette: { type: 'custom', colors: next } });
@@ -1329,6 +1397,7 @@ export function FlexIconGridPanel({
           <button
             type="button"
             onClick={() => {
+              if (paletteBaseline === null) setPaletteBaseline(config.palette);
               const current = paletteColours(config.palette);
               const next = shiftPaletteLightness(current, -8);
               updateConfig({ palette: { type: 'custom', colors: next } });
@@ -1340,6 +1409,61 @@ export function FlexIconGridPanel({
             <span aria-hidden="true">↓</span>
             Darken
           </button>
+          {/* Phase 4.23: saturate / desaturate the active palette by
+              ~10 percentage points of HSL saturation per click.
+              Pairs with Lighten / Darken — those move along the L
+              axis, these along the S axis. Same baseline-capture +
+              global-clamp spread-preservation pattern. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (paletteBaseline === null) setPaletteBaseline(config.palette);
+              const current = paletteColours(config.palette);
+              const next = shiftPaletteSaturation(current, 10);
+              updateConfig({ palette: { type: 'custom', colors: next } });
+            }}
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Saturate the palette by ~10% (HSL saturation)"
+            aria-label="Saturate palette"
+          >
+            <span aria-hidden="true">◐</span>
+            Saturate
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (paletteBaseline === null) setPaletteBaseline(config.palette);
+              const current = paletteColours(config.palette);
+              const next = shiftPaletteSaturation(current, -10);
+              updateConfig({ palette: { type: 'custom', colors: next } });
+            }}
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Desaturate the palette by ~10% (HSL saturation)"
+            aria-label="Desaturate palette"
+          >
+            <span aria-hidden="true">◑</span>
+            Desaturate
+          </button>
+          {/* Phase 4.23: restore-to-baseline chip. Appears whenever a
+              baseline has been captured (i.e. an adjust has run) and
+              the current palette differs from it. One click swaps
+              the palette back to the baseline and clears the baseline
+              so a subsequent adjust starts fresh. */}
+          {paletteBaseline !== null && (
+            <button
+              type="button"
+              onClick={() => {
+                updateConfig({ palette: paletteBaseline });
+                setPaletteBaseline(null);
+              }}
+              style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              title="Restore the palette to the pre-adjust state"
+              aria-label="Restore palette to baseline"
+            >
+              <span aria-hidden="true">↺</span>
+              Restore
+            </button>
+          )}
           {/* Phase 4.16 → 4.17: reset + undo chips — appear once
               the user has shuffled at least once. Undo steps back
               by one; Reset jumps to 0. Together they let a user

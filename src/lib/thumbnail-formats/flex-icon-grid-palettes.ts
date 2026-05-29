@@ -366,29 +366,91 @@ export function generateRandomPalette(count: number, rng: () => number = Math.ra
 }
 
 /**
- * Phase 4.22: lighten or darken each colour in a palette by `delta`
- * percentage points in HSL lightness. `+8` is "noticeably brighter"
- * without washing the colours out; `-8` is the matching "moodier"
- * shift. Clamps the result into [5, 95] so a colour can't go fully
- * black or fully white (preserves the palette's vibrancy across
- * repeated taps). Round-trip stability is not guaranteed — eight
- * +8 taps then eight -8 taps will drift slightly due to floating
- * point — but the visual look returns very close to the original.
+ * Phase 4.22 → 4.23: lighten or darken each colour in a palette by
+ * `delta` percentage points in HSL lightness. `+8` is "noticeably
+ * brighter"; `-8` is the matching "moodier" shift.
+ *
+ * Phase 4.23 — relative-spread preservation. The previous behaviour
+ * clamped each colour independently to [5, 95], which collapsed the
+ * spread between bright and dim colours over repeated taps. Now we
+ * compute a single "effective delta" first — the largest shift the
+ * whole palette can take without ANY colour hitting the clamp — and
+ * apply that uniformly. A palette with one near-white colour and
+ * one mid-grey, lightened with +8, gets +5 to BOTH so the brighter
+ * one just reaches 95 and the gap stays preserved. When every
+ * colour has full headroom, the effective delta equals the
+ * requested delta (no behaviour change for the common case).
  *
  * Pure function; exported alongside `generateRandomPalette` so the
  * panel can re-use the same colour-space conversion path.
  */
 export function shiftPaletteLightness(colors: readonly string[], delta: number): string[] {
-  const out: string[] = [];
+  // First pass: parse every colour and find the most-constraining
+  // headroom in the requested direction. Unparseable hex strings are
+  // skipped (treated as no constraint) so a future doctored config
+  // can't make us return a less-shifted palette than the user asked.
+  let headroom = Math.abs(delta);
+  const parsedHsl: ({ h: number; s: number; l: number } | null)[] = [];
   for (const c of colors) {
     const rgb = parseHex(c);
     if (!rgb) {
-      out.push(c);
+      parsedHsl.push(null);
       continue;
     }
     const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
-    const nextL = Math.max(5, Math.min(95, hsl.l + delta));
+    parsedHsl.push(hsl);
+    // Headroom toward the clamp the delta is pushing us toward.
+    const room = delta > 0 ? 95 - hsl.l : hsl.l - 5;
+    headroom = Math.min(headroom, Math.max(0, room));
+  }
+  const effectiveDelta = delta >= 0 ? Math.min(delta, headroom) : -Math.min(-delta, headroom);
+  const out: string[] = [];
+  for (let i = 0; i < colors.length; i++) {
+    const hsl = parsedHsl[i];
+    if (!hsl) {
+      out.push(colors[i]);
+      continue;
+    }
+    const nextL = hsl.l + effectiveDelta;
     out.push(hslToHex(hsl.h, hsl.s, nextL));
+  }
+  return out;
+}
+
+/**
+ * Phase 4.23: saturate or desaturate each colour in a palette by
+ * `delta` percentage points in HSL saturation. `+10` shifts a
+ * muted palette into something punchier; `-10` walks toward
+ * sophisticated/dusty. Uses the same global-clamp spread-preservation
+ * trick as `shiftPaletteLightness` so a near-grey colour doesn't
+ * pin while the rest run away.
+ *
+ * Pure function; exported alongside the other palette helpers.
+ */
+export function shiftPaletteSaturation(colors: readonly string[], delta: number): string[] {
+  let headroom = Math.abs(delta);
+  const parsedHsl: ({ h: number; s: number; l: number } | null)[] = [];
+  for (const c of colors) {
+    const rgb = parseHex(c);
+    if (!rgb) {
+      parsedHsl.push(null);
+      continue;
+    }
+    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    parsedHsl.push(hsl);
+    const room = delta > 0 ? 100 - hsl.s : hsl.s;
+    headroom = Math.min(headroom, Math.max(0, room));
+  }
+  const effectiveDelta = delta >= 0 ? Math.min(delta, headroom) : -Math.min(-delta, headroom);
+  const out: string[] = [];
+  for (let i = 0; i < colors.length; i++) {
+    const hsl = parsedHsl[i];
+    if (!hsl) {
+      out.push(colors[i]);
+      continue;
+    }
+    const nextS = hsl.s + effectiveDelta;
+    out.push(hslToHex(hsl.h, nextS, hsl.l));
   }
   return out;
 }
