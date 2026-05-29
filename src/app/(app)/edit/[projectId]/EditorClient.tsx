@@ -498,145 +498,80 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       return (async () => {
         const slotLabel =
           slot === 'image' ? 'image' : slot === 'overlay' ? 'overlay' : 'clip';
-        const MAX_ATTEMPTS = 3;
-        const RETRY_DELAYS_MS = [500, 1_500, 3_500] as const;
-        let lastFailureKind: 'http_5xx' | 'http_4xx' | 'network' = 'network';
-        let lastFailureDetail: {
-          status?: number;
-          message?: string;
-          /** Server-classified failure category — surfaced in the
-           *  final toast so the user sees actionable text. */
-          failureClass?: string;
-          /** Which DB step failed (ownership / asset_write / version_bump). */
-          step?: string;
-        } = {};
-
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-          try {
-            // eslint-disable-next-line no-restricted-syntax -- row-asset attach RPC: returns version for SYNC_SERVER_VERSION; custom MAX_ATTEMPTS retry loop already handles failure classes
-            const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/row-asset`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ rowIndex, slot, value }),
-            });
-            if (res.ok) {
-              const data = (await res.json().catch(() => ({}))) as { version?: number };
-              if (typeof data.version === 'number') {
-                // Keep the editor's local version aligned with the
-                // server. Without this sync the next debounced PATCH
-                // would fail the optimistic check and surface a
-                // spurious conflict.
-                apply({ type: 'SYNC_SERVER_VERSION', version: data.version });
-              }
-              console.info('[editor row-asset] written', {
-                rowIndex,
-                slot,
-                newVersion: data.version,
-                attempts: attempt,
-              });
-              return { ok: true };
-            }
-            // Parse the response body as JSON first — the server returns
-            // a classified failure shape `{ error, failureClass, step }`
-            // (see src/lib/db-error.ts + the row-asset route). Fall back
-            // to raw text when the body isn't JSON (proxy 5xx, edge HTML).
-            const rawBody = await res.text().catch(() => '');
-            let serverError: string | undefined;
-            let serverFailureClass: string | undefined;
-            let serverStep: string | undefined;
-            try {
-              const parsed = JSON.parse(rawBody) as {
-                error?: string;
-                failureClass?: string;
-                step?: string;
-              };
-              serverError = parsed.error;
-              serverFailureClass = parsed.failureClass;
-              serverStep = parsed.step;
-            } catch {
-              // not JSON — keep rawBody as detail for the log
-            }
-            lastFailureDetail = {
-              status: res.status,
-              message: (serverError ?? rawBody).slice(0, 200),
-              failureClass: serverFailureClass,
-              step: serverStep,
-            };
-            // 4xx: deterministic, can't fix with retry. Surface now.
-            if (res.status < 500) {
-              lastFailureKind = 'http_4xx';
-              console.warn('[editor row-asset] write failed (4xx — no retry)', {
-                rowIndex,
-                slot,
-                status: res.status,
-                attempt,
-                failure_class: serverFailureClass,
-                step: serverStep,
-                detail: lastFailureDetail.message,
-              });
-              break;
-            }
-            // 5xx: log + retry. Capture the server's failureClass so
-            // the final exhausted-retries log + toast can show it.
-            lastFailureKind = 'http_5xx';
-            console.warn('[editor row-asset] write failed (5xx — retrying)', {
-              rowIndex,
-              slot,
-              status: res.status,
-              attempt,
-              max_attempts: MAX_ATTEMPTS,
-              failure_class: serverFailureClass,
-              step: serverStep,
-              detail: lastFailureDetail.message,
-            });
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            lastFailureKind = 'network';
-            lastFailureDetail = { message };
-            console.warn('[editor row-asset] write threw (retrying)', {
-              rowIndex,
-              slot,
-              attempt,
-              max_attempts: MAX_ATTEMPTS,
-              detail: message,
-            });
+        // Phase 3-followup (2026-05-30): route through the durable
+        // outbox + ack promise. The mutate() chokepoint handles
+        // retry / backoff / breaker / server-side dedup; the ack
+        // promise gives us the response body so SYNC_SERVER_VERSION
+        // still works. Replaces the inline MAX_ATTEMPTS=3 loop —
+        // the outbox's retry policy is more generous (10 attempts,
+        // exponential backoff to 60s) AND survives tab close, which
+        // the inline loop did not.
+        const handle = mutate('row-asset.set', {
+          url: `/api/edit/${encodeURIComponent(projectId)}/row-asset`,
+          method: 'POST',
+          body: { rowIndex, slot, value },
+        });
+        const ack = await handle.ack;
+        if (ack.ok) {
+          const data = ack.data as { version?: number; deduped?: boolean } | undefined;
+          if (data && typeof data.version === 'number') {
+            // Keep the editor's local version aligned with the
+            // server. Without this sync the next debounced PATCH
+            // would fail the optimistic check and surface a
+            // spurious conflict.
+            apply({ type: 'SYNC_SERVER_VERSION', version: data.version });
           }
-          // Not the last attempt → sleep then retry.
-          if (attempt < MAX_ATTEMPTS) {
-            const delay = RETRY_DELAYS_MS[attempt - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]!;
-            await new Promise((r) => setTimeout(r, delay));
-          }
+          console.info('[editor row-asset] written', {
+            rowIndex,
+            slot,
+            newVersion: data?.version,
+            intentId: handle.intentId,
+            deduped: data?.deduped ?? false,
+          });
+          return { ok: true };
         }
-
-        // Exhausted retries (or hit a 4xx). Surface to the user. The
-        // server's `failureClass` (when present) gives the most
-        // actionable text — falls back to status-based copy for 4xx
-        // that don't have a classified body, and network errors.
-        const status = lastFailureDetail.status;
+        // Failure path — drainer exhausted retries (or hit a 4xx).
+        // Try to extract the server-classified failure shape from
+        // the reason string (which holds the response body for
+        // HTTP failures, or the Error message for network throws).
+        let serverFailureClass: string | undefined;
+        let serverStep: string | undefined;
+        let serverMessage: string | undefined;
+        try {
+          const parsed = JSON.parse(ack.reason) as {
+            error?: string;
+            failureClass?: string;
+            step?: string;
+          };
+          serverFailureClass = parsed.failureClass;
+          serverStep = parsed.step;
+          serverMessage = parsed.error;
+        } catch {
+          /* reason wasn't JSON (network throw, raw 5xx HTML) */
+        }
+        const status = ack.status;
         const friendlyReason =
-          // Server-classified message wins when available.
-          lastFailureDetail.failureClass && lastFailureDetail.message
-            ? lastFailureDetail.message
+          serverFailureClass && serverMessage
+            ? serverMessage
             : status === 413
               ? 'Project is too large to add another image. Delete some shots first.'
               : status === 429
                 ? 'Too many uploads in a short window — try again in a minute.'
                 : status === 404
                   ? 'Project not found on the server (was it deleted in another tab?).'
-                  : lastFailureKind === 'network'
+                  : status === undefined
                     ? 'Network error. Check your connection and try again.'
-                    : status && status >= 500
-                      ? `Server error after ${MAX_ATTEMPTS} retries — try again, or refresh.`
-                      : `Couldn't save (HTTP ${status ?? '?'}).`;
+                    : status >= 500
+                      ? `Server error after repeated retries — try again, or refresh.`
+                      : `Couldn't save (HTTP ${status}).`;
         console.error('[editor row-asset] write failed permanently', {
           rowIndex,
           slot,
-          kind: lastFailureKind,
           status,
-          attempts: MAX_ATTEMPTS,
-          failure_class: lastFailureDetail.failureClass,
-          step: lastFailureDetail.step,
-          detail: lastFailureDetail.message,
+          intentId: handle.intentId,
+          failure_class: serverFailureClass,
+          step: serverStep,
+          detail: ack.reason.slice(0, 200),
         });
         if (!opts.suppressToast) {
           toast.error(
@@ -646,8 +581,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         }
         return {
           ok: false,
-          failureClass: lastFailureDetail.failureClass,
-          status: lastFailureDetail.status,
+          failureClass: serverFailureClass,
+          status,
           message: friendlyReason,
         };
       })();

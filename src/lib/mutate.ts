@@ -102,10 +102,40 @@ export interface MutateOptions {
   headers?: Record<string, string>;
 }
 
+export interface MutateAckSuccess {
+  ok: true;
+  /** Parsed JSON response body. `undefined` when the server returned
+   *  a non-JSON body or an empty 204. */
+  data?: unknown;
+  /** HTTP status of the successful response (200 / 204 / 409-as-dedup). */
+  status: number;
+}
+
+export interface MutateAckFailure {
+  ok: false;
+  /** HTTP status when the failure was a 4xx terminal. `undefined`
+   *  when the failure was a thrown fetch (network) or the entry was
+   *  marked dead after MAX_ATTEMPTS retries. */
+  status?: number;
+  /** Human-readable reason — server error body for HTTP failures,
+   *  `Error.message` for thrown fetches, `'exhausted'` for dead entries. */
+  reason: string;
+}
+
+export type MutateAck = MutateAckSuccess | MutateAckFailure;
+
 export interface MutateHandle {
   /** The intent id stored on the entry. Also sent to the server as
    *  `X-Intent-Id`. Stable across retries. */
   intentId: string;
+  /** Resolves when the drainer reaches a terminal state for this
+   *  entry — success (2xx / 409 dedup), terminal 4xx failure, or
+   *  exhausted retries. The promise is in-memory only: an entry
+   *  recovered from IDB on a fresh page load has no corresponding
+   *  ack (the original tab's promise died with the tab). Callers
+   *  that need to observe success after a refresh should subscribe
+   *  to outbox state and re-read the affected entity. */
+  ack: Promise<MutateAck>;
 }
 
 interface OutboxEntry {
@@ -169,6 +199,13 @@ let breakerState: BreakerState = 'closed';
 let breakerWindow: boolean[] = [];
 let breakerReopenAt: number | null = null;
 
+// In-memory ack registry, keyed by intent id. Populated by mutate()
+// at enqueue time, resolved by the drainer at terminal state. Cleared
+// after resolve so the map doesn't grow unboundedly. NOT persisted
+// across page loads — entries IDB-recovered from a prior session
+// have no ack (the original tab's promise died with the tab).
+const ackResolvers = new Map<string, (ack: MutateAck) => void>();
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
@@ -196,6 +233,14 @@ export function mutate(kind: string, options: MutateOptions): MutateHandle {
     nextAt: Date.now(),
     createdAt: Date.now(),
   };
+  // Set up the ack promise BEFORE the IDB write so the caller's
+  // `await handle.ack` is registered no matter how fast the drainer
+  // fires after enqueue.
+  let resolveAck: (ack: MutateAck) => void = () => {};
+  const ack = new Promise<MutateAck>((resolve) => {
+    resolveAck = resolve;
+  });
+  ackResolvers.set(id, resolveAck);
   if (store) {
     void set(id, entry, store).then(() => {
       log('enqueue', { intentId: id, kind, url: options.url });
@@ -215,7 +260,7 @@ export function mutate(kind: string, options: MutateOptions): MutateHandle {
     log('no-idb-direct-send', { intentId: id, kind });
     void fireDirect(entry);
   }
-  return { intentId: id };
+  return { intentId: id, ack };
 }
 
 /** Subscribe to outbox state changes. Returns an unsubscribe fn. */
@@ -321,18 +366,33 @@ async function runDrainLoop(): Promise<void> {
         }
         break;
       }
-      const outcome = await sendOnce(entry);
-      recordBreakerOutcome(outcome !== 'retry');
-      if (outcome === 'success') {
+      const result = await sendOnce(entry);
+      recordBreakerOutcome(result.outcome !== 'retry');
+      if (result.outcome === 'success') {
         await del(entry.id, store);
+        resolveAckIfPending(entry.id, {
+          ok: true,
+          status: result.status ?? 200,
+          data: result.data,
+        });
         log('drain success', { intentId: entry.id, kind: entry.kind, attempt: entry.attempt });
-      } else if (outcome === 'terminal-fail') {
+      } else if (result.outcome === 'terminal-fail') {
         await del(entry.id, store);
+        resolveAckIfPending(entry.id, {
+          ok: false,
+          status: result.status,
+          reason: result.reason ?? `http-${result.status}`,
+        });
         log('drain dead-4xx', { intentId: entry.id, kind: entry.kind });
-      } else if (outcome === 'retry') {
+      } else if (result.outcome === 'retry') {
         entry.attempt += 1;
         if (entry.attempt >= MAX_ATTEMPTS) {
           entry.dead = true;
+          resolveAckIfPending(entry.id, {
+            ok: false,
+            status: result.status,
+            reason: 'exhausted',
+          });
           log('drain dead-exhausted', { intentId: entry.id, kind: entry.kind, attempts: entry.attempt });
         } else {
           entry.nextAt = now + Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (entry.attempt - 1));
@@ -344,7 +404,7 @@ async function runDrainLoop(): Promise<void> {
       // Done after recordBreakerOutcome above so the window reflects
       // the probe result before we re-evaluate the state.
       if (breakerState === 'half-open') {
-        if (outcome === 'success') {
+        if (result.outcome === 'success') {
           closeBreaker();
         } else {
           openBreaker();
@@ -365,10 +425,17 @@ async function runDrainLoop(): Promise<void> {
   }
 }
 
-/** Result of one send attempt. */
-type SendOutcome = 'success' | 'retry' | 'terminal-fail';
+/** Result of one send attempt — outcome plus the data the drainer
+ *  needs to resolve the ack promise (response data on success,
+ *  reason on failure). */
+interface SendResult {
+  outcome: 'success' | 'retry' | 'terminal-fail';
+  status?: number;
+  data?: unknown;
+  reason?: string;
+}
 
-async function sendOnce(entry: OutboxEntry): Promise<SendOutcome> {
+async function sendOnce(entry: OutboxEntry): Promise<SendResult> {
   try {
     const res = await fetch(entry.url, {
       method: entry.method,
@@ -381,36 +448,75 @@ async function sendOnce(entry: OutboxEntry): Promise<SendOutcome> {
       },
       body: entry.body !== undefined ? JSON.stringify(entry.body) : undefined,
     });
-    if (res.ok) return 'success';
+    if (res.ok) {
+      const data = await parseJsonSafe(res);
+      return { outcome: 'success', status: res.status, data };
+    }
     // 409 Conflict: the server's mutation_ids table reports we already
     // landed this intent. Treat as success — the side effect already
     // happened, the original POST just lost its response over the
     // wire. This is the whole point of intent-id dedup.
     if (res.status === 409) {
       log('drain dedup-hit', { intentId: entry.id, kind: entry.kind });
-      return 'success';
+      const data = await parseJsonSafe(res);
+      return { outcome: 'success', status: 409, data };
     }
     // 4xx (other than 409): our payload is bad. Retrying with the same
     // body would just re-fail. Drop with no toast — the optimistic UI
     // state is the caller's; they decide whether to surface it.
+    const bodyText = typeof res.text === 'function'
+      ? await res.text().catch(() => '')
+      : '';
     if (res.status >= 400 && res.status < 500) {
       entry.lastError = `http-${res.status}`;
-      return 'terminal-fail';
+      return { outcome: 'terminal-fail', status: res.status, reason: bodyText.slice(0, 400) };
     }
     // 5xx — server-side hiccup. Retry with backoff.
     entry.lastError = `http-${res.status}`;
-    return 'retry';
+    return { outcome: 'retry', status: res.status, reason: bodyText.slice(0, 400) };
   } catch (err) {
     entry.lastError = errMsg(err);
-    return 'retry';
+    return { outcome: 'retry', reason: errMsg(err) };
+  }
+}
+
+/** Resolve a pending ack promise and remove it from the registry.
+ *  Idempotent — a second call for the same id is a no-op so a retry
+ *  loop can't double-resolve. */
+function resolveAckIfPending(id: string, ack: MutateAck): void {
+  const resolve = ackResolvers.get(id);
+  if (resolve) {
+    ackResolvers.delete(id);
+    resolve(ack);
+  }
+}
+
+/** Best-effort response-body parser. Returns the parsed JSON, or
+ *  undefined for empty bodies / non-JSON / unmocked test responses.
+ *  Never throws. */
+async function parseJsonSafe(res: Response): Promise<unknown> {
+  if (typeof res.text !== 'function') return undefined;
+  let txt = '';
+  try {
+    txt = await res.text();
+  } catch {
+    return undefined;
+  }
+  if (!txt) return undefined;
+  try {
+    return JSON.parse(txt);
+  } catch {
+    return undefined;
   }
 }
 
 /** SSR / no-IDB fallback. Best-effort; reverts to the original
- *  fire-and-forget behavior so the call still goes out. */
+ *  fire-and-forget behavior so the call still goes out. Also
+ *  resolves the ack promise so a caller's await doesn't hang
+ *  forever when we couldn't queue the entry. */
 async function fireDirect(entry: OutboxEntry): Promise<void> {
   try {
-    await fetch(entry.url, {
+    const res = await fetch(entry.url, {
       method: entry.method,
       credentials: 'same-origin',
       headers: {
@@ -421,8 +527,20 @@ async function fireDirect(entry: OutboxEntry): Promise<void> {
       },
       body: entry.body !== undefined ? JSON.stringify(entry.body) : undefined,
     });
+    if (res.ok || res.status === 409) {
+      const data = await parseJsonSafe(res);
+      resolveAckIfPending(entry.id, { ok: true, status: res.status, data });
+    } else {
+      const txt = await res.text().catch(() => '');
+      resolveAckIfPending(entry.id, {
+        ok: false,
+        status: res.status,
+        reason: txt.slice(0, 400) || `http-${res.status}`,
+      });
+    }
   } catch (err) {
     log('direct-send-failed', { intentId: entry.id, error: errMsg(err) });
+    resolveAckIfPending(entry.id, { ok: false, reason: errMsg(err) });
   }
 }
 

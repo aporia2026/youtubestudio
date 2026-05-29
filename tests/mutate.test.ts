@@ -386,6 +386,80 @@ describe('circuit breaker', () => {
   });
 });
 
+describe('ack promise', () => {
+  it("resolves with { ok: true, status, data } when the drain succeeds", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ version: 42 }),
+    });
+    (globalThis as { fetch?: unknown }).fetch = fetchMock;
+
+    const { mutate, drainNow, _resetBreakerForTests } = await import('@/lib/mutate');
+    _resetBreakerForTests();
+
+    const handle = mutate('row-asset.set', { url: '/api/test' });
+    await Promise.resolve();
+    await Promise.resolve();
+    await drainNow();
+    const ack = await handle.ack;
+
+    expect(ack.ok).toBe(true);
+    if (ack.ok) {
+      expect(ack.status).toBe(200);
+      expect(ack.data).toEqual({ version: 42 });
+    }
+  });
+
+  it("resolves with { ok: false, status: 400 } on a terminal 4xx", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => '{"error":"bad payload"}',
+    });
+    (globalThis as { fetch?: unknown }).fetch = fetchMock;
+
+    const { mutate, drainNow, _resetBreakerForTests } = await import('@/lib/mutate');
+    _resetBreakerForTests();
+
+    const handle = mutate('row-asset.set', { url: '/api/test' });
+    await Promise.resolve();
+    await Promise.resolve();
+    await drainNow();
+    const ack = await handle.ack;
+
+    expect(ack.ok).toBe(false);
+    if (!ack.ok) {
+      expect(ack.status).toBe(400);
+      expect(ack.reason).toContain('bad payload');
+    }
+  });
+
+  it("resolves with { ok: true, status: 409 } on a server dedup hit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      text: async () => '{"ok":true,"deduped":true,"version":7}',
+    });
+    (globalThis as { fetch?: unknown }).fetch = fetchMock;
+
+    const { mutate, drainNow, _resetBreakerForTests } = await import('@/lib/mutate');
+    _resetBreakerForTests();
+
+    const handle = mutate('row-asset.set', { url: '/api/test' });
+    await Promise.resolve();
+    await Promise.resolve();
+    await drainNow();
+    const ack = await handle.ack;
+
+    expect(ack.ok).toBe(true);
+    if (ack.ok) {
+      expect(ack.status).toBe(409);
+      expect((ack.data as { deduped?: boolean }).deduped).toBe(true);
+    }
+  });
+});
+
 describe('subscribe()', () => {
   it('notifies subscribers when state changes', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
