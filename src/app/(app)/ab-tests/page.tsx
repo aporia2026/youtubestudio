@@ -49,7 +49,9 @@ export default function AbTestsPage() {
     (async () => {
       try {
         const [chRes, abRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads channels
           fetch('/api/channels'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads ab-tests list
           fetch('/api/ab-tests?limit=100'),
         ]);
         if (cancelled) return;
@@ -65,6 +67,7 @@ export default function AbTestsPage() {
   }, []);
 
   async function refreshList() {
+    // eslint-disable-next-line no-restricted-syntax -- GET, reloads ab-tests
     const r = await fetch('/api/ab-tests?limit=100', { cache: 'no-store' });
     if (r.ok) setTests(((await r.json()).tests as AbTestRow[]) || []);
   }
@@ -72,6 +75,7 @@ export default function AbTestsPage() {
   async function loadDetail(id: string) {
     setDetailBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads ab-test detail
       const r = await fetch(`/api/ab-tests/${id}`, { cache: 'no-store' });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
@@ -102,6 +106,7 @@ export default function AbTestsPage() {
     setCreating(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to create ab-test - RPC
       const res = await fetch('/api/ab-tests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -137,6 +142,7 @@ export default function AbTestsPage() {
     setDetailBusy(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited swap POST - RPC
       const res = await fetch(`/api/ab-tests/${id}/swap`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -159,6 +165,7 @@ export default function AbTestsPage() {
     setDetailBusy(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited snapshot POST - RPC
       const res = await fetch(`/api/ab-tests/${id}/snapshot`, { method: 'POST' });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -177,6 +184,7 @@ export default function AbTestsPage() {
     setDetailBusy(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited conclude POST - RPC
       const res = await fetch(`/api/ab-tests/${id}/conclude`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -199,6 +207,7 @@ export default function AbTestsPage() {
     if (!confirm('Delete this A/B test? Snapshots will be deleted too.')) return;
     setDetailBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for ab-test - RPC
       await fetch(`/api/ab-tests/${id}`, { method: 'DELETE' });
       setOpenId(null);
       setDetail(null);

@@ -160,6 +160,7 @@ function TypeNicheTab({ locale }: { locale: NicheFinderLocale }): React.ReactEle
       setSubmitting(true);
       setError(null);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- deep-dive RPC: awaits and uses response
         const res = await fetch('/api/niche-finder/deep-dive', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -222,6 +223,7 @@ function InterestsTab({ locale }: { locale: NicheFinderLocale }): React.ReactEle
       setSubmitting(true);
       setError(null);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- discover RPC: awaits and uses response
         const res = await fetch('/api/niche-finder/discover/from-interests', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -323,6 +325,7 @@ function ChannelTab({ locale }: { locale: NicheFinderLocale }): React.ReactEleme
       setSubmitting(true);
       setError(null);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- discover-from-channel RPC: awaits and uses response
         const res = await fetch('/api/niche-finder/discover/from-channel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -436,6 +439,7 @@ function CategoryTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
       if (ids.length === 0) return;
       setScoring(true);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- taxonomy-score RPC: awaits and uses response
         const res = await fetch('/api/niche-finder/taxonomy/score', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -476,6 +480,7 @@ function CategoryTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
       try {
         const params = new URLSearchParams({ lang, region: reg });
         if (parent) params.set('parent', parent.id);
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads taxonomy
         const res = await fetch(`/api/niche-finder/taxonomy?${params.toString()}`);
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -536,6 +541,7 @@ function CategoryTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
     setBrainstorming(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to save taxonomy - RPC
       const res = await fetch('/api/niche-finder/taxonomy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1032,6 +1038,7 @@ function OutliersTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
     setSubmitting(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- outliers RPC: awaits and uses response
       const res = await fetch('/api/niche-finder/outliers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1071,6 +1078,7 @@ function OutliersTab({ locale }: { locale: NicheFinderLocale }): React.ReactElem
     setError(null);
     setNiche('');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- outliers RPC: awaits and uses response
       const res = await fetch('/api/niche-finder/outliers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

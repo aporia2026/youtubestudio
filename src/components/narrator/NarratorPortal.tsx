@@ -339,6 +339,7 @@ export function NarratorPortal({ token }: { token: string }) {
 
   async function loadData() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads assignment via narrator token
       const res = await fetch(`/api/narrate/${token}`);
       if (!res.ok) { setError(true); return; }
       const data = await res.json();
@@ -350,6 +351,7 @@ export function NarratorPortal({ token }: { token: string }) {
   }
 
   const handleReceive = useCallback(async () => {
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST to mark received - RPC
     await fetch(`/api/narrate/${token}/receive`, { method: 'POST' });
     setAssignment(prev => prev ? { ...prev, status: 'received' } : prev);
   }, [token]);
@@ -384,6 +386,7 @@ export function NarratorPortal({ token }: { token: string }) {
       } catch {}
 
       // 1. Reserve a take + get a presigned R2 upload URL
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const reserveRes = await fetch(`/api/narrate/${token}/sections/${sectionId}/upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -401,6 +404,7 @@ export function NarratorPortal({ token }: { token: string }) {
       const { uploadUrl, takeId, takeNumber, audioUrl, contentType: signedContentType } = await reserveRes.json();
 
       // 2. Upload directly to R2 — must match the Content-Type the server signed.
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': signedContentType || resolvedContentType },
@@ -411,6 +415,7 @@ export function NarratorPortal({ token }: { token: string }) {
       }
 
       // 3. Confirm with metadata
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH to commit upload - RPC
       await fetch(`/api/narrate/${token}/sections/${sectionId}/upload`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -471,6 +476,7 @@ export function NarratorPortal({ token }: { token: string }) {
         URL.revokeObjectURL(objectUrl);
       } catch {}
 
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL (full audio)
       const reserveRes = await fetch(`/api/narrate/${token}/full-audio`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -487,6 +493,7 @@ export function NarratorPortal({ token }: { token: string }) {
       }
       const { uploadUrl, takeId, audioUrl, contentType: signedContentType } = await reserveRes.json();
 
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': signedContentType || resolvedContentType },
@@ -496,6 +503,7 @@ export function NarratorPortal({ token }: { token: string }) {
         throw new Error(`R2 rejected the upload (HTTP ${putRes.status}). Check bucket CORS configuration.`);
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH to commit full audio - RPC
       await fetch(`/api/narrate/${token}/full-audio`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -507,6 +515,7 @@ export function NarratorPortal({ token }: { token: string }) {
       // a long review session is fragile). Falls back to the optimistic
       // update if the refetch fails so the UI still reflects the upload.
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, reloads assignment
         const res = await fetch(`/api/narrate/${token}`);
         if (res.ok) {
           const data = await res.json();
@@ -535,6 +544,7 @@ export function NarratorPortal({ token }: { token: string }) {
   const handleComment = useCallback(async (sectionId: string) => {
     if (!commentText.trim() || !assignment) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to add comment - RPC
       const res = await fetch(`/api/narrate/${token}/sections/${sectionId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -549,6 +559,7 @@ export function NarratorPortal({ token }: { token: string }) {
   }, [token, commentText, assignment]);
 
   const handleSubmit = useCallback(async () => {
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST to submit assignment - RPC
     await fetch(`/api/narrate/${token}/submit`, { method: 'POST' });
     setAssignment(prev => prev ? { ...prev, status: 'submitted' } : prev);
   }, [token]);
@@ -1149,6 +1160,7 @@ export function NarratorPortal({ token }: { token: string }) {
                                   onClick={async () => {
                                     if (!confirm('Delete your comment?')) return;
                                     try {
+                                      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for comment - RPC
                                       const res = await fetch(`/api/narrate/${token}/comments/${c.id}?author_name=${encodeURIComponent(myName!)}`, { method: 'DELETE' });
                                       if (res.ok) setComments(prev => prev.filter(x => x.id !== c.id));
                                     } catch {}

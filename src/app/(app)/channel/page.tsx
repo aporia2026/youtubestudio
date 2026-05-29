@@ -93,6 +93,7 @@ export default function ChannelPage() {
 
   async function checkApiKey() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads channel status
       const res = await fetch('/api/channel/status');
       if (res.ok) {
         const data = await res.json();
@@ -104,6 +105,7 @@ export default function ChannelPage() {
 
   async function fetchChannels() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads channels
       const res = await fetch('/api/channels');
       const data = await res.json();
       setChannels(data.channels || []);
@@ -114,6 +116,7 @@ export default function ChannelPage() {
     if (!channelUrl.trim()) return;
     setAddingChannel(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new channel - RPC
       const res = await fetch('/api/channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -147,6 +150,7 @@ export default function ChannelPage() {
     if (!confirm('Disconnect YouTube OAuth for this channel?')) return;
     setDisconnecting(channelId);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited disconnect POST - RPC
       const res = await fetch('/api/auth/google/disconnect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -163,6 +167,7 @@ export default function ChannelPage() {
   async function syncChannel(channelId: string) {
     setSyncing(channelId);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited sync POST - RPC
       const res = await fetch(`/api/channels/${channelId}/sync`, { method: 'POST' });
       if (!res.ok) { const e = await res.json().catch(() => ({ error: 'Sync failed' })); throw new Error(e.error); }
       toast.success('Channel synced!');
@@ -174,6 +179,7 @@ export default function ChannelPage() {
   async function analyzeChannel(channelId: string) {
     toast.info('Analyzing channel... This may take a moment.');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited analyze POST - RPC
       const res = await fetch(`/api/channels/${channelId}/analyze`, { method: 'POST' });
       if (!res.ok) { const e = await res.json().catch(() => ({ error: 'Analysis failed' })); throw new Error(e.error); }
       toast.success('Analysis complete!');
@@ -183,6 +189,7 @@ export default function ChannelPage() {
   async function deleteChannel(channelId: string) {
     if (!confirm('Remove this channel?')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for channel - RPC
       await fetch(`/api/channels/${channelId}`, { method: 'DELETE' });
       setChannels(prev => prev.filter(c => c.id !== channelId));
       toast.success('Channel removed');
@@ -194,6 +201,7 @@ export default function ChannelPage() {
     setLoadingVideos(true);
     setVideos([]);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads channel detail
       const res = await fetch(`/api/channels/${channel.id}`);
       if (res.ok) {
         const data = await res.json();
@@ -211,6 +219,7 @@ export default function ChannelPage() {
       formData.append('videoId', videoId);
       formData.append('image', file);
 
+      // eslint-disable-next-line no-restricted-syntax -- upload POST (multipart): awaits and uses response (thumbnail URL)
       const res = await fetch('/api/youtube/thumbnail', { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);

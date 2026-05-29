@@ -229,6 +229,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
 
   async function loadAssignments() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads assignments
       const res = await fetch(`/api/narrator/assignments`);
       if (res.ok) {
         const all: Array<Assignment & { project_id?: string }> = await res.json();
@@ -237,6 +238,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
         // Find assignment for this project and load its details
         const match = all.find(a => a.project_id === projectId);
         if (match) {
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads assignment detail
           const detailRes = await fetch(`/api/narrator/assignments/${match.id}`);
           if (detailRes.ok) {
             const data = await detailRes.json();
@@ -259,6 +261,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
   async function handleApproveSection(sectionId: string, takeId: string) {
     if (!activeAssignment) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for section update - RPC
       await fetch(`/api/narrator/assignments/${activeAssignment.id}/sections/${sectionId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -274,6 +277,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     const notes = prompt('What needs to be re-recorded?');
     if (!notes) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for section update - RPC
       await fetch(`/api/narrator/assignments/${activeAssignment.id}/sections/${sectionId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -303,6 +307,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
 
     async function poll() {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads alignment status
         const res = await fetch(`/api/narrator/assignments/${activeAssignment!.id}/align`);
         if (!res.ok) {
           // 500 most commonly means migration 0051 hasn't run on this DB
@@ -338,6 +343,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
         if (data.status === 'ready' && data.hasAlignment) {
           // Pull the full payload once; subsequent polls skip this branch
           // until status flips again.
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads full alignment
           const fullRes = await fetch(
             `/api/narrator/assignments/${activeAssignment!.id}/align?include=alignment`,
           );
@@ -365,6 +371,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
         // will have moved status to 'running' by then anyway).
         if (data.status === 'pending' && !kicked) {
           kicked = true;
+          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget POST to /align - kicks off background alignment; .catch only logs. Bug-class candidate but caller does not need the response.
           fetch(`/api/narrator/assignments/${activeAssignment!.id}/align`, { method: 'POST' })
             .catch(() => {
               // Failures surface on the next status poll as 'failed' + error string.
@@ -402,6 +409,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
       startedAt: new Date().toISOString(),
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited align POST - RPC, returns status
       const res = await fetch(`/api/narrator/assignments/${activeAssignment.id}/align`, {
         method: 'POST',
       });
@@ -437,6 +445,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
       startedAt: null,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for alignment - RPC
       await fetch(`/api/narrator/assignments/${activeAssignment.id}/align`, { method: 'DELETE' });
       toast.success('Sync cancelled');
     } catch (err) {
@@ -452,6 +461,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     if (!confirm('Approve this full narration? This marks the assignment complete and the narrator gets notified.')) return;
     setApprovingFull(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited approve-full POST - RPC
       const res = await fetch(`/api/narrator/assignments/${activeAssignment.id}/approve-full`, { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -474,6 +484,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
     if (!activeAssignment) return;
     setStitching(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited stitch POST - RPC
       const res = await fetch(`/api/narrator/assignments/${activeAssignment.id}/stitch`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
@@ -490,6 +501,7 @@ export function NarrationTab({ projectId, scriptId, scriptText, scriptVersion, p
   async function handleRateTake(takeId: string, rating: number, sectionId: string) {
     if (!activeAssignment) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for take - RPC
       await fetch(`/api/narrator/assignments/${activeAssignment.id}/sections/${sectionId}/takes/${takeId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

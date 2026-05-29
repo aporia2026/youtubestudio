@@ -175,12 +175,18 @@ export function EditorTab({ projectId }: Props) {
     setLoading(true);
     try {
       const [a, c, refs, thumbs, mediaRes, uploadsRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads editors
         fetch(`/api/projects/${projectId}/editors`).then(r => r.ok ? r.json() : []),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads collaborators
         fetch(`/api/team/collaborators?role=editor`).then(r => r.ok ? r.json() : []),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads image-refs
         fetch(`/api/projects/${projectId}/image-refs`).then(r => r.ok ? r.json() : []),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads thumbnails
         fetch(`/api/projects/${projectId}/thumbnails`).then(r => r.ok ? r.json() : []),
         // Production-doc attachments live on the unified media table.
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads media
         fetch(`/api/projects/${projectId}/media`).then(r => r.ok ? r.json() : { assets: [] }),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads editor-uploads
         fetch(`/api/projects/${projectId}/editor-uploads`).then(r => r.ok ? r.json() : { versions: [], reviewProjectId: null }),
       ]);
       // production-doc attachments are stored as type='document' +
@@ -210,6 +216,7 @@ export function EditorTab({ projectId }: Props) {
       // Inline-create new editor if needed
       if (!editorId && newName.trim()) {
         const palette = ['#3b82f6', '#7c3aed', '#06b6d4', '#f59e0b', '#22c55e', '#ec4899'];
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new collaborator - RPC
         const cRes = await fetch('/api/team/collaborators', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -222,6 +229,7 @@ export function EditorTab({ projectId }: Props) {
       }
       if (!editorId) { toast.error('Pick an editor or enter a name'); setAssigning(false); return; }
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to assign editor - RPC
       const res = await fetch(`/api/projects/${projectId}/editors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -250,6 +258,7 @@ export function EditorTab({ projectId }: Props) {
 
   async function handleRevoke(assignmentId: string, name: string) {
     if (!confirm(`Revoke ${name}'s access to this project?`)) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for editor assignment - RPC
     await fetch(`/api/projects/${projectId}/editors/${assignmentId}`, { method: 'DELETE' });
     setAssignments(prev => prev.filter(a => a.id !== assignmentId));
     toast.success('Access revoked');
@@ -267,6 +276,7 @@ export function EditorTab({ projectId }: Props) {
     const setBusy = kind === 'image-refs' ? setUploadingRef : setUploadingThumb;
     setBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const reserveRes = await fetch(`/api/projects/${projectId}/${kind}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -277,6 +287,7 @@ export function EditorTab({ projectId }: Props) {
         throw new Error(err.error || `Server returned ${reserveRes.status}`);
       }
       const { uploadUrl } = await reserveRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
       if (!putRes.ok) throw new Error(`R2 rejected upload (HTTP ${putRes.status}). Check bucket CORS.`);
       toast.success(kind === 'image-refs' ? 'Reference added' : 'Thumbnail added');
@@ -288,6 +299,7 @@ export function EditorTab({ projectId }: Props) {
 
   async function deleteAsset(kind: 'image-refs' | 'thumbnails', assetId: string) {
     if (!confirm('Delete this image?')) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for asset - RPC
     await fetch(`/api/projects/${projectId}/${kind}/${assetId}`, { method: 'DELETE' });
     if (kind === 'image-refs') setImageRefs(prev => prev.filter(a => a.id !== assetId));
     else setThumbnails(prev => prev.filter(a => a.id !== assetId));
@@ -298,6 +310,7 @@ export function EditorTab({ projectId }: Props) {
   async function uploadProductionDoc(file: File) {
     setUploadingProdDoc(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch(`/api/projects/${projectId}/production-doc-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -308,6 +321,7 @@ export function EditorTab({ projectId }: Props) {
         throw new Error(err.error || `Server returned ${presignRes.status}`);
       }
       const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -315,6 +329,7 @@ export function EditorTab({ projectId }: Props) {
       });
       if (!putRes.ok) throw new Error(`R2 upload failed (HTTP ${putRes.status}). Check bucket CORS.`);
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media - RPC
       const registerRes = await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -359,6 +374,7 @@ export function EditorTab({ projectId }: Props) {
     }
     setAddingSheet(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media - RPC
       const res = await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -393,6 +409,7 @@ export function EditorTab({ projectId }: Props) {
     setProdDocLibLoading(true);
     setProdDocLibError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads production-doc library
       const res = await fetch(`/api/projects/${projectId}/production-doc-library`);
       if (!res.ok) throw new Error(`Failed to load library (${res.status})`);
       const data = await res.json();
@@ -408,6 +425,7 @@ export function EditorTab({ projectId }: Props) {
     if (attachingProdDoc) return;
     setAttachingProdDoc(item.id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media - RPC
       const res = await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -447,6 +465,7 @@ export function EditorTab({ projectId }: Props) {
   async function deleteProductionDoc(assetId: string) {
     if (!confirm('Detach this production doc from the project? The original file in R2 (or library) is not removed.')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for media asset - RPC
       const res = await fetch(`/api/media/${assetId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       setProductionDocs(prev => prev.filter(a => a.id !== assetId));
@@ -466,6 +485,7 @@ export function EditorTab({ projectId }: Props) {
   async function uploadVoiceover(file: File) {
     setUploadingVoiceover(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch(`/api/projects/${projectId}/voiceover-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -477,6 +497,7 @@ export function EditorTab({ projectId }: Props) {
       }
       const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
 
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type || 'audio/mpeg' },
@@ -484,6 +505,7 @@ export function EditorTab({ projectId }: Props) {
       });
       if (!putRes.ok) throw new Error(`R2 upload failed (HTTP ${putRes.status}). Check bucket CORS.`);
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media - RPC
       const registerRes = await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -515,6 +537,7 @@ export function EditorTab({ projectId }: Props) {
     setVoiceoverLibLoading(true);
     setVoiceoverLibError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads voiceover library
       const res = await fetch(`/api/projects/${projectId}/voiceover-library`);
       if (!res.ok) throw new Error(`Failed to load library (${res.status})`);
       const data = await res.json();
@@ -530,6 +553,7 @@ export function EditorTab({ projectId }: Props) {
     if (attachingVoiceover) return;
     setAttachingVoiceover(item.id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media - RPC
       const res = await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -570,6 +594,7 @@ export function EditorTab({ projectId }: Props) {
   async function deleteVoiceover(assetId: string) {
     if (!confirm('Detach this voiceover from the project? The original audio file in R2 (or library) is not removed.')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for media asset - RPC
       const res = await fetch(`/api/media/${assetId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`Failed (${res.status})`);
       setVoiceovers(prev => prev.filter(a => a.id !== assetId));
@@ -630,6 +655,7 @@ export function EditorTab({ projectId }: Props) {
             const fd = new FormData();
             fd.append('file', blob, 'thumbnail.jpg');
             fd.append('type', 'image');
+            // eslint-disable-next-line no-restricted-syntax -- awaited upload POST (multipart)
             const r = await fetch('/api/upload', { method: 'POST', body: fd });
             if (!r.ok) return null;
             return (await r.json()).url ?? null;
@@ -639,6 +665,7 @@ export function EditorTab({ projectId }: Props) {
         },
         reservePresignedUrl: async input => {
           const note = editorUploadNote.trim();
+          // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new editor-upload - RPC
           const res = await fetch(`/api/projects/${projectId}/editor-uploads`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -658,6 +685,7 @@ export function EditorTab({ projectId }: Props) {
           return { uploadUrl: body.uploadUrl, versionId: body.versionId };
         },
         confirmMetadata: async input => {
+          // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for editor-upload - RPC
           await fetch(`/api/projects/${projectId}/editor-uploads`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },

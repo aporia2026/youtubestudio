@@ -382,6 +382,7 @@ function ThumbnailsPage() {
   const isI2I = imageModel.endsWith('-i2i');
 
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads niches
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       // Functional setter so a parallel schedule-link prefill that resolved
@@ -389,6 +390,7 @@ function ThumbnailsPage() {
       if (data.niches?.length) setNiche(curr => curr || data.niches[0].name);
     }).catch(() => {});
     // Load channels for "attach to video" feature
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads channels
     fetch('/api/channels').then(r => r.json()).then(data => {
       setChannels((data.channels || []).map((c: { id: string; name: string; channel_id: string }) => ({ id: c.id, name: c.name, channel_id: c.channel_id })));
     }).catch(() => {});
@@ -634,6 +636,7 @@ function ThumbnailsPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads video on mount
         const res = await fetch(`/api/videos/${videoIdParam}`);
         if (cancelled || !res.ok) return;
         const data = await res.json();
@@ -644,6 +647,7 @@ function ThumbnailsPage() {
         const n = (video.niche || '').trim();
         if (t) setTitle(curr => curr || t);
         if (n) setNiche(curr => curr || n);
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts on mount
         const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
         if (!cancelled && scriptsRes.ok) {
           const scriptsData = await scriptsRes.json();
@@ -677,6 +681,7 @@ function ThumbnailsPage() {
     setResult(null);
     setGeneratedImages({});
     try {
+      // eslint-disable-next-line no-restricted-syntax -- thumbnails-generate RPC: awaits and uses response
       const res = await fetch('/api/thumbnails/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -742,6 +747,7 @@ function ThumbnailsPage() {
     if (file.size > 10 * 1024 * 1024) { toast.error('Image must be under 10MB'); return; }
     setUploadingRef(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch('/api/uploads/thumbnail-reference', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -752,6 +758,7 @@ function ThumbnailsPage() {
         throw new Error((data && data.error) ? data.error : `Presign failed (${presignRes.status})`);
       }
       const { uploadUrl, downloadUrl } = await presignRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type },
@@ -771,6 +778,7 @@ function ThumbnailsPage() {
   async function loadChannelVideos(channelId: string) {
     setLoadingVideos(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads channel detail
       const res = await fetch(`/api/channels/${channelId}`);
       if (!res.ok) throw new Error('Failed');
       const data = await res.json();
@@ -823,6 +831,7 @@ function ThumbnailsPage() {
       const finalPrompt = buildImagePrompt(prompt);
       const body: Record<string, string> = { model: imageModel, prompt: finalPrompt };
       if (referenceImageUrl.trim()) body.referenceImageUrl = referenceImageUrl.trim();
+      // eslint-disable-next-line no-restricted-syntax -- thumbnail-image RPC: awaits and uses response (image URL)
       const res = await fetch('/api/thumbnails/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

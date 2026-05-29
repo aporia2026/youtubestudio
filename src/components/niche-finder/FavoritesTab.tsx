@@ -106,6 +106,7 @@ export function FavoritesTab(): React.ReactElement {
     setExportingSheet(true);
     setExportError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- export RPC: awaits and uses response (sheet URL)
       const res = await fetch('/api/niche-finder/favorites/export-sheet', { method: 'POST' });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
@@ -497,6 +498,7 @@ function PanelHeader({
       const slug = favorite.niche_slug;
       // Optimistic — mutate the cached row's status.
       applyOptimisticFavorite({ ...favorite, status: next, updated_at: new Date().toISOString() });
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for favorite - RPC
       const res = await fetch(`/api/niche-finder/favorites/${encodeURIComponent(slug)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -653,6 +655,7 @@ function NotesField({ favorite }: { favorite: NicheFavoriteWithVideos }): React.
     if (value === (favorite.notes ?? '')) return;
     const handle = setTimeout(async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for favorite - RPC
         await fetch(`/api/niche-finder/favorites/${encodeURIComponent(favorite.niche_slug)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -846,6 +849,7 @@ function VerdictOutcomeRow({ favorite }: { favorite: NicheFavoriteWithVideos }):
     async (body: Record<string, unknown>) => {
       // Optimistic refresh.
       applyOptimisticFavorite({ ...favorite, ...body, updated_at: new Date().toISOString() });
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for favorite - RPC
       const res = await fetch(`/api/niche-finder/favorites/${encodeURIComponent(favorite.niche_slug)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -1002,6 +1006,7 @@ function ActionsRow({
 
   const onRemove = useCallback(async () => {
     applyOptimisticUnfavorite(favorite.niche_slug);
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for favorite - RPC
     const res = await fetch(
       `/api/niche-finder/favorites/${encodeURIComponent(favorite.niche_slug)}`,
       { method: 'DELETE' },
@@ -1019,6 +1024,7 @@ function ActionsRow({
     setExportingSheet(true);
     setExportError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited export POST for slug - RPC
       const res = await fetch(
         `/api/niche-finder/favorites/${encodeURIComponent(favorite.niche_slug)}/export-sheet`,
         { method: 'POST' },
@@ -1159,6 +1165,7 @@ function RecentlyRemovedSection({ onRestore }: { onRestore: () => Promise<void> 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads recently-removed favorites
       const res = await fetch('/api/niche-finder/favorites/recently-removed');
       if (!res.ok) {
         setRemoved([]);
@@ -1177,6 +1184,7 @@ function RecentlyRemovedSection({ onRestore }: { onRestore: () => Promise<void> 
 
   const restore = useCallback(
     async (slug: string) => {
+      // eslint-disable-next-line no-restricted-syntax -- awaited restore POST - RPC
       const res = await fetch(
         `/api/niche-finder/favorites/${encodeURIComponent(slug)}/restore`,
         { method: 'POST' },
@@ -1285,6 +1293,7 @@ function MonthlyBriefSpendCaption({ refreshKey }: { refreshKey: number }): React
     let cancelled = false;
     void (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads brief stats
         const res = await fetch('/api/niche-finder/favorites/brief-stats');
         if (!res.ok) return;
         const body = (await res.json()) as { monthlySpendUsd?: number };

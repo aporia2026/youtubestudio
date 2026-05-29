@@ -62,6 +62,7 @@ export function QaSettingsPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads qa settings
     fetch('/api/workspace/qa-settings')
       .then(r => r.json())
       .then(data => {
@@ -106,6 +107,7 @@ export function QaSettingsPanel() {
     setSettings(prev => ({ ...prev, nuclearModelId: newModelId }));
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for qa settings - RPC
       const res = await fetch('/api/workspace/qa-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -122,6 +124,7 @@ export function QaSettingsPanel() {
       // Roll back the optimistic update. The next fetch on next mount
       // will reconcile if the user navigates away and back.
       toast.error(err instanceof Error ? err.message : 'Failed to save QA settings');
+      // eslint-disable-next-line no-restricted-syntax -- GET, reloads qa settings
       const res = await fetch('/api/workspace/qa-settings').catch(() => null);
       if (res?.ok) {
         const data = await res.json();
@@ -136,6 +139,7 @@ export function QaSettingsPanel() {
     setSettings(prev => ({ ...prev, [flag]: state }));
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for qa settings - RPC
       const res = await fetch('/api/workspace/qa-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -149,6 +153,7 @@ export function QaSettingsPanel() {
       setSettings(data.settings ?? DEFAULT_SETTINGS);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save QA setting');
+      // eslint-disable-next-line no-restricted-syntax -- GET, reloads qa settings
       const res = await fetch('/api/workspace/qa-settings').catch(() => null);
       if (res?.ok) {
         const data = await res.json();
@@ -169,6 +174,7 @@ export function QaSettingsPanel() {
     });
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for qa settings - RPC
       const res = await fetch('/api/workspace/qa-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -182,6 +188,7 @@ export function QaSettingsPanel() {
       setSettings(data.settings ?? DEFAULT_SETTINGS);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save WIP limit');
+      // eslint-disable-next-line no-restricted-syntax -- GET, reloads qa settings
       const res = await fetch('/api/workspace/qa-settings').catch(() => null);
       if (res?.ok) {
         const data = await res.json();
@@ -196,6 +203,7 @@ export function QaSettingsPanel() {
     setSettings(prev => ({ ...prev, stuckThresholdHours: newHours }));
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for qa settings - RPC
       const res = await fetch('/api/workspace/qa-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -210,6 +218,7 @@ export function QaSettingsPanel() {
       toast.success(`Stuck threshold set to ${formatHours(newHours)}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to save stuck threshold');
+      // eslint-disable-next-line no-restricted-syntax -- GET, reloads qa settings
       const res = await fetch('/api/workspace/qa-settings').catch(() => null);
       if (res?.ok) {
         const data = await res.json();
