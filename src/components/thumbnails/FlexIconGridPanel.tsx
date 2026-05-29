@@ -54,6 +54,7 @@ import {
   type IconEntry,
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import {
+  generateRandomPalette,
   paletteColours,
   resolveCellBackgrounds,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
@@ -185,6 +186,11 @@ interface SavedPaletteRecord {
  *  have to expand the disclosure to grab a familiar one. */
 const SAVED_PALETTE_QUICK_LOAD_COUNT = 3;
 
+/** Phase 4.21: sessionStorage key for the cell clipboard. Scoped
+ *  to the flex-icon-grid format so a copy here doesn't collide
+ *  with future sibling-format clipboards. */
+const CELL_CLIPBOARD_KEY = 'flex-icon-grid:cell-clipboard';
+
 // ─── Export / import (Phase 4.17) ───────────────────────────────────────────
 
 /**
@@ -197,10 +203,19 @@ const SAVED_PALETTE_QUICK_LOAD_COUNT = 3;
  * within the same minute still differ. Object URL is revoked after
  * click to avoid leaks.
  */
-/** Phase 4.19: bumped each phase a feature lands that changes the
- *  wire format. Imports tolerate any version (parseConfig is
- *  forgiving) but a future migration step can key off this field. */
-const EXPORT_FORMAT_VERSION = '4.19';
+/** Phase 4.19 → 4.21: bumped each phase a feature lands that
+ *  changes the wire format. Imports tolerate older versions and
+ *  warn on newer-than-known ones (see `KNOWN_FORMAT_VERSIONS`)
+ *  so a config exported from a future client surfaces the version
+ *  mismatch instead of silently dropping fields the current parser
+ *  doesn't recognise. */
+const EXPORT_FORMAT_VERSION = '4.21';
+
+/** Versions this client knows how to read. Append on every export
+ *  bump. The parser is forgiving for unrecognised fields, so
+ *  reading a NEWER format usually works — but we toast a warning
+ *  so the user knows the import may have dropped data. */
+const KNOWN_FORMAT_VERSIONS = new Set(['4.19', '4.20', '4.21']);
 
 function exportConfigJson(config: FlexIconGridConfig): void {
   // Phase 4.19: wrap the config in an envelope carrying
@@ -266,12 +281,25 @@ async function importConfigJson(
     // an envelope ONLY when it carries BOTH `formatVersion` AND
     // `config` — the combination is unique to the Phase-4.19 export
     // shape, while a raw config that happens to have a `config`
-    // property (e.g. an exotic palette name or a future field) won't
-    // be misclassified. Pre-4.19 exports fall through to the raw-
-    // config path unchanged.
+    // property won't be misclassified. Pre-4.19 exports fall
+    // through to the raw-config path unchanged.
     const rawObj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
     const isEnvelope = !!rawObj && 'config' in rawObj && 'formatVersion' in rawObj;
     const candidate = isEnvelope ? (rawObj as { config: unknown }).config : raw;
+    // Phase 4.21: warn (non-blocking) when the envelope advertises a
+    // version the client doesn't know about. `parseConfig` is still
+    // forgiving so the import usually works, but the user deserves
+    // to know that newer fields may have been dropped during the
+    // tolerant parse — they can re-export from THIS client to lock
+    // in the round-trippable shape going forward.
+    if (isEnvelope) {
+      const advertised = String((rawObj as { formatVersion: unknown }).formatVersion);
+      if (advertised && !KNOWN_FORMAT_VERSIONS.has(advertised)) {
+        toast.message(
+          `Imported config advertises format ${advertised}; this client knows ${[...KNOWN_FORMAT_VERSIONS].sort().pop()}. Some newer fields may have been dropped.`,
+        );
+      }
+    }
     const config = parseConfig(candidate);
     const result = validateConfig(config);
     if (!result.ok) {
@@ -310,12 +338,35 @@ export function FlexIconGridPanel({
   const [stickerBusy, setStickerBusy] = useState(false);
   const [result, setResult] = useState<FlexIconGridGenerationResult | null>(null);
   const [uploadingCells, setUploadingCells] = useState<Set<number>>(new Set());
-  // Phase 4.20: in-memory cell clipboard. Holds the FULL cell minus
-  // its `index` so paste can drop it into any slot. Survives panel
-  // lifetime; not persisted across page reloads (intentional — the
-  // typical use is "duplicate this cell's setup three times in a
-  // row" rather than "save for next session").
-  const [cellClipboard, setCellClipboard] = useState<Omit<FlexIconCell, 'index'> | null>(null);
+  // Phase 4.20 → 4.21: cell clipboard. Holds the FULL cell minus its
+  // `index` so paste can drop it into any slot. Mirrored to
+  // sessionStorage so navigating to another project and back keeps
+  // the clipboard — the previous per-mount-only behaviour was a
+  // common surprise. SSR-safe init checks `typeof window`.
+  const [cellClipboard, setCellClipboardState] = useState<Omit<FlexIconCell, 'index'> | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.sessionStorage.getItem(CELL_CLIPBOARD_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw) as Omit<FlexIconCell, 'index'>;
+    } catch {
+      return null;
+    }
+  });
+  // Wrap the setter so the storage mirror updates atomically with
+  // the state. Calls fall through `setCellClipboardState` directly,
+  // so passing `null` clears the mirror too.
+  const setCellClipboard = (next: Omit<FlexIconCell, 'index'> | null) => {
+    setCellClipboardState(next);
+    if (typeof window === 'undefined') return;
+    try {
+      if (next === null) window.sessionStorage.removeItem(CELL_CLIPBOARD_KEY);
+      else window.sessionStorage.setItem(CELL_CLIPBOARD_KEY, JSON.stringify(next));
+    } catch {
+      // Quota / private-mode failures are non-fatal — the in-memory
+      // state still works for this session.
+    }
+  };
 
   // Workspace-registered fonts (Phase 4.8b). Fetched eagerly so the
   // chip row inside the custom-font picker shows up immediately
@@ -593,6 +644,28 @@ export function FlexIconGridPanel({
       ),
     }));
     toast.success(`Pasted into cell ${targetIndex}`);
+  }
+
+  /**
+   * Phase 4.21: paste only the STYLE fields from the clipboard onto
+   * the target, preserving the target's content/label/colour. Same
+   * field selection as `applyStyleToAllCells` so the two operations
+   * agree on what "style" means. Useful for "make this cell look
+   * like the copied one but keep the existing icon/label".
+   */
+  function pasteCellStyle(targetIndex: number) {
+    if (!cellClipboard) return;
+    updateCell(targetIndex, {
+      shape: cellClipboard.shape,
+      ring: cellClipboard.ring,
+      shadow: cellClipboard.shadow,
+      rotation: cellClipboard.rotation,
+      flipX: cellClipboard.flipX,
+      flipY: cellClipboard.flipY,
+      labelStyle: cellClipboard.labelStyle,
+      badge: cellClipboard.badge,
+    });
+    toast.success(`Pasted style into cell ${targetIndex}`);
   }
 
   /**
@@ -1141,6 +1214,29 @@ export function FlexIconGridPanel({
           >
             <span aria-hidden="true">⤵</span>
             Shuffle
+          </button>
+          {/* Phase 4.21: one-click random palette. Generates 8 fresh,
+              harmonious hex colours via the pure `generateRandomPalette`
+              helper and swaps them in as a custom palette. Pairs with
+              Shuffle — Shuffle rotates the cursor over the SAME
+              colours; Random replaces the colours themselves. Locked
+              cells (with explicit `backgroundColor`) still bypass the
+              palette so they survive Random untouched. */}
+          <button
+            type="button"
+            onClick={() => {
+              const colors = generateRandomPalette(8);
+              updateConfig({
+                palette: { type: 'custom', colors },
+                paletteShuffleOffset: 0,
+              });
+            }}
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Generate a fresh random palette (locked cells unaffected)"
+            aria-label="Generate random palette"
+          >
+            <span aria-hidden="true">✦</span>
+            Random
           </button>
           {/* Phase 4.16 → 4.17: reset + undo chips — appear once
               the user has shuffled at least once. Undo steps back
@@ -1944,15 +2040,19 @@ export function FlexIconGridPanel({
             )}
           </div>
 
-          {/* Phase 4.20: copy / paste row. Copy snapshots the current
-              cell into the in-memory clipboard; Paste replaces the
-              selected cell with the clipboard's content + style.
-              "Paste" is disabled until something has been copied. */}
-          <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+          {/* Phase 4.20 → 4.21: copy / paste / paste-style row. Copy
+              snapshots the current cell. "Paste cell" replaces the
+              target fully; "Paste style" replaces only the visual
+              fields and keeps the target's existing content + label
+              + colour. Mirrors `applyStyleToAllCells`'s field
+              selection so the two operations agree on what "style"
+              means. Both paste buttons disable until something has
+              been copied. */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
             <button
               type="button"
               onClick={() => copyCell(selectedCell.index)}
-              style={{ ...ghostButtonStyle, flex: 1 }}
+              style={{ ...ghostButtonStyle, flex: 1, minWidth: 90 }}
               title="Copy this cell to the clipboard"
               aria-label={`Copy cell ${selectedCell.index} to clipboard`}
             >
@@ -1962,7 +2062,7 @@ export function FlexIconGridPanel({
               type="button"
               onClick={() => pasteCell(selectedCell.index)}
               disabled={!cellClipboard}
-              style={{ ...ghostButtonStyle, flex: 1, opacity: cellClipboard ? 1 : 0.5 }}
+              style={{ ...ghostButtonStyle, flex: 1, minWidth: 90, opacity: cellClipboard ? 1 : 0.5 }}
               title={
                 cellClipboard
                   ? 'Paste the clipboard cell here (full replace)'
@@ -1971,6 +2071,20 @@ export function FlexIconGridPanel({
               aria-label={cellClipboard ? 'Paste clipboard cell here' : 'Paste disabled — no cell copied'}
             >
               Paste cell
+            </button>
+            <button
+              type="button"
+              onClick={() => pasteCellStyle(selectedCell.index)}
+              disabled={!cellClipboard}
+              style={{ ...ghostButtonStyle, flex: 1, minWidth: 90, opacity: cellClipboard ? 1 : 0.5 }}
+              title={
+                cellClipboard
+                  ? 'Paste only the style (shape, ring, shadow, etc.) — keep the target\'s content'
+                  : 'Copy a cell first'
+              }
+              aria-label={cellClipboard ? 'Paste style only' : 'Paste style disabled — no cell copied'}
+            >
+              Paste style
             </button>
           </div>
 
@@ -3577,11 +3691,19 @@ function BulkApplyStyleButton({
 }) {
   const [armed, setArmed] = useState(false);
   const timerRef = useRef<number | null>(null);
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
   }, []);
+  // Phase 4.21: when the button arms, give keyboard focus to the
+  // cancel chip so Tab/Enter behaviour matches the visible "armed"
+  // affordance, and Esc disarms cleanly without leaving focus
+  // somewhere stale. Skipped on the initial mount (armed=false).
+  useEffect(() => {
+    if (armed) cancelRef.current?.focus();
+  }, [armed]);
   const disarm = () => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     timerRef.current = null;
@@ -3595,16 +3717,22 @@ function BulkApplyStyleButton({
     }
     setArmed(true);
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    // Phase 4.20: window bumped 4 s → 6 s for slower readers; the
-    // explicit ✕ cancel button below gives power users an instant
-    // out instead of waiting for the timer.
     timerRef.current = window.setTimeout(() => {
       setArmed(false);
       timerRef.current = null;
     }, 6000);
   };
   return (
-    <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+    <div
+      style={{ display: 'flex', gap: 6, marginTop: 12 }}
+      onKeyDown={(e) => {
+        // Esc dismisses the armed state from anywhere in this row.
+        if (e.key === 'Escape' && armed) {
+          e.preventDefault();
+          disarm();
+        }
+      }}
+    >
       <button
         type="button"
         onClick={handleClick}
@@ -3627,11 +3755,12 @@ function BulkApplyStyleButton({
       </button>
       {armed && (
         <button
+          ref={cancelRef}
           type="button"
           onClick={disarm}
           style={{ ...ghostButtonStyle, paddingLeft: 12, paddingRight: 12 }}
-          aria-label="Cancel apply"
-          title="Cancel"
+          aria-label="Cancel apply (or press Esc)"
+          title="Cancel (Esc)"
         >
           ✕
         </button>

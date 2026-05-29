@@ -337,3 +337,54 @@ export function paletteColours(spec: PaletteSpec): readonly string[] {
   if (spec.type === 'preset') return NAMED_PALETTES[spec.name];
   return spec.colors;
 }
+
+/**
+ * Phase 4.21: generate a fresh, harmonious random palette of `count`
+ * hex colours. Uses evenly-spaced hues around the wheel with small
+ * per-slot jitter so two calls never produce identical palettes;
+ * saturation + lightness are clamped to the "vibrant but legible"
+ * band so labels read regardless of the picked text colour.
+ *
+ * `rng` is injected so tests can pass a seeded source; production
+ * callers pass `Math.random`. Pure function — no side effects.
+ */
+export function generateRandomPalette(count: number, rng: () => number = Math.random): string[] {
+  if (count <= 0) return [];
+  const out: string[] = [];
+  const baseHueOffset = rng() * 360; // start anywhere on the wheel
+  const step = 360 / count;
+  for (let i = 0; i < count; i++) {
+    const hueJitter = (rng() - 0.5) * Math.min(step * 0.5, 25);
+    const hue = (baseHueOffset + i * step + hueJitter + 360) % 360;
+    // Vibrant + legible band — picked empirically against the
+    // reference channels' look. Sat 65–85 %, light 50–62 %.
+    const sat = 65 + rng() * 20;
+    const light = 50 + rng() * 12;
+    out.push(hslToHex(hue, sat, light));
+  }
+  return out;
+}
+
+/** HSL (0–360, 0–100, 0–100) → #RRGGBB. Internal helper for
+ *  `generateRandomPalette`; not exported because callers should
+ *  prefer the palette helper rather than fiddle with raw colour
+ *  spaces. */
+function hslToHex(h: number, s: number, l: number): string {
+  const sNorm = s / 100;
+  const lNorm = l / 100;
+  const c = (1 - Math.abs(2 * lNorm - 1)) * sNorm;
+  const hp = (h % 360) / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hp >= 0 && hp < 1) { r = c; g = x; b = 0; }
+  else if (hp < 2) { r = x; g = c; b = 0; }
+  else if (hp < 3) { r = 0; g = c; b = x; }
+  else if (hp < 4) { r = 0; g = x; b = c; }
+  else if (hp < 5) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  const m = lNorm - c / 2;
+  const toByte = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return `#${toByte(r)}${toByte(g)}${toByte(b)}`;
+}

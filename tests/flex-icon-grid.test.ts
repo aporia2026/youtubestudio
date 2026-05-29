@@ -47,6 +47,7 @@ import { validateSavedPaletteInput } from '@/lib/flex-icon-grid-saved-palettes-v
 import { validateSavedTemplateInput } from '@/lib/flex-icon-grid-saved-templates-validate';
 import { validateWorkspaceFontInput } from '@/lib/flex-icon-grid-workspace-fonts-validate';
 import {
+  generateRandomPalette,
   hueFamilyOf,
   parseHex,
   pickLabelColourFor,
@@ -1578,6 +1579,40 @@ describe('Phase 4.16 — per-cell rotation', () => {
 });
 
 // ─── Phase 4.17 — JSON round-trip ───────────────────────────────────────────
+
+describe('Phase 4.21 — generateRandomPalette', () => {
+  it('returns the requested count of colours', () => {
+    const seq = seededRng([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 0.5, 0.4, 0.3, 0.2, 0.1, 0.6, 0.7, 0.8, 0.9, 0.5, 0.4, 0.3, 0.2, 0.1, 0.6, 0.7, 0.8, 0.9, 0.5, 0.4]);
+    const palette = generateRandomPalette(5, seq);
+    expect(palette.length).toBe(5);
+  });
+  it('returns valid #RRGGBB hex strings', () => {
+    const palette = generateRandomPalette(4, () => 0.5);
+    for (const c of palette) {
+      expect(c).toMatch(/^#[0-9a-f]{6}$/);
+    }
+  });
+  it('returns the empty array when count is zero or negative', () => {
+    expect(generateRandomPalette(0)).toEqual([]);
+    expect(generateRandomPalette(-3)).toEqual([]);
+  });
+  it('is deterministic with a deterministic rng', () => {
+    const a = generateRandomPalette(3, seededRng([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]));
+    const b = generateRandomPalette(3, seededRng([0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]));
+    expect(a).toEqual(b);
+  });
+});
+
+// Simple test helper: returns a function that yields the next value
+// from `seq` on each call, cycling back to the start when exhausted.
+function seededRng(seq: number[]): () => number {
+  let i = 0;
+  return () => {
+    const v = seq[i % seq.length];
+    i++;
+    return v;
+  };
+}
 
 describe('Phase 4.19 — per-cell flip', () => {
   it('round-trips flipX through parseConfig', () => {
