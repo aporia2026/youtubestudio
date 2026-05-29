@@ -337,6 +337,18 @@ export interface TitleBarSpec {
    *  solid (the pre-4.28 default). Renders as an SVG
    *  `<linearGradient>` rotated by `angle` and applied as a fill. */
   backgroundGradient?: { from: string; to: string; angle: number };
+  /** Phase 4.29: when true, the title bar fill is fully transparent
+   *  (only the text + optional drop shadow render). Useful for
+   *  thumbnails where the title should sit over the cells without
+   *  a backing strip. Overrides both `background` and
+   *  `backgroundGradient` when set. */
+  backgroundTransparent?: boolean;
+  /** Phase 4.29: horizontal alignment for the title text (and
+   *  subtitle). Defaults to 'center' — the pre-4.29 behaviour.
+   *  'left' aligns to the canvas-relative safe area's left edge;
+   *  'right' to the right edge. Helps editorial-style thumbnails
+   *  where the title is meant to anchor visually. */
+  textAlign?: 'left' | 'center' | 'right';
   background: string;
   color: string;
   font: LabelFont;
@@ -1606,6 +1618,14 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     // (`from`, `to`) so a doctored config can't sneak a malformed
     // gradient through.
     backgroundGradient: parseTitleBarGradient(o.backgroundGradient),
+    // Phase 4.29: strict boolean parsing — anything other than
+    // `true` falls back to undefined so a doctored config can't
+    // sneak a truthy non-boolean through.
+    backgroundTransparent: o.backgroundTransparent === true ? true : undefined,
+    textAlign:
+      o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center'
+        ? o.textAlign
+        : undefined,
   };
 }
 

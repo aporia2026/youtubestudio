@@ -1679,18 +1679,56 @@ export function FlexIconGridPanel({
                 varies by browser (Chromium = visible marks above
                 the track; Firefox = nothing visible) but the value
                 snap behaviour is consistent. */}
-            <input
-              type="range"
-              min={25}
-              max={300}
-              step={5}
-              value={previewZoom}
-              onChange={(e) => setPreviewZoom(Number(e.target.value))}
-              aria-label={`Live preview zoom: ${previewZoom}%`}
-              title={`Zoom: ${previewZoom}% (tick marks at 50 / 100 / 150 / 200)`}
-              list="fg-preview-zoom-presets"
-              style={{ width: 110 }}
-            />
+            {/* Phase 4.28 → 4.29: slider with native `<datalist>`
+                snap targets PLUS an absolutely-positioned tick row
+                rendered by us. The native ticks only show in
+                Chromium; the custom ticks render the same affordance
+                cross-browser. */}
+            <div style={{ position: 'relative', width: 110, height: 18 }}>
+              <input
+                type="range"
+                min={25}
+                max={300}
+                step={5}
+                value={previewZoom}
+                onChange={(e) => setPreviewZoom(Number(e.target.value))}
+                aria-label={`Live preview zoom: ${previewZoom}%`}
+                title={`Zoom: ${previewZoom}% (tick marks at 50 / 100 / 150 / 200)`}
+                list="fg-preview-zoom-presets"
+                style={{ width: 110, position: 'absolute', top: 0, left: 0 }}
+              />
+              <div
+                aria-hidden="true"
+                style={{
+                  position: 'absolute',
+                  top: 14,
+                  left: 0,
+                  right: 0,
+                  height: 4,
+                  pointerEvents: 'none',
+                }}
+              >
+                {[50, 100, 150, 200].map((pct) => {
+                  // Map zoom % into slider track position.
+                  // Track span: 25–300 (275 wide). Account for the
+                  // ~8 px thumb half-width on each side.
+                  const trackFraction = (pct - 25) / (300 - 25);
+                  return (
+                    <span
+                      key={pct}
+                      style={{
+                        position: 'absolute',
+                        left: `calc(${trackFraction * 100}% - 1px)`,
+                        width: 1,
+                        height: 4,
+                        background: 'currentColor',
+                        opacity: 0.45,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
             <datalist id="fg-preview-zoom-presets">
               <option value={50} label="50%" />
               <option value={100} label="100%" />
@@ -3126,6 +3164,39 @@ export function FlexIconGridPanel({
                   </span>
                 </div>
               )}
+              {/* Phase 4.29: title text alignment. Three-chip row;
+                  defaults to center. Applies to both the main title
+                  and the optional subtitle below it so the stack
+                  stays visually coherent. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ ...labelStyle, marginTop: 0 }}>Title alignment</label>
+                  <div style={chipRowStyle}>
+                    {(['left', 'center', 'right'] as const).map((align) => {
+                      const active = (config.titleBar!.textAlign ?? 'center') === align;
+                      return (
+                        <button
+                          key={align}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                textAlign: align === 'center' ? undefined : align,
+                              },
+                            })
+                          }
+                          style={chipStyle(active)}
+                          title={`Align title text to ${align}`}
+                        >
+                          {align}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {/* Phase 4.10: optional subtitle (second smaller line).
                   Rendered below the main title at ~half the size,
                   same font/colour by default. Off by default — only
@@ -3343,6 +3414,12 @@ export function FlexIconGridPanel({
                 <div style={{ marginTop: 10 }}>
                   <label style={{ ...labelStyle, marginTop: 0 }}>Title bar background</label>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {/* Phase 4.29: solid swatch dims when a higher-
+                        priority option (transparent or gradient) is
+                        active. Tooltip explains why. Inputs stay
+                        clickable so the user can still update the
+                        underlying solid colour for when they switch
+                        modes back. */}
                     <input
                       type="color"
                       value={config.titleBar.background}
@@ -3352,9 +3429,48 @@ export function FlexIconGridPanel({
                         })
                       }
                       aria-label="Title bar solid background colour"
-                      title="Solid background colour"
-                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                      title={
+                        config.titleBar.backgroundTransparent
+                          ? 'Solid colour (overridden by Transparent mode)'
+                          : config.titleBar.backgroundGradient
+                            ? 'Solid colour (overridden by gradient)'
+                            : 'Solid background colour'
+                      }
+                      style={{
+                        width: 36,
+                        height: 32,
+                        padding: 0,
+                        border: 'none',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        opacity:
+                          config.titleBar.backgroundTransparent ||
+                          config.titleBar.backgroundGradient
+                            ? 0.45
+                            : 1,
+                      }}
                     />
+                    {/* Phase 4.29: transparent toggle. Off by default
+                        — when on, the bar paints no rect at all, so
+                        the text + (optional) drop shadow sit
+                        directly over the cells. */}
+                    <button
+                      type="button"
+                      aria-pressed={config.titleBar.backgroundTransparent === true}
+                      onClick={() =>
+                        updateConfig({
+                          titleBar: {
+                            ...config.titleBar!,
+                            backgroundTransparent:
+                              config.titleBar!.backgroundTransparent === true ? undefined : true,
+                          },
+                        })
+                      }
+                      style={chipStyle(config.titleBar.backgroundTransparent === true)}
+                      title="Hide the title bar's backing rectangle; text floats over the cells"
+                    >
+                      Transparent
+                    </button>
                     <button
                       type="button"
                       aria-pressed={!!config.titleBar.backgroundGradient}
@@ -3439,6 +3555,39 @@ export function FlexIconGridPanel({
                         <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
                           {config.titleBar.backgroundGradient.angle}°
                         </span>
+                        {/* Phase 4.29: tiny SVG compass showing the
+                            gradient direction. On a wide-but-short
+                            title bar the SVG-rendered gradient can
+                            look ambiguous between similar angles —
+                            this gives the user an unambiguous
+                            indication of WHICH direction they're
+                            choosing, independent of how the rect's
+                            aspect ratio renders it. */}
+                        <svg
+                          width={20}
+                          height={20}
+                          viewBox="0 0 20 20"
+                          aria-hidden="true"
+                          focusable="false"
+                          style={{ flex: '0 0 auto' }}
+                        >
+                          <circle
+                            cx={10}
+                            cy={10}
+                            r={8}
+                            fill="transparent"
+                            stroke="currentColor"
+                            strokeOpacity={0.35}
+                          />
+                          <line
+                            x1={10}
+                            y1={10}
+                            x2={10 + 7 * Math.sin((config.titleBar.backgroundGradient.angle * Math.PI) / 180)}
+                            y2={10 - 7 * Math.cos((config.titleBar.backgroundGradient.angle * Math.PI) / 180)}
+                            stroke="currentColor"
+                            strokeWidth={1.5}
+                          />
+                        </svg>
                       </>
                     )}
                   </div>

@@ -1687,6 +1687,53 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.29 — title bar transparent + text alignment', () => {
+  it('round-trips backgroundTransparent through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      backgroundTransparent: true,
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.backgroundTransparent).toBe(true);
+  });
+  it('drops backgroundTransparent for non-true values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        backgroundTransparent: 1,
+      },
+    });
+    expect(reparsed.titleBar?.backgroundTransparent).toBeUndefined();
+  });
+  it('round-trips textAlign through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      textAlign: 'left',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.textAlign).toBe('left');
+  });
+  it('drops textAlign for unsupported values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        textAlign: 'justify',
+      },
+    });
+    expect(reparsed.titleBar?.textAlign).toBeUndefined();
+  });
+});
+
 describe('Phase 4.28 — title bar gradient background', () => {
   it('round-trips backgroundGradient through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

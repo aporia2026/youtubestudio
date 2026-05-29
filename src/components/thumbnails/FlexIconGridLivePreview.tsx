@@ -250,46 +250,58 @@ export function FlexIconGridLivePreview({
             into the cells. Gradient (when set) renders via an SVG
             `<linearGradient>` def mirroring the composer's
             `fg-title-bar-bg` id pattern. */}
-        {config.titleBar && (config.titleBar.shadow || config.titleBar.backgroundGradient) && (
-          <defs>
-            {config.titleBar.shadow && (
-              <CellShadowFilter
-                id="fg-preview-title-bar-shadow"
-                shadow={{
-                  ...config.titleBar.shadow,
-                  offsetY:
-                    config.titleBar.position === 'bottom'
-                      ? -Math.abs(config.titleBar.shadow.offsetY)
-                      : Math.abs(config.titleBar.shadow.offsetY),
-                }}
-                shapeSize={config.titleBar.height}
+        {(() => {
+          const tb = config.titleBar;
+          if (!tb) return null;
+          // Phase 4.29: transparent bar — skip both rect and filter
+          // since there's no fill to cast a shadow from. The text
+          // overlay paints on its own; this just removes the strip.
+          const isTransparent = tb.backgroundTransparent === true;
+          const hasShadow = !!tb.shadow && !isTransparent;
+          const hasGradient = !!tb.backgroundGradient && !isTransparent;
+          if (isTransparent) return null;
+          const fill = hasGradient
+            ? 'url(#fg-preview-title-bar-bg)'
+            : tb.background;
+          return (
+            <>
+              {(hasShadow || hasGradient) && (
+                <defs>
+                  {hasShadow && tb.shadow && (
+                    <CellShadowFilter
+                      id="fg-preview-title-bar-shadow"
+                      shadow={{
+                        ...tb.shadow,
+                        offsetY:
+                          tb.position === 'bottom'
+                            ? -Math.abs(tb.shadow.offsetY)
+                            : Math.abs(tb.shadow.offsetY),
+                      }}
+                      shapeSize={tb.height}
+                    />
+                  )}
+                  {hasGradient && tb.backgroundGradient && (
+                    <linearGradient
+                      id="fg-preview-title-bar-bg"
+                      gradientTransform={`rotate(${tb.backgroundGradient.angle} 0.5 0.5)`}
+                    >
+                      <stop offset="0%" stopColor={tb.backgroundGradient.from} />
+                      <stop offset="100%" stopColor={tb.backgroundGradient.to} />
+                    </linearGradient>
+                  )}
+                </defs>
+              )}
+              <rect
+                x={0}
+                y={tb.position === 'top' ? 0 : config.height - tb.height}
+                width={config.width}
+                height={tb.height}
+                fill={fill}
+                filter={hasShadow ? 'url(#fg-preview-title-bar-shadow)' : undefined}
               />
-            )}
-            {config.titleBar.backgroundGradient && (
-              <linearGradient
-                id="fg-preview-title-bar-bg"
-                gradientTransform={`rotate(${config.titleBar.backgroundGradient.angle} 0.5 0.5)`}
-              >
-                <stop offset="0%" stopColor={config.titleBar.backgroundGradient.from} />
-                <stop offset="100%" stopColor={config.titleBar.backgroundGradient.to} />
-              </linearGradient>
-            )}
-          </defs>
-        )}
-        {config.titleBar && (
-          <rect
-            x={0}
-            y={config.titleBar.position === 'top' ? 0 : config.height - config.titleBar.height}
-            width={config.width}
-            height={config.titleBar.height}
-            fill={
-              config.titleBar.backgroundGradient
-                ? 'url(#fg-preview-title-bar-bg)'
-                : config.titleBar.background
-            }
-            filter={config.titleBar.shadow ? 'url(#fg-preview-title-bar-shadow)' : undefined}
-          />
-        )}
+            </>
+          );
+        })()}
 
         {/* Title bar text + optional Phase 4.10 subtitle. Phase 4.11
             caveat fix: subtitle stacking now uses a single <text>
@@ -332,18 +344,34 @@ export function FlexIconGridLivePreview({
               />
             </clipPath>
           );
+          // Phase 4.29: horizontal alignment maps to SVG textAnchor +
+          // x position. 'center' (default) keeps the pre-4.29 behaviour;
+          // 'left' / 'right' anchor against the same safe-area edges
+          // the composer uses, so on-screen matches the PNG.
+          const textX =
+            tb.textAlign === 'left'
+              ? titleSideMargin
+              : tb.textAlign === 'right'
+                ? config.width - titleSideMargin
+                : config.width / 2;
+          const anchor: 'start' | 'middle' | 'end' =
+            tb.textAlign === 'left'
+              ? 'start'
+              : tb.textAlign === 'right'
+                ? 'end'
+                : 'middle';
           if (!hasSubtitle) {
             return (
               <>
                 <defs>{clipRect}</defs>
                 <text
-                  x={config.width / 2}
+                  x={textX}
                   y={barCenterY}
                   fontFamily={fontFamily}
                   fontSize={mainSize}
                   fontWeight={900}
                   fill={tb.color}
-                  textAnchor="middle"
+                  textAnchor={anchor}
                   dominantBaseline="middle"
                   clipPath={`url(#${clipId})`}
                 >
@@ -374,19 +402,19 @@ export function FlexIconGridLivePreview({
             <>
               <defs>{clipRect}</defs>
               <text
-                x={config.width / 2}
+                x={textX}
                 y={barCenterY}
                 fontFamily={fontFamily}
                 fill={tb.color}
-                textAnchor="middle"
+                textAnchor={anchor}
                 dominantBaseline="middle"
                 clipPath={`url(#${clipId})`}
               >
-                <tspan x={config.width / 2} fontSize={mainSize} fontWeight={900}>
+                <tspan x={textX} fontSize={mainSize} fontWeight={900}>
                   {sanitizeUserText(tb.text, 80)}
                 </tspan>
                 <tspan
-                  x={config.width / 2}
+                  x={textX}
                   dy={subDy}
                   fontFamily={subFontFamily}
                   fontSize={subSize}

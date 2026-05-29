@@ -482,13 +482,18 @@ function renderTitleBarBackground(config: FlexIconGridConfig): string {
   const { titleBar, width, height } = config;
   if (!titleBar) return '';
   const y = titleBar.position === 'top' ? 0 : height - titleBar.height;
-  // Phase 4.28: resolve the bar fill — gradient (when set) wins
-  // over the solid `background` hex. Gradient emits a `<defs>`
-  // entry with a stable id; rect refs `url(#...)` in its `fill`.
+  // Phase 4.28 → 4.29: resolve the bar fill — transparent (when
+  // set) beats gradient beats solid. Transparent renders the rect
+  // with `fill="none"` (or skipped entirely when there's also no
+  // shadow). Gradient emits a `<defs>` entry with a stable id;
+  // solid uses the hex directly.
   const gradient = titleBar.backgroundGradient;
+  const isTransparent = titleBar.backgroundTransparent === true;
   let fillExpr: string;
   let extraDef = '';
-  if (gradient) {
+  if (isTransparent) {
+    fillExpr = 'none';
+  } else if (gradient) {
     const gradId = 'fg-title-bar-bg';
     extraDef =
       `<linearGradient id="${gradId}" gradientTransform="rotate(${gradient.angle} 0.5 0.5)">` +
@@ -512,7 +517,10 @@ function renderTitleBarBackground(config: FlexIconGridConfig): string {
   // shadows downward into the cells; bottom bar shadows upward
   // into the cells. The UI control stays "positive = stronger
   // shadow"; the renderer handles direction implicitly.
-  if (titleBar.shadow) {
+  // Phase 4.29: skip the shadow filter when the bar is transparent —
+  // there's no fill to cast a shadow from. The text overlay paints
+  // on its own pass and doesn't get a bar-level shadow either.
+  if (titleBar.shadow && !isTransparent) {
     const filterId = 'fg-title-bar-shadow';
     const directedShadow: NonNullable<ShadowStyle> = {
       ...titleBar.shadow,
@@ -1239,10 +1247,18 @@ async function buildTitleBarOverlay(
   const barTop = titleBar.position === 'top' ? 0 : height - titleBar.height;
   const overlays: sharp.OverlayOptions[] = [];
 
+  // Phase 4.29: horizontal alignment. `center` (default) keeps the
+  // pre-4.29 placement; `left` and `right` snap to the safe-area
+  // edges so editorial-style headlines anchor consistently.
+  const horizontalLeft = (bw: number): number => {
+    if (titleBar.textAlign === 'left') return titleSideMargin;
+    if (titleBar.textAlign === 'right') return width - titleSideMargin - bw;
+    return Math.round((width - bw) / 2);
+  };
+
   if (!hasSubtitle) {
     const top = Math.round(barTop + (titleBar.height - mainBh) / 2);
-    const left = Math.round((width - mainBw) / 2);
-    overlays.push({ input: mainBuf, top, left });
+    overlays.push({ input: mainBuf, top, left: Math.round(horizontalLeft(mainBw)) });
     return overlays;
   }
 
@@ -1308,12 +1324,12 @@ async function buildTitleBarOverlay(
   overlays.push({
     input: mainBuf,
     top: stackTop,
-    left: Math.round((width - mainBw) / 2),
+    left: Math.round(horizontalLeft(mainBw)),
   });
   overlays.push({
     input: subBuf,
     top: stackTop + mainBh + lineGap,
-    left: Math.round((width - subBw) / 2),
+    left: Math.round(horizontalLeft(subBw)),
   });
   return overlays;
 }
