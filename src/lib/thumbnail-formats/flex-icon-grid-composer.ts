@@ -46,6 +46,7 @@ import {
   computeCellGeometry,
   computeCellRect,
   computeGridLayout,
+  computeShadowFilterRegion,
   escapeSvgText,
   getConsumedCellIndexes,
   resolveCellShadow,
@@ -631,11 +632,19 @@ function renderCellShape(
  * as a fragment to inline into the canvas-level <defs> block. The
  * SourceGraphic is overlaid on top of the offset shadow so the
  * shape itself stays crisp — only the shadow halo is blurred.
+ *
+ * Phase 4.12: the filter region is now derived from the shadow's
+ * own offsetY + blur so big shadows don't get clipped. We pad the
+ * box by `2 * blur + |offsetY|` on each axis, then express it as a
+ * percentage that scales with the filtered element's bounding box.
+ * Floored at the prior fixed `-25%/150%` so even shadowless edges
+ * still match the Phase-4.11 default region.
  */
 function emitShadowFilterDef(shadow: NonNullable<ShadowStyle>, cellIndex: number): string {
+  const region = computeShadowFilterRegion(shadow);
   const id = `fg-cell-shadow-${cellIndex}`;
   return [
-    `<filter id="${id}" x="-25%" y="-25%" width="150%" height="150%">`,
+    `<filter id="${id}" x="${region.x}%" y="${region.y}%" width="${region.w}%" height="${region.h}%">`,
     `<feGaussianBlur in="SourceAlpha" stdDeviation="${shadow.blur}"/>`,
     `<feOffset dx="0" dy="${shadow.offsetY}" result="offsetblur"/>`,
     `<feFlood flood-color="${escapeSvgText(shadow.color)}" flood-opacity="${shadow.opacity}"/>`,
@@ -644,6 +653,7 @@ function emitShadowFilterDef(shadow: NonNullable<ShadowStyle>, cellIndex: number
     `</filter>`,
   ].join('');
 }
+
 
 /**
  * Six vertices for a flat-top regular hexagon centred at (cx, cy)
@@ -752,6 +762,14 @@ async function buildCellOverlays(
   if (labelStyle.position !== 'hidden' && cell.content.type !== 'text-only') {
     const labelOverlay = await buildLabelOverlay(cell.label, geom, labelStyle, background, cell.content.type === 'upload', shape, fontResolver, defaultFallbackFont(config));
     if (labelOverlay) overlays.push(labelOverlay);
+  }
+
+  // Phase 4.12: corner badge — small pill in a configured cell corner.
+  // Rendered after the label so it always sits on top (typical use:
+  // numeric rank stickers that need to read above everything else).
+  if (cell.badge) {
+    const badgeOverlay = await buildBadgeOverlay(cell.badge, rect, fontResolver);
+    if (badgeOverlay) overlays.push(badgeOverlay);
   }
 
   return overlays;
@@ -1193,6 +1211,115 @@ async function buildTitleBarOverlay(
     left: Math.round((width - subBw) / 2),
   });
   return overlays;
+}
+
+// ─── Badge overlay (Phase 4.12) ─────────────────────────────────────────────
+
+/**
+ * Phase 4.12: render a corner-badge pill. Pipeline:
+ *   1. Resolve the bundled Anton font (chunky, reads well at small
+ *      sizes; badges are always short uppercase labels).
+ *   2. Render the badge text via Sharp's Pango integration so we can
+ *      precisely measure the rendered width before deciding the pill
+ *      dimensions.
+ *   3. Build a rounded-pill SVG matching the text width + horizontal
+ *      padding, rasterise it to PNG.
+ *   4. Composite the text on top of the pill.
+ *   5. Position the composed pill at the configured cell corner with
+ *      a small inset so it doesn't kiss the cell edge.
+ *
+ * Custom fonts are NOT supported here — badges are deliberately
+ * uniform across the grid (the typical "1 2 3 4" rank treatment).
+ * If a future request needs branded badge text we can revisit.
+ */
+async function buildBadgeOverlay(
+  badge: { text: string; corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'; background: string; color: string },
+  cellRect: { x: number; y: number; w: number; h: number },
+  fontResolver: CustomFontResolver,
+): Promise<sharp.OverlayOptions | null> {
+  const text = sanitizeUserText(badge.text, 8);
+  if (!text) return null;
+
+  // Sizing relative to the cell — keeps badges legible across grid
+  // densities (a 6×6 grid still gets ≥24 px pill height).
+  const cellMin = Math.min(cellRect.w, cellRect.h);
+  const pillH = Math.max(24, Math.round(cellMin * 0.16));
+  const fontSize = Math.round(pillH * 0.6);
+  const padX = Math.round(pillH * 0.5);
+  const inset = Math.max(6, Math.round(cellMin * 0.03));
+
+  // Anton — bundled, chunky uppercase; ideal for short rank/status
+  // badges. Going through the same font resolver as labels gives us
+  // the FFI temp-file lifecycle for free.
+  const fontStyle: LabelStyle = {
+    position: 'below',
+    font: 'anton',
+    case: 'upper',
+    color: badge.color,
+    stroke: null,
+    maxLines: 1,
+  };
+  const font = await resolveLabelFont(fontStyle, fontResolver, 'anton');
+
+  // Render text via Pango.
+  let textBuf = await sharp({
+    text: {
+      text: escapePangoText(text.toUpperCase()),
+      fontfile: font.path,
+      font: `${font.family} ${fontSize}`,
+      rgba: true,
+      width: Math.max(16, cellRect.w),
+      align: 'centre',
+      wrap: 'none',
+    },
+  })
+    .png()
+    .toBuffer();
+  textBuf = await tintPngTo(textBuf, badge.color);
+  const textMeta = await sharp(textBuf).metadata();
+  const textW = textMeta.width ?? 16;
+  const textH = textMeta.height ?? fontSize;
+
+  const pillW = textW + 2 * padX;
+  const pillRadius = pillH / 2;
+
+  // Build the pill background as a tiny SVG so Sharp can rasterise it
+  // with the right transparent corners.
+  const pillSvg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${pillW}" height="${pillH}">` +
+    `<rect x="0" y="0" width="${pillW}" height="${pillH}" rx="${pillRadius}" ry="${pillRadius}" fill="${escapeSvgText(badge.background)}"/>` +
+    `</svg>`;
+  const pillBuf = await sharp(Buffer.from(pillSvg)).png().toBuffer();
+
+  // Composite text centered on the pill.
+  const composed = await sharp(pillBuf)
+    .composite([
+      {
+        input: textBuf,
+        top: Math.round((pillH - textH) / 2),
+        left: Math.round((pillW - textW) / 2),
+      },
+    ])
+    .png()
+    .toBuffer();
+
+  // Position at the configured corner with an inset.
+  let top: number;
+  let left: number;
+  if (badge.corner === 'top-left') {
+    top = cellRect.y + inset;
+    left = cellRect.x + inset;
+  } else if (badge.corner === 'top-right') {
+    top = cellRect.y + inset;
+    left = cellRect.x + cellRect.w - pillW - inset;
+  } else if (badge.corner === 'bottom-left') {
+    top = cellRect.y + cellRect.h - pillH - inset;
+    left = cellRect.x + inset;
+  } else {
+    top = cellRect.y + cellRect.h - pillH - inset;
+    left = cellRect.x + cellRect.w - pillW - inset;
+  }
+  return { input: composed, top: Math.round(top), left: Math.round(left) };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

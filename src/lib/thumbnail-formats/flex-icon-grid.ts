@@ -184,6 +184,39 @@ export interface LabelStyle {
 export type RingStyle = { color: string; thickness: number; style: 'solid' | 'dashed' } | null;
 
 /**
+ * Phase 4.12: optional corner badge — a small text chip painted on
+ * one corner of the cell. Common YouTube patterns: numeric ranks
+ * ("1", "2", "3" in top-left), status flags ("NEW", "HOT", "TOP"
+ * in top-right), or category tags. Off by default — the reference
+ * channels rarely use them, but they're invaluable for ranked-list
+ * thumbnails ("Top 10 X").
+ *
+ *   text       short label (capped at 8 chars so a "NEW" or numeric
+ *              rank fits comfortably on every cell size).
+ *   corner     one of four positions in cell-relative space.
+ *   background pill colour (hex).
+ *   color      text colour (hex).
+ *
+ * Renders as a rounded pill with the text vertically centered, sized
+ * proportionally with the cell so it stays legible across grid sizes.
+ */
+export type BadgeCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+
+export const SUPPORTED_BADGE_CORNERS: readonly BadgeCorner[] = [
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right',
+] as const;
+
+export interface BadgeStyle {
+  text: string;
+  corner: BadgeCorner;
+  background: string;
+  color: string;
+}
+
+/**
  * Phase 4.11: optional drop shadow under the cell's icon shape. Paints
  * a soft cast underneath the disc/square so the cell reads as a
  * sticker lifted off the canvas. Off by default — the reference flat-
@@ -344,6 +377,11 @@ export interface FlexIconCell {
    *  cell even when the config default has one; `undefined` falls
    *  back to `FlexIconGridConfig.defaultShadow`. */
   shadow?: ShadowStyle;
+  /** Phase 4.12: optional corner badge — small pill in one of four
+   *  cell corners. Off by default; undefined / null both render as
+   *  no badge. Badges live per-cell only — no config-level default
+   *  since the typical use case is "tag a few cells differently". */
+  badge?: BadgeStyle | null;
   labelStyle?: Partial<LabelStyle>;
   /** Phase-2 cell-merge: this cell extends across multiple slots,
    *  consuming the cells immediately to the right and below for the
@@ -614,6 +652,33 @@ export function resolveCellShadow(
 }
 
 /**
+ * Phase 4.12: compute the SVG filter region (objectBoundingBox %) that
+ * comfortably contains the shadow halo. Over-estimates to ~200 % of
+ * the maximum displacement so the Gaussian tail also stays inside,
+ * and floors per-axis pad at 25 % so a subtle shadow doesn't get a
+ * tiny clip box. Returned as integers since fractional percentages
+ * don't help and make the emitted SVG noisier.
+ *
+ * Both `flex-icon-grid-composer` and the live preview's
+ * `CellShadowFilter` import this so they emit the exact same region —
+ * important so the preview's filter doesn't clip when the rendered
+ * PNG's wouldn't.
+ */
+export function computeShadowFilterRegion(shadow: NonNullable<ShadowStyle>): {
+  x: number; y: number; w: number; h: number;
+} {
+  const padFraction = 2 * shadow.blur + Math.abs(shadow.offsetY);
+  const padPct = Math.max(25, Math.ceil(padFraction));
+  const downExtra = shadow.offsetY > 0 ? Math.ceil(shadow.offsetY) : 0;
+  return {
+    x: -padPct,
+    y: -padPct,
+    w: 100 + 2 * padPct,
+    h: 100 + 2 * padPct + downExtra,
+  };
+}
+
+/**
  * Per-cell span conflict diagnosis. A cell falls into the conflict
  * set when:
  *  - It has an explicit `cellSpan > 1×1`, AND its origin slot is
@@ -875,6 +940,9 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // non-negative blur + finite offsetY.
     const shadowResult = validateShadow(c.shadow, `cell ${idx}`, idx);
     if (!shadowResult.ok) return shadowResult;
+    // Phase 4.12: badge shape check.
+    const badgeResult = validateBadge(c.badge, idx);
+    if (!badgeResult.ok) return badgeResult;
   }
   if (config.titleBar) {
     if (typeof config.titleBar.text !== 'string') {
@@ -901,6 +969,32 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
   }
   const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
   if (!defaultShadowResult.ok) return defaultShadowResult;
+  return { ok: true };
+}
+
+/** Phase 4.12: badge shape check. undefined / null are valid (no
+ *  badge). A populated object must have a 1–8 char text, a supported
+ *  corner, and hex colours for both background and text. */
+function validateBadge(
+  badge: BadgeStyle | null | undefined,
+  cellIndex: number,
+): ValidationResult {
+  if (badge === undefined || badge === null) return { ok: true };
+  if (typeof badge !== 'object') {
+    return { ok: false, reason: `cell ${cellIndex} badge must be an object, null, or undefined`, offending_cell_index: cellIndex };
+  }
+  if (typeof badge.text !== 'string' || badge.text.length === 0 || badge.text.length > 8) {
+    return { ok: false, reason: `cell ${cellIndex} badge.text must be a 1–8 character string`, offending_cell_index: cellIndex };
+  }
+  if (!SUPPORTED_BADGE_CORNERS.includes(badge.corner)) {
+    return { ok: false, reason: `cell ${cellIndex} badge.corner ${String(badge.corner)} is not supported`, offending_cell_index: cellIndex };
+  }
+  if (typeof badge.background !== 'string' || !HEX_COLOR_RE.test(badge.background)) {
+    return { ok: false, reason: `cell ${cellIndex} badge.background is not a valid hex color`, offending_cell_index: cellIndex };
+  }
+  if (typeof badge.color !== 'string' || !HEX_COLOR_RE.test(badge.color)) {
+    return { ok: false, reason: `cell ${cellIndex} badge.color is not a valid hex color`, offending_cell_index: cellIndex };
+  }
   return { ok: true };
 }
 
@@ -1127,6 +1221,27 @@ function parseRing(v: unknown, fallback: RingStyle): RingStyle {
   };
 }
 
+/** Phase 4.12: tolerant badge parser. `null` round-trips as "explicit
+ *  off" so a future config-level default could opt out per cell.
+ *  Missing / non-object → undefined. Empty text → undefined so an
+ *  emptied badge input clears the badge cleanly. */
+function parseBadge(v: unknown): BadgeStyle | null | undefined {
+  if (v === null) return null;
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const text = typeof o.text === 'string' ? o.text : '';
+  if (text.length === 0) return undefined;
+  const corner: BadgeCorner = SUPPORTED_BADGE_CORNERS.includes(o.corner as BadgeCorner)
+    ? (o.corner as BadgeCorner)
+    : 'top-right';
+  return {
+    text: text.slice(0, 8),
+    corner,
+    background: stringOr(o.background, '#fbbf24'),
+    color: stringOr(o.color, '#0a0a0a'),
+  };
+}
+
 /** Phase 4.11: parse a shadow value tolerantly. `null` round-trips
  *  as "explicit off" (cell-level opt-out from the default). Missing
  *  / non-object values return undefined so the field stays absent
@@ -1257,6 +1372,7 @@ function parseCell(raw: unknown, expectedIndex: number): FlexIconCell {
     background: o.background ? parseCellBackground(o.background) : undefined,
     ring: o.ring === null ? null : o.ring ? parseRing(o.ring, DEFAULT_RING) : undefined,
     shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
+    badge: 'badge' in o ? parseBadge(o.badge) : undefined,
     labelStyle: o.labelStyle && typeof o.labelStyle === 'object'
       ? (o.labelStyle as Partial<LabelStyle>)
       : undefined,

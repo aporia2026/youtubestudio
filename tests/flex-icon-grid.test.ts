@@ -20,6 +20,7 @@ import {
   escapeSvgText,
   getConsumedCellIndexes,
   getSpanConflicts,
+  computeShadowFilterRegion,
   makeDefaultConfig,
   parseConfig,
   resolveCellShadow,
@@ -1211,5 +1212,88 @@ describe('Phase 4.11 — per-cell drop shadow', () => {
     const result = validateConfig(config);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.offending_cell_index).toBe(1);
+  });
+});
+
+// ─── Phase 4.12 — shadow filter region ──────────────────────────────────────
+
+describe('Phase 4.12 — shadow filter region', () => {
+  it('floors per-axis pad at 25% for subtle shadows', () => {
+    const region = computeShadowFilterRegion({ offsetY: 2, blur: 1, color: '#000', opacity: 0.3 });
+    expect(region.x).toBe(-25);
+    expect(region.y).toBe(-25);
+    expect(region.w).toBe(150);
+  });
+  it('expands region for large blur', () => {
+    const region = computeShadowFilterRegion({ offsetY: 0, blur: 30, color: '#000', opacity: 0.3 });
+    expect(region.x).toBeLessThan(-25);
+    expect(region.w).toBeGreaterThan(150);
+  });
+  it('adds downward headroom for positive offsetY', () => {
+    const region = computeShadowFilterRegion({ offsetY: 20, blur: 4, color: '#000', opacity: 0.3 });
+    // Bottom edge = 100 + 2*padPct + downExtra; padPct = max(25, 2*4+20)=28
+    expect(region.h).toBeGreaterThan(100 + 2 * 28);
+  });
+});
+
+// ─── Phase 4.12 — corner badges ─────────────────────────────────────────────
+
+describe('Phase 4.12 — corner badges', () => {
+  it('round-trips badge through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].badge = { text: 'NEW', corner: 'top-right', background: '#fbbf24', color: '#0a0a0a' };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].badge).toEqual({
+      text: 'NEW', corner: 'top-right', background: '#fbbf24', color: '#0a0a0a',
+    });
+  });
+  it('truncates badge text past 8 chars at parse time', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        badge: { text: 'EXTRA-LONG', corner: 'top-left', background: '#000', color: '#fff' },
+      }],
+    });
+    expect(reparsed.cells[0].badge?.text.length).toBeLessThanOrEqual(8);
+  });
+  it('drops empty-text badge to undefined', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        badge: { text: '', corner: 'top-left', background: '#000', color: '#fff' },
+      }],
+    });
+    expect(reparsed.cells[0].badge).toBeUndefined();
+  });
+  it('falls back to top-right for unknown corner', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        badge: { text: 'NEW', corner: 'middle', background: '#000', color: '#fff' },
+      }],
+    });
+    expect(reparsed.cells[0].badge?.corner).toBe('top-right');
+  });
+  it('rejects malformed hex on badge.background', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].badge = { text: 'NEW', corner: 'top-right', background: 'red', color: '#000000' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/badge\.background/);
+  });
+  it('rejects empty badge text', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].badge = { text: '', corner: 'top-right', background: '#000000', color: '#ffffff' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+  });
+  it('rejects badge text longer than 8 chars at validate time', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].badge = { text: 'TOO-LONG-9', corner: 'top-right', background: '#000000', color: '#ffffff' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
   });
 });

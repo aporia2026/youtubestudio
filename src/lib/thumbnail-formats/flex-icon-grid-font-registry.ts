@@ -39,8 +39,21 @@ const faces = new Map<string, FontFace>();
  *  open even after every subscriber has unmounted. After this
  *  timeout we drop the face from the registry so the chip falls back
  *  cleanly to the generic stack and the next `acquireCustomFont` call
- *  for the same URL gets a fresh load attempt. */
-const FONT_LOAD_TIMEOUT_MS = 8000;
+ *  for the same URL gets a fresh load attempt.
+ *
+ *  Phase 4.12 — configurable via `NEXT_PUBLIC_FLEX_FONT_LOAD_TIMEOUT_MS`.
+ *  Default 8 s; slow regions or large multi-MB faces may need 15–30 s
+ *  on first cold load. Clamped to [1 s, 60 s] so a misconfigured
+ *  env can't disable the timeout entirely or set a pathologically
+ *  short one. */
+const DEFAULT_FONT_LOAD_TIMEOUT_MS = 8000;
+const FONT_LOAD_TIMEOUT_MS = (() => {
+  const raw = process.env.NEXT_PUBLIC_FLEX_FONT_LOAD_TIMEOUT_MS;
+  if (!raw) return DEFAULT_FONT_LOAD_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_FONT_LOAD_TIMEOUT_MS;
+  return Math.max(1000, Math.min(60_000, parsed));
+})();
 
 /**
  * Increment the refcount for `url`. The first acquire loads the font;

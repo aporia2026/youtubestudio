@@ -417,6 +417,8 @@ export function FlexIconGridPanel({
       backgroundColor: undefined,
       background: undefined,
       ring: undefined,
+      shadow: undefined,
+      badge: undefined,
       labelStyle: undefined,
       cellSpan: undefined,
     });
@@ -1233,6 +1235,199 @@ export function FlexIconGridPanel({
             </>
           )}
 
+          {/* Phase 4.12: per-cell shadow override. Three states:
+              - inherit (cell.shadow === undefined) → uses
+                config.defaultShadow.
+              - off (cell.shadow === null) → explicit opt-out, wins
+                over the default.
+              - on (cell.shadow is an object) → cell-specific shadow.
+              The override surface stays compact; the defaultShadow
+              sliders in Advanced are where the precise values live
+              for the global default. */}
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Cell shadow</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                aria-pressed={selectedCell.shadow === undefined}
+                onClick={() => updateCell(selectedCell.index, { shadow: undefined })}
+                style={chipStyle(selectedCell.shadow === undefined)}
+              >
+                Inherit
+              </button>
+              <button
+                type="button"
+                aria-pressed={selectedCell.shadow === null}
+                onClick={() => updateCell(selectedCell.index, { shadow: null })}
+                style={chipStyle(selectedCell.shadow === null)}
+              >
+                Off
+              </button>
+              <button
+                type="button"
+                aria-pressed={
+                  selectedCell.shadow !== undefined && selectedCell.shadow !== null
+                }
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    shadow: selectedCell.shadow && selectedCell.shadow !== null
+                      ? selectedCell.shadow
+                      : (config.defaultShadow ?? DEFAULT_SHADOW),
+                  })
+                }
+                style={chipStyle(
+                  selectedCell.shadow !== undefined && selectedCell.shadow !== null,
+                )}
+              >
+                Custom
+              </button>
+            </div>
+            {selectedCell.shadow && selectedCell.shadow !== null && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="range"
+                  min={0}
+                  max={24}
+                  step={1}
+                  value={selectedCell.shadow.offsetY}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      shadow: { ...selectedCell.shadow!, offsetY: Number(e.target.value) },
+                    })
+                  }
+                  aria-label="Cell shadow vertical offset"
+                  title={`Offset: ${selectedCell.shadow.offsetY}px`}
+                  style={{ width: 100 }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={32}
+                  step={1}
+                  value={selectedCell.shadow.blur}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      shadow: { ...selectedCell.shadow!, blur: Number(e.target.value) },
+                    })
+                  }
+                  aria-label="Cell shadow blur"
+                  title={`Blur: ${selectedCell.shadow.blur}px`}
+                  style={{ width: 100 }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={selectedCell.shadow.opacity}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      shadow: { ...selectedCell.shadow!, opacity: Number(e.target.value) },
+                    })
+                  }
+                  aria-label="Cell shadow opacity"
+                  title={`Opacity: ${Math.round(selectedCell.shadow.opacity * 100)}%`}
+                  style={{ width: 80 }}
+                />
+                <input
+                  type="color"
+                  value={selectedCell.shadow.color}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      shadow: { ...selectedCell.shadow!, color: e.target.value },
+                    })
+                  }
+                  aria-label="Cell shadow colour"
+                  style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Phase 4.12: corner badge editor. Toggle on/off plus
+              text input, corner picker, and two colour swatches.
+              Stays compact — badges are a small per-cell decoration
+              not a global default. */}
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Corner badge</label>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                aria-pressed={!!selectedCell.badge}
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    badge: selectedCell.badge
+                      ? null
+                      : { text: 'NEW', corner: 'top-right', background: '#fbbf24', color: '#0a0a0a' },
+                  })
+                }
+                style={chipStyle(!!selectedCell.badge)}
+              >
+                {selectedCell.badge ? 'Badge on' : 'Badge off'}
+              </button>
+              {selectedCell.badge && (
+                <>
+                  <input
+                    type="text"
+                    value={selectedCell.badge.text}
+                    onChange={(e) =>
+                      updateCell(selectedCell.index, {
+                        badge: { ...selectedCell.badge!, text: e.target.value.slice(0, 8) },
+                      })
+                    }
+                    maxLength={8}
+                    placeholder="NEW"
+                    aria-label="Badge text"
+                    style={{ ...inputStyle, width: 90 }}
+                  />
+                  <input
+                    type="color"
+                    value={selectedCell.badge.background}
+                    onChange={(e) =>
+                      updateCell(selectedCell.index, {
+                        badge: { ...selectedCell.badge!, background: e.target.value },
+                      })
+                    }
+                    aria-label="Badge background colour"
+                    title="Background"
+                    style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                  />
+                  <input
+                    type="color"
+                    value={selectedCell.badge.color}
+                    onChange={(e) =>
+                      updateCell(selectedCell.index, {
+                        badge: { ...selectedCell.badge!, color: e.target.value },
+                      })
+                    }
+                    aria-label="Badge text colour"
+                    title="Text"
+                    style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                  />
+                </>
+              )}
+            </div>
+            {selectedCell.badge && (
+              <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {(['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const).map((corner) => (
+                  <button
+                    key={corner}
+                    type="button"
+                    aria-pressed={selectedCell.badge!.corner === corner}
+                    onClick={() =>
+                      updateCell(selectedCell.index, {
+                        badge: { ...selectedCell.badge!, corner },
+                      })
+                    }
+                    style={chipStyle(selectedCell.badge!.corner === corner)}
+                  >
+                    {corner.replace('-', ' ')}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Reset everything */}
           <button
             type="button"
@@ -1646,6 +1841,46 @@ export function FlexIconGridPanel({
                             </button>
                           ))}
                       </div>
+                      {/* Phase 4.12 caveat fix: workspace-font chips
+                          for the subtitle. Same chip row as the main
+                          title font picker — clicking applies the
+                          workspace font as the subtitle's custom font. */}
+                      {workspaceFonts.length > 0 && (
+                        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                          {workspaceFonts.map((wf) => {
+                            const isActive =
+                              config.titleBar!.subtitleFont === 'custom' &&
+                              config.titleBar!.subtitleCustomFontUrl === wf.downloadUrl;
+                            return (
+                              <button
+                                key={wf.id}
+                                type="button"
+                                aria-pressed={isActive}
+                                aria-label={`Set subtitle font to ${wf.name}`}
+                                onClick={() => {
+                                  updateConfig({
+                                    titleBar: {
+                                      ...config.titleBar!,
+                                      subtitleFont: 'custom',
+                                      subtitleCustomFontUrl: wf.downloadUrl,
+                                      subtitleCustomFontLabel: wf.name,
+                                    },
+                                  });
+                                  setFontAnnouncement(`Subtitle font set to ${wf.name}`);
+                                }}
+                                style={{
+                                  ...chipStyle(isActive),
+                                  fontFamily: `'${customFontFamilyName(wf.downloadUrl)}', 'Arial Black', sans-serif`,
+                                  fontWeight: 700,
+                                }}
+                                title={`${wf.name} · ${Math.round(wf.size_bytes / 1024)} KB`}
+                              >
+                                {wf.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

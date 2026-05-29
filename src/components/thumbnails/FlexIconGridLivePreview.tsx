@@ -38,7 +38,9 @@ import {
   type FlexIconCell,
   type FlexIconGridConfig,
   type LabelStyle,
+  computeShadowFilterRegion,
   resolveCellShadow,
+  type BadgeStyle,
   type RingStyle,
   type ShadowStyle,
   type SpanConflictReason,
@@ -570,6 +572,11 @@ function CellGroup({
         <LabelText label={labelText} geom={geom} labelStyle={labelStyle} colour={labelColour} />
       )}
 
+      {/* Phase 4.12: corner badge. Sized + positioned to mirror the
+          composer's `buildBadgeOverlay` so the live preview lines up
+          with the rendered PNG. */}
+      {cell.badge && <CornerBadge badge={cell.badge} rect={rect} />}
+
       {/* Highlight outline for the active cell in the editor. */}
       {highlighted && (
         <rect
@@ -724,13 +731,88 @@ function CellShapeEl({
 }
 
 /**
+ * Phase 4.12: corner badge — small rounded-pill chip rendered at one
+ * of four cell corners. Sizing math mirrors the composer's
+ * `buildBadgeOverlay` so the on-screen preview lines up with the
+ * rendered PNG. Text gets pre-uppercased here so the chunky bundled
+ * Anton fallback reads consistently with the server-side render.
+ */
+function CornerBadge({
+  badge,
+  rect,
+}: {
+  badge: BadgeStyle;
+  rect: { x: number; y: number; w: number; h: number };
+}) {
+  const cellMin = Math.min(rect.w, rect.h);
+  const pillH = Math.max(24, Math.round(cellMin * 0.16));
+  const fontSize = Math.round(pillH * 0.6);
+  const padX = Math.round(pillH * 0.5);
+  const inset = Math.max(6, Math.round(cellMin * 0.03));
+  const text = badge.text.toUpperCase().slice(0, 8);
+  // Estimate width from glyph count — Anton's average UC glyph is
+  // ~0.46 em wide. We approximate; the rendered PNG uses real Pango
+  // metrics, so the preview can be ~5 % off on long badges but the
+  // corner placement stays correct.
+  const estTextW = Math.round(text.length * fontSize * 0.46);
+  const pillW = estTextW + 2 * padX;
+  let x: number;
+  let y: number;
+  if (badge.corner === 'top-left') {
+    x = rect.x + inset;
+    y = rect.y + inset;
+  } else if (badge.corner === 'top-right') {
+    x = rect.x + rect.w - pillW - inset;
+    y = rect.y + inset;
+  } else if (badge.corner === 'bottom-left') {
+    x = rect.x + inset;
+    y = rect.y + rect.h - pillH - inset;
+  } else {
+    x = rect.x + rect.w - pillW - inset;
+    y = rect.y + rect.h - pillH - inset;
+  }
+  return (
+    <g pointerEvents="none">
+      <rect
+        x={x}
+        y={y}
+        width={pillW}
+        height={pillH}
+        rx={pillH / 2}
+        ry={pillH / 2}
+        fill={badge.background}
+      />
+      <text
+        x={x + pillW / 2}
+        y={y + pillH / 2}
+        fontSize={fontSize}
+        fontWeight={900}
+        fontFamily="'Anton', Impact, 'Arial Black', sans-serif"
+        fill={badge.color}
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
+/**
  * Phase 4.11: SVG <filter> for the drop shadow under a single cell's
  * shape. Mirrors the composer's `emitShadowFilterDef` exactly so the
  * live preview and rendered PNG cast the same shadow.
  */
 function CellShadowFilter({ id, shadow }: { id: string; shadow: NonNullable<ShadowStyle> }) {
+  const region = computeShadowFilterRegion(shadow);
   return (
-    <filter id={id} x="-25%" y="-25%" width="150%" height="150%">
+    <filter
+      id={id}
+      x={`${region.x}%`}
+      y={`${region.y}%`}
+      width={`${region.w}%`}
+      height={`${region.h}%`}
+    >
       <feGaussianBlur in="SourceAlpha" stdDeviation={shadow.blur} />
       <feOffset dx={0} dy={shadow.offsetY} result="offsetblur" />
       <feFlood floodColor={shadow.color} floodOpacity={shadow.opacity} />
