@@ -1621,63 +1621,94 @@ export function FlexIconGridPanel({
           <h3 style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
             Live preview · click any cell to edit
           </h3>
-          {/* Phase 4.26: zoom controls. 50 % shows full thumbnail at
-              a glance on small windows; 100 % is native fit;
-              150 % / 200 % are for precision editing of small
-              cells in a dense grid. Uses CSS transform so the
-              rendered PNG geometry is unaffected. The wrapping
-              container handles the resulting overflow with horizontal
-              + vertical scrolling. */}
-          <div
-            role="radiogroup"
-            aria-label="Live preview zoom"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 0,
-              borderRadius: 6,
-              border: '1px solid #2a2a2e',
-              padding: 2,
-              background: '#0e0e10',
-            }}
-          >
-            {[50, 100, 150, 200].map((pct) => {
-              const active = previewZoom === pct;
-              return (
-                <button
-                  key={pct}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => setPreviewZoom(pct)}
-                  style={{
-                    background: active ? '#2563eb' : 'transparent',
-                    color: active ? '#fafafa' : '#a1a1aa',
-                    border: 'none',
-                    padding: '3px 8px',
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                    fontSize: 11,
-                    fontWeight: active ? 700 : 500,
-                    borderRadius: 4,
-                    cursor: 'pointer',
-                  }}
-                  title={`Zoom preview to ${pct}%`}
-                  aria-label={`Zoom ${pct} percent`}
-                >
-                  {pct}%
-                </button>
-              );
-            })}
+          {/* Phase 4.26 → 4.27: zoom controls. Quick chips at 50 /
+              100 / 150 / 200 % for common levels, plus a 25–300 %
+              slider for fine-grained values (e.g. 130 % to see a
+              specific cell's overflow without going full 150 %).
+              The chip row and the slider write to the same
+              `previewZoom` state, so dragging the slider away from
+              a preset deselects the chip and vice versa.
+              Uses width-based scaling so the rendered PNG geometry
+              is unaffected. */}
+          <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+            <div
+              role="radiogroup"
+              aria-label="Live preview zoom"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 0,
+                borderRadius: 6,
+                border: '1px solid #2a2a2e',
+                padding: 2,
+                background: '#0e0e10',
+              }}
+            >
+              {[50, 100, 150, 200].map((pct) => {
+                const active = previewZoom === pct;
+                return (
+                  <button
+                    key={pct}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => setPreviewZoom(pct)}
+                    style={{
+                      background: active ? '#2563eb' : 'transparent',
+                      color: active ? '#fafafa' : '#a1a1aa',
+                      border: 'none',
+                      padding: '3px 8px',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      fontSize: 11,
+                      fontWeight: active ? 700 : 500,
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                    }}
+                    title={`Zoom preview to ${pct}%`}
+                    aria-label={`Zoom ${pct} percent`}
+                  >
+                    {pct}%
+                  </button>
+                );
+              })}
+            </div>
+            <input
+              type="range"
+              min={25}
+              max={300}
+              step={5}
+              value={previewZoom}
+              onChange={(e) => setPreviewZoom(Number(e.target.value))}
+              aria-label={`Live preview zoom: ${previewZoom}%`}
+              title={`Zoom: ${previewZoom}%`}
+              style={{ width: 110 }}
+            />
+            <span
+              style={{
+                fontSize: 11,
+                color: '#a1a1aa',
+                fontFamily: 'ui-monospace, monospace',
+                minWidth: 36,
+                textAlign: 'right',
+              }}
+              aria-hidden="true"
+            >
+              {previewZoom}%
+            </span>
           </div>
         </div>
         <div
           style={{
             marginTop: 10,
-            // Container scrolls when the inner div outgrows it
-            // (zoom > 100 %). At 100 % the preview fits exactly;
-            // below 100 % it sits in the top-left with empty
-            // surround.
-            overflow: previewZoom > 100 ? 'auto' : 'hidden',
+            // Phase 4.27: always `overflow: auto` so the outer page
+            // scrolls when needed but never clips overlays the
+            // preview might paint just outside cell rects (e.g. a
+            // future focus ring). Below 100 %, the inner preview is
+            // CENTRED inside the container via flexbox alignment —
+            // looks intentional instead of pinned top-left.
+            overflow: 'auto',
+            display: 'flex',
+            justifyContent: previewZoom < 100 ? 'center' : 'flex-start',
           }}
         >
           <div
@@ -1688,6 +1719,7 @@ export function FlexIconGridPanel({
               // takes its own layout space (transform wouldn't).
               // Overflow + scroll work naturally.
               width: `${previewZoom}%`,
+              flex: '0 0 auto',
             }}
           >
             <FlexIconGridLivePreview
@@ -2131,8 +2163,18 @@ export function FlexIconGridPanel({
                         labelStyle: Object.keys(rest).length > 0 ? rest : undefined,
                       });
                     }}
-                    style={chipStyle(strokeState === 'inherit')}
-                    title="Inherit the canvas-level default stroke"
+                    style={{
+                      ...chipStyle(strokeState === 'inherit'),
+                      // Phase 4.27: italic + dashed border signal
+                      // this is an "inherit" indicator, not an
+                      // explicit value like Off / On. Helps users
+                      // tell at a glance that the cell follows the
+                      // canvas-level default rather than carrying
+                      // its own commitment.
+                      fontStyle: 'italic',
+                      borderStyle: 'dashed',
+                    }}
+                    title={`Inherit the canvas-level default stroke (currently ${config.defaultLabel.stroke ? 'on' : 'off'})`}
                   >
                     Inherit
                   </button>
@@ -3276,6 +3318,107 @@ export function FlexIconGridPanel({
                       this picker. Registered fonts appear here automatically.
                     </p>
                   )}
+                </div>
+              )}
+              {/* Phase 4.27: title bar drop shadow. Off by default —
+                  the reference channels rarely use it, but on busy
+                  canvas backgrounds (e.g. a photo behind a gradient
+                  bar) the cast helps the bar read as a distinct
+                  layer. Toggle on; sliders for offset, blur, opacity
+                  + colour swatch only appear once enabled. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ ...labelStyle, marginTop: 0 }}>Title bar shadow</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      aria-pressed={!!config.titleBar.shadow}
+                      onClick={() =>
+                        updateConfig({
+                          titleBar: {
+                            ...config.titleBar!,
+                            shadow: config.titleBar!.shadow ? null : DEFAULT_SHADOW,
+                          },
+                        })
+                      }
+                      style={chipStyle(!!config.titleBar.shadow)}
+                    >
+                      {config.titleBar.shadow ? 'Shadow on' : 'Shadow off'}
+                    </button>
+                    {config.titleBar.shadow && (
+                      <>
+                        <input
+                          type="range"
+                          min={0}
+                          max={32}
+                          step={1}
+                          value={config.titleBar.shadow.offsetY}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                shadow: { ...config.titleBar!.shadow!, offsetY: Number(e.target.value) },
+                              },
+                            })
+                          }
+                          aria-label="Title bar shadow offset"
+                          title={`Offset: ${config.titleBar.shadow.offsetY}px`}
+                          style={{ width: 100 }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={40}
+                          step={1}
+                          value={config.titleBar.shadow.blur}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                shadow: { ...config.titleBar!.shadow!, blur: Number(e.target.value) },
+                              },
+                            })
+                          }
+                          aria-label="Title bar shadow blur"
+                          title={`Blur: ${config.titleBar.shadow.blur}px`}
+                          style={{ width: 100 }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={config.titleBar.shadow.opacity}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                shadow: { ...config.titleBar!.shadow!, opacity: Number(e.target.value) },
+                              },
+                            })
+                          }
+                          aria-label="Title bar shadow opacity"
+                          title={`Opacity: ${Math.round(config.titleBar.shadow.opacity * 100)}%`}
+                          style={{ width: 80 }}
+                        />
+                        <input
+                          type="color"
+                          value={config.titleBar.shadow.color}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                shadow: { ...config.titleBar!.shadow!, color: e.target.value },
+                              },
+                            })
+                          }
+                          aria-label="Title bar shadow colour"
+                          title="Shadow colour"
+                          style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                        />
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

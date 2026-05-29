@@ -1687,6 +1687,44 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.27 — title bar drop shadow', () => {
+  it('round-trips titleBar.shadow through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.titleBar = {
+      text: 'TITLE', position: 'top', height: 100,
+      background: '#000', color: '#fff', font: 'anton',
+      shadow: { offsetY: 10, blur: 16, color: '#000000', opacity: 0.4 },
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.shadow).toEqual({
+      offsetY: 10, blur: 16, color: '#000000', opacity: 0.4,
+    });
+  });
+  it('keeps titleBar.shadow as null when explicitly opted out', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        shadow: null,
+      },
+    });
+    expect(reparsed.titleBar?.shadow).toBeNull();
+  });
+  it('rejects titleBar.shadow with opacity out of [0, 1]', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.titleBar = {
+      text: 'A', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      shadow: { offsetY: 4, blur: 8, color: '#000000', opacity: 2 },
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/titleBar.shadow/);
+  });
+});
+
 describe('Phase 4.19 — per-cell flip', () => {
   it('round-trips flipX through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

@@ -482,6 +482,23 @@ function renderTitleBarBackground(config: FlexIconGridConfig): string {
   const { titleBar, width, height } = config;
   if (!titleBar) return '';
   const y = titleBar.position === 'top' ? 0 : height - titleBar.height;
+  // Phase 4.27: optional drop shadow under the bar rectangle. Uses
+  // the same SVG `<filter>` pattern as per-cell shadows, with the
+  // bar width as the shape-size hint for accurate region clamping.
+  // The filter def + the rect-with-filter live in the same returned
+  // string so a single function call covers both halves.
+  if (titleBar.shadow) {
+    const filterId = 'fg-title-bar-shadow';
+    const filterDef = emitShadowFilterDef(titleBar.shadow, -1, width);
+    // Override the auto-generated cellIndex-based id since this is
+    // the bar, not a cell. Replace the emitted id to point at our
+    // stable name.
+    const def = filterDef.replace('fg-cell-shadow--1', filterId);
+    return [
+      `<defs>${def}</defs>`,
+      `<rect x="0" y="${y}" width="${width}" height="${titleBar.height}" fill="${escapeSvgText(titleBar.background)}" filter="url(#${filterId})"/>`,
+    ].join('');
+  }
   return `<rect x="0" y="${y}" width="${width}" height="${titleBar.height}" fill="${escapeSvgText(titleBar.background)}"/>`;
 }
 

@@ -325,6 +325,12 @@ export interface TitleBarSpec {
    *  `height` field directly so we don't fight their explicit
    *  preference. */
   heightFraction?: number;
+  /** Phase 4.27: optional drop shadow under the title bar rectangle.
+   *  Mirrors the per-cell `ShadowStyle` shape exactly, painted via
+   *  the same SVG filter pattern. Helps the bar lift off busy
+   *  canvas backgrounds. Undefined / null = no shadow (the
+   *  pre-4.27 look). */
+  shadow?: ShadowStyle;
   background: string;
   color: string;
   font: LabelFont;
@@ -1143,6 +1149,11 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     if (config.titleBar.subtitleColor !== undefined && !HEX_COLOR_RE.test(config.titleBar.subtitleColor)) {
       return { ok: false, reason: 'titleBar.subtitleColor is not a valid hex color' };
     }
+    // Phase 4.27: title bar shadow goes through the same shape check
+    // as the per-cell shadow so a malformed value is caught with an
+    // actionable reason rather than crashing the SVG filter.
+    const titleShadowResult = validateShadow(config.titleBar.shadow, 'titleBar.shadow');
+    if (!titleShadowResult.ok) return titleShadowResult;
   }
   const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
   if (!defaultShadowResult.ok) return defaultShadowResult;
@@ -1567,6 +1578,9 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     subtitleFont,
     subtitleCustomFontUrl,
     subtitleCustomFontLabel,
+    // Phase 4.27: title bar shadow follows the same parser as the
+    // per-cell shadow so format symmetry stays clean.
+    shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
   };
 }
 

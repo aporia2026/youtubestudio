@@ -240,7 +240,18 @@ export function FlexIconGridLivePreview({
         {/* Canvas background */}
         <CanvasBackground config={config} />
 
-        {/* Title bar background */}
+        {/* Title bar background + Phase 4.27 optional drop shadow.
+            Mirrors the composer's `renderTitleBarBackground` so the
+            preview's filter region + offset match the rendered PNG. */}
+        {config.titleBar?.shadow && (
+          <defs>
+            <CellShadowFilter
+              id="fg-preview-title-bar-shadow"
+              shadow={config.titleBar.shadow}
+              shapeSize={config.width}
+            />
+          </defs>
+        )}
         {config.titleBar && (
           <rect
             x={0}
@@ -248,6 +259,7 @@ export function FlexIconGridLivePreview({
             width={config.width}
             height={config.titleBar.height}
             fill={config.titleBar.background}
+            filter={config.titleBar.shadow ? 'url(#fg-preview-title-bar-shadow)' : undefined}
           />
         )}
 
