@@ -243,13 +243,37 @@ export function FlexIconGridLivePreview({
         {/* Title bar background + Phase 4.27 optional drop shadow.
             Mirrors the composer's `renderTitleBarBackground` so the
             preview's filter region + offset match the rendered PNG. */}
-        {config.titleBar?.shadow && (
+        {/* Phase 4.27 → 4.28: title bar drop shadow + optional
+            gradient fill. Shadow uses the bar height as the
+            shape-size hint and inverts the offsetY for bottom-
+            position bars so it casts AWAY from the canvas edge —
+            into the cells. Gradient (when set) renders via an SVG
+            `<linearGradient>` def mirroring the composer's
+            `fg-title-bar-bg` id pattern. */}
+        {config.titleBar && (config.titleBar.shadow || config.titleBar.backgroundGradient) && (
           <defs>
-            <CellShadowFilter
-              id="fg-preview-title-bar-shadow"
-              shadow={config.titleBar.shadow}
-              shapeSize={config.width}
-            />
+            {config.titleBar.shadow && (
+              <CellShadowFilter
+                id="fg-preview-title-bar-shadow"
+                shadow={{
+                  ...config.titleBar.shadow,
+                  offsetY:
+                    config.titleBar.position === 'bottom'
+                      ? -Math.abs(config.titleBar.shadow.offsetY)
+                      : Math.abs(config.titleBar.shadow.offsetY),
+                }}
+                shapeSize={config.titleBar.height}
+              />
+            )}
+            {config.titleBar.backgroundGradient && (
+              <linearGradient
+                id="fg-preview-title-bar-bg"
+                gradientTransform={`rotate(${config.titleBar.backgroundGradient.angle} 0.5 0.5)`}
+              >
+                <stop offset="0%" stopColor={config.titleBar.backgroundGradient.from} />
+                <stop offset="100%" stopColor={config.titleBar.backgroundGradient.to} />
+              </linearGradient>
+            )}
           </defs>
         )}
         {config.titleBar && (
@@ -258,7 +282,11 @@ export function FlexIconGridLivePreview({
             y={config.titleBar.position === 'top' ? 0 : config.height - config.titleBar.height}
             width={config.width}
             height={config.titleBar.height}
-            fill={config.titleBar.background}
+            fill={
+              config.titleBar.backgroundGradient
+                ? 'url(#fg-preview-title-bar-bg)'
+                : config.titleBar.background
+            }
             filter={config.titleBar.shadow ? 'url(#fg-preview-title-bar-shadow)' : undefined}
           />
         )}

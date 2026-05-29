@@ -482,24 +482,57 @@ function renderTitleBarBackground(config: FlexIconGridConfig): string {
   const { titleBar, width, height } = config;
   if (!titleBar) return '';
   const y = titleBar.position === 'top' ? 0 : height - titleBar.height;
-  // Phase 4.27: optional drop shadow under the bar rectangle. Uses
-  // the same SVG `<filter>` pattern as per-cell shadows, with the
-  // bar width as the shape-size hint for accurate region clamping.
-  // The filter def + the rect-with-filter live in the same returned
-  // string so a single function call covers both halves.
+  // Phase 4.28: resolve the bar fill — gradient (when set) wins
+  // over the solid `background` hex. Gradient emits a `<defs>`
+  // entry with a stable id; rect refs `url(#...)` in its `fill`.
+  const gradient = titleBar.backgroundGradient;
+  let fillExpr: string;
+  let extraDef = '';
+  if (gradient) {
+    const gradId = 'fg-title-bar-bg';
+    extraDef =
+      `<linearGradient id="${gradId}" gradientTransform="rotate(${gradient.angle} 0.5 0.5)">` +
+      `<stop offset="0%" stop-color="${escapeSvgText(gradient.from)}"/>` +
+      `<stop offset="100%" stop-color="${escapeSvgText(gradient.to)}"/>` +
+      `</linearGradient>`;
+    fillExpr = `url(#${gradId})`;
+  } else {
+    fillExpr = escapeSvgText(titleBar.background);
+  }
+  // Phase 4.27 → 4.28: optional drop shadow under the bar
+  // rectangle. Uses the same SVG `<filter>` pattern as per-cell
+  // shadows, with the bar HEIGHT (not width) as the shape-size hint
+  // for accurate region clamping — a 12 px blur over a 96 px-tall
+  // bar reads similarly to a 12 px blur over a 96 px cell, while
+  // using the canvas width (1280 px) would have collapsed the
+  // shadow to near-invisibility.
+  //
+  // Phase 4.28 also flips the offsetY direction for bottom bars so
+  // the shadow always casts AWAY from the canvas edge — top bar
+  // shadows downward into the cells; bottom bar shadows upward
+  // into the cells. The UI control stays "positive = stronger
+  // shadow"; the renderer handles direction implicitly.
   if (titleBar.shadow) {
     const filterId = 'fg-title-bar-shadow';
-    const filterDef = emitShadowFilterDef(titleBar.shadow, -1, width);
+    const directedShadow: NonNullable<ShadowStyle> = {
+      ...titleBar.shadow,
+      offsetY:
+        titleBar.position === 'bottom'
+          ? -Math.abs(titleBar.shadow.offsetY)
+          : Math.abs(titleBar.shadow.offsetY),
+    };
+    const filterDef = emitShadowFilterDef(directedShadow, -1, titleBar.height);
     // Override the auto-generated cellIndex-based id since this is
     // the bar, not a cell. Replace the emitted id to point at our
     // stable name.
     const def = filterDef.replace('fg-cell-shadow--1', filterId);
     return [
-      `<defs>${def}</defs>`,
-      `<rect x="0" y="${y}" width="${width}" height="${titleBar.height}" fill="${escapeSvgText(titleBar.background)}" filter="url(#${filterId})"/>`,
+      `<defs>${extraDef}${def}</defs>`,
+      `<rect x="0" y="${y}" width="${width}" height="${titleBar.height}" fill="${fillExpr}" filter="url(#${filterId})"/>`,
     ].join('');
   }
-  return `<rect x="0" y="${y}" width="${width}" height="${titleBar.height}" fill="${escapeSvgText(titleBar.background)}"/>`;
+  const defs = extraDef ? `<defs>${extraDef}</defs>` : '';
+  return `${defs}<rect x="0" y="${y}" width="${width}" height="${titleBar.height}" fill="${fillExpr}"/>`;
 }
 
 function renderCellBackgroundRect(

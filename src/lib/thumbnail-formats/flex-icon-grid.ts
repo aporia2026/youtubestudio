@@ -331,6 +331,12 @@ export interface TitleBarSpec {
    *  canvas backgrounds. Undefined / null = no shadow (the
    *  pre-4.27 look). */
   shadow?: ShadowStyle;
+  /** Phase 4.28: optional gradient background for the title bar.
+   *  Overrides the solid `background` hex when present. Same shape
+   *  as the canvas-level gradient `BackgroundSpec`. Undefined =
+   *  solid (the pre-4.28 default). Renders as an SVG
+   *  `<linearGradient>` rotated by `angle` and applied as a fill. */
+  backgroundGradient?: { from: string; to: string; angle: number };
   background: string;
   color: string;
   font: LabelFont;
@@ -1154,6 +1160,20 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // actionable reason rather than crashing the SVG filter.
     const titleShadowResult = validateShadow(config.titleBar.shadow, 'titleBar.shadow');
     if (!titleShadowResult.ok) return titleShadowResult;
+    // Phase 4.28: gradient backgrounds — both stops must be valid
+    // hex; angle is a finite number (any value works as a rotation).
+    if (config.titleBar.backgroundGradient) {
+      const g = config.titleBar.backgroundGradient;
+      if (!HEX_COLOR_RE.test(g.from)) {
+        return { ok: false, reason: 'titleBar.backgroundGradient.from is not a valid hex color' };
+      }
+      if (!HEX_COLOR_RE.test(g.to)) {
+        return { ok: false, reason: 'titleBar.backgroundGradient.to is not a valid hex color' };
+      }
+      if (!Number.isFinite(g.angle)) {
+        return { ok: false, reason: 'titleBar.backgroundGradient.angle must be a finite number' };
+      }
+    }
   }
   const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
   if (!defaultShadowResult.ok) return defaultShadowResult;
@@ -1581,6 +1601,22 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     // Phase 4.27: title bar shadow follows the same parser as the
     // per-cell shadow so format symmetry stays clean.
     shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
+    // Phase 4.28: optional gradient. Parsed tolerantly — drops the
+    // field entirely when the object is missing required keys
+    // (`from`, `to`) so a doctored config can't sneak a malformed
+    // gradient through.
+    backgroundGradient: parseTitleBarGradient(o.backgroundGradient),
+  };
+}
+
+function parseTitleBarGradient(v: unknown): { from: string; to: string; angle: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o.from !== 'string' || typeof o.to !== 'string') return undefined;
+  return {
+    from: o.from,
+    to: o.to,
+    angle: numberOr(o.angle, 180),
   };
 }
 

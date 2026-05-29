@@ -1672,6 +1672,13 @@ export function FlexIconGridPanel({
                 );
               })}
             </div>
+            {/* Phase 4.28: `list="…"` + `<datalist>` gives the
+                slider native tick marks at the chip presets, so a
+                user dragging the slider can feel / see where the
+                presets sit on the 25–300 range. Tick rendering
+                varies by browser (Chromium = visible marks above
+                the track; Firefox = nothing visible) but the value
+                snap behaviour is consistent. */}
             <input
               type="range"
               min={25}
@@ -1680,9 +1687,16 @@ export function FlexIconGridPanel({
               value={previewZoom}
               onChange={(e) => setPreviewZoom(Number(e.target.value))}
               aria-label={`Live preview zoom: ${previewZoom}%`}
-              title={`Zoom: ${previewZoom}%`}
+              title={`Zoom: ${previewZoom}% (tick marks at 50 / 100 / 150 / 200)`}
+              list="fg-preview-zoom-presets"
               style={{ width: 110 }}
             />
+            <datalist id="fg-preview-zoom-presets">
+              <option value={50} label="50%" />
+              <option value={100} label="100%" />
+              <option value={150} label="150%" />
+              <option value={200} label="200%" />
+            </datalist>
             <span
               style={{
                 fontSize: 11,
@@ -1700,15 +1714,15 @@ export function FlexIconGridPanel({
         <div
           style={{
             marginTop: 10,
-            // Phase 4.27: always `overflow: auto` so the outer page
-            // scrolls when needed but never clips overlays the
-            // preview might paint just outside cell rects (e.g. a
-            // future focus ring). Below 100 %, the inner preview is
-            // CENTRED inside the container via flexbox alignment —
-            // looks intentional instead of pinned top-left.
+            // Phase 4.27 → 4.28: always `overflow: auto` + always
+            // centred. When the inner div is wider than the
+            // container (zoom > 100), flexbox centring keeps the
+            // overflow symmetric and the user can scroll
+            // horizontally to reach either edge. No layout flip
+            // when crossing the 100 % boundary, so no visual jump.
             overflow: 'auto',
             display: 'flex',
-            justifyContent: previewZoom < 100 ? 'center' : 'flex-start',
+            justifyContent: 'center',
           }}
         >
           <div
@@ -3318,6 +3332,116 @@ export function FlexIconGridPanel({
                       this picker. Registered fonts appear here automatically.
                     </p>
                   )}
+                </div>
+              )}
+              {/* Phase 4.28: title bar background — solid + optional
+                  gradient. Gradient overrides the solid hex when
+                  enabled; on/off chip swaps between modes without
+                  losing the user's solid colour choice (the field
+                  stays alongside, ready to come back). */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ ...labelStyle, marginTop: 0 }}>Title bar background</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input
+                      type="color"
+                      value={config.titleBar.background}
+                      onChange={(e) =>
+                        updateConfig({
+                          titleBar: { ...config.titleBar!, background: e.target.value },
+                        })
+                      }
+                      aria-label="Title bar solid background colour"
+                      title="Solid background colour"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <button
+                      type="button"
+                      aria-pressed={!!config.titleBar.backgroundGradient}
+                      onClick={() =>
+                        updateConfig({
+                          titleBar: {
+                            ...config.titleBar!,
+                            backgroundGradient: config.titleBar!.backgroundGradient
+                              ? undefined
+                              : {
+                                  from: config.titleBar!.background,
+                                  to: '#1e3a8a',
+                                  angle: 180,
+                                },
+                          },
+                        })
+                      }
+                      style={chipStyle(!!config.titleBar.backgroundGradient)}
+                      title="Use a gradient background instead of a solid colour"
+                    >
+                      {config.titleBar.backgroundGradient ? 'Gradient on' : 'Gradient off'}
+                    </button>
+                    {config.titleBar.backgroundGradient && (
+                      <>
+                        <input
+                          type="color"
+                          value={config.titleBar.backgroundGradient.from}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                backgroundGradient: {
+                                  ...config.titleBar!.backgroundGradient!,
+                                  from: e.target.value,
+                                },
+                              },
+                            })
+                          }
+                          aria-label="Gradient start colour"
+                          title="Gradient start"
+                          style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                        />
+                        <input
+                          type="color"
+                          value={config.titleBar.backgroundGradient.to}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                backgroundGradient: {
+                                  ...config.titleBar!.backgroundGradient!,
+                                  to: e.target.value,
+                                },
+                              },
+                            })
+                          }
+                          aria-label="Gradient end colour"
+                          title="Gradient end"
+                          style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={360}
+                          step={15}
+                          value={config.titleBar.backgroundGradient.angle}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                backgroundGradient: {
+                                  ...config.titleBar!.backgroundGradient!,
+                                  angle: Number(e.target.value),
+                                },
+                              },
+                            })
+                          }
+                          aria-label="Gradient angle in degrees"
+                          title={`Angle: ${config.titleBar.backgroundGradient.angle}°`}
+                          style={{ width: 80 }}
+                        />
+                        <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
+                          {config.titleBar.backgroundGradient.angle}°
+                        </span>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
               {/* Phase 4.27: title bar drop shadow. Off by default —

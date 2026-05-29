@@ -1687,6 +1687,56 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.28 — title bar gradient background', () => {
+  it('round-trips backgroundGradient through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      backgroundGradient: { from: '#ff0000', to: '#0000ff', angle: 135 },
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.backgroundGradient).toEqual({
+      from: '#ff0000', to: '#0000ff', angle: 135,
+    });
+  });
+  it('drops backgroundGradient when from / to is missing', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        backgroundGradient: { from: '#ff0000' }, // missing `to`
+      },
+    });
+    expect(reparsed.titleBar?.backgroundGradient).toBeUndefined();
+  });
+  it('rejects backgroundGradient with bad hex on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      backgroundGradient: { from: 'not-a-color', to: '#0000ff', angle: 90 },
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/backgroundGradient/);
+  });
+  it('defaults angle to 180 when parseConfig is given a partial', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        backgroundGradient: { from: '#ff0000', to: '#0000ff' }, // no angle
+      },
+    });
+    expect(reparsed.titleBar?.backgroundGradient?.angle).toBe(180);
+  });
+});
+
 describe('Phase 4.27 — title bar drop shadow', () => {
   it('round-trips titleBar.shadow through parseConfig', () => {
     const original = makeDefaultConfig(2, 2);
