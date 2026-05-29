@@ -25,7 +25,9 @@ import {
 } from 'remotion';
 import { LabelPopOn } from '../components/LabelPopOn';
 import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
+import { MicroWiggle } from '../components/MicroWiggle';
 import { MouthSwap } from '../components/MouthSwap';
+import { PropSlideIn, type PropSlideInDirection } from '../components/PropSlideIn';
 import { RealPhotoPunchIn } from '../components/RealPhotoPunchIn';
 import { ScribbleDraw, type ScribbleDrawDirection } from '../components/ScribbleDraw';
 import { SceneTransition } from '../components/SceneTransition';
@@ -83,6 +85,14 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
   );
   const scribbleDrawBeats = useMemo(
     () => beats.filter((b) => b.kind === 'scribble_draw'),
+    [beats],
+  );
+  const microWiggleBeats = useMemo(
+    () => beats.filter((b) => b.kind === 'micro_wiggle'),
+    [beats],
+  );
+  const propSlideBeats = useMemo(
+    () => beats.filter((b) => b.kind === 'prop_slide'),
     [beats],
   );
 
@@ -201,6 +211,101 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
               anchor={shot.mouthAnchor}
               diagnose={shotIndex < 5 && idx === 0}
             />
+          </Sequence>
+        );
+      })}
+
+      {/* Prop-slide beats. The prop PNG slides in from the chosen
+          side (default 'right') to its anchor, settles with a soft
+          spring. URL resolution: beat.payload.assetUrl wins; the
+          renderer renders nothing when neither the LLM nor the
+          (deferred) prop-generation pipeline supplies a URL — no
+          held frames, no broken-image icons. */}
+      {propSlideBeats.map((beat, idx) => {
+        const beatStartFrame = Math.max(0, Math.round((beat.startMs / 1000) * fps));
+        const beatDurationFrames = Math.max(
+          1,
+          Math.round((beat.durationMs / 1000) * fps),
+        );
+        const url = beat.payload?.assetUrl;
+        if (!url) {
+          if (shotIndex < 5 && idx === 0) {
+            console.info('[paint-explainer-v1 prop-slide] skipped — no URL', {
+              shotIndex,
+              beat_idx: idx,
+              has_payload_assetUrl: Boolean(beat.payload?.assetUrl),
+              has_prompt_hint: Boolean(beat.payload?.propPromptHint),
+            });
+          }
+          return null;
+        }
+        const rawDirection = (beat.payload as { fromDirection?: string } | undefined)?.fromDirection;
+        const fromDirection: PropSlideInDirection =
+          rawDirection === 'left' || rawDirection === 'top' || rawDirection === 'bottom'
+            ? rawDirection
+            : 'right';
+        return (
+          <Sequence
+            key={`prop-slide-${idx}`}
+            from={beatStartFrame}
+            durationInFrames={beatDurationFrames}
+            layout="none"
+          >
+            <PropSlideIn
+              url={url}
+              anchor={beat.anchor}
+              fromDirection={fromDirection}
+              diagnose={shotIndex < 5 && idx === 0}
+            />
+          </Sequence>
+        );
+      })}
+
+      {/* Micro-wiggle beats. Each beat mounts a tiny rotation /
+          translation transform on an overlay layer that covers the
+          base, so the character body subtly sways for the beat's
+          duration. The wiggle is frame-deterministic (no Math.random)
+          so preview and Lambda renders stay byte-identical. */}
+      {microWiggleBeats.map((beat, idx) => {
+        const beatStartFrame = Math.max(0, Math.round((beat.startMs / 1000) * fps));
+        const beatDurationFrames = Math.max(
+          1,
+          Math.round((beat.durationMs / 1000) * fps),
+        );
+        if (shotIndex < 5 && idx === 0) {
+          console.info('[paint-explainer-v1 micro-wiggle]', {
+            shotIndex,
+            beat_idx: idx,
+            duration_ms: beat.durationMs,
+            base_for_wiggle: baseForMouthSwap ? 'mouth-removed' : shot.imageUrl ? 'image' : 'none',
+          });
+        }
+        return (
+          <Sequence
+            key={`micro-wiggle-${idx}`}
+            from={beatStartFrame}
+            durationInFrames={beatDurationFrames}
+            layout="none"
+          >
+            <MicroWiggle diagnose={shotIndex < 5 && idx === 0}>
+              {/* Render a copy of the base image inside the wiggle
+                  wrapper. The static base / mouth-swap below this
+                  layer keeps rendering, but the wiggling copy on top
+                  occludes it during the beat — the viewer sees the
+                  wiggle, not a double-image. */}
+              {(baseForMouthSwap || shot.imageUrl) && (
+                <img
+                  src={(baseForMouthSwap || shot.imageUrl)!}
+                  alt=""
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    display: 'block',
+                  }}
+                />
+              )}
+            </MicroWiggle>
           </Sequence>
         );
       })}
