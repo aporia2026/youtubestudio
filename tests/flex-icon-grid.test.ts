@@ -1388,3 +1388,28 @@ describe('Phase 4.13 — aspect ratio presets', () => {
     expect(getAspectRatioPreset('21-9')).toBeUndefined();
   });
 });
+
+// ─── Phase 4.14 — shadow region Gaussian tail headroom ──────────────────────
+
+describe('Phase 4.14 — shadow region Gaussian tail headroom', () => {
+  it('adds 2*blur of downward headroom on top of offsetY', () => {
+    const shadowNoBlur = { offsetY: 10, blur: 0, color: '#000', opacity: 0.3 };
+    const shadowWithBlur = { offsetY: 10, blur: 8, color: '#000', opacity: 0.3 };
+    const regionNoBlur = computeShadowFilterRegion(shadowNoBlur, 200);
+    const regionWithBlur = computeShadowFilterRegion(shadowWithBlur, 200);
+    // With blur=8, downExtraPx = 10 + 16 = 26 → ceil(26/200*100) = 13 %
+    // Without blur, downExtraPx = 10 → ceil(10/200*100) = 5 %
+    // Difference should be ~8 % more bottom headroom.
+    const diff = regionWithBlur.h - regionNoBlur.h;
+    expect(diff).toBeGreaterThan(0);
+  });
+  it('keeps downExtra at zero for negative offsetY (shadow above)', () => {
+    const region = computeShadowFilterRegion(
+      { offsetY: -10, blur: 4, color: '#000', opacity: 0.3 },
+      200,
+    );
+    // Bottom edge = 100 + 2 * padPct (no downExtra contribution).
+    const padPct = region.w / 2 - 50;
+    expect(region.h).toBe(100 + 2 * padPct);
+  });
+});

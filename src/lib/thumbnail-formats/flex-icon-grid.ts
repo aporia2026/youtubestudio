@@ -742,10 +742,18 @@ export function computeShadowFilterRegion(
   const padPct = shapeSize && shapeSize > 0
     ? Math.max(25, Math.ceil((pixelPad / shapeSize) * 100))
     : Math.max(25, Math.ceil(pixelPad));
-  const downExtra = shadow.offsetY > 0
+  // Phase 4.14: include the Gaussian tail on the downward side. A
+  // shape pushed down by offsetY + extended by ~2*blur of soft tail
+  // can otherwise trim its last few pixels when offsetY ≫ blur.
+  // `downExtraPx = offsetY + 2*blur` gives the bottom edge enough
+  // headroom in both the pure-offset and blur-dominated regimes.
+  const downExtraPx = shadow.offsetY > 0
+    ? Math.abs(shadow.offsetY) + 2 * shadow.blur
+    : 0;
+  const downExtra = downExtraPx > 0
     ? shapeSize && shapeSize > 0
-      ? Math.ceil((shadow.offsetY / shapeSize) * 100)
-      : Math.ceil(shadow.offsetY)
+      ? Math.ceil((downExtraPx / shapeSize) * 100)
+      : Math.ceil(downExtraPx)
     : 0;
   return {
     x: -padPct,

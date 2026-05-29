@@ -774,7 +774,20 @@ function CornerBadge({
   // the real getBBox measurement once the text element mounts. The
   // estimate keeps the badge from popping in at zero width on the
   // initial frame (which would briefly show a degenerate pill).
-  const estTextW = Math.round(text.length * fontSize * 0.46);
+  // Phase 4.14: per-font em-width factors. Measured from the bundled
+  // TTFs at 100 px uppercase, averaged across A–Z + 0–9. Custom
+  // fonts fall back to the Anton factor — close enough until the
+  // post-mount measurement lands.
+  const emWidthByFont: Record<Exclude<LabelStyle['font'], 'custom'>, number> = {
+    'anton': 0.46,
+    'bowlby-one': 0.66,
+    'archivo-black': 0.62,
+    'patrick-hand': 0.50,
+  };
+  const emFactor = badge.font && badge.font !== 'custom'
+    ? emWidthByFont[badge.font]
+    : emWidthByFont.anton;
+  const estTextW = Math.round(text.length * fontSize * emFactor);
   const [measuredTextW, setMeasuredTextW] = useState<number | null>(null);
   const textRef = useRef<SVGTextElement | null>(null);
 

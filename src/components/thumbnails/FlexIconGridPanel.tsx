@@ -52,6 +52,7 @@ import {
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import {
   paletteColours,
+  resolveCellBackgrounds,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
 import {
   DEFAULT_STICKER_STYLE,
@@ -222,6 +223,7 @@ export function FlexIconGridPanel({
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads workspace fonts
         const res = await fetch('/api/thumbnails/format/flex-icon-grid/workspace-fonts');
         if (!res.ok) return;
         const data = (await res.json()) as { fonts: WorkspaceFontEntry[] };
@@ -275,6 +277,7 @@ export function FlexIconGridPanel({
       `Cancel = keep the file in storage (bucket lifecycle may reclaim it later).`,
     );
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for workspace font - RPC
       const res = await fetch(
         `/api/thumbnails/format/flex-icon-grid/workspace-fonts/${encodeURIComponent(id)}` +
           (reclaim ? '?reclaim=true' : ''),
@@ -377,6 +380,14 @@ export function FlexIconGridPanel({
   const selectedCellConflict = selectedCell
     ? spanConflicts.get(selectedCell.index) ?? null
     : null;
+  // Phase 4.14: resolved palette colours per cell, used by the cell
+  // editor's "Lock current colour" button so we can capture whatever
+  // the palette engine would have picked for this cell into the
+  // explicit `backgroundColor` field.
+  const paletteResolvedBackgrounds = useMemo(
+    () => resolveCellBackgrounds(config),
+    [config],
+  );
 
   // ── Mutators ─────────────────────────────────────────────────────────────
 
@@ -448,6 +459,7 @@ export function FlexIconGridPanel({
       content_type: file.type, size_bytes: file.size,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch('/api/uploads/flex-icon-grid-font', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -462,6 +474,7 @@ export function FlexIconGridPanel({
         throw new Error(data.error || `Presign failed (${presignRes.status})`);
       }
       const { uploadUrl, downloadUrl, r2Key } = await presignRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type || 'font/ttf' },
@@ -483,6 +496,7 @@ export function FlexIconGridPanel({
       // thumbnail; the chip just won't appear next session.
       void (async () => {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- awaited POST to register font - RPC
           const regRes = await fetch('/api/thumbnails/format/flex-icon-grid/workspace-fonts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -543,6 +557,7 @@ export function FlexIconGridPanel({
       cell_index: cellIndex, size_bytes: file.size, content_type: file.type,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch('/api/uploads/flex-icon-grid-cell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -553,6 +568,7 @@ export function FlexIconGridPanel({
         throw new Error(data.error || `Presign failed (${presignRes.status})`);
       }
       const { uploadUrl, downloadUrl } = await presignRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type },
@@ -652,6 +668,7 @@ export function FlexIconGridPanel({
     try {
       for (let b = 0; b < batches.length; b++) {
         const batch = batches[b];
+        // eslint-disable-next-line no-restricted-syntax -- sticker-gen RPC: awaits and uses response
         const res = await fetch('/api/thumbnails/format/flex-icon-grid/generate-stickers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -694,6 +711,7 @@ export function FlexIconGridPanel({
       rows: config.rows, cols: config.cols, cell_count: config.cells.length,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- render RPC: awaits and uses response
       const res = await fetch('/api/thumbnails/format/flex-icon-grid/render', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -770,7 +788,12 @@ export function FlexIconGridPanel({
         {/* Phase 4.13: aspect ratio presets. Picking one updates the
             canvas dimensions; the grid re-flows automatically since
             the layout math is purely proportional. Cell contents
-            survive the switch — only the rendered canvas changes. */}
+            survive the switch — only the rendered canvas changes.
+            Phase 4.14: when the orientation flips (landscape ↔
+            portrait), swap rows and cols so a 5×3 landscape grid
+            becomes 3×5 on portrait. Cell reading order stays 1-based
+            top-to-bottom, left-to-right; cell contents survive the
+            re-flow because they're indexed by `cell.index`. */}
         <div style={{ marginTop: 10 }}>
           <label style={labelStyle}>Aspect ratio</label>
           <div style={chipRowStyle}>
@@ -781,9 +804,60 @@ export function FlexIconGridPanel({
                   key={preset.id}
                   type="button"
                   aria-pressed={active}
-                  onClick={() =>
-                    updateConfig({ width: preset.width, height: preset.height })
-                  }
+                  onClick={() => {
+                    // Use the functional setConfig so the cell re-seed
+                    // and the canvas dim update land in a single React
+                    // commit — avoids a transient frame where the
+                    // canvas dims and the grid dims disagree.
+                    setConfig((prev) => {
+                      const currentLandscape = prev.width >= prev.height;
+                      const nextLandscape = preset.width >= preset.height;
+                      const flip = currentLandscape !== nextLandscape;
+                      // Phase 4.14 caveat fix: scale title bar height
+                      // proportionally with the new canvas height so a
+                      // ~13 % bar on 1280×720 stays ~13 % on 720×1280
+                      // instead of becoming a hairline strip.
+                      const titleBar = prev.titleBar
+                        ? {
+                            ...prev.titleBar,
+                            height: Math.max(
+                              16,
+                              Math.round((prev.titleBar.height / prev.height) * preset.height),
+                            ),
+                          }
+                        : undefined;
+                      if (!flip) {
+                        return {
+                          ...prev,
+                          width: preset.width,
+                          height: preset.height,
+                          titleBar,
+                        };
+                      }
+                      const newRows = prev.cols;
+                      const newCols = prev.rows;
+                      const total = newRows * newCols;
+                      const cells: FlexIconCell[] = [];
+                      for (let i = 0; i < total; i++) {
+                        const existing = prev.cells[i];
+                        cells.push(
+                          existing
+                            ? { ...existing, index: i + 1 }
+                            : { index: i + 1, label: `Item ${i + 1}`, content: { type: 'text-only' } },
+                        );
+                      }
+                      return {
+                        ...prev,
+                        width: preset.width,
+                        height: preset.height,
+                        rows: newRows,
+                        cols: newCols,
+                        cells,
+                        titleBar,
+                      };
+                    });
+                    setSelectedCellIndex(null);
+                  }}
                   style={chipStyle(active)}
                   title={`${preset.description} (${preset.width}×${preset.height})`}
                 >
@@ -1113,9 +1187,13 @@ export function FlexIconGridPanel({
             ))}
           </div>
 
-          {/* Cell background (overrides palette for this cell). */}
+          {/* Cell background (overrides palette for this cell).
+              Phase 4.14: pass the resolved palette colour for this
+              cell so the editor can offer a one-click "lock" that
+              freezes the current palette assignment. */}
           <CellBackgroundEditor
             cell={selectedCell}
+            palettePreviewColour={paletteResolvedBackgrounds[selectedCell.index - 1] ?? '#1a1a1a'}
             onChange={(patch) => updateCell(selectedCell.index, patch)}
           />
 
@@ -2211,6 +2289,7 @@ function SavedTemplatesSection({
 
   async function refresh() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads saved templates
       const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-templates');
       if (!res.ok) throw new Error(`Load failed (${res.status})`);
       const data = (await res.json()) as { templates: SavedTemplateRecord[] };
@@ -2234,6 +2313,7 @@ function SavedTemplatesSection({
     setBusy(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to save template - RPC
       const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2259,6 +2339,7 @@ function SavedTemplatesSection({
     if (!confirm(`Delete saved template "${name}"?`)) return;
     setBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for template - RPC
       const res = await fetch(
         `/api/thumbnails/format/flex-icon-grid/saved-templates/${encodeURIComponent(id)}`,
         { method: 'DELETE' },
@@ -2420,6 +2501,7 @@ function SavedPalettesSection({
     setBusy(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to save palette - RPC
       const res = await fetch('/api/thumbnails/format/flex-icon-grid/saved-palettes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2447,6 +2529,7 @@ function SavedPalettesSection({
     if (!confirm(`Delete saved palette "${name}"?`)) return;
     setBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for palette - RPC
       const res = await fetch(
         `/api/thumbnails/format/flex-icon-grid/saved-palettes/${encodeURIComponent(id)}`,
         { method: 'DELETE' },
@@ -2907,9 +2990,14 @@ function CellSpanEditor({
 
 function CellBackgroundEditor({
   cell,
+  palettePreviewColour,
   onChange,
 }: {
   cell: FlexIconCell;
+  /** Phase 4.14: the resolved palette colour for this cell — what the
+   *  palette engine would assign when the user is in "Use palette"
+   *  mode. Used to seed the "Lock current colour" button. */
+  palettePreviewColour: string;
   onChange: (patch: Partial<FlexIconCell>) => void;
 }) {
   // Effective spec: explicit `background` wins; legacy `backgroundColor`
@@ -2973,6 +3061,36 @@ function CellBackgroundEditor({
           </button>
         ))}
       </div>
+      {/* Phase 4.14: one-click lock for the current palette colour.
+          Visible only when the cell is still in palette mode (the
+          colour is being assigned dynamically). Click → captures the
+          current palette colour into `backgroundColor`, switching the
+          cell into solid mode so a palette re-roll leaves it alone. */}
+      {usingPalette && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={() =>
+              onChange({ backgroundColor: palettePreviewColour, background: undefined })
+            }
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Freeze this cell's current palette colour so it survives a re-roll"
+            aria-label={`Lock current palette colour ${palettePreviewColour}`}
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                width: 14,
+                height: 14,
+                borderRadius: 4,
+                background: palettePreviewColour,
+                border: '1px solid rgba(255,255,255,0.2)',
+              }}
+            />
+            Lock current colour
+          </button>
+        </div>
+      )}
 
       {activeType === 'solid' && spec?.type === 'solid' && (
         <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
