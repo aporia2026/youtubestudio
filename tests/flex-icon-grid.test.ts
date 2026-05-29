@@ -52,6 +52,7 @@ import {
   parseHex,
   pickLabelColourFor,
   resolveCellBackgrounds,
+  shiftPaletteLightness,
   PALETTE_RAINBOW,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
 import { buildBaseSvg } from '@/lib/thumbnail-formats/flex-icon-grid-composer';
@@ -1579,6 +1580,33 @@ describe('Phase 4.16 — per-cell rotation', () => {
 });
 
 // ─── Phase 4.17 — JSON round-trip ───────────────────────────────────────────
+
+describe('Phase 4.22 — shiftPaletteLightness', () => {
+  it('lightens by the requested delta', () => {
+    // #808080 is HSL(0, 0%, 50%). +20 should land at L=70% = #b3b3b3.
+    const next = shiftPaletteLightness(['#808080'], 20);
+    const rgb = parseHex(next[0]);
+    expect(rgb).not.toBeNull();
+    if (rgb) expect(rgb.r).toBeGreaterThan(0x80);
+  });
+  it('clamps at 95% so the colour never goes fully white', () => {
+    // Already near-white; +50 should clamp short of pure white.
+    const next = shiftPaletteLightness(['#f0f0f0'], 50);
+    expect(next[0]).not.toBe('#ffffff');
+  });
+  it('clamps at 5% so the colour never goes fully black', () => {
+    const next = shiftPaletteLightness(['#0a0a0a'], -50);
+    expect(next[0]).not.toBe('#000000');
+  });
+  it('returns the input verbatim for unparseable hex', () => {
+    const next = shiftPaletteLightness(['not-a-color'], 8);
+    expect(next[0]).toBe('not-a-color');
+  });
+  it('preserves the array length', () => {
+    const next = shiftPaletteLightness(['#ff0000', '#00ff00', '#0000ff'], 8);
+    expect(next).toHaveLength(3);
+  });
+});
 
 describe('Phase 4.21 — generateRandomPalette', () => {
   it('returns the requested count of colours', () => {

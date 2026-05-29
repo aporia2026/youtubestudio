@@ -57,6 +57,7 @@ import {
   generateRandomPalette,
   paletteColours,
   resolveCellBackgrounds,
+  shiftPaletteLightness,
 } from '@/lib/thumbnail-formats/flex-icon-grid-palettes';
 import {
   DEFAULT_STICKER_STYLE,
@@ -203,19 +204,24 @@ const CELL_CLIPBOARD_KEY = 'flex-icon-grid:cell-clipboard';
  * within the same minute still differ. Object URL is revoked after
  * click to avoid leaks.
  */
-/** Phase 4.19 → 4.21: bumped each phase a feature lands that
+/** Phase 4.19 → 4.22: bumped each phase a feature lands that
  *  changes the wire format. Imports tolerate older versions and
  *  warn on newer-than-known ones (see `KNOWN_FORMAT_VERSIONS`)
  *  so a config exported from a future client surfaces the version
  *  mismatch instead of silently dropping fields the current parser
  *  doesn't recognise. */
-const EXPORT_FORMAT_VERSION = '4.21';
+const EXPORT_FORMAT_VERSION = '4.22';
 
 /** Versions this client knows how to read. Append on every export
  *  bump. The parser is forgiving for unrecognised fields, so
  *  reading a NEWER format usually works — but we toast a warning
- *  so the user knows the import may have dropped data. */
-const KNOWN_FORMAT_VERSIONS = new Set(['4.19', '4.20', '4.21']);
+ *  so the user knows the import may have dropped data. The array
+ *  is intentionally kept in ascending order so `KNOWN_FORMAT_LATEST`
+ *  is just the last entry; the warning surface uses that instead
+ *  of spreading the Set + sort + pop on every import. */
+const KNOWN_FORMAT_VERSIONS = ['4.19', '4.20', '4.21', '4.22'] as const;
+const KNOWN_FORMAT_VERSIONS_SET: ReadonlySet<string> = new Set(KNOWN_FORMAT_VERSIONS);
+const KNOWN_FORMAT_LATEST = KNOWN_FORMAT_VERSIONS[KNOWN_FORMAT_VERSIONS.length - 1];
 
 function exportConfigJson(config: FlexIconGridConfig): void {
   // Phase 4.19: wrap the config in an envelope carrying
@@ -294,9 +300,9 @@ async function importConfigJson(
     // in the round-trippable shape going forward.
     if (isEnvelope) {
       const advertised = String((rawObj as { formatVersion: unknown }).formatVersion);
-      if (advertised && !KNOWN_FORMAT_VERSIONS.has(advertised)) {
+      if (advertised && !KNOWN_FORMAT_VERSIONS_SET.has(advertised)) {
         toast.message(
-          `Imported config advertises format ${advertised}; this client knows ${[...KNOWN_FORMAT_VERSIONS].sort().pop()}. Some newer fields may have been dropped.`,
+          `Imported config advertises format ${advertised}; this client knows ${KNOWN_FORMAT_LATEST}. Some newer fields may have been dropped.`,
         );
       }
     }
@@ -348,20 +354,44 @@ export function FlexIconGridPanel({
     try {
       const raw = window.sessionStorage.getItem(CELL_CLIPBOARD_KEY);
       if (!raw) return null;
-      return JSON.parse(raw) as Omit<FlexIconCell, 'index'>;
+      const parsed = JSON.parse(raw) as unknown;
+      // Phase 4.22: clipboard is now stored as an envelope
+      // `{ formatVersion, cell }` so a future client can detect old
+      // shapes. Pre-4.22 entries are unwrapped tolerantly by
+      // checking for the envelope shape; falling through to the
+      // raw-cell path keeps existing sessions importable.
+      if (parsed && typeof parsed === 'object' && 'cell' in (parsed as Record<string, unknown>)) {
+        const env = parsed as { formatVersion?: unknown; cell: unknown };
+        if (
+          typeof env.formatVersion === 'string' &&
+          !KNOWN_FORMAT_VERSIONS_SET.has(env.formatVersion)
+        ) {
+          // Don't toast at init time (would surprise the user on
+          // mount), just log so devtools surface the mismatch.
+          console.info(
+            `[flex-icon-grid] clipboard advertises unknown format ${env.formatVersion}; reading as best-effort.`,
+          );
+        }
+        return env.cell as Omit<FlexIconCell, 'index'>;
+      }
+      return parsed as Omit<FlexIconCell, 'index'>;
     } catch {
       return null;
     }
   });
   // Wrap the setter so the storage mirror updates atomically with
-  // the state. Calls fall through `setCellClipboardState` directly,
-  // so passing `null` clears the mirror too.
+  // the state. Phase 4.22: writes the envelope shape going forward
+  // so future clients can spot stale clipboards; reads accept both
+  // shapes (see the init reducer).
   const setCellClipboard = (next: Omit<FlexIconCell, 'index'> | null) => {
     setCellClipboardState(next);
     if (typeof window === 'undefined') return;
     try {
       if (next === null) window.sessionStorage.removeItem(CELL_CLIPBOARD_KEY);
-      else window.sessionStorage.setItem(CELL_CLIPBOARD_KEY, JSON.stringify(next));
+      else {
+        const envelope = { formatVersion: EXPORT_FORMAT_VERSION, cell: next };
+        window.sessionStorage.setItem(CELL_CLIPBOARD_KEY, JSON.stringify(envelope));
+      }
     } catch {
       // Quota / private-mode failures are non-fatal — the in-memory
       // state still works for this session.
@@ -386,6 +416,11 @@ export function FlexIconGridPanel({
   // step=1 with Shift-snap (Phase 4.17). Local to this panel — not
   // saved to config since it's a UI preference, not a data choice.
   const [rotationAlwaysSnap, setRotationAlwaysSnap] = useState(false);
+  // Phase 4.22: target colour count for the Random palette button.
+  // 5 keeps a tight, on-style scheme; 8 is the Phase-4.21 default;
+  // 12 gives dense grids enough variety to avoid the adjacency
+  // fallback. Local UI state — not persisted.
+  const [randomPaletteCount, setRandomPaletteCount] = useState<number>(8);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -635,11 +670,21 @@ export function FlexIconGridPanel({
     // field from the clipboard (including UNSET fields that should
     // clear existing overrides on the target). Spreading the
     // clipboard onto an empty `{ index }` base achieves that.
+    //
+    // Phase 4.22: explicitly carry the TARGET's existing `cellSpan`
+    // through the replace so a paste never collapses an adjacent
+    // hero block. Matches Paste style's behaviour (which also
+    // leaves cellSpan untouched) so both paste variants behave
+    // consistently on layout-affecting fields.
     setConfig((prev) => ({
       ...prev,
       cells: prev.cells.map((c) =>
         c.index === targetIndex
-          ? ({ index: targetIndex, ...cellClipboard } as FlexIconCell)
+          ? ({
+              index: targetIndex,
+              ...cellClipboard,
+              cellSpan: c.cellSpan,
+            } as FlexIconCell)
           : c,
       ),
     }));
@@ -1215,28 +1260,85 @@ export function FlexIconGridPanel({
             <span aria-hidden="true">⤵</span>
             Shuffle
           </button>
-          {/* Phase 4.21: one-click random palette. Generates 8 fresh,
-              harmonious hex colours via the pure `generateRandomPalette`
-              helper and swaps them in as a custom palette. Pairs with
-              Shuffle — Shuffle rotates the cursor over the SAME
-              colours; Random replaces the colours themselves. Locked
-              cells (with explicit `backgroundColor`) still bypass the
-              palette so they survive Random untouched. */}
+          {/* Phase 4.21 → 4.22: random palette. Click ✦ Random to
+              swap the active palette for a fresh harmonious set of
+              `randomPaletteCount` colours; the 5 / 8 / 12 chips
+              after it select the count. 5 keeps a tight on-style
+              scheme; 8 is the default; 12 gives dense grids enough
+              variety to avoid the adjacency fallback. Locked cells
+              (with explicit `backgroundColor`) bypass the palette so
+              they survive Random untouched. */}
           <button
             type="button"
             onClick={() => {
-              const colors = generateRandomPalette(8);
+              const colors = generateRandomPalette(randomPaletteCount);
               updateConfig({
                 palette: { type: 'custom', colors },
                 paletteShuffleOffset: 0,
               });
             }}
             style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            title="Generate a fresh random palette (locked cells unaffected)"
-            aria-label="Generate random palette"
+            title={`Generate a fresh random palette of ${randomPaletteCount} colours (locked cells unaffected)`}
+            aria-label={`Generate random palette of ${randomPaletteCount} colours`}
           >
             <span aria-hidden="true">✦</span>
             Random
+          </button>
+          {[5, 8, 12].map((count) => (
+            <button
+              key={count}
+              type="button"
+              aria-pressed={randomPaletteCount === count}
+              onClick={() => setRandomPaletteCount(count)}
+              style={{
+                ...chipStyle(randomPaletteCount === count),
+                paddingLeft: 8,
+                paddingRight: 8,
+                fontSize: 11,
+                opacity: 0.85,
+              }}
+              title={`Use ${count} colours for Random`}
+              aria-label={`Random palette count: ${count}`}
+            >
+              {count}
+            </button>
+          ))}
+          {/* Phase 4.22: lighten / darken the active palette by 8
+              percentage points of HSL lightness per click. Pure +
+              repeatable — five lighten then five darken returns
+              very close to the starting colours. Switches the
+              palette to `custom` since we're rewriting colours; the
+              named-preset chip becomes inactive until the user
+              picks one again. Locked cells with explicit
+              `backgroundColor` are unaffected (palette engine
+              skips them entirely). */}
+          <button
+            type="button"
+            onClick={() => {
+              const current = paletteColours(config.palette);
+              const next = shiftPaletteLightness(current, 8);
+              updateConfig({ palette: { type: 'custom', colors: next } });
+            }}
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Lighten the palette by ~8% (HSL lightness)"
+            aria-label="Lighten palette"
+          >
+            <span aria-hidden="true">↑</span>
+            Lighten
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const current = paletteColours(config.palette);
+              const next = shiftPaletteLightness(current, -8);
+              updateConfig({ palette: { type: 'custom', colors: next } });
+            }}
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Darken the palette by ~8% (HSL lightness)"
+            aria-label="Darken palette"
+          >
+            <span aria-hidden="true">↓</span>
+            Darken
           </button>
           {/* Phase 4.16 → 4.17: reset + undo chips — appear once
               the user has shuffled at least once. Undo steps back

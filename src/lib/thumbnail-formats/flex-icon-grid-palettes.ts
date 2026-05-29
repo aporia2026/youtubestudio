@@ -365,6 +365,56 @@ export function generateRandomPalette(count: number, rng: () => number = Math.ra
   return out;
 }
 
+/**
+ * Phase 4.22: lighten or darken each colour in a palette by `delta`
+ * percentage points in HSL lightness. `+8` is "noticeably brighter"
+ * without washing the colours out; `-8` is the matching "moodier"
+ * shift. Clamps the result into [5, 95] so a colour can't go fully
+ * black or fully white (preserves the palette's vibrancy across
+ * repeated taps). Round-trip stability is not guaranteed — eight
+ * +8 taps then eight -8 taps will drift slightly due to floating
+ * point — but the visual look returns very close to the original.
+ *
+ * Pure function; exported alongside `generateRandomPalette` so the
+ * panel can re-use the same colour-space conversion path.
+ */
+export function shiftPaletteLightness(colors: readonly string[], delta: number): string[] {
+  const out: string[] = [];
+  for (const c of colors) {
+    const rgb = parseHex(c);
+    if (!rgb) {
+      out.push(c);
+      continue;
+    }
+    const hsl = rgbToHsl(rgb.r, rgb.g, rgb.b);
+    const nextL = Math.max(5, Math.min(95, hsl.l + delta));
+    out.push(hslToHex(hsl.h, hsl.s, nextL));
+  }
+  return out;
+}
+
+/** RGB (0–255 each) → HSL (h:0–360, s:0–100, l:0–100). Internal
+ *  helper used by `shiftPaletteLightness`. */
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  const d = max - min;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (max === rn) h = ((gn - bn) / d) % 6;
+    else if (max === gn) h = (bn - rn) / d + 2;
+    else h = (rn - gn) / d + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  return { h, s: s * 100, l: l * 100 };
+}
+
 /** HSL (0–360, 0–100, 0–100) → #RRGGBB. Internal helper for
  *  `generateRandomPalette`; not exported because callers should
  *  prefer the palette helper rather than fiddle with raw colour
