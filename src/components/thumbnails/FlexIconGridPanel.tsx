@@ -32,6 +32,7 @@ import {
   STARTER_CELL_SHADOW,
   getSpanConflicts,
   makeDefaultConfig,
+  transposeCells,
   type CellBackgroundSpec,
   type CellContent,
   type CellShape,
@@ -813,17 +814,22 @@ export function FlexIconGridPanel({
                       const currentLandscape = prev.width >= prev.height;
                       const nextLandscape = preset.width >= preset.height;
                       const flip = currentLandscape !== nextLandscape;
-                      // Phase 4.14 caveat fix: scale title bar height
-                      // proportionally with the new canvas height so a
-                      // ~13 % bar on 1280×720 stays ~13 % on 720×1280
-                      // instead of becoming a hairline strip.
-                      const titleBar = prev.titleBar
+                      // Phase 4.14 → 4.15: scale title bar height
+                      // proportionally with the new canvas height.
+                      // 4.15 remembers the fraction explicitly so a
+                      // tall bar stays tall across multiple flips
+                      // even if the user nudged the absolute height
+                      // between them. The fraction is captured here
+                      // (using the current absolute height) and
+                      // applied to the new canvas height in one step.
+                      const fraction = prev.titleBar
+                        ? prev.titleBar.heightFraction ?? prev.titleBar.height / prev.height
+                        : null;
+                      const titleBar = prev.titleBar && fraction !== null
                         ? {
                             ...prev.titleBar,
-                            height: Math.max(
-                              16,
-                              Math.round((prev.titleBar.height / prev.height) * preset.height),
-                            ),
+                            height: Math.max(16, Math.round(fraction * preset.height)),
+                            heightFraction: fraction,
                           }
                         : undefined;
                       if (!flip) {
@@ -834,18 +840,13 @@ export function FlexIconGridPanel({
                           titleBar,
                         };
                       }
+                      // Phase 4.15: transpose cells so the visual
+                      // layout rotates with the canvas. A landscape
+                      // hero at top-left stays at top-left on the
+                      // portrait flip; row 1 ↔ column 1.
                       const newRows = prev.cols;
                       const newCols = prev.rows;
-                      const total = newRows * newCols;
-                      const cells: FlexIconCell[] = [];
-                      for (let i = 0; i < total; i++) {
-                        const existing = prev.cells[i];
-                        cells.push(
-                          existing
-                            ? { ...existing, index: i + 1 }
-                            : { index: i + 1, label: `Item ${i + 1}`, content: { type: 'text-only' } },
-                        );
-                      }
+                      const cells = transposeCells(prev.cells, prev.rows, prev.cols);
                       return {
                         ...prev,
                         width: preset.width,
@@ -932,6 +933,25 @@ export function FlexIconGridPanel({
               <span style={{ marginLeft: 8 }}>★ {p.name}</span>
             </button>
           ))}
+          {/* Phase 4.15: shuffle button — rotates the palette cursor
+              so unlocked cells get re-assigned to different palette
+              colours while the palette itself stays the same. Locked
+              cells (those with explicit backgroundColor, e.g. via the
+              Phase-4.14 "Lock current colour" chip) skip the rotation
+              entirely. Each click adds 1 to the offset; the resolver
+              takes modulo so it never overflows. */}
+          <button
+            type="button"
+            onClick={() =>
+              updateConfig({ paletteShuffleOffset: (config.paletteShuffleOffset ?? 0) + 1 })
+            }
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Shuffle palette colour assignment (locked cells unaffected)"
+            aria-label="Shuffle palette colour assignment"
+          >
+            <span aria-hidden="true">⤵</span>
+            Shuffle
+          </button>
         </div>
         {config.palette.type === 'custom' && (
           <CustomPaletteEditor
@@ -3065,7 +3085,11 @@ function CellBackgroundEditor({
           Visible only when the cell is still in palette mode (the
           colour is being assigned dynamically). Click → captures the
           current palette colour into `backgroundColor`, switching the
-          cell into solid mode so a palette re-roll leaves it alone. */}
+          cell into solid mode so a palette re-roll leaves it alone.
+          Phase 4.15: complementary "Restore palette" chip appears
+          when the cell is in solid mode — one click drops the
+          explicit colour and the palette re-flows. The two chips
+          are mutually exclusive: at most one shows at a time. */}
       {usingPalette && (
         <div style={{ marginTop: 8 }}>
           <button
@@ -3088,6 +3112,29 @@ function CellBackgroundEditor({
               }}
             />
             Lock current colour
+          </button>
+        </div>
+      )}
+      {!usingPalette && activeType === 'solid' && (
+        <div style={{ marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={() => onChange({ backgroundColor: undefined, background: undefined })}
+            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            title="Return this cell to palette-driven colour assignment"
+            aria-label="Restore palette colour for this cell"
+          >
+            <span
+              style={{
+                display: 'inline-block',
+                width: 14,
+                height: 14,
+                borderRadius: 4,
+                background: `linear-gradient(135deg, ${palettePreviewColour} 50%, transparent 50%)`,
+                border: '1px solid rgba(255,255,255,0.2)',
+              }}
+            />
+            Restore palette
           </button>
         </div>
       )}

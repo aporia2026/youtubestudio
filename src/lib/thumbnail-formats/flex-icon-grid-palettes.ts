@@ -294,8 +294,11 @@ export function resolveCellBackgrounds(config: FlexIconGridConfig): string[] {
   }
   // Track which palette slot we tried last so the assignment walks
   // the palette deterministically instead of biasing toward index 0
-  // when adjacency constraints reset the search.
-  let cursor = 0;
+  // when adjacency constraints reset the search. Phase 4.15: seed the
+  // cursor with `paletteShuffleOffset` so the panel's "Shuffle" chip
+  // rotates the colour assignment without changing palette or
+  // touching locked cells.
+  let cursor = ((config.paletteShuffleOffset ?? 0) % palette.length + palette.length) % palette.length;
   for (let i = 0; i < total; i++) {
     const cell = config.cells[i];
     if (cell?.backgroundColor) {

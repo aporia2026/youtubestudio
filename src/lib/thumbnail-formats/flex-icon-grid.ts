@@ -317,6 +317,14 @@ export interface TitleBarSpec {
   position: 'top' | 'bottom';
   /** Pixel height of the strip. Composer scales font to fit. */
   height: number;
+  /** Phase 4.15: optional remembered height as a fraction of the
+   *  canvas height. When set, aspect-ratio chip clicks scale the bar
+   *  height by this fraction × the new canvas height, so a tall bar
+   *  stays proportionally tall across orientation flips even after
+   *  manual height edits. Cleared when the user edits the absolute
+   *  `height` field directly so we don't fight their explicit
+   *  preference. */
+  heightFraction?: number;
   background: string;
   color: string;
   font: LabelFont;
@@ -429,6 +437,14 @@ export interface FlexIconGridConfig {
   defaultCellShape: CellShape;
   defaultRing: RingStyle;
   defaultLabel: LabelStyle;
+  /** Phase 4.15: starting cursor for palette colour assignment.
+   *  Resolves modulo palette length, so any integer is valid. The
+   *  panel's "Shuffle" button increments this to rotate the colour
+   *  assignment without changing the palette itself. Locked cells
+   *  (explicit `backgroundColor`) are unaffected — they bypass the
+   *  cursor entirely. Defaults to 0 if unset; existing thumbnails
+   *  parse with cursor=0 so the assignment stays byte-identical. */
+  paletteShuffleOffset?: number;
   /** Phase 4.11: default drop shadow applied to every cell whose
    *  own `shadow` field is `undefined`. Cells with an explicit
    *  `null` shadow opt out. Defaults to `null` (no shadow) so the
@@ -466,6 +482,10 @@ export const ASPECT_RATIO_PRESETS: readonly AspectRatioPreset[] = [
   { id: '1-1', label: '1:1', description: 'Instagram square', width: 1080, height: 1080 },
   { id: '9-16', label: '9:16', description: 'YouTube Shorts / TikTok vertical', width: 720, height: 1280 },
   { id: '4-3', label: '4:3', description: 'Legacy 4:3 card', width: 1280, height: 960 },
+  // Phase 4.15: 21:9 ultra-wide for cinematic banner-style thumbnails
+  // and channel art crops. Stays within the 4096 px validateConfig
+  // limit while preserving enough vertical room for a usable grid.
+  { id: '21-9', label: '21:9', description: 'Ultra-wide / banner', width: 1680, height: 720 },
 ] as const;
 
 /** Look up an aspect ratio preset by `id`. Returns undefined for
@@ -473,6 +493,44 @@ export const ASPECT_RATIO_PRESETS: readonly AspectRatioPreset[] = [
  *  preserve the current canvas. */
 export function getAspectRatioPreset(id: string): AspectRatioPreset | undefined {
   return ASPECT_RATIO_PRESETS.find((p) => p.id === id);
+}
+
+/**
+ * Phase 4.15: transpose cells when the grid orientation flips.
+ * Given an array of cells laid out in reading order on a rowsA × colsA
+ * grid, returns a new array re-indexed for the transposed colsA × rowsA
+ * grid. The hero cell at top-left (index 1) stays top-left; row 1 ↔
+ * column 1; cell (r, c) becomes cell (c, r). Preserves the cell's
+ * full content + per-cell overrides — only `index` changes.
+ *
+ * Pure function — exported so the panel can apply it without
+ * duplicating the math.
+ */
+export function transposeCells(
+  cells: FlexIconCell[],
+  rowsA: number,
+  colsA: number,
+): FlexIconCell[] {
+  const out: FlexIconCell[] = new Array(rowsA * colsA);
+  for (const cell of cells) {
+    if (cell.index < 1 || cell.index > rowsA * colsA) continue;
+    const i = cell.index - 1;
+    const r = Math.floor(i / colsA);
+    const c = i % colsA;
+    // After transpose, new grid is colsA rows × rowsA cols.
+    // (r, c) on old grid → (c, r) on new grid → new index = c * rowsA + r + 1
+    const newIndex = c * rowsA + r + 1;
+    out[newIndex - 1] = { ...cell, index: newIndex };
+  }
+  // Fill any missing positions with default empty cells. Shouldn't
+  // happen on well-formed input but defensive against history entries
+  // with missing cells.
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i]) {
+      out[i] = { index: i + 1, label: `Item ${i + 1}`, content: { type: 'text-only' } };
+    }
+  }
+  return out;
 }
 
 /** Sensible defaults for the reference channels' look. Cell gap of 0
@@ -1249,6 +1307,12 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     // Phase 4.11: defaultShadow round-trips with the same opt-out
     // semantics as ring (null → off, undefined → none configured).
     defaultShadow: parseShadow(o.defaultShadow),
+    // Phase 4.15: palette cursor offset for shuffle. Coerce to a
+    // non-negative integer; the resolver takes modulo anyway, but
+    // keeping the field tidy makes diff-friendly history entries.
+    paletteShuffleOffset: typeof o.paletteShuffleOffset === 'number' && Number.isFinite(o.paletteShuffleOffset)
+      ? Math.max(0, Math.floor(o.paletteShuffleOffset))
+      : undefined,
     cells,
     titleBar: o.titleBar ? parseTitleBar(o.titleBar) : undefined,
   };
@@ -1446,10 +1510,19 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     subtitleFont === 'custom' && typeof o.subtitleCustomFontLabel === 'string'
       ? o.subtitleCustomFontLabel
       : undefined;
+  // Phase 4.15: clamp heightFraction to a sane (0, 1] range so a
+  // garbage value doesn't make the title bar fill the canvas.
+  const rawFraction = typeof o.heightFraction === 'number' && Number.isFinite(o.heightFraction)
+    ? o.heightFraction
+    : undefined;
+  const heightFraction = rawFraction !== undefined && rawFraction > 0 && rawFraction <= 1
+    ? rawFraction
+    : undefined;
   return {
     text: stringOr(o.text, ''),
     position: o.position === 'top' ? 'top' : 'bottom',
     height: numberOr(o.height, 96),
+    heightFraction,
     background: stringOr(o.background, '#0a0a0a'),
     color: stringOr(o.color, '#fbfbf8'),
     font,

@@ -27,6 +27,7 @@ import {
   parseConfig,
   resolveCellShadow,
   sanitizeUserText,
+  transposeCells,
   SUPPORTED_CELL_SHAPES,
   SUPPORTED_CONTENT_TYPES,
   validateConfig,
@@ -1385,7 +1386,7 @@ describe('Phase 4.13 — aspect ratio presets', () => {
     expect(shorts?.height).toBe(1280);
   });
   it('getAspectRatioPreset returns undefined for unknown ids', () => {
-    expect(getAspectRatioPreset('21-9')).toBeUndefined();
+    expect(getAspectRatioPreset('not-a-real-ratio')).toBeUndefined();
   });
 });
 
@@ -1411,5 +1412,102 @@ describe('Phase 4.14 — shadow region Gaussian tail headroom', () => {
     // Bottom edge = 100 + 2 * padPct (no downExtra contribution).
     const padPct = region.w / 2 - 50;
     expect(region.h).toBe(100 + 2 * padPct);
+  });
+});
+
+// ─── Phase 4.15 — cell transposition ────────────────────────────────────────
+
+describe('Phase 4.15 — transposeCells', () => {
+  it('rotates a 3-col grid so row 1 becomes column 1', () => {
+    // Old grid (rows=2, cols=3):
+    //   1 2 3
+    //   4 5 6
+    // New grid (rows=3, cols=2):
+    //   1 4
+    //   2 5
+    //   3 6
+    const cells = [
+      { index: 1, label: 'a', content: { type: 'text-only' as const } },
+      { index: 2, label: 'b', content: { type: 'text-only' as const } },
+      { index: 3, label: 'c', content: { type: 'text-only' as const } },
+      { index: 4, label: 'd', content: { type: 'text-only' as const } },
+      { index: 5, label: 'e', content: { type: 'text-only' as const } },
+      { index: 6, label: 'f', content: { type: 'text-only' as const } },
+    ];
+    const out = transposeCells(cells, 2, 3);
+    expect(out.map((c) => c.label)).toEqual(['a', 'd', 'b', 'e', 'c', 'f']);
+    expect(out.map((c) => c.index)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+  it('preserves per-cell overrides through the transpose', () => {
+    const cells = [
+      { index: 1, label: 'hero', content: { type: 'text-only' as const }, backgroundColor: '#ff0000' },
+      { index: 2, label: 'b', content: { type: 'text-only' as const } },
+    ];
+    const out = transposeCells(cells, 1, 2);
+    expect(out[0].backgroundColor).toBe('#ff0000');
+  });
+});
+
+// ─── Phase 4.15 — title bar heightFraction ──────────────────────────────────
+
+describe('Phase 4.15 — title bar heightFraction', () => {
+  it('round-trips heightFraction through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.titleBar = {
+      text: 'TITLE', position: 'top', height: 130,
+      heightFraction: 0.18,
+      background: '#000', color: '#fff', font: 'anton',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.heightFraction).toBe(0.18);
+  });
+  it('drops out-of-range heightFraction values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96, heightFraction: 2.5,
+        background: '#000', color: '#fff', font: 'anton',
+      },
+    });
+    expect(reparsed.titleBar?.heightFraction).toBeUndefined();
+  });
+});
+
+// ─── Phase 4.15 — palette shuffle offset ────────────────────────────────────
+
+describe('Phase 4.15 — palette shuffle offset', () => {
+  it('round-trips paletteShuffleOffset through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.paletteShuffleOffset = 3;
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.paletteShuffleOffset).toBe(3);
+  });
+  it('coerces non-integer offsets via floor + max(0,…)', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      paletteShuffleOffset: 5.9,
+    });
+    expect(reparsed.paletteShuffleOffset).toBe(5);
+  });
+  it('drops negative offsets at parse time', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      paletteShuffleOffset: -3,
+    });
+    expect(reparsed.paletteShuffleOffset).toBe(0);
+  });
+});
+
+// ─── Phase 4.15 — 21:9 aspect ratio preset ──────────────────────────────────
+
+describe('Phase 4.15 — 21:9 ultra-wide preset', () => {
+  it('exposes the ultra-wide preset', () => {
+    const wide = getAspectRatioPreset('21-9');
+    expect(wide).toBeDefined();
+    expect(wide?.width).toBe(1680);
+    expect(wide?.height).toBe(720);
   });
 });
