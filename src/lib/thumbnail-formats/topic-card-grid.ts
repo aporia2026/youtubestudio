@@ -289,24 +289,123 @@ export function computeRegionsFor(
 // ─── Validation ─────────────────────────────────────────────────────────────
 
 /**
- * Card concepts the model should NOT produce. The aggressive r1 banlist
- * (text / screenshot / UI / person / face / scene / busy / detailed) is
- * gone in r1.5 — competitor analysis showed those are exactly the kinds of
- * cards that work: real virus ransom screens, real product photos, real
- * brand logos, real character faces. The banlist was the wrong solution.
+ * Card concepts the model should NOT produce. r2 re-introduces a narrow
+ * set of regexes after a real GPT-4o run on the Cybersecurity niche
+ * produced exactly the multi-element UI mockups the prompt told it not
+ * to make ("a browser window with a bold red warning overlay...", "an
+ * email inbox with a highlighted message...", "an installer wizard with
+ * a tiny checkbox..."). These were the dominant failure mode the empty
+ * r1.5 banlist's comment predicted: "Add a narrow regex here if a
+ * specific failure mode... starts dominating outputs."
  *
- * What stays banned: "invented" text overlays (fake captions the model
- * makes up on its own). Authentic-to-subject text (the actual WannaCry
- * ransom text, the actual ILOVEYOU file extension) is fine and recognisable.
+ * The regexes are deliberately narrow. They catch the specific phrase
+ * patterns that signal "I'm describing a multi-element UI mockup as the
+ * icon" without false-positiving on legitimate uses:
+ * - "a [browser/dialog] window with..." — catches the multi-element
+ *   dialog description; doesn't catch "Microsoft Windows logo".
+ * - "an [email inbox/email client] with..." — catches the inbox mockup;
+ *   doesn't catch "an envelope" or "a fishing hook through an envelope".
+ * - "an [installer/setup] wizard with..." — catches the wizard mockup;
+ *   doesn't catch "a wizard hat" or "Bonzi Buddy" descriptions.
+ * - "scanner [results/ui/table]" — catches the scanner mockup.
+ * - 'showing/displaying/containing "..."' — catches "showing 'VIRUS
+ *   ALERT!'" embedded-text descriptions. Specific named subjects whose
+ *   icon IS text (a brand wordmark) describe it as "the YAHOO! wordmark"
+ *   or "the Microsoft logotype", not "containing 'Microsoft'".
+ * - "with a/multiple [button/checkbox/...]" — catches multi-control UI
+ *   descriptions; the singular permitted form ("a button-shaped icon")
+ *   is unaffected.
  *
- * In practice this means the banlist is effectively empty for normal LLM
- * output; we retain the structure so we can re-add narrow bans cheaply if
- * a specific failure mode emerges.
+ * Authentic-to-subject embedded text (the actual WannaCry ransom screen,
+ * the actual ILOVEYOU file extension) is still fine — those describe the
+ * canonical visual identity of a SPECIFIC named entity and use phrases
+ * like "the WannaCry ransom screen" or "the ILOVEYOU email", not the
+ * banned multi-element shapes above.
  */
 export const ICON_CONCEPT_BANLIST: readonly { match: RegExp; reason: string }[] = [
-  // Intentionally empty post-1.5. Add a narrow regex here if a specific
-  // failure mode (e.g. "stick-figure clipart") starts dominating outputs.
+  {
+    match: /\b(?:a |an )?(?:browser|dialog) window with\b/i,
+    reason: 'multi-element browser/dialog mockup — use a single iconic symbol (e.g. a giant warning shield) instead',
+  },
+  {
+    match: /\b(?:an? )?(?:email inbox|email client) with\b/i,
+    reason: 'multi-element email-client mockup — use a single iconic symbol (e.g. a fishing hook through an envelope) instead',
+  },
+  {
+    match: /\b(?:an? )?(?:installer|setup) wizard with\b/i,
+    reason: 'multi-element installer-wizard mockup — use a single iconic symbol (e.g. a wrapped gift box with a skull) instead',
+  },
+  {
+    match: /\bscanner\s+(?:results|ui|table)\b/i,
+    reason: 'scanner-results-table mockup — use a single iconic symbol (e.g. a magnifying glass over a skull) instead',
+  },
+  {
+    match: /\b(?:showing|displaying|containing)\s+['"]/i,
+    reason: 'embedded-text description (e.g. showing \'VIRUS ALERT!\') — describe the visual itself, not the text inside it',
+  },
+  {
+    match: /\bwith\s+(?:a|an|multiple|several|two|three|four)\s+(?:buttons?|checkboxes?|progress\s+bars?|tabs?|panels?|fields?|menus?|toolbars?|sidebars?)\b/i,
+    reason: 'multi-control UI description — pick one bold iconic visual, not a UI mockup',
+  },
 ];
+
+/** Hard caps the validator enforces on the LLM's output. Sized to fit a
+ *  single line in the 20%-height label band at the deterministic font
+ *  size — anything past these caps wraps to two lines and the layout
+ *  starts to crowd.
+ *
+ *  22 chars / 3 words was picked by measuring the band capacity at the
+ *  default 1280×720 canvas with the bundled Patrick Hand font: "Fake
+ *  Virus Warnings" (19 chars, 3 words) fits comfortably; "Phishing
+ *  Emails and Tech Support Scams" (38 chars, 6 words) wraps. The cap
+ *  catches anything over the safe line. */
+export const MAX_LABEL_CHARS = 22;
+export const MAX_LABEL_WORDS = 3;
+
+/** Hard cap on `icon_concept` length. 80 chars fits a single sentence
+ *  describing one bold central symbol. The previous effective cap (250
+ *  chars via `sanitizeForPrompt`) was large enough to fit a multi-
+ *  element UI mockup description, which is exactly what GPT-4o produced
+ *  when told not to. Structural concision forces iconic descriptions. */
+export const MAX_ICON_CONCEPT_CHARS = 80;
+
+/** Words that signal a "negative" subject (scam, attack, threat) where a
+ *  green or pure-blue accent color reads semantically wrong (green = safe
+ *  / trusted, blue = corporate / brand). Used by the validator to reject
+ *  the specific color/meaning mismatch seen in real runs ("Fake Online
+ *  Scanners" with a green shield reads as legitimate antivirus, not as
+ *  the scam it labels). */
+const NEGATIVE_CONCEPT_RE = /\b(?:fake|scam|phish(?:ing)?|malicious|malware|ransomware|breach|attack|threat|fraud|exploit|hack(?:ing|er)?|virus|trojan|worm|spyware|rogue)\b/i;
+
+/** Hex colors that read as safe/trusted/legit. Tight list, not a fuzzy
+ *  range — false positives here would block legitimate cards. Picked by
+ *  sampling the LLM's typical "wrong" choices (#00FF00 lime, #4CAF50
+ *  Material green, #2196F3 Material blue, etc.) and rounding to nearest
+ *  named ranges. We don't enforce a regex over the full hex space —
+ *  too risky. */
+const SAFE_READING_COLOR_RES: readonly RegExp[] = [
+  // Pure greens
+  /^#(?:0[0-9a-f]|1[0-9a-f]|2[0-9a-f]|3[0-9a-f])(?:[8-9a-f][0-9a-f])(?:0[0-9a-f]|1[0-9a-f]|2[0-9a-f]|3[0-9a-f])$/i,
+  // Common named green/blue palette entries
+  /^#(?:00ff00|00e676|4caf50|2e7d32|66bb6a|81c784|a5d6a7|c8e6c9|388e3c|43a047|2196f3|1976d2|0d47a1|03a9f4|00bcd4)$/i,
+];
+
+/** Check whether a hex color reads as safe/trusted (green/blue family).
+ *  Exported for tests. Returns false for any non-hex input so the
+ *  validator is permissive on shapes it doesn't understand. */
+export function readsAsSafeColor(hex: string | undefined): boolean {
+  if (!hex || typeof hex !== 'string') return false;
+  const trimmed = hex.trim();
+  if (!/^#[0-9a-f]{6}$/i.test(trimmed)) return false;
+  return SAFE_READING_COLOR_RES.some((re) => re.test(trimmed));
+}
+
+/** Count words in a label. Splits on runs of whitespace, ignoring empty
+ *  fragments. Hyphenated tokens ("anti-virus") count as one word — the
+ *  visual line cost is one token's worth. */
+export function countWords(s: string): number {
+  return s.trim().split(/\s+/).filter(Boolean).length;
+}
 
 export type ValidationResult =
   | { ok: true }
@@ -337,17 +436,49 @@ export function validateCardList(
     const icon = (c.icon_concept || '').toString().trim();
     if (!label) return { ok: false, reason: `Card ${i + 1} has no label.`, offending_card_index: i };
     if (!icon) return { ok: false, reason: `Card ${i + 1} has no icon_concept.`, offending_card_index: i };
-    if (label.length > 60) {
-      return { ok: false, reason: `Card ${i + 1} label is too long (${label.length} chars; max 60).`, offending_card_index: i };
+    if (label.length > MAX_LABEL_CHARS) {
+      return {
+        ok: false,
+        reason: `Card ${i + 1} label "${label}" is too long (${label.length} chars; max ${MAX_LABEL_CHARS}). Shorten it so it fits one line in the label band.`,
+        offending_card_index: i,
+      };
+    }
+    const wordCount = countWords(label);
+    if (wordCount > MAX_LABEL_WORDS) {
+      return {
+        ok: false,
+        reason: `Card ${i + 1} label "${label}" has too many words (${wordCount}; max ${MAX_LABEL_WORDS}). Shorten it so it fits one line in the label band.`,
+        offending_card_index: i,
+      };
+    }
+    if (icon.length > MAX_ICON_CONCEPT_CHARS) {
+      return {
+        ok: false,
+        reason: `Card ${i + 1} icon_concept is too long (${icon.length} chars; max ${MAX_ICON_CONCEPT_CHARS}). Describe ONE bold central symbol in a single short sentence.`,
+        offending_card_index: i,
+      };
     }
     for (const banned of ICON_CONCEPT_BANLIST) {
       if (banned.match.test(icon)) {
         return {
           ok: false,
-          reason: `Card ${i + 1} icon_concept contains a banned concept (${banned.reason}). Rewrite as a single bold central icon/symbol on a dark background.`,
+          reason: `Card ${i + 1} icon_concept describes a ${banned.reason}.`,
           offending_card_index: i,
         };
       }
+    }
+    // Semantic color guard: scam / attack / threat labels paired with a
+    // green or pure-blue accent read as "safe / trusted antivirus" — the
+    // opposite of the card's meaning. Reject so the LLM picks again. This
+    // only fires when BOTH the label is clearly negative AND the accent
+    // is in the tight safe-reading palette; neutral labels and other
+    // colors pass through untouched.
+    if (c.accent_color && NEGATIVE_CONCEPT_RE.test(label) && readsAsSafeColor(c.accent_color)) {
+      return {
+        ok: false,
+        reason: `Card ${i + 1} label "${label}" is a negative concept (scam/attack/threat) but its accent_color "${c.accent_color}" reads as safe/trusted. Pick a red, orange, or warning-yellow accent instead.`,
+        offending_card_index: i,
+      };
     }
   }
   return { ok: true };
@@ -439,6 +570,20 @@ export function topicCardGridLlmPrompt(input: LlmPromptInput): { system: string;
 
 YOUR JOB: produce exactly ${total} card entries (the user has chosen a ${gridRows}×${gridCols} grid).
 
+HARD STRUCTURAL CAPS (the server rejects card lists that violate these — no second chance after the retry):
+- Each \`label\` is **at most ${MAX_LABEL_CHARS} characters** AND **at most ${MAX_LABEL_WORDS} words**. The label band can hold ONE line at the deterministic font size; anything longer wraps and looks crowded. Examples that fit: "Fake Virus Warnings" (19 chars / 3 words), "Phishing Emails" (15 chars / 2 words). Examples that DON'T fit and get rejected: "400 Million Dollars Every Year" (5 words), "Phishing Emails and Tech Support Scams" (6 words).
+- Each \`icon_concept\` is **at most ${MAX_ICON_CONCEPT_CHARS} characters** and describes ONE bold central symbol in a single short sentence. If you find yourself writing more than one clause, you're describing a multi-element scene — stop and pick a single iconic symbol instead.
+
+FORBIDDEN icon_concept PATTERNS (server-rejected, picked from real failure modes — DO NOT produce these):
+- "a browser window with..." / "a dialog window with..."
+- "an email inbox with..." / "an email client with..."
+- "an installer wizard with..." / "a setup wizard with..."
+- "scanner results / scanner UI / scanner table"
+- "...showing 'X'" / "...displaying 'X'" / "...containing 'X'" (embedded-text descriptions — describe the visual itself, not the literal text inside it)
+- "with multiple/several buttons / checkboxes / progress bars / tabs / panels / fields / menus" (multi-control UI mockups)
+
+These patterns are HOW you describe a UI mockup. The user wants a single iconic symbol per card, not a UI mockup. If your subject genuinely IS a UI (a specific named software product's real interface), name it directly ("the WannaCry ransom screen", "the Bonzi Buddy purple monkey") — that does NOT match the forbidden patterns above.
+
 THE GOAL FOR EACH CARD: depict the subject in the most IMMEDIATELY RECOGNISABLE way possible. The viewer should be able to look at a card and know what it represents in under a second — even at 168×94 px (YouTube mobile size).
 
 The most recognisable depictions are usually NOT abstract icons. They are:
@@ -509,7 +654,12 @@ SCRIPT FIDELITY — TITLES MUST MATCH WHAT THE USER WROTE:
 - If the script lists MORE items than the grid has cells, prioritise the most prominent / most-emphasised ones in the script (typically the first N or the ones with the most detail).
 - If the script lists FEWER items than the grid has cells, pick the additional items from the most natural adjacent concepts the script implies — but mark this clearly with a slight stylistic variation if possible.
 
-The label below each card is short (1–4 words). It identifies the card; it isn't repeated inside the illustration.
+The label below each card is short — see the HARD STRUCTURAL CAPS at the top of this message (≤ ${MAX_LABEL_CHARS} chars, ≤ ${MAX_LABEL_WORDS} words). It identifies the card; it isn't repeated inside the illustration.
+
+COLOR SEMANTICS for \`accent_color\`:
+- If the card's subject is a scam, attack, threat, malware, breach, fraud, virus, or other "negative" concept, DO NOT pick a green or pure-blue accent. Green reads as safe/legit/trusted (it's the color real antivirus uses), and pure blue reads as corporate/brand. A "Fake Online Scanners" card with a green shield reads to the viewer as a legitimate scanner, the opposite of the meaning.
+- Negative subjects want reds, oranges, warning-yellows, magentas, or charged purples — colors that signal danger / alert / hostile.
+- Neutral or positive subjects (real-time scanning, password manager, protection features) can use any color that fits naturally. The rule only applies when the label is itself negative.
 
 A reference image is attached to this message. Match its STRUCTURE precisely (grid layout, gutters, borders, the hand-drawn-feeling label font). Do NOT inherit its specific palette or per-card content — your cards should fit the user's topic, not the reference's topic.
 
@@ -519,7 +669,7 @@ Return JSON only — no prose, no markdown fences. Schema:
 
 {
   "cards": [
-    { "index": 1, "label": "<1-4 words>", "icon_concept": "<concrete description of the most recognisable depiction of this subject — name the real logo / screen / product / photo when one exists; let the natural colors and background come through>", "accent_color": "<hex if a specific accent matters for this card, otherwise omit>" }
+    { "index": 1, "label": "<≤ ${MAX_LABEL_CHARS} chars AND ≤ ${MAX_LABEL_WORDS} words>", "icon_concept": "<≤ ${MAX_ICON_CONCEPT_CHARS} chars, ONE bold central symbol in a single short sentence — name the real logo / screen / product / photo when one exists; let the natural colors and background come through>", "accent_color": "<hex if a specific accent matters for this card, otherwise omit; never green / pure-blue on negative subjects>" }
   ],
   "global_palette": {
     "background": "#000000",
@@ -733,13 +883,15 @@ ${
 - Each label sits in the white canvas BELOW its disc, centred horizontally.
 - Rendered in the SAME hand-drawn humanist font as the attached reference image's typography (friendly weight, slight slope, NOT a system sans-serif).
 - Label color: solid black. No box, no underline, no background tint — text sits directly on the white canvas.
-- Labels go ONLY beneath each disc — they NEVER appear inside the disc except as part of the subject's authentic visual identity.`
+- Labels go ONLY beneath each disc — they NEVER appear inside the disc except as part of the subject's authentic visual identity.
+- Labels are short (≤ ${MAX_LABEL_CHARS} chars / ≤ ${MAX_LABEL_WORDS} words) — render each as a SINGLE LINE. Do not wrap, do not overflow into the disc above or into the gutter below the cell. Stay strictly within the label band of the cell.`
     : `LABEL STRIP RULES (strict):
 - Pure white background.
 - Card label rendered in the SAME hand-drawn humanist font as the attached reference image's typography (friendly weight, slight slope, NOT a system sans-serif).
 - Label color: solid black.
 - Centred horizontally and vertically in the strip.
-- Labels go ONLY in the white strip — they NEVER appear in the illustration except as part of the subject's authentic visual identity.`
+- Labels go ONLY in the white strip — they NEVER appear in the illustration except as part of the subject's authentic visual identity.
+- Labels are short (≤ ${MAX_LABEL_CHARS} chars / ≤ ${MAX_LABEL_WORDS} words) — render each as a SINGLE LINE within its label strip. Do not wrap, do not overflow into the illustration above or into the gutter between rows. Stay strictly within the cell's bottom 20% white strip.`
 }
 
 CARDS (render exactly these ${total} ${cardShape === 'circle' ? 'discs' : 'cards'}, in this order, reading left-to-right then top-to-bottom):

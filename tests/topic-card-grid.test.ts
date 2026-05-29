@@ -4,10 +4,18 @@ import {
   computeCircleRegions,
   computeRegions,
   computeRegionsFor,
+  countWords,
   DEFAULT_CANVAS,
+  ICON_CONCEPT_BANLIST,
   makeDefaultLayout,
+  MAX_ICON_CONCEPT_CHARS,
+  MAX_LABEL_CHARS,
+  MAX_LABEL_WORDS,
+  readsAsSafeColor,
   topicCardGridImagePrompt,
   topicCardGridLlmPrompt,
+  validateCardList,
+  type TopicCard,
 } from '@/lib/thumbnail-formats/topic-card-grid';
 
 function mkSequentialId(): () => string {
@@ -208,5 +216,212 @@ describe('topicCardGridImagePrompt', () => {
   it('omits the USER-RESERVED block when no cells are uploaded', () => {
     const prompt = topicCardGridImagePrompt(baseInput);
     expect(prompt).not.toMatch(/USER-RESERVED/);
+  });
+});
+
+// ─── Validation helpers ─────────────────────────────────────────────────────
+
+describe('countWords', () => {
+  it('counts whitespace-separated tokens', () => {
+    expect(countWords('Fake Virus Warnings')).toBe(3);
+    expect(countWords('Phishing')).toBe(1);
+    expect(countWords('  leading and  trailing  ')).toBe(3);
+  });
+  it('treats hyphenated tokens as one word (visual line cost)', () => {
+    expect(countWords('Anti-Virus Tips')).toBe(2);
+    expect(countWords('Real-Time Scanning')).toBe(2);
+  });
+  it('returns 0 for empty / whitespace-only input', () => {
+    expect(countWords('')).toBe(0);
+    expect(countWords('   ')).toBe(0);
+  });
+});
+
+describe('readsAsSafeColor', () => {
+  it('flags pure greens and Material-palette greens', () => {
+    expect(readsAsSafeColor('#00ff00')).toBe(true);
+    expect(readsAsSafeColor('#4CAF50')).toBe(true);
+    expect(readsAsSafeColor('#388e3c')).toBe(true);
+  });
+  it('flags pure / Material blues', () => {
+    expect(readsAsSafeColor('#2196f3')).toBe(true);
+    expect(readsAsSafeColor('#1976d2')).toBe(true);
+  });
+  it('does NOT flag warning colors (reds / oranges / yellows)', () => {
+    expect(readsAsSafeColor('#ff0000')).toBe(false);
+    expect(readsAsSafeColor('#ff6600')).toBe(false);
+    expect(readsAsSafeColor('#ffd700')).toBe(false);
+  });
+  it('does NOT flag black, white, gray, magenta, purple', () => {
+    expect(readsAsSafeColor('#000000')).toBe(false);
+    expect(readsAsSafeColor('#ffffff')).toBe(false);
+    expect(readsAsSafeColor('#808080')).toBe(false);
+    expect(readsAsSafeColor('#ff00ff')).toBe(false);
+    expect(readsAsSafeColor('#9c27b0')).toBe(false);
+  });
+  it('returns false for non-hex or missing input', () => {
+    expect(readsAsSafeColor(undefined)).toBe(false);
+    expect(readsAsSafeColor('')).toBe(false);
+    expect(readsAsSafeColor('rgb(0,255,0)')).toBe(false);
+    expect(readsAsSafeColor('green')).toBe(false);
+  });
+});
+
+describe('validateCardList — caps & banlist (r2)', () => {
+  const okCard = (i: number, label: string, icon: string, accent?: string): TopicCard => ({
+    index: i,
+    label,
+    icon_concept: icon,
+    accent_color: accent,
+  });
+
+  it('accepts a clean list within all caps', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Fake Warnings', 'a giant red exclamation shield', '#ff0000'),
+      okCard(2, 'Phishing', 'a fishing hook through an envelope', '#ff6600'),
+    ];
+    expect(validateCardList(cards, 2)).toEqual({ ok: true });
+  });
+
+  it('rejects a label that exceeds MAX_LABEL_CHARS', () => {
+    const longLabel = 'A'.repeat(MAX_LABEL_CHARS + 1);
+    const cards: TopicCard[] = [
+      okCard(1, longLabel, 'a shield'),
+      okCard(2, 'Ok', 'a shield'),
+    ];
+    const r = validateCardList(cards, 2);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toMatch(/too long/);
+      expect(r.offending_card_index).toBe(0);
+    }
+  });
+
+  it('rejects a label with more than MAX_LABEL_WORDS words', () => {
+    // 4 short words (under char cap, over word cap)
+    const cards: TopicCard[] = [
+      okCard(1, 'a b c d', 'a shield'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/too many words/);
+  });
+
+  it('rejects the real failing label "400 Million Dollars Every Year"', () => {
+    const cards: TopicCard[] = [
+      okCard(1, '400 Million Dollars Every Year', 'a dollar sign with a red cross'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects an icon_concept exceeding MAX_ICON_CONCEPT_CHARS', () => {
+    const longIcon = 'a '.repeat(MAX_ICON_CONCEPT_CHARS).slice(0, MAX_ICON_CONCEPT_CHARS + 5);
+    const cards: TopicCard[] = [
+      okCard(1, 'Ok', longIcon),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/icon_concept is too long/);
+  });
+
+  // Each banlist pattern gets a regression test — one for the exact GPT-4o
+  // output that triggered the r2 work, one synthetic per pattern so a
+  // future regex tweak can't silently disable a category.
+  it('rejects the real failing browser-window mockup', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Fake Virus', 'a browser window with a red warning overlay'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects the real failing email-inbox mockup', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Phishing', 'an email inbox with a message from Microsoft'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects the real failing installer-wizard mockup', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Bundled', 'an installer wizard with a checkbox'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects scanner-results / scanner-ui / scanner-table phrasings', () => {
+    for (const phrase of ['scanner results', 'scanner UI', 'scanner table']) {
+      const cards: TopicCard[] = [okCard(1, 'Scanner', `a ${phrase} showing detections`)];
+      const r = validateCardList(cards, 1);
+      expect(r.ok, `phrase "${phrase}" should be banned`).toBe(false);
+    }
+  });
+
+  it('rejects embedded-text descriptions (showing/displaying/containing "...")', () => {
+    for (const verb of ['showing', 'displaying', 'containing']) {
+      const cards: TopicCard[] = [okCard(1, 'Alert', `a sign ${verb} 'VIRUS!'`)];
+      const r = validateCardList(cards, 1);
+      expect(r.ok, `verb "${verb}" should be banned`).toBe(false);
+    }
+  });
+
+  it('rejects multi-control UI mockups (with multiple buttons / checkboxes / etc)', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Settings', 'a panel with multiple buttons and checkboxes'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects green accent on a negative concept', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Fake Scan', 'a shield icon', '#4CAF50'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/reads as safe|safe.*trusted/i);
+  });
+
+  it('rejects pure-blue accent on a negative concept', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Phishing', 'a hook icon', '#2196F3'),
+    ];
+    const r = validateCardList(cards, 1);
+    expect(r.ok).toBe(false);
+  });
+
+  it('accepts a negative concept with a red accent', () => {
+    const cards: TopicCard[] = [
+      okCard(1, 'Phishing', 'a hook icon', '#ff0000'),
+    ];
+    expect(validateCardList(cards, 1)).toEqual({ ok: true });
+  });
+
+  it('accepts a neutral / positive concept with a green accent (rule does NOT false-positive)', () => {
+    // "Real-Time Scanning" is a legitimate antivirus feature — green is fine here.
+    const cards: TopicCard[] = [
+      okCard(1, 'Scanning', 'a magnifying glass icon', '#4CAF50'),
+    ];
+    expect(validateCardList(cards, 1)).toEqual({ ok: true });
+  });
+
+  it('accepts legit specific-named-entity cards (no false positives on real subjects)', () => {
+    // Cards like the prompt's curated examples — these should pass.
+    const cards: TopicCard[] = [
+      okCard(1, 'WannaCry', 'the WannaCry ransom screen'),
+      okCard(2, 'Sony Hack', 'the Sony Pictures logo'),
+      okCard(3, 'ILOVEYOU', 'the ILOVEYOU email icon'),
+    ];
+    expect(validateCardList(cards, 3)).toEqual({ ok: true });
+  });
+
+  it('does NOT crash if ICON_CONCEPT_BANLIST is read-only (sanity)', () => {
+    // Guards against a future maintenance change accidentally mutating the
+    // exported readonly array.
+    expect(Array.isArray(ICON_CONCEPT_BANLIST)).toBe(true);
+    expect(ICON_CONCEPT_BANLIST.length).toBeGreaterThan(0);
   });
 });

@@ -258,6 +258,63 @@ describe('applyCellUploads', () => {
     expect(tB).toBeGreaterThan(240);
   });
 
+  it('wipes the row gutter beneath non-last-row cells in pure-prompt mode (r2)', async () => {
+    // Pure-prompt mode (no uploads) previously left the row gutter
+    // untouched at the cell's own width. If the AI's label rendering
+    // wrapped to two lines, line 2 could land in the gutter under the
+    // cell and survive next to our composite label. The new wipe paints
+    // a white strip from the cell's bottom edge through the row gutter
+    // at the cell's own width — for non-last-row cells.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H);
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'square',
+      uploads: [],
+    });
+    const r1 = cellRect(layout, 1);
+    // Sample just below cell 1's bottom edge, at the cell's horizontal
+    // centre. This is inside the row gutter under cell 1's column — the
+    // exact spot where AI-rendered "Year"-style text would land. Should
+    // now be white.
+    const [gx, gy] = [r1.x + r1.w / 2, r1.y + r1.h + 1];
+    const [gr, gg, gb] = await pixelAt(out, gx, gy);
+    expect(gr).toBeGreaterThan(240);
+    expect(gg).toBeGreaterThan(240);
+    expect(gb).toBeGreaterThan(240);
+    // But the gutter INTERSECTION (column gutter × row gutter) at canvas
+    // centre must remain untouched black — we deliberately don't wipe
+    // column gutters because the AI may anchor borders for adjacent
+    // columns there.
+    const [cr, cg, cb] = await pixelAt(out, CANVAS_W / 2, CANVAS_H / 2);
+    expect(cr).toBe(0);
+    expect(cg).toBe(0);
+    expect(cb).toBe(0);
+  });
+
+  it('does not wipe a row gutter for circle mode in pure-prompt (r2 scope)', async () => {
+    // Circle mode skips ALL pure-prompt overpainting (label band + gutter
+    // wipe) so the AI's existing circle label rendering on white canvas
+    // stays untouched. Pin this behaviour so a future change to circle
+    // mode is forced to update the test alongside.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'circle');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+    });
+    const r1 = cellRect(layout, 1);
+    const [gr, gg, gb] = await pixelAt(out, r1.x + r1.w / 2, r1.y + r1.h + 1);
+    expect(gr).toBe(0);
+    expect(gg).toBe(0);
+    expect(gb).toBe(0);
+  });
+
   it('paints each upload independently when multiple cells are uploaded', async () => {
     const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
     const redUpload = await makeSolidPng(64, 64, { r: 255, g: 0, b: 0 });

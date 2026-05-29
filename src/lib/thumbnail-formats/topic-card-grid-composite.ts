@@ -366,20 +366,25 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
 
   const overlays: sharp.OverlayOptions[] = [];
 
-  // Half-gutter white wipe pad around every uploaded cell. Belt-and-
-  // braces against AI bleed: when the AI runs (mixed-upload case, or
-  // when the route's all-uploads fast path can't detect the input as
-  // fully uploaded for some reason), the AI's drawn cell boundaries
-  // never line up perfectly with our cellRect formula, so a few pixels
-  // of the AI's cell content (image, drawn label, faint chrome) end up
-  // outside the composite cell overlay and visible in the gutter. By
-  // extending the white wipe halfway into each surrounding gutter, we
-  // wallpaper over anything the AI rendered within that margin — the
-  // composite cell paints on top of the wipe at its original position,
-  // so the visual layout is unchanged. Clamped to canvas bounds for
-  // edge cells.
+  // Half-gutter white wipe pad. Belt-and-braces against AI bleed in
+  // two distinct cases:
+  //   - Uploaded / mixed-upload cells (useFullCellOverlay = true): the
+  //     AI's drawn cell boundaries never line up perfectly with our
+  //     cellRect formula, so a few pixels of the AI's cell content end
+  //     up outside the composite cell overlay and visible in the
+  //     gutter. We wipe four-sides-around the cell before painting the
+  //     overlay on top.
+  //   - Pure-prompt cells (useFullCellOverlay = false): the AI's label
+  //     text wraps to two lines if the LLM emitted a too-long label,
+  //     and line 2 can render BELOW the cell's bottom edge in the row
+  //     gutter, where our band overlay doesn't reach. We wipe a single
+  //     strip from the cell's bottom edge down through the row gutter
+  //     at the cell's own width. Horizontal extent is restricted to the
+  //     cell's own width — the column gutter may legitimately hold AI
+  //     border anchors for adjacent columns, so we don't touch it here.
+  // Clamped to canvas bounds for edge cells.
   const gutterPad = Math.max(0, Math.round(layout.gutter / 2));
-  const wipeOverlaysForUploads: sharp.OverlayOptions[] = [];
+  const wipeOverlays: sharp.OverlayOptions[] = [];
 
   // When ANY upload is present in this request, EVERY non-uploaded cell
   // is treated as "user-intended an upload here, it just didn't reach
@@ -421,7 +426,9 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   //   - Non-uploaded cell in mixed mode: full overlay with white
   //     placeholder (wipes any AI bleed; signals failed upload)
   //   - Non-uploaded cell in pure-prompt mode: label-band only
-  //     (preserves the AI's illustration)
+  //     (preserves the AI's illustration), PLUS a row-gutter wipe
+  //     beneath the cell so any AI-rendered label text that overflowed
+  //     into the gutter doesn't survive next to our composite label
   for (const card of cards) {
     const rect = cellRect(layout, card.index);
     const uploadedBytes = uploadByIndex.get(card.index);
@@ -444,7 +451,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
         })
           .png()
           .toBuffer();
-        wipeOverlaysForUploads.push({ input: wipePng, top: wipeTop, left: wipeLeft });
+        wipeOverlays.push({ input: wipePng, top: wipeTop, left: wipeLeft });
       }
       const overlay =
         cardShape === 'circle'
@@ -460,6 +467,28 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     // risks blanking the disc if the layout-derived band misses by a
     // few pixels (the reference sample size for circle mode is small).
     if (cardShape === 'square') {
+      // Row-gutter wipe: AI label text that wrapped to two lines can
+      // render BELOW the cell's bottom edge and survive in the gutter
+      // between rows because our band overlay only covers the cell's
+      // own bottom 20%. Paint a white rectangle from the cell's bottom
+      // edge down to halfway across the gutter (or to the canvas edge
+      // for last-row cells) at the cell's own width. Horizontal extent
+      // is restricted to the cell's width — we deliberately don't wipe
+      // the column gutter, which the AI may legitimately use to anchor
+      // borders on adjacent columns.
+      if (gutterPad > 0) {
+        const wipeTop = rect.y + rect.h;
+        const wipeBottom = Math.min(layout.height, wipeTop + gutterPad);
+        const wipeH = Math.max(0, wipeBottom - wipeTop);
+        if (wipeH > 0) {
+          const wipePng = await sharp({
+            create: { width: rect.w, height: wipeH, channels: 4, background: WHITE },
+          })
+            .png()
+            .toBuffer();
+          wipeOverlays.push({ input: wipePng, top: wipeTop, left: rect.x });
+        }
+      }
       const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, rect.w, rect.h);
       overlays.push({ input: overlay, top: rect.y + topOffset, left: rect.x });
     }
@@ -469,7 +498,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   // composites overlays in array order, so prepending the wipe array
   // gives us the correct paint order: base → wipes → cell overlays →
   // label-band overlays.
-  const finalOverlays = [...wipeOverlaysForUploads, ...overlays];
+  const finalOverlays = [...wipeOverlays, ...overlays];
 
   if (finalOverlays.length === 0) {
     return await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).png().toBuffer();

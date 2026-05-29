@@ -382,7 +382,7 @@ export async function POST(req: NextRequest) {
         offending_card_index: 'offending_card_index' in validation ? validation.offending_card_index : undefined,
         retries_so_far: 0,
       });
-      const retryPrompt = `${user}\n\nThe previous attempt was rejected for this reason: ${validation.reason} Return EXACTLY ${totalCards} cards. Fix the offending entry by replacing the icon_concept with a single bold central icon/symbol on a dark background. No text, no scenes, no people, no UI.`;
+      const retryPrompt = `${user}\n\nThe previous attempt was rejected for this reason: ${validation.reason}\n\nReturn EXACTLY ${totalCards} cards. Fix ONLY the offending entry to satisfy the reason above; keep the other entries as-is. Re-read the HARD STRUCTURAL CAPS and FORBIDDEN icon_concept PATTERNS at the top of the system prompt and comply with them this time.`;
       raw = await callLlm(retryPrompt, 0.5);
       try {
         const parsedJson = parseLlmJson(raw);
