@@ -365,6 +365,7 @@ function VoiceoverStudio() {
 
       // 1) Presign — server returns the R2 PUT URL + the keys we'll
       //    later register against media_assets.
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch(`/api/projects/${projectId}/voiceover-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -377,6 +378,7 @@ function VoiceoverStudio() {
       const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
 
       // 2) PUT bytes straight to R2 — never touches our API route.
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL — file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': 'audio/wav' },
@@ -386,6 +388,7 @@ function VoiceoverStudio() {
 
       // 3) Register the media_assets row. workspace_id is copied from
       //    the parent project by the /media POST handler.
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media — RPC
       const registerRes = await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -468,6 +471,7 @@ function VoiceoverStudio() {
     if (saved) { setApiKey(saved); loadVoices(saved); }
     else {
       // Try server-side env var
+      // eslint-disable-next-line no-restricted-syntax -- GET .then, loads key status
       fetch('/api/settings/key-status').then(r => r.json()).then(data => {
         if (data.elevenlabs) { setApiKey('__server__'); loadVoices(''); }
       }).catch(() => {});
@@ -502,6 +506,7 @@ function VoiceoverStudio() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts
         const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
         if (cancelled || !scriptsRes.ok) return;
         const scriptsData = await scriptsRes.json();
@@ -524,6 +529,7 @@ function VoiceoverStudio() {
   // tab strip can hide the Google tab entirely when it's not configured.
   // See _plans/2026-05-25-google-tts-voiceover-provider.md.
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads Google TTS voice list
     fetch('/api/tts/voices?provider=google&languageCode=en-US')
       .then((r) => r.json())
       .then((data) => {
@@ -557,6 +563,7 @@ function VoiceoverStudio() {
   } | null>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads workspace TTS settings
     fetch('/api/workspace/tts-settings')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -629,6 +636,7 @@ function VoiceoverStudio() {
 
   async function loadGoogleVoicesForLanguage(languageCode: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads voice list by language
       const res = await fetch(`/api/tts/voices?provider=google&languageCode=${encodeURIComponent(languageCode)}`);
       if (!res.ok) return;
       const data = await res.json();
@@ -699,6 +707,7 @@ function VoiceoverStudio() {
 
   async function loadVoices(key: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads ElevenLabs voices
       const res = await fetch('/api/elevenlabs/voices', {
         headers: { 'x-eleven-api-key': key },
       });
@@ -709,6 +718,7 @@ function VoiceoverStudio() {
       toast.success(`Loaded ${data.voices?.length} voices`);
 
       // Load subscription info
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads ElevenLabs subscription
       const subRes = await fetch('/api/elevenlabs/subscription', { headers: { 'x-eleven-api-key': key } });
       if (subRes.ok) setSubscription(await subRes.json());
     } catch (err: unknown) {
@@ -750,6 +760,7 @@ function VoiceoverStudio() {
         const isGemini =
           selectedGoogleVoice.voice.tier === 'gemini-25-flash-tts' ||
           selectedGoogleVoice.voice.tier === 'gemini-31-flash-tts';
+        // eslint-disable-next-line no-restricted-syntax -- TTS gen RPC: awaits and uses response (audio URL)
         res = await fetch('/api/tts/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -767,6 +778,7 @@ function VoiceoverStudio() {
       } else {
         // Legacy ElevenLabs endpoint — internally dispatches now but keeps
         // the same external shape for backward compatibility.
+        // eslint-disable-next-line no-restricted-syntax -- ElevenLabs gen RPC: awaits and uses response (audio URL)
         res = await fetch('/api/elevenlabs/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -855,6 +867,7 @@ function VoiceoverStudio() {
   async function saveToProject() {
     if (!projectId || !audioUrl) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register voiceover media — RPC
       await fetch(`/api/projects/${projectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -913,6 +926,7 @@ function VoiceoverStudio() {
       url = googlePreviewCacheRef.current.get(cacheKey);
       if (!url) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- GET, preview voice TTS
           const res = await fetch(
             `/api/tts/preview?provider=google&voiceId=${encodeURIComponent(entry.voice.voiceId)}` +
               `&tier=${encodeURIComponent(entry.voice.tier)}` +

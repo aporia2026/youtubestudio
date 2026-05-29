@@ -240,6 +240,7 @@ function GeneratorPage() {
     setStylePreset(fromUrl);
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads styles
         const res = await fetch('/api/production-doc/styles');
         if (!res.ok) return;
         const data = (await res.json()) as { styles?: Array<{ id: string; label: string }> };
@@ -303,6 +304,7 @@ function GeneratorPage() {
     setScript('');
     refineAbortRef.current = new AbortController();
     try {
+      // eslint-disable-next-line no-restricted-syntax -- script-refine RPC: awaits and uses response
       const res = await fetch('/api/generate/script/refine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -470,6 +472,7 @@ function GeneratorPage() {
     setRefs(prev => [...prev, { id: refId, url, title: 'Deep analyzing...', channelTitle: '', viewCount: 0, thumbnailUrl: '', styleAnalysis: null, analysis: null, loading: true }]);
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- youtube-analyze RPC: awaits and uses response
       const res = await fetch('/api/youtube/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -576,6 +579,7 @@ function GeneratorPage() {
       }
     } catch {}
 
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads niches
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       // Only set default niche if no prefill was applied. Functional setter
@@ -613,6 +617,7 @@ function GeneratorPage() {
     let mergedContext = context;
     if (templateId) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads template
         const tplRes = await fetch(`/api/templates/${templateId}`);
         if (tplRes.ok) {
           const { template } = await tplRes.json();
@@ -644,6 +649,7 @@ function GeneratorPage() {
         // Non-streaming validated path. Round-trips once per attempt; can
         // take 1–5 minutes depending on threshold + attempts.
         toast.info(`Self-QA running — scoring at threshold ${qaThreshold}. This may take a few minutes…`);
+        // eslint-disable-next-line no-restricted-syntax -- script-validated RPC (long-running): awaits and uses response
         const res = await fetch('/api/generate/script-validated', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -749,6 +755,7 @@ function GeneratorPage() {
         return;
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- script gen RPC: awaits and uses response
       const res = await fetch('/api/generate/script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -908,6 +915,7 @@ function GeneratorPage() {
             let scriptId: string | null = null;
             try {
               if (existingProjectId) {
+                // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new script — RPC
                 const r = await fetch(`/api/projects/${existingProjectId}/scripts`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -917,6 +925,7 @@ function GeneratorPage() {
                 const data = await r.json();
                 scriptId = data.script?.id ?? null;
               } else {
+                // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new project — RPC
                 const r = await fetch('/api/projects', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -1673,6 +1682,7 @@ function GeneratorPage() {
                         return;
                       }
                       try {
+                        // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new project — RPC
                         const res = await fetch('/api/projects', {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },

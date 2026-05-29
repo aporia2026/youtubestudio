@@ -45,8 +45,11 @@ export default function ShortsPage() {
     (async () => {
       try {
         const [projRes, voiceRes, shortsRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads projects
           fetch('/api/projects?limit=100'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads ElevenLabs voices
           fetch('/api/elevenlabs/voices'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads shorts
           fetch('/api/shorts?limit=50'),
         ]);
         if (cancelled) return;
@@ -70,6 +73,7 @@ export default function ShortsPage() {
       return;
     }
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads scripts
     fetch(`/api/projects/${selectedProjectId}/scripts`)
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(d => {
@@ -87,6 +91,7 @@ export default function ShortsPage() {
 
   async function refreshShorts() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, reloads shorts list
       const res = await fetch('/api/shorts?limit=50');
       if (res.ok) setShorts((await res.json()).shorts || []);
     } catch {
@@ -102,6 +107,7 @@ export default function ShortsPage() {
     setError(null);
     setExtracting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new short — RPC
       const res = await fetch(`/api/scripts/${selectedScriptId}/short`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -130,6 +136,7 @@ export default function ShortsPage() {
     setError(null);
     setVoiceoverBusy(prev => new Set(prev).add(shortId));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- voiceover-gen RPC: awaits and uses response
       const res = await fetch(`/api/shorts/${shortId}/voiceover`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -155,6 +162,7 @@ export default function ShortsPage() {
     if (!confirm('Delete this Short?')) return;
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for short — RPC
       const res = await fetch(`/api/shorts/${shortId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await refreshShorts();
@@ -506,6 +514,7 @@ function ShortRenderRow({ short }: { short: ShortRow }) {
     let cancelled = false;
     const tick = async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, polls render status
         const res = await fetch(`/api/render/short?renderId=${renderId}`, { cache: 'no-store' });
         if (!res.ok) {
           if (cancelled) return;
@@ -541,6 +550,7 @@ function ShortRenderRow({ short }: { short: ShortRow }) {
     setProgress(0);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- render RPC: awaits and uses response (render id)
       const res = await fetch('/api/render/short', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

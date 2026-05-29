@@ -249,6 +249,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
     const ctrl = new AbortController();
     refsAbortRef.current = ctrl;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET (abortable), loads refs for style
       const res = await fetch(`/api/production-doc/styles/${styleId}/refs`, { signal: ctrl.signal });
       if (!res.ok) {
         if (res.status !== 404) {
@@ -271,6 +272,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
    *  freshly-opened "Create new style" form. Returns the draft id. */
   const ensureDraftStyle = useCallback(async (): Promise<string> => {
     if (draftStyleId) return draftStyleId;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new style — RPC
     const res = await fetch('/api/production-doc/styles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -309,6 +311,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
     try {
       const styleId = await ensureDraftStyle();
       // Step 1: presign + DB row insert
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL for ref
       const presignRes = await fetch(`/api/production-doc/styles/${styleId}/refs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -325,6 +328,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
       }
       // Step 2: PUT the actual bytes to R2 directly. Same-origin
       // cookies aren't needed; the signed URL carries the auth.
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL — file upload
       const putRes = await fetch(presignData.uploadUrl, {
         method: 'PUT',
         body: file,
@@ -347,6 +351,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
       const refId = presignData.ref?.id as string | undefined;
       if (refId) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- awaited POST to validate ref — RPC
           const valRes = await fetch(
             `/api/production-doc/styles/${styleId}/refs/${refId}/validate`,
             { method: 'POST' },
@@ -380,6 +385,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
     const ok = await confirmToast('Remove this reference image?', { destructive: true });
     if (!ok) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for ref — RPC
       const res = await fetch(`/api/production-doc/styles/${draftStyleId}/refs/${refId}`, {
         method: 'DELETE',
       });
@@ -406,6 +412,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
   /** Refresh the test-render gallery for the active style. */
   const loadTestRendersFor = useCallback(async (styleId: string) => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads test render
       const res = await fetch(`/api/production-doc/styles/${styleId}/test-render`);
       if (!res.ok) return;
       const data = await res.json();
@@ -453,6 +460,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
     const startedFor = targetId;
     setTestRenderBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST for style action — RPC (test-render)
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -528,6 +536,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
   const handleClearRejection = useCallback(async (refId: string) => {
     if (!draftStyleId) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for ref — RPC
       const res = await fetch(`/api/production-doc/styles/${draftStyleId}/refs/${refId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -601,6 +610,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
         // (b) draftStyleId is null — no refs uploaded; create a draft
         //     and immediately save it in two requests (POST → PATCH).
         const targetId = draftStyleId ?? await ensureDraftStyle();
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for style — RPC
         const res = await fetch(`/api/production-doc/styles/${targetId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -615,6 +625,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
       } else {
         // Edit-existing path. Existing styles keep their draft=false
         // state and we just bump version + write the changed fields.
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for style — RPC
         const res = await fetch(`/api/production-doc/styles/${editing}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -650,6 +661,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
     if (!ok) return;
     setBusy(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for style — RPC
       const res = await fetch(`/api/production-doc/styles/${id}`, { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

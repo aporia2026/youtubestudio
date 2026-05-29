@@ -103,8 +103,11 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
   async function loadData() {
     try {
       const [projRes, linksRes, collabRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads review project
         fetch(`/api/review/projects/${id}`),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads share links
         fetch(`/api/review/projects/${id}/share`),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads collaborators
         fetch(`/api/team/collaborators`),
       ]);
       if (projRes.ok) {
@@ -171,6 +174,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
 
     try {
       // 1. Get presigned URL
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL for new version
       const presignRes = await fetch(`/api/review/projects/${id}/versions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,6 +236,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
               const formData = new FormData();
               formData.append('file', blob, 'thumbnail.jpg');
               formData.append('type', 'image');
+              // eslint-disable-next-line no-restricted-syntax -- awaited POST upload — RPC
               const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
               if (uploadRes.ok) {
                 const data = await uploadRes.json();
@@ -244,6 +249,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
         URL.revokeObjectURL(objectUrl);
 
         // 4. Update version with metadata
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for version — RPC
         await fetch(`/api/review/projects/${id}/versions`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -266,6 +272,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
 
   async function handleStatusChange(status: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for project — RPC
       const res = await fetch(`/api/review/projects/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -294,6 +301,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
       // Path B: New collaborator inline
       else if (newName.trim()) {
         const palette = ['#7c3aed', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#8b5cf6', '#14b8a6'];
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new collaborator — RPC
         const cRes = await fetch('/api/team/collaborators', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -318,6 +326,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
       }
 
       // Create the share link tied to this collaborator
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new share link — RPC
       const linkRes = await fetch(`/api/review/projects/${id}/share`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -332,6 +341,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
         throw new Error(err.error || 'Failed to create link');
       }
       // Reload to get joined collaborator info
+      // eslint-disable-next-line no-restricted-syntax -- GET, refresh share links
       const refresh = await fetch(`/api/review/projects/${id}/share`);
       if (refresh.ok) setShareLinks(await refresh.json());
 
@@ -357,6 +367,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
   async function handleRevokeAccess(linkId: string, name: string) {
     if (!confirm(`Revoke ${name}'s access? Their link will stop working immediately.`)) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for share link — RPC
       await fetch(`/api/review/projects/${id}/share`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
@@ -372,6 +383,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
   async function handleDeleteVersion(versionId: string, versionNumber: number) {
     if (!confirm(`Delete v${versionNumber}? The video will be removed permanently from R2 storage and all comments on this version will be deleted. This cannot be undone.`)) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for version — RPC
       const res = await fetch(`/api/review/projects/${id}/versions/${versionId}`, { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -388,6 +400,7 @@ export default function ReviewProjectPage({ params }: { params: Promise<{ id: st
     if (!confirm('Delete this review project and all its versions?')) return;
     setDeleting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for project — RPC
       await fetch(`/api/review/projects/${id}`, { method: 'DELETE' });
       toast.success('Project deleted');
       router.push('/reviews');

@@ -96,9 +96,13 @@ export default function ProjectDetailPage() {
     setLoading(true);
     try {
       const [projRes, scriptsRes, mediaRes, refsRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads project
         fetch(`/api/projects/${id}`),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts
         fetch(`/api/projects/${id}/scripts`),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads media
         fetch(`/api/projects/${id}/media`),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads references
         fetch(`/api/projects/${id}/references`),
       ]);
       const [proj, sc, med, ref] = await Promise.all([
@@ -121,6 +125,7 @@ export default function ProjectDetailPage() {
     if (!scriptContent.trim()) return;
     setSavingScript(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new script — RPC
       const res = await fetch(`/api/projects/${id}/scripts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -141,6 +146,7 @@ export default function ProjectDetailPage() {
     if (!mediaUrl.trim()) return;
     setAddingMedia(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media — RPC
       await fetch(`/api/projects/${id}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -166,6 +172,7 @@ export default function ProjectDetailPage() {
       form.append('file', file);
       form.append('type', type);
       form.append('projectId', id);
+      // eslint-disable-next-line no-restricted-syntax -- upload POST (multipart): awaits and uses response
       const res = await fetch('/api/upload', { method: 'POST', body: form });
       if (!res.ok) {
         // Surface the server's actual error so failures aren't silent.
@@ -188,6 +195,7 @@ export default function ProjectDetailPage() {
   async function uploadVoiceoverFile(file: File) {
     setUploadingFile(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
       const presignRes = await fetch(`/api/projects/${id}/voiceover-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -200,6 +208,7 @@ export default function ProjectDetailPage() {
       const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
 
       // Direct PUT to R2 — file bytes never touch our API route.
+      // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL — file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type || 'audio/mpeg' },
@@ -209,6 +218,7 @@ export default function ProjectDetailPage() {
         throw new Error(`R2 upload failed (${putRes.status})`);
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media — RPC
       const res = await fetch(`/api/projects/${id}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -264,6 +274,7 @@ export default function ProjectDetailPage() {
     setLibraryLoading(true);
     setLibraryError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads voiceover library
       const res = await fetch(`/api/projects/${id}/voiceover-library`);
       if (!res.ok) throw new Error(`Failed to load library (${res.status})`);
       const data = await res.json();
@@ -279,6 +290,7 @@ export default function ProjectDetailPage() {
     if (attaching) return;
     setAttaching(item.id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to register media — RPC
       const res = await fetch(`/api/projects/${id}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -313,6 +325,7 @@ export default function ProjectDetailPage() {
     if (!ytUrl.trim()) return;
     setAddingRef(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to add reference — RPC
       await fetch(`/api/projects/${id}/references`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -326,12 +339,14 @@ export default function ProjectDetailPage() {
   }
 
   async function deleteMedia(assetId: string) {
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE — RPC
     await fetch(`/api/media/${assetId}`, { method: 'DELETE' });
     setMedia(m => m.filter(a => a.id !== assetId));
     toast.success('Removed');
   }
 
   async function deleteRef(refId: string) {
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE — RPC
     await fetch(`/api/references/${refId}`, { method: 'DELETE' });
     setRefs(r => r.filter(ref => ref.id !== refId));
     toast.success('Removed');

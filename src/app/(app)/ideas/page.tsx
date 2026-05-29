@@ -244,6 +244,7 @@ function IdeasPage() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads niches
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       // Functional setter so a parallel schedule-link prefill that resolved
@@ -304,6 +305,7 @@ function IdeasPage() {
     setAnalyzerPrefillApplied(true);
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads YouTube analysis
         const res = await fetch(`/api/analyze/youtube-video/${analysisId}`);
         if (!res.ok) {
           toast.error('Could not load analyzer context', {
@@ -382,6 +384,7 @@ function IdeasPage() {
     (async () => {
       setLibraryLoading(true);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads ideas library
         const res = await fetch('/api/ideas?limit=100');
         if (res.ok) {
           const data = await res.json();
@@ -396,6 +399,7 @@ function IdeasPage() {
     if (!confirm('Remove this saved idea?')) return;
     setDeletingLibId(id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for idea — RPC
       const res = await fetch(`/api/ideas/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
@@ -435,6 +439,7 @@ function IdeasPage() {
 
     try {
       // Only fetch metadata — NO deep AI analysis yet (that happens at generate time)
+      // eslint-disable-next-line no-restricted-syntax -- youtube-analyze RPC: awaits and uses response
       const res = await fetch('/api/youtube/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -479,6 +484,7 @@ function IdeasPage() {
           activeRefs.map(async (ref, idx) => {
             setGenStep(`Analyzing video ${idx + 1}/${activeRefs.length}: "${ref.title.slice(0, 40)}..."`);
             try {
+              // eslint-disable-next-line no-restricted-syntax -- youtube-analyze RPC: awaits and uses response
               const res = await fetch('/api/youtube/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -517,6 +523,7 @@ function IdeasPage() {
         setGenStep('Scraping Reddit discussions and top comments...');
         try {
           const subs = redditSubs.split(',').map(s => s.trim()).filter(Boolean);
+          // eslint-disable-next-line no-restricted-syntax -- reddit-research RPC: awaits and uses response
           const redditRes = await fetch('/api/research/reddit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -560,6 +567,7 @@ function IdeasPage() {
         ? selectedNiche!.keywords!
         : undefined;
       setGenStep('Generating ideas from all sources...');
+      // eslint-disable-next-line no-restricted-syntax -- generate-ideas RPC: awaits and uses response
       const res = await fetch('/api/generate/ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -598,6 +606,7 @@ function IdeasPage() {
         // Auto-persist all generated ideas to the database. If this generation is
         // linked to a series, tag the ideas with series_id + part_number so the
         // Script Generator can later pick up the right continuity context.
+        // eslint-disable-next-line no-restricted-syntax -- fire-and-forget .then to ideas/batch — bug-class candidate; deferred because the .then handler needs the response.inserted count to set UI state. Migrate when mutate() supports response callbacks.
         fetch('/api/ideas/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -622,6 +631,7 @@ function IdeasPage() {
 
   async function saveIdea(idea: VideoIdea, idx: number) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new idea — RPC
       const res = await fetch('/api/ideas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -643,6 +653,7 @@ function IdeasPage() {
       'why_it_will_perform' in idea && idea.why_it_will_perform ? `Why it performs: ${idea.why_it_will_perform}` : null,
     ].filter(Boolean).join('\n\n');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new schedule item — RPC
       const res = await fetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
