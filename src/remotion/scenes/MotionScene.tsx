@@ -27,6 +27,7 @@ import { LabelPopOn } from '../components/LabelPopOn';
 import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { MouthSwap } from '../components/MouthSwap';
 import { RealPhotoPunchIn } from '../components/RealPhotoPunchIn';
+import { ScribbleDraw, type ScribbleDrawDirection } from '../components/ScribbleDraw';
 import { SceneTransition } from '../components/SceneTransition';
 import {
   constantRateVisemeSequence,
@@ -78,6 +79,10 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
   );
   const labelPopBeats = useMemo(
     () => beats.filter((b) => b.kind === 'label_pop'),
+    [beats],
+  );
+  const scribbleDrawBeats = useMemo(
+    () => beats.filter((b) => b.kind === 'scribble_draw'),
     [beats],
   );
 
@@ -194,6 +199,50 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
               baseUrl={baseForMouthSwap!}
               sequence={sequence}
               anchor={shot.mouthAnchor}
+              diagnose={shotIndex < 5 && idx === 0}
+            />
+          </Sequence>
+        );
+      })}
+
+      {/* Scribble-draw beats. The component renders a white-cover
+          rectangle that progressively masks AWAY from the base image
+          beneath it, simulating "drawing in progress." Mounted ABOVE
+          the static base / mouth-swap layer but BELOW labels and
+          real-photo punches — labels should land on the revealed
+          canvas, not on the white cover. Direction comes from
+          beat.payload?.direction (one of 'left-to-right' /
+          'top-to-bottom' / 'radial-out'); default left-to-right. */}
+      {scribbleDrawBeats.map((beat, idx) => {
+        const beatStartFrame = Math.max(0, Math.round((beat.startMs / 1000) * fps));
+        const beatDurationFrames = Math.max(
+          1,
+          Math.round((beat.durationMs / 1000) * fps),
+        );
+        const rawDirection = (beat.payload as { direction?: string } | undefined)?.direction;
+        const direction: ScribbleDrawDirection =
+          rawDirection === 'top-to-bottom' || rawDirection === 'radial-out'
+            ? rawDirection
+            : 'left-to-right';
+        if (shotIndex < 5 && idx === 0) {
+          console.info('[paint-explainer-v1 scribble-draw]', {
+            shotIndex,
+            beat_idx: idx,
+            direction,
+            duration_ms: beat.durationMs,
+          });
+        }
+        return (
+          <Sequence
+            key={`scribble-draw-${idx}`}
+            from={beatStartFrame}
+            durationInFrames={beatDurationFrames}
+            layout="none"
+          >
+            <ScribbleDraw
+              durationInFrames={beatDurationFrames}
+              direction={direction}
+              coverColor={brand.backgroundColor}
               diagnose={shotIndex < 5 && idx === 0}
             />
           </Sequence>
