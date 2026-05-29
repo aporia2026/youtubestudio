@@ -24,7 +24,7 @@
  * currently-selected cell for visual lock-in.
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   applyLabelCase,
   computeCellGeometry,
@@ -140,6 +140,12 @@ function useCustomFontRegistration(config: FlexIconGridConfig): void {
       const cellStyle = cell.labelStyle;
       if (cellStyle?.font === 'custom' && cellStyle.customFontUrl) {
         wanted.add(cellStyle.customFontUrl);
+      }
+      // Phase 4.13: badge custom font URLs subscribe to the registry
+      // too so the preview chip-row + rendered preview render the
+      // right face.
+      if (cell.badge?.font === 'custom' && cell.badge.customFontUrl) {
+        wanted.add(cell.badge.customFontUrl);
       }
     }
 
@@ -367,12 +373,13 @@ export function FlexIconGridLivePreview({
               />
             ),
           )}
-          {cellViews.map(({ cell, shadow }) =>
+          {cellViews.map(({ cell, geom, shadow }) =>
             shadow ? (
               <CellShadowFilter
                 key={`shadow-${cell.index}`}
                 id={`fg-preview-shadow-${cell.index}`}
                 shadow={shadow}
+                shapeSize={geom.shapeW}
               />
             ) : null,
           )}
@@ -736,6 +743,12 @@ function CellShapeEl({
  * `buildBadgeOverlay` so the on-screen preview lines up with the
  * rendered PNG. Text gets pre-uppercased here so the chunky bundled
  * Anton fallback reads consistently with the server-side render.
+ *
+ * Phase 4.13: pill width is now measured from the actual rendered
+ * `<text>` element via `getBBox()` instead of an Anton-only glyph-
+ * width estimate. This makes the on-screen preview pixel-accurate
+ * for any font, including custom workspace fonts, and removes the
+ * ~5 % drift the estimate produced on long badges.
  */
 function CornerBadge({
   badge,
@@ -750,12 +763,37 @@ function CornerBadge({
   const padX = Math.round(pillH * 0.5);
   const inset = Math.max(6, Math.round(cellMin * 0.03));
   const text = badge.text.toUpperCase().slice(0, 8);
-  // Estimate width from glyph count — Anton's average UC glyph is
-  // ~0.46 em wide. We approximate; the rendered PNG uses real Pango
-  // metrics, so the preview can be ~5 % off on long badges but the
-  // corner placement stays correct.
+  const fontFamily =
+    badge.font === 'custom' && badge.customFontUrl
+      ? `'${customFontFamilyName(badge.customFontUrl)}', 'Anton', Impact, sans-serif`
+      : badge.font
+        ? resolveFontCssFor({ font: badge.font })
+        : "'Anton', Impact, 'Arial Black', sans-serif";
+
+  // Glyph-width estimate used as the FIRST-PAINT width; replaced by
+  // the real getBBox measurement once the text element mounts. The
+  // estimate keeps the badge from popping in at zero width on the
+  // initial frame (which would briefly show a degenerate pill).
   const estTextW = Math.round(text.length * fontSize * 0.46);
-  const pillW = estTextW + 2 * padX;
+  const [measuredTextW, setMeasuredTextW] = useState<number | null>(null);
+  const textRef = useRef<SVGTextElement | null>(null);
+
+  // Re-measure when text, font size, or font family changes —
+  // anything that could change the rendered glyph metrics.
+  useLayoutEffect(() => {
+    if (!textRef.current) return;
+    try {
+      const bbox = textRef.current.getBBox();
+      if (bbox.width > 0) setMeasuredTextW(bbox.width);
+    } catch {
+      // getBBox can throw on detached / not-yet-laid-out elements
+      // in some browsers — fall back to the estimate silently.
+    }
+  }, [text, fontSize, fontFamily]);
+
+  const textW = measuredTextW ?? estTextW;
+  const pillW = Math.round(textW + 2 * padX);
+
   let x: number;
   let y: number;
   if (badge.corner === 'top-left') {
@@ -783,11 +821,12 @@ function CornerBadge({
         fill={badge.background}
       />
       <text
+        ref={textRef}
         x={x + pillW / 2}
         y={y + pillH / 2}
         fontSize={fontSize}
         fontWeight={900}
-        fontFamily="'Anton', Impact, 'Arial Black', sans-serif"
+        fontFamily={fontFamily}
         fill={badge.color}
         textAnchor="middle"
         dominantBaseline="central"
@@ -803,8 +842,16 @@ function CornerBadge({
  * shape. Mirrors the composer's `emitShadowFilterDef` exactly so the
  * live preview and rendered PNG cast the same shadow.
  */
-function CellShadowFilter({ id, shadow }: { id: string; shadow: NonNullable<ShadowStyle> }) {
-  const region = computeShadowFilterRegion(shadow);
+function CellShadowFilter({
+  id,
+  shadow,
+  shapeSize,
+}: {
+  id: string;
+  shadow: NonNullable<ShadowStyle>;
+  shapeSize: number;
+}) {
+  const region = computeShadowFilterRegion(shadow, shapeSize);
   return (
     <filter
       id={id}

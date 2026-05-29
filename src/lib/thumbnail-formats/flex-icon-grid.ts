@@ -214,6 +214,18 @@ export interface BadgeStyle {
   corner: BadgeCorner;
   background: string;
   color: string;
+  /** Phase 4.13: optional badge font override. Falls back to Anton
+   *  (chunky, reads at small sizes) when undefined — the right
+   *  default for numeric-rank / status-flag use. A workspace-
+   *  registered custom font lets a brand-aware badge match the
+   *  thumbnail's overall typography. */
+  font?: LabelFont;
+  /** Phase 4.13: required when `font === 'custom'`. Same shape as
+   *  `LabelStyle.customFontUrl` — composer fetches via the byte
+   *  cache, browser registers via FontFace. */
+  customFontUrl?: string;
+  /** Phase 4.13: display label for the registered-font chip. */
+  customFontLabel?: string;
 }
 
 /**
@@ -431,6 +443,38 @@ export interface FlexIconGridConfig {
 /** Canonical YouTube thumbnail canvas. Same as the sibling formats. */
 export const DEFAULT_CANVAS = { width: 1280, height: 720 } as const;
 
+/**
+ * Phase 4.13: aspect ratio presets. Each entry maps a chip label
+ * (and its primary use case) to a width × height pair. The reference
+ * 16:9 stays the default; the others let a user repurpose the same
+ * grid as a Shorts vertical, an Instagram square, or a legacy 4:3
+ * card without manually editing the canvas dimensions. Picked sizes
+ * are all reasonable upload resolutions for each platform — large
+ * enough for crisp downscaling, small enough that Lambda renders
+ * stay under the function timeout for a typical 5×3 grid.
+ */
+export interface AspectRatioPreset {
+  id: string;
+  label: string;
+  description: string;
+  width: number;
+  height: number;
+}
+
+export const ASPECT_RATIO_PRESETS: readonly AspectRatioPreset[] = [
+  { id: '16-9', label: '16:9', description: 'YouTube thumbnail (default)', width: 1280, height: 720 },
+  { id: '1-1', label: '1:1', description: 'Instagram square', width: 1080, height: 1080 },
+  { id: '9-16', label: '9:16', description: 'YouTube Shorts / TikTok vertical', width: 720, height: 1280 },
+  { id: '4-3', label: '4:3', description: 'Legacy 4:3 card', width: 1280, height: 960 },
+] as const;
+
+/** Look up an aspect ratio preset by `id`. Returns undefined for
+ *  unknown ids — caller decides whether to fall back to 16:9 or
+ *  preserve the current canvas. */
+export function getAspectRatioPreset(id: string): AspectRatioPreset | undefined {
+  return ASPECT_RATIO_PRESETS.find((p) => p.id === id);
+}
+
 /** Sensible defaults for the reference channels' look. Cell gap of 0
  *  matches the `Paint Explainer` and `Evaluator` edge-to-edge style;
  *  users who want gaps bump it via the panel. Outer padding 0 lets
@@ -469,6 +513,19 @@ export const DEFAULT_SHADOW: ShadowStyle = {
   blur: 12,
   color: '#000000',
   opacity: 0.35,
+};
+
+/** Phase 4.13: starter shadow used when a user picks "Custom" on a
+ *  cell that has no inherited default. Lighter than `DEFAULT_SHADOW`
+ *  (smaller offset, more transparent) so the override visibly differs
+ *  from the canvas-level default — the user can then dial it up if
+ *  they want a stronger cast. Picking the same defaults as the
+ *  canvas-level toggle would mask the cell-specific override. */
+export const STARTER_CELL_SHADOW: ShadowStyle = {
+  offsetY: 4,
+  blur: 6,
+  color: '#000000',
+  opacity: 0.2,
 };
 
 /**
@@ -663,13 +720,33 @@ export function resolveCellShadow(
  * `CellShadowFilter` import this so they emit the exact same region —
  * important so the preview's filter doesn't clip when the rendered
  * PNG's wouldn't.
+ *
+ * Phase 4.13: optional `shapeSize` parameter converts pixel-valued
+ * `offsetY` / `blur` into accurate percentages relative to the
+ * filtered element's bounding box. Without it we fall back to the
+ * Phase-4.12 "1 px ≈ 1 %" heuristic, which over-pads on large cells
+ * and under-pads on very small ones. Always passing `shapeSize`
+ * gives a tight region that scales correctly across grid sizes.
  */
-export function computeShadowFilterRegion(shadow: NonNullable<ShadowStyle>): {
+export function computeShadowFilterRegion(
+  shadow: NonNullable<ShadowStyle>,
+  shapeSize?: number,
+): {
   x: number; y: number; w: number; h: number;
 } {
-  const padFraction = 2 * shadow.blur + Math.abs(shadow.offsetY);
-  const padPct = Math.max(25, Math.ceil(padFraction));
-  const downExtra = shadow.offsetY > 0 ? Math.ceil(shadow.offsetY) : 0;
+  // When shapeSize is known we can convert pixel displacements to
+  // exact percentages of the filtered shape. Multiplied by 200 since
+  // a Gaussian's 95th-percentile reach is ~2σ — `blur` IS σ, so the
+  // visible halo extends ~2*blur on each side. Plus full offset.
+  const pixelPad = 2 * shadow.blur + Math.abs(shadow.offsetY);
+  const padPct = shapeSize && shapeSize > 0
+    ? Math.max(25, Math.ceil((pixelPad / shapeSize) * 100))
+    : Math.max(25, Math.ceil(pixelPad));
+  const downExtra = shadow.offsetY > 0
+    ? shapeSize && shapeSize > 0
+      ? Math.ceil((shadow.offsetY / shapeSize) * 100)
+      : Math.ceil(shadow.offsetY)
+    : 0;
   return {
     x: -padPct,
     y: -padPct,
@@ -1234,11 +1311,31 @@ function parseBadge(v: unknown): BadgeStyle | null | undefined {
   const corner: BadgeCorner = SUPPORTED_BADGE_CORNERS.includes(o.corner as BadgeCorner)
     ? (o.corner as BadgeCorner)
     : 'top-right';
+  // Phase 4.13: badge font is optional; only kept when it's a known
+  // token. Custom URL only kept when font === 'custom' — same
+  // posture as label / title bar / subtitle parsers, so a stale URL
+  // can't bleed through after switching to a bundled font.
+  const font: LabelFont | undefined =
+    typeof o.font === 'string' &&
+    (SUPPORTED_LABEL_FONTS as readonly string[]).includes(o.font)
+      ? (o.font as LabelFont)
+      : undefined;
+  const customFontUrl =
+    font === 'custom' && typeof o.customFontUrl === 'string'
+      ? o.customFontUrl
+      : undefined;
+  const customFontLabel =
+    font === 'custom' && typeof o.customFontLabel === 'string'
+      ? o.customFontLabel
+      : undefined;
   return {
     text: text.slice(0, 8),
     corner,
     background: stringOr(o.background, '#fbbf24'),
     color: stringOr(o.color, '#0a0a0a'),
+    font,
+    customFontUrl,
+    customFontLabel,
   };
 }
 

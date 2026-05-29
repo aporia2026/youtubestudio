@@ -27,7 +27,9 @@ import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
 import {
+  ASPECT_RATIO_PRESETS,
   DEFAULT_SHADOW,
+  STARTER_CELL_SHADOW,
   getSpanConflicts,
   makeDefaultConfig,
   type CellBackgroundSpec,
@@ -765,6 +767,32 @@ export function FlexIconGridPanel({
             </button>
           ))}
         </div>
+        {/* Phase 4.13: aspect ratio presets. Picking one updates the
+            canvas dimensions; the grid re-flows automatically since
+            the layout math is purely proportional. Cell contents
+            survive the switch — only the rendered canvas changes. */}
+        <div style={{ marginTop: 10 }}>
+          <label style={labelStyle}>Aspect ratio</label>
+          <div style={chipRowStyle}>
+            {ASPECT_RATIO_PRESETS.map((preset) => {
+              const active = config.width === preset.width && config.height === preset.height;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() =>
+                    updateConfig({ width: preset.width, height: preset.height })
+                  }
+                  style={chipStyle(active)}
+                  title={`${preset.description} (${preset.width}×${preset.height})`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </section>
 
       <section style={sectionStyle}>
@@ -1270,9 +1298,15 @@ export function FlexIconGridPanel({
                 }
                 onClick={() =>
                   updateCell(selectedCell.index, {
+                    // Phase 4.13: seed from the canvas default first
+                    // (so a per-cell tweak starts where the rest of
+                    // the grid is); fall back to STARTER_CELL_SHADOW
+                    // — a lighter "starter" — when there is no
+                    // default so the override visibly differs from
+                    // turning the toggle on for the whole grid.
                     shadow: selectedCell.shadow && selectedCell.shadow !== null
                       ? selectedCell.shadow
-                      : (config.defaultShadow ?? DEFAULT_SHADOW),
+                      : (config.defaultShadow ?? STARTER_CELL_SHADOW),
                   })
                 }
                 style={chipStyle(

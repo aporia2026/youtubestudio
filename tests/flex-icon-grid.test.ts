@@ -12,12 +12,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyLabelCase,
+  ASPECT_RATIO_PRESETS,
   computeCellGeometry,
   computeCellRect,
   computeGridLayout,
   computeRegions,
   DEFAULT_CANVAS,
   escapeSvgText,
+  getAspectRatioPreset,
   getConsumedCellIndexes,
   getSpanConflicts,
   computeShadowFilterRegion,
@@ -1295,5 +1297,94 @@ describe('Phase 4.12 — corner badges', () => {
     config.cells[0].badge = { text: 'TOO-LONG-9', corner: 'top-right', background: '#000000', color: '#ffffff' };
     const result = validateConfig(config);
     expect(result.ok).toBe(false);
+  });
+});
+
+// ─── Phase 4.13 — badge custom font ─────────────────────────────────────────
+
+describe('Phase 4.13 — badge custom font', () => {
+  it('round-trips badge font through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].badge = {
+      text: 'NEW', corner: 'top-right', background: '#fbbf24', color: '#0a0a0a',
+      font: 'bowlby-one',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].badge?.font).toBe('bowlby-one');
+  });
+  it('drops customFontUrl when badge.font is not custom', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        badge: {
+          text: 'NEW', corner: 'top-right', background: '#000', color: '#fff',
+          font: 'anton', customFontUrl: 'https://example.com/stale.ttf',
+        },
+      }],
+    });
+    expect(reparsed.cells[0].badge?.customFontUrl).toBeUndefined();
+  });
+  it('falls back to undefined for unsupported badge font', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        badge: {
+          text: 'NEW', corner: 'top-right', background: '#000', color: '#fff',
+          font: 'comic-sans',
+        },
+      }],
+    });
+    expect(reparsed.cells[0].badge?.font).toBeUndefined();
+  });
+});
+
+// ─── Phase 4.13 — shapeSize-aware shadow filter region ──────────────────────
+
+describe('Phase 4.13 — shapeSize-aware shadow filter region', () => {
+  it('converts pixel pad to accurate percentage when shapeSize provided', () => {
+    // 30px blur + 10px offset = 70px pad on a 200px shape = 35%
+    const region = computeShadowFilterRegion(
+      { offsetY: 10, blur: 30, color: '#000', opacity: 0.3 },
+      200,
+    );
+    expect(region.x).toBe(-35);
+    expect(region.y).toBe(-35);
+  });
+  it('still floors at 25% when pixel pad is tiny relative to shape', () => {
+    // 1px blur, 1px offset on a 500px shape = ~0.6% — floored to 25%
+    const region = computeShadowFilterRegion(
+      { offsetY: 1, blur: 1, color: '#000', opacity: 0.3 },
+      500,
+    );
+    expect(region.x).toBe(-25);
+  });
+  it('preserves Phase-4.12 behavior when shapeSize is omitted', () => {
+    const region = computeShadowFilterRegion(
+      { offsetY: 4, blur: 6, color: '#000', opacity: 0.3 },
+    );
+    // padFraction = 2*6 + 4 = 16; max(25, 16) = 25
+    expect(region.x).toBe(-25);
+  });
+});
+
+// ─── Phase 4.13 — aspect ratio presets ──────────────────────────────────────
+
+describe('Phase 4.13 — aspect ratio presets', () => {
+  it('exposes 16:9, 1:1, 9:16, and 4:3 presets', () => {
+    const ids = ASPECT_RATIO_PRESETS.map((p) => p.id);
+    expect(ids).toContain('16-9');
+    expect(ids).toContain('1-1');
+    expect(ids).toContain('9-16');
+    expect(ids).toContain('4-3');
+  });
+  it('getAspectRatioPreset returns the matching preset', () => {
+    const shorts = getAspectRatioPreset('9-16');
+    expect(shorts?.width).toBe(720);
+    expect(shorts?.height).toBe(1280);
+  });
+  it('getAspectRatioPreset returns undefined for unknown ids', () => {
+    expect(getAspectRatioPreset('21-9')).toBeUndefined();
   });
 });

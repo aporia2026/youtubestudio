@@ -393,10 +393,19 @@ export function buildBaseSvg(
     // Phase 4.11: collect each cell's resolved shadow so we can emit
     // one <filter> per shadowed cell. Cells without a shadow skip the
     // filter entirely so the existing flat-cell SVG is byte-identical.
+    // Phase 4.13: pass the cell's shape size to the filter region
+    // helper so percentage math is exact across grid sizes.
     const resolvedShadow = resolveCellShadow(cell, config);
     cellShadows.push(resolvedShadow);
     if (resolvedShadow) {
-      cellDefs.push(emitShadowFilterDef(resolvedShadow, cell.index));
+      const cellRectForShadow = computeCellRect(layout, cell.index, cell.cellSpan);
+      const cellLabelStyle = resolveLabelStyle(cell, config);
+      const cellGeomForShadow = computeCellGeometry(
+        cellRectForShadow.x, cellRectForShadow.y,
+        cellRectForShadow.w, cellRectForShadow.h,
+        cellLabelStyle.position,
+      );
+      cellDefs.push(emitShadowFilterDef(resolvedShadow, cell.index, cellGeomForShadow.shapeW));
     }
   }
   if (cellDefs.length > 0) {
@@ -640,8 +649,12 @@ function renderCellShape(
  * Floored at the prior fixed `-25%/150%` so even shadowless edges
  * still match the Phase-4.11 default region.
  */
-function emitShadowFilterDef(shadow: NonNullable<ShadowStyle>, cellIndex: number): string {
-  const region = computeShadowFilterRegion(shadow);
+function emitShadowFilterDef(
+  shadow: NonNullable<ShadowStyle>,
+  cellIndex: number,
+  shapeSize: number,
+): string {
+  const region = computeShadowFilterRegion(shadow, shapeSize);
   const id = `fg-cell-shadow-${cellIndex}`;
   return [
     `<filter id="${id}" x="${region.x}%" y="${region.y}%" width="${region.w}%" height="${region.h}%">`,
@@ -1233,7 +1246,15 @@ async function buildTitleBarOverlay(
  * If a future request needs branded badge text we can revisit.
  */
 async function buildBadgeOverlay(
-  badge: { text: string; corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'; background: string; color: string },
+  badge: {
+    text: string;
+    corner: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+    background: string;
+    color: string;
+    font?: LabelFont;
+    customFontUrl?: string;
+    customFontLabel?: string;
+  },
   cellRect: { x: number; y: number; w: number; h: number },
   fontResolver: CustomFontResolver,
 ): Promise<sharp.OverlayOptions | null> {
@@ -1248,18 +1269,24 @@ async function buildBadgeOverlay(
   const padX = Math.round(pillH * 0.5);
   const inset = Math.max(6, Math.round(cellMin * 0.03));
 
-  // Anton — bundled, chunky uppercase; ideal for short rank/status
-  // badges. Going through the same font resolver as labels gives us
-  // the FFI temp-file lifecycle for free.
+  // Phase 4.13: badge font is optional. Anton is the default —
+  // chunky, reads at small sizes; ideal for short rank/status
+  // badges — but a workspace custom font lets a brand-aware badge
+  // match the thumbnail's overall typography.
+  const badgeFont: LabelFont = badge.font ?? 'anton';
   const fontStyle: LabelStyle = {
     position: 'below',
-    font: 'anton',
+    font: badgeFont,
     case: 'upper',
     color: badge.color,
     stroke: null,
     maxLines: 1,
+    customFontUrl: badge.customFontUrl,
+    customFontLabel: badge.customFontLabel,
   };
-  const font = await resolveLabelFont(fontStyle, fontResolver, 'anton');
+  const fontFallback: Exclude<LabelFont, 'custom'> =
+    badgeFont === 'custom' ? 'anton' : badgeFont;
+  const font = await resolveLabelFont(fontStyle, fontResolver, fontFallback);
 
   // Render text via Pango.
   let textBuf = await sharp({
