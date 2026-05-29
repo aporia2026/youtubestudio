@@ -34,6 +34,7 @@ import {
   makeDefaultConfig,
   parseConfig,
   transposeCells,
+  validateConfig,
   type CellBackgroundSpec,
   type CellContent,
   type CellShape,
@@ -187,31 +188,54 @@ const SAVED_PALETTE_QUICK_LOAD_COUNT = 3;
 // ─── Export / import (Phase 4.17) ───────────────────────────────────────────
 
 /**
- * Phase 4.17: serialise the current config as a pretty-printed JSON
- * file and trigger a browser download. File name carries a date so
- * users with many exports can tell them apart in their downloads
- * folder. Object URL is revoked after the click so we don't leak.
+ * Phase 4.17 → 4.18: serialise the current config as pretty-printed
+ * JSON, derive a differentiating filename, and trigger a browser
+ * download. Filename composition:
+ *   `flex-icon-grid-<title-slug>-<YYYY-MM-DD>-<HHMM>.json`
+ * The title slug comes from the title bar text (when present) or
+ * "untitled" otherwise; the HHMM suffix ensures multiple exports
+ * within the same minute still differ. Object URL is revoked after
+ * click to avoid leaks.
  */
 function exportConfigJson(config: FlexIconGridConfig): void {
   const json = JSON.stringify(config, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const datePart = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const datePart = now.toISOString().slice(0, 10);
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const titleSlug = slugifyForFilename(config.titleBar?.text) || 'untitled';
   a.href = url;
-  a.download = `flex-icon-grid-${datePart}.json`;
+  a.download = `flex-icon-grid-${titleSlug}-${datePart}-${hhmm}.json`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** Phase 4.18: lower-kebab-case slug capped at 40 chars, suitable
+ *  for a download filename. Strips diacritics + symbols, collapses
+ *  whitespace, and drops trailing hyphens that would look ugly. */
+function slugifyForFilename(raw: string | undefined): string {
+  if (!raw) return '';
+  return raw
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
 /**
- * Phase 4.17: read the given file as text, parse as JSON, run
- * through the tolerant `parseConfig` (so older / sibling-version
- * shapes still import), and hand the result to the panel's
- * `setConfig`. Any failure surfaces as a toast so the user knows
- * the file didn't apply rather than silently doing nothing.
+ * Phase 4.17 → 4.18: read the given file as text, parse as JSON,
+ * run through the tolerant `parseConfig`, then validate the
+ * resulting config BEFORE handing it to `setConfig`. Catches the
+ * Phase-4.17 caveat where a row × col mismatch or bad hex colour
+ * would import "successfully" then break at render time. Errors
+ * surface as a toast with the validator's actionable reason so the
+ * user knows what to fix.
  */
 async function importConfigJson(
   file: File,
@@ -221,6 +245,11 @@ async function importConfigJson(
     const text = await file.text();
     const raw = JSON.parse(text) as unknown;
     const config = parseConfig(raw);
+    const result = validateConfig(config);
+    if (!result.ok) {
+      toast.error(`Import rejected: ${result.reason}`);
+      return;
+    }
     setConfig(config);
     toast.success(`Imported config from ${file.name}`);
   } catch (err) {
@@ -266,6 +295,12 @@ export function FlexIconGridPanel({
   // the steady state — set on every chip click, polite mode so it
   // doesn't interrupt the user mid-action.
   const [fontAnnouncement, setFontAnnouncement] = useState('');
+  // Phase 4.18: persistent "always snap to 15°" toggle for the cell
+  // rotation slider. When on, the slider step becomes 15 and the
+  // value clamps to multiples of 15 regardless of Shift. When off,
+  // step=1 with Shift-snap (Phase 4.17). Local to this panel — not
+  // saved to config since it's a UI preference, not a data choice.
+  const [rotationAlwaysSnap, setRotationAlwaysSnap] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -482,6 +517,37 @@ export function FlexIconGridPanel({
       rotation: undefined,
       labelStyle: undefined,
       cellSpan: undefined,
+    });
+  }
+
+  /**
+   * Phase 4.18: copy the selected cell's style fields to every other
+   * cell. "Style" means everything that's visual/decorative — shape,
+   * ring, shadow, rotation, labelStyle, badge — but NOT content,
+   * label text, or per-cell colour overrides (the user usually
+   * wants each cell to keep its own subject + colour). `cellSpan`
+   * stays out too since copying a 2×2 span to every cell would
+   * collapse the grid.
+   */
+  function applyStyleToAllCells(sourceIndex: number) {
+    setConfig((prev) => {
+      const source = prev.cells.find((c) => c.index === sourceIndex);
+      if (!source) return prev;
+      return {
+        ...prev,
+        cells: prev.cells.map((c) => {
+          if (c.index === sourceIndex) return c;
+          return {
+            ...c,
+            shape: source.shape,
+            ring: source.ring,
+            shadow: source.shadow,
+            rotation: source.rotation,
+            labelStyle: source.labelStyle,
+            badge: source.badge,
+          };
+        }),
+      };
     });
   }
 
@@ -1354,6 +1420,47 @@ export function FlexIconGridPanel({
             />
           )}
 
+          {/* Phase 4.18: per-cell label position override. The
+              composer cascades via `resolveLabelStyle` (defaults
+              merged then per-cell override). Picking "Use default"
+              clears the per-cell `position` field so the cell falls
+              back to the grid's `defaultLabel.position`. */}
+          <label style={labelStyle}>Label position (this cell)</label>
+          <div style={chipRowStyle}>
+            <button
+              type="button"
+              aria-pressed={selectedCell.labelStyle?.position === undefined}
+              onClick={() =>
+                updateCell(selectedCell.index, {
+                  labelStyle: selectedCell.labelStyle
+                    ? { ...selectedCell.labelStyle, position: undefined }
+                    : undefined,
+                })
+              }
+              style={chipStyle(selectedCell.labelStyle?.position === undefined)}
+            >
+              Use default ({config.defaultLabel.position})
+            </button>
+            {(['below', 'above', 'overlay', 'hidden'] as const).map((pos) => (
+              <button
+                key={pos}
+                type="button"
+                aria-pressed={selectedCell.labelStyle?.position === pos}
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    labelStyle: {
+                      ...(selectedCell.labelStyle ?? {}),
+                      position: pos,
+                    },
+                  })
+                }
+                style={chipStyle(selectedCell.labelStyle?.position === pos)}
+              >
+                {pos}
+              </button>
+            ))}
+          </div>
+
           {/* Phase 4.8a: per-cell font override. Lets a single cell
               pick its own bundled font or registered custom font
               independently of the grid's defaultLabel font. The
@@ -1555,10 +1662,14 @@ export function FlexIconGridPanel({
             )}
           </div>
 
-          {/* Phase 4.16: cell shape rotation. Slider from -180 to
-              +180 degrees plus quick-pick chips for common angles.
-              Rotates the shape + icon content but keeps the label
-              band horizontal so multi-cell grids stay readable. */}
+          {/* Phase 4.16 → 4.18: cell shape rotation. Slider from -180
+              to +180 degrees plus quick-pick chips for common angles
+              + a "Snap 15°" persistent toggle. When the toggle is on,
+              the slider always snaps to 15° increments (no Shift
+              required); when off, step=1 with Shift-snap is the
+              Phase-4.17 behaviour. Rotates the shape + icon content
+              but keeps the label band horizontal so multi-cell grids
+              stay readable. */}
           <div style={{ marginTop: 12 }}>
             <label style={labelStyle}>Cell rotation</label>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1566,31 +1677,42 @@ export function FlexIconGridPanel({
                 type="range"
                 min={-180}
                 max={180}
-                step={1}
+                step={rotationAlwaysSnap ? 15 : 1}
                 value={selectedCell.rotation ?? 0}
                 onChange={(e) => {
-                  // Phase 4.17: hold Shift while dragging to snap to
-                  // 15° increments — useful for hitting common angles
-                  // without releasing the slider. `InputEvent` only
-                  // exposes `shiftKey` on Mouse/Keyboard events, so we
-                  // narrow via a runtime check rather than a type
-                  // assertion. step={1} stays the default so non-Shift
-                  // drags still allow per-degree precision.
+                  // Phase 4.18: when the "Snap 15°" toggle is on, the
+                  // browser's step={15} already enforces snapping —
+                  // no extra rounding needed. When off, fall back to
+                  // the Phase-4.17 Shift-snap behaviour.
                   const raw = Number(e.target.value);
-                  const native = e.nativeEvent as { shiftKey?: boolean };
-                  const shifted = native.shiftKey === true;
-                  const next = shifted ? Math.round(raw / 15) * 15 : raw;
+                  let next: number;
+                  if (rotationAlwaysSnap) {
+                    next = raw;
+                  } else {
+                    const native = e.nativeEvent as { shiftKey?: boolean };
+                    const shifted = native.shiftKey === true;
+                    next = shifted ? Math.round(raw / 15) * 15 : raw;
+                  }
                   updateCell(selectedCell.index, {
                     rotation: next === 0 ? undefined : next,
                   });
                 }}
-                aria-label="Cell rotation in degrees (hold Shift to snap to 15°)"
-                title={`Rotation: ${selectedCell.rotation ?? 0}° (hold Shift to snap to 15°)`}
+                aria-label="Cell rotation in degrees"
+                title={`Rotation: ${selectedCell.rotation ?? 0}°${rotationAlwaysSnap ? ' (snapped to 15°)' : ' (hold Shift to snap to 15°)'}`}
                 style={{ flex: 1, minWidth: 120 }}
               />
               <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}>
                 {selectedCell.rotation ?? 0}°
               </span>
+              <button
+                type="button"
+                aria-pressed={rotationAlwaysSnap}
+                onClick={() => setRotationAlwaysSnap((x) => !x)}
+                style={chipStyle(rotationAlwaysSnap)}
+                title="Always snap rotation to 15° increments"
+              >
+                Snap 15°
+              </button>
             </div>
             <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {[-90, -45, 0, 45, 90].map((angle) => (
@@ -1694,6 +1816,29 @@ export function FlexIconGridPanel({
               </div>
             )}
           </div>
+
+          {/* Phase 4.18: bulk apply this cell's style to every other
+              cell. Asks for confirmation since it's a sweeping change
+              the user might not undo easily. Copies shape, ring,
+              shadow, rotation, labelStyle, badge — NOT content,
+              label, colour, or cellSpan (those typically stay
+              per-cell). */}
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                confirm(
+                  `Apply this cell's style (shape, ring, shadow, rotation, label style, badge) to all ${totalCells - 1} other cells?`,
+                )
+              ) {
+                applyStyleToAllCells(selectedCell.index);
+                toast.success('Style applied to all cells');
+              }
+            }}
+            style={{ ...ghostButtonStyle, marginTop: 12 }}
+          >
+            Apply style to all cells
+          </button>
 
           {/* Reset everything */}
           <button
