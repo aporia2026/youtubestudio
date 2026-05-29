@@ -66,6 +66,7 @@ export function TeamBoardView() {
   const loadRoster = useCallback(async () => {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/team-hub/roster', { cache: 'no-store' });
       if (!res.ok) {
         setRoster([]);

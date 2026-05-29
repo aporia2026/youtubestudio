@@ -49,6 +49,7 @@ export function CompareOverlay({ favorites, onClose }: CompareOverlayProps): Rea
         const results = await Promise.all(
           favorites.map(async (f) => {
             try {
+              // eslint-disable-next-line no-restricted-syntax -- GET, read
               const res = await fetch(
                 `/api/niche-finder/favorites/${encodeURIComponent(f.niche_slug)}/brief`,
               );
@@ -97,6 +98,7 @@ export function CompareOverlay({ favorites, onClose }: CompareOverlayProps): Rea
     setExporting(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/niche-finder/favorites/export-compare-sheet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

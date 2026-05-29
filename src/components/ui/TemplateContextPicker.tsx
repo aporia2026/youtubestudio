@@ -108,6 +108,7 @@ export function TemplateContextPicker({
       const results = await Promise.all(
         allFieldTypes.map(async (ft) => {
           try {
+            // eslint-disable-next-line no-restricted-syntax -- GET, read
             const res = await fetch(`/api/templates?field_type=${ft}`);
             if (!res.ok) return [] as Template[];
             const data = await res.json();
@@ -171,6 +172,7 @@ export function TemplateContextPicker({
     setSaving(true);
     setSaveError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

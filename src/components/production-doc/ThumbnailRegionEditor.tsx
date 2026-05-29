@@ -534,6 +534,7 @@ export function ThumbnailRegionEditor({ thumbnail, onSave, onClose }: ThumbnailR
     }
     setAutoDetecting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/production-doc/thumbnail/auto-regions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

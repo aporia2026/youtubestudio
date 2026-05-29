@@ -33,6 +33,7 @@ export function DependenciesSection({ itemId, allItems, onSelectItem }: Props) {
   const [pickingKind, setPickingKind] = useState<string>(KINDS[0].key);
 
   async function load() {
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     const res = await fetch(`/api/schedule/${itemId}/dependencies`);
     const data = await res.json();
     setOutgoing(data.outgoing || []);
@@ -42,6 +43,7 @@ export function DependenciesSection({ itemId, allItems, onSelectItem }: Props) {
 
   async function add() {
     if (!pickingTarget) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch(`/api/schedule/${itemId}/dependencies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -52,6 +54,7 @@ export function DependenciesSection({ itemId, allItems, onSelectItem }: Props) {
     load();
   }
   async function remove(edgeId: string) {
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
     const res = await fetch(`/api/schedule/${itemId}/dependencies?edge_id=${edgeId}`, { method: 'DELETE' });
     if (!res.ok) { toast.error('Could not remove'); return; }
     load();

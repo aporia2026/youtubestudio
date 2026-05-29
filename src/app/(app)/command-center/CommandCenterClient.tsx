@@ -111,6 +111,7 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
     async function pull() {
       if (draggingCardId !== null) return; // don't fight an in-flight drag
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/command-center/cards');
         if (!res.ok) return;
         const data = await res.json();
@@ -224,6 +225,7 @@ export function CommandCenterClient({ initialCards, truncated, totalProjects, ch
     // roll back via a router.refresh() on failure.
     setCards(prev => prev.map(c => c.id === cardId ? { ...c, current_stage: targetStageId, current_stage_label: getStageDef(targetStageId).label, last_moved_at: new Date().toISOString() } : c));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/videos/${cardId}/advance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

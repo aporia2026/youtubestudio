@@ -31,6 +31,7 @@ export function LogoutButton({
     // the per-cache scope envelope.
     wipeHistoryCaches();
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       await fetch('/api/auth/logout', { method: 'POST' });
     } catch {
       /* ignore — proceed to /login regardless */

@@ -24,6 +24,7 @@ export function MessagesLink({ token, pollMs = 30_000 }: Props) {
     let alive = true;
     async function load() {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch(`/api/messages/inbox/${token}/unread`, { cache: 'no-store' });
         if (!res.ok) return;
         const data = await res.json();

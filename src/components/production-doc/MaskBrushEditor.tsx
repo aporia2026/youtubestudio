@@ -272,6 +272,7 @@ export function MaskBrushEditor({
    */
   async function uploadMask(): Promise<string> {
     const blob = await buildMaskBlob();
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const presignRes = await fetch('/api/uploads/mask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -286,6 +287,7 @@ export function MaskBrushEditor({
       throw new Error((errBody as { error?: string }).error || `Presign failed (${presignRes.status})`);
     }
     const { uploadUrl, downloadUrl } = await presignRes.json();
+    // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
     const putRes = await fetch(uploadUrl, {
       method: 'PUT',
       headers: { 'Content-Type': 'image/png' },

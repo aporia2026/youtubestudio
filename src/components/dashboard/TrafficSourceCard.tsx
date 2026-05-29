@@ -52,6 +52,7 @@ export function TrafficSourceCard() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/dashboard/traffic-sources', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as TrafficSourceSummary;

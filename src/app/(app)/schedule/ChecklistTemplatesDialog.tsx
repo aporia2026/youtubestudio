@@ -28,6 +28,7 @@ export function ChecklistTemplatesDialog({ channelId, channelName, statuses, onC
     const url = channelId
       ? `/api/schedule/checklist-templates?channel_id=${channelId}`
       : `/api/schedule/checklist-templates`;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     const res = await fetch(url);
     const data = await res.json();
     const list: Template[] = data.templates || [];
@@ -48,6 +49,7 @@ export function ChecklistTemplatesDialog({ channelId, channelName, statuses, onC
   async function save(statusKey: string) {
     setSavingKey(statusKey);
     const items = (drafts[statusKey] ?? []).filter(Boolean).map(text => ({ text }));
+    // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
     const res = await fetch('/api/schedule/checklist-templates', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

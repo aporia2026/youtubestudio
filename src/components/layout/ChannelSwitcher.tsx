@@ -40,6 +40,7 @@ export function ChannelSwitcher({
     setActive(next);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/user/settings/active-channel', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

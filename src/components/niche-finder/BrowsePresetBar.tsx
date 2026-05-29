@@ -55,6 +55,7 @@ export function BrowsePresetBar({
 
   const refresh = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/niche-finder/watchlist/searches');
       if (!res.ok) {
         setSaved([]);
@@ -80,6 +81,7 @@ export function BrowsePresetBar({
     setSaving(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/niche-finder/watchlist/searches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -101,6 +103,7 @@ export function BrowsePresetBar({
   const onDelete = useCallback(
     async (slug: string) => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
         await fetch(`/api/niche-finder/watchlist/searches/${encodeURIComponent(slug)}`, {
           method: 'DELETE',
         });

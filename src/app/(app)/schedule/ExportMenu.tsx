@@ -23,6 +23,7 @@ export function ExportMenu({ items, statuses, scopeLabel }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
 
   async function exportSheets() {
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/schedule/export-sheets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

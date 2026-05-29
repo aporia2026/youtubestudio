@@ -43,6 +43,7 @@ export function NicheFinderLocalePicker({ value, onChange }: Props): React.React
     setSaving(true);
     setSaveError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const res = await fetch('/api/user/settings/niche-finder-locale', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -147,6 +148,7 @@ export function useNicheFinderLocale(): {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/user/settings/niche-finder-locale');
         if (!res.ok || cancelled) {
           if (!cancelled) setReady(true);

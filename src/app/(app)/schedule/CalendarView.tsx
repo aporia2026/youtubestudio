@@ -39,6 +39,7 @@ export function CalendarView({ items, statuses, channelId, onSelect, onPatch }: 
   useEffect(() => {
     if (!channelId) { setHeatmap(null); return; }
     const controller = new AbortController();
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(`/api/schedule/best-times?channel_id=${channelId}`, { signal: controller.signal })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.grid) setHeatmap(d.grid); })
@@ -49,6 +50,7 @@ export function CalendarView({ items, statuses, channelId, onSelect, onPatch }: 
   useEffect(() => {
     if (!showCompetitors) return;
     const controller = new AbortController();
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/schedule/competitor-cadence', { signal: controller.signal })
       .then(r => r.ok ? r.json() : { events: [] })
       .then(d => setCompetitorEvents(d.events || []))

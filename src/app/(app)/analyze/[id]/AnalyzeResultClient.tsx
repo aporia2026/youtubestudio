@@ -104,6 +104,7 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
     if (snap.stage !== 'analyzing') return undefined;
     const interval = setInterval(async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch(`/api/analyze/youtube-video/${snap.id}`, { method: 'GET' });
         if (!res.ok) return;
         const data = (await res.json()) as {
@@ -146,6 +147,7 @@ export function AnalyzeResultClient({ initial }: Props): React.ReactElement {
   const retry = useCallback(async () => {
     setRetrying(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/analyze/youtube-video', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

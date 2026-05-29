@@ -51,6 +51,7 @@ export default function MessagesPage() {
 
   const loadThreads = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/messages/threads', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();

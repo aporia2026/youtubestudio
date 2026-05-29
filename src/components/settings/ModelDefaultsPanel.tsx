@@ -47,6 +47,7 @@ export function ModelDefaultsPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/settings/model-defaults')
       .then((r) => r.json())
       .then((data) => {
@@ -155,6 +156,7 @@ export function ModelDefaultsPanel() {
   async function saveScope(scope: string, modelId: string) {
     setSavingScope(scope);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const res = await fetch('/api/settings/model-defaults', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -176,6 +178,7 @@ export function ModelDefaultsPanel() {
   async function clearScope(scope: string) {
     setSavingScope(scope);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/settings/model-defaults?scope=${encodeURIComponent(scope)}`, {
         method: 'DELETE',
       });

@@ -81,6 +81,7 @@ export default function AskStudioPage() {
 
   async function refreshHistory(opts: { autoExpandLatestError?: boolean } = {}) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/ask-studio/questions?limit=30', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const rows = ((await res.json()).questions as AskStudioQuestionRow[]) || [];
@@ -99,6 +100,7 @@ export default function AskStudioPage() {
   async function fetchThread(rootId: string) {
     setThreadLoading((prev) => ({ ...prev, [rootId]: true }));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/ask-studio/questions/${rootId}/thread`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const turns = ((await res.json()).turns as AskStudioQuestionRow[]) || [];
@@ -133,6 +135,7 @@ export default function AskStudioPage() {
     setAsking(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/ask-studio/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -164,6 +167,7 @@ export default function AskStudioPage() {
     setReplying((prev) => ({ ...prev, [rootId]: true }));
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/ask-studio/questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -188,6 +192,7 @@ export default function AskStudioPage() {
     if (!confirm('Delete this entire thread (question + all replies)?')) return;
     try {
       // Check res.ok — fetch() doesn't throw on 4xx/5xx (audit M3).
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/ask-studio/questions/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));

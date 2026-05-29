@@ -33,6 +33,7 @@ export function NewItemDialog({ channels, statuses, defaultChannelId, onClose, o
       return;
     }
     setSubmitting(true);
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

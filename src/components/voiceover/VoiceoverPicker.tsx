@@ -133,6 +133,7 @@ export function VoiceoverPicker({
       )
       .catch(() => [] as VoiceoverItem[]);
 
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     const libraryPromise = fetch('/api/voiceovers/library', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : { voiceovers: [] as LibraryRow[] }))
       .then((data: { voiceovers?: LibraryRow[] }) =>
@@ -344,6 +345,7 @@ export function VoiceoverPicker({
     const contentType = file.type || 'audio/mpeg';
     setUploadingFile(file.name);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const presignRes = await fetch(`/api/projects/${resolvedProjectId}/voiceover-upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -355,6 +357,7 @@ export function VoiceoverPicker({
       }
       const { uploadUrl, downloadUrl, r2Key, r2Bucket } = await presignRes.json();
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': contentType },
@@ -362,6 +365,7 @@ export function VoiceoverPicker({
       });
       if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const registerRes = await fetch(`/api/projects/${resolvedProjectId}/media`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -427,6 +431,7 @@ export function VoiceoverPicker({
     const historyId = item.id.startsWith('el:') ? item.id.slice(3) : item.id;
     setSavingToLibraryId(item.id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/voiceovers/save-from-history', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

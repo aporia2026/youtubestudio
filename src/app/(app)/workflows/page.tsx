@@ -33,7 +33,9 @@ export default function WorkflowsPage() {
   async function refresh() {
     try {
       const [rulesRes, runsRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch('/api/workflows/rules', { cache: 'no-store' }),
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch('/api/workflows/runs?limit=30', { cache: 'no-store' }),
       ]);
       if (rulesRes.ok) setRules(((await rulesRes.json()).rules as WorkflowRuleRow[]) || []);
@@ -75,6 +77,7 @@ export default function WorkflowsPage() {
       return;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/workflows/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -105,6 +108,7 @@ export default function WorkflowsPage() {
 
   async function toggleEnabled(rule: WorkflowRuleRow) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       await fetch(`/api/workflows/rules/${rule.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -119,6 +123,7 @@ export default function WorkflowsPage() {
   async function deleteRule(id: string) {
     if (!confirm('Delete this rule? Pending action runs for it will stay queued.')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       await fetch(`/api/workflows/rules/${id}`, { method: 'DELETE' });
       await refresh();
     } catch (e) {
@@ -128,6 +133,7 @@ export default function WorkflowsPage() {
 
   async function runNow() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/workflows/runs', { method: 'POST' });
       const data = await res.json();
       setInfo(`Drained: ${data.picked} picked, ${data.succeeded} ok, ${data.failed} failed, ${data.skipped} skipped.`);

@@ -56,7 +56,9 @@ export default function ChannelBrandKitPage({
       try {
         // Fetch the channel name + the kit in parallel.
         const [chanRes, kitRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch('/api/channels'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch(`/api/channels/${id}/brand-kit`),
         ]);
         if (!cancelled) {
@@ -129,6 +131,7 @@ export default function ChannelBrandKitPage({
         topics_to_emphasize: splitLines(topicsEmphasize),
         brand_keywords: splitCommas(brandKeywords),
       };
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const res = await fetch(`/api/channels/${id}/brand-kit`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

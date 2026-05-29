@@ -418,6 +418,7 @@ export const ReviewPlayer = forwardRef<HTMLVideoElement, ReviewPlayerProps>(
             const blob = new Blob([json], { type: 'application/json' });
             navigator.sendBeacon('/api/review/timing', blob);
           } else {
+            // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
             fetch('/api/review/timing', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

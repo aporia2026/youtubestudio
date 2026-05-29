@@ -17,6 +17,7 @@ export default function CannibalizationPage() {
 
   async function refreshList(status: 'active' | 'dismissed' = filter) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/cannibalization/alerts?status=${status}&limit=200`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setAlerts(((await res.json()).alerts as CannibalizationAlertRow[]) || []);
@@ -34,6 +35,7 @@ export default function CannibalizationPage() {
     setScanning(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/cannibalization/scans', { method: 'POST' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -54,6 +56,7 @@ export default function CannibalizationPage() {
       // Check res.ok — fetch() doesn't throw on 4xx/5xx, so without
       // this the local state drifts away from the server when the
       // API rejects (audit M3).
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/cannibalization/alerts/${id}/dismiss`, { method: 'POST' });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));

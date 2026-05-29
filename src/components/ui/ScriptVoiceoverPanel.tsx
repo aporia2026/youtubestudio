@@ -82,6 +82,7 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
     const saved = localStorage.getItem('elevenlabs_api_key');
     if (saved) { setApiKey(saved); loadVoices(saved); }
     else {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/settings/key-status').then(r => r.json()).then(data => {
         if (data.elevenlabs) { setApiKey('__server__'); loadVoices(''); }
       }).catch(() => {});
@@ -128,6 +129,7 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
 
   async function loadVoices(key: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/elevenlabs/voices', { headers: { 'x-eleven-api-key': key } });
       if (!res.ok) throw new Error('Invalid API key');
       const data = await res.json();
@@ -153,6 +155,7 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
     setAudioUrl('');
     setSectionAudios([]);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/elevenlabs/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -202,6 +205,7 @@ export function ScriptVoiceoverPanel({ script, tone, style, targetDuration, proj
     setGeneratingSection(index);
     try {
       const cleanText = cleanScriptForVoiceover(section.content);
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/elevenlabs/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -82,6 +82,7 @@ export function CollageTesterPanel() {
     setError(null);
     setResult(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/dev/collage-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -57,6 +57,7 @@ export function StylePackCard({ pack, sourceVideo, onSaved }: Props): React.Reac
     }
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/production-doc/styles', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

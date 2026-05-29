@@ -24,6 +24,7 @@ export function CompetitorSignalsCard() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/competitors/summary?lookbackDays=14&minVsMedian=2.5', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as SummaryResponse;

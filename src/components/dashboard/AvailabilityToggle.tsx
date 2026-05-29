@@ -36,6 +36,7 @@ export function AvailabilityToggle({ token, initial, role }: Props) {
 
   useEffect(() => {
     if (initial !== undefined) return;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(`/api/collaborator-prefs/${token}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => {
@@ -54,6 +55,7 @@ export function AvailabilityToggle({ token, initial, role }: Props) {
   async function save(next: { availability?: Availability; status_note?: string }) {
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/collaborator-prefs/${token}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

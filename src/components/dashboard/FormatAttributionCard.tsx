@@ -41,6 +41,7 @@ export function FormatAttributionCard() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/dashboard/format-attribution', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as SummaryResponse;

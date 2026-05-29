@@ -24,6 +24,7 @@ export function SaveToWatchlistButton({ slug, name }: SaveToWatchlistButtonProps
     let cancelled = false;
     void (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/niche-finder/watchlist');
         if (cancelled) return;
         if (!res.ok) {
@@ -45,6 +46,7 @@ export function SaveToWatchlistButton({ slug, name }: SaveToWatchlistButtonProps
     if (state === 'busy') return;
     setState('busy');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/niche-finder/watchlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,6 +62,7 @@ export function SaveToWatchlistButton({ slug, name }: SaveToWatchlistButtonProps
     if (state === 'busy') return;
     setState('busy');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/niche-finder/watchlist/${encodeURIComponent(slug)}`, {
         method: 'DELETE',
       });

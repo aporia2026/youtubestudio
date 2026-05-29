@@ -100,6 +100,7 @@ export function NicheFinderModelPicker({
     let cancelled = false;
     void (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/settings/model-defaults');
         if (!res.ok) return;
         const body = (await res.json()) as { defaults: DefaultsBlob };
@@ -160,6 +161,7 @@ export function NicheFinderModelPicker({
       setSaving(true);
       setSaveError(null);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
         const res = await fetch('/api/settings/model-defaults', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -196,6 +198,7 @@ export function NicheFinderModelPicker({
     setSaving(true);
     setSaveError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(
         `/api/settings/model-defaults?scope=${encodeURIComponent(`feature:${feature}`)}`,
         { method: 'DELETE' },

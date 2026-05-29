@@ -68,6 +68,7 @@ export function CommentPanel({
       url = `${url}${sep}author_name=${encodeURIComponent(authorName)}`;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(url, { method: 'DELETE' });
       if (res.ok) onCommentDeleted?.(commentId);
     } catch {}
@@ -226,6 +227,7 @@ export function CommentPanel({
                 onSeek={() => handleSeekToComment(comment.id, comment.timestamp_ms)}
                 onResolve={async (resolved) => {
                   try {
+                    // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
                     const res = await fetch(commentItemUrl(comment.id), {
                       method: 'PATCH',
                       headers: { 'Content-Type': 'application/json' },

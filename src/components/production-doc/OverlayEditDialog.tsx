@@ -163,6 +163,7 @@ export function OverlayEditDialog({
     const controller = new AbortController();
     abortRef.current = controller;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/overlay/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -226,6 +227,7 @@ export function OverlayEditDialog({
       const controller = new AbortController();
       abortRef.current = controller;
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const res = await fetch('/api/overlay/edit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

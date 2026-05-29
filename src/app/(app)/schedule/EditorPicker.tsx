@@ -46,6 +46,7 @@ export function EditorPicker({ linkedChannels, selectedEditorId, onChange, onRos
     setLoading(true);
     try {
       const results = await Promise.all(linkedChannels.map(async c => {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch(`/api/channels/${c.id}/editors`);
         if (!res.ok) return [];
         const data = await res.json();
@@ -85,6 +86,7 @@ export function EditorPicker({ linkedChannels, selectedEditorId, onChange, onRos
     if (saving) return; // defend against double-click / Enter-spam
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/channels/${targetChannelId}/editors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,6 +116,7 @@ export function EditorPicker({ linkedChannels, selectedEditorId, onChange, onRos
     const prev = editors.find(e => e.id === id)?.name;
     setRenamingId(null);
     if (next === prev) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
     const res = await fetch(`/api/channel-editors/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -128,6 +131,7 @@ export function EditorPicker({ linkedChannels, selectedEditorId, onChange, onRos
     const ed = editors.find(e => e.id === id);
     const name = ed?.name ?? 'this editor';
     if (!confirm(`Remove ${name} from the roster? Videos they were assigned to will be unlinked but remain in the schedule.`)) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
     const res = await fetch(`/api/channel-editors/${id}`, { method: 'DELETE' });
     if (!res.ok) { toast.error('Remove failed'); return; }
     if (selectedEditorId === id) onChange(null);

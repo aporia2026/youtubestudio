@@ -49,6 +49,7 @@ export function YouTubeDescriptionPanel({ projectId, title, niche, topic, script
     }
     setGenerating(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/generate/youtube-description', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,6 +81,7 @@ export function YouTubeDescriptionPanel({ projectId, title, niche, topic, script
   async function save() {
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const res = await fetch(`/api/projects/${projectId}/description`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

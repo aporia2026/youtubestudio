@@ -86,7 +86,9 @@ export function VideoContextStrip(): React.ReactElement | null {
     console.info('[video-context-strip load] start', { videoId, pathname });
     try {
       const [videoRes, neighborsRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch(`/api/videos/${videoId}`),
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch(`/api/videos/${videoId}/neighbors`),
       ]);
       if (!videoRes.ok) {
@@ -195,6 +197,7 @@ export function VideoContextStrip(): React.ReactElement | null {
       to_stage: neighbor.stage,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/videos/${data.id}/advance`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

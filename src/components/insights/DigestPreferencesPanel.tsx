@@ -25,6 +25,7 @@ export function DigestPreferencesPanel() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/insights/preferences', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as Prefs;
@@ -46,6 +47,7 @@ export function DigestPreferencesPanel() {
     setSaving(true);
     setSavedNotice(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/insights/preferences', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

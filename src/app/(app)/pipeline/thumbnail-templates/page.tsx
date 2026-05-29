@@ -32,6 +32,7 @@ export default function ThumbnailTemplatesPage() {
   async function refresh() {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/thumbnail-templates', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -55,6 +56,7 @@ export default function ThumbnailTemplatesPage() {
     )
       return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/thumbnail-templates/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -207,11 +209,13 @@ function TemplateForm({
       };
 
       const res = template
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
         ? await fetch(`/api/thumbnail-templates/${template.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           })
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         : await fetch('/api/thumbnail-templates', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

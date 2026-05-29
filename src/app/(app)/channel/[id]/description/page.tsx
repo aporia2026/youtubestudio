@@ -38,6 +38,7 @@ export default function ChannelDescriptionPage({
     let cancelled = false;
     async function load() {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch(`/api/channels/${id}`);
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
@@ -69,6 +70,7 @@ export default function ChannelDescriptionPage({
     setSaving(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/channels/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

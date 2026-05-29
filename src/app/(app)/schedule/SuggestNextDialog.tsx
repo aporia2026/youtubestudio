@@ -23,6 +23,7 @@ export function SuggestNextDialog({ channelId, channelName, onClose, onCreated }
     (async () => {
       setLoading(true);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const res = await fetch('/api/schedule/ai/suggest-next', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -45,6 +46,7 @@ export function SuggestNextDialog({ channelId, channelName, onClose, onCreated }
 
   async function addToSchedule(s: Suggestion) {
     setAdding(s.title);
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

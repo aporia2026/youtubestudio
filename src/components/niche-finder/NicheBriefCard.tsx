@@ -57,6 +57,7 @@ export function NicheBriefCard({ nicheSlug, scoresArePlaceholder }: NicheBriefCa
 
   const fetchBrief = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/niche-finder/favorites/${encodeURIComponent(nicheSlug)}/brief`);
       if (!res.ok) {
         setError(`Brief fetch failed (${res.status})`);
@@ -115,6 +116,7 @@ export function NicheBriefCard({ nicheSlug, scoresArePlaceholder }: NicheBriefCa
     setMenuOpen(false);
     setGenerating(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/niche-finder/favorites/${encodeURIComponent(nicheSlug)}/brief`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

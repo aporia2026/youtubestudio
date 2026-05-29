@@ -455,6 +455,7 @@ export function ShotInspector({
       }
       setRephraseState({ kind: 'rephrasing', style });
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const res = await fetch('/api/edit/rephrase', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -498,6 +499,7 @@ export function ShotInspector({
     setProjectClips({ kind: 'loading' });
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch(`/api/broll?productionDocId=${encodeURIComponent(projectId)}&limit=200`);
         if (!res.ok) throw new Error(`Fetch failed: HTTP ${res.status}`);
         const data = (await res.json()) as { clips?: unknown };
@@ -549,6 +551,7 @@ export function ShotInspector({
       setUploadState({ kind: 'uploading', fileName: file.name });
       try {
         // 1. Mint a presigned PUT URL.
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const presignRes = await fetch('/api/uploads/image', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -568,6 +571,7 @@ export function ShotInspector({
         };
 
         // 2. PUT the file directly to R2 (bypassing Vercel's body cap).
+        // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
         const putRes = await fetch(uploadUrl, {
           method: 'PUT',
           headers: { 'Content-Type': file.type },

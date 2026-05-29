@@ -92,6 +92,7 @@ function TakeMount({
     setBundle(null);
     setError(null);
     setActingAs(false); // reset whenever the take changes
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(`/api/team-hub/takes/${takeId}`, { cache: 'no-store' })
       .then(async (res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

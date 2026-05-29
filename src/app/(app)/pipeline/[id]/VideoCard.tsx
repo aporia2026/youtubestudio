@@ -156,6 +156,7 @@ export default function VideoCard({
   async function loadDetail() {
     setLoadingDetail(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/auto-pipeline/videos/${video.id}`, { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
@@ -169,6 +170,7 @@ export default function VideoCard({
   async function loadStyles() {
     if (styles !== null) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/production-doc/styles', { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
@@ -194,6 +196,7 @@ export default function VideoCard({
     setActionError(null);
     setBusyAction(typeof body.action === 'string' ? body.action : 'action');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/auto-pipeline/videos/${video.id}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

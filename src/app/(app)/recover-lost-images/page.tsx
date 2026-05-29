@@ -67,6 +67,7 @@ function uuidLike(id: string): boolean {
 }
 
 async function fetchServerState(projectId: string): Promise<ServerState | null> {
+  // eslint-disable-next-line no-restricted-syntax -- GET, read
   const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}`, { credentials: 'same-origin' });
   if (!res.ok) return null;
   const body = (await res.json()) as { payload?: { rowImages?: unknown; rowOverlays?: unknown; rowVideoClips?: unknown; doc?: { rows?: unknown[] } } };
@@ -144,6 +145,7 @@ async function postRowAsset(
   slot: 'image' | 'overlay' | 'clip',
   value: unknown,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
   const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/row-asset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

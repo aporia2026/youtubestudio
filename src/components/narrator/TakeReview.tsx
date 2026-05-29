@@ -149,6 +149,7 @@ export function TakeReview({
     let cancelled = false;
     setLoadingComments(true);
     setComments([]);
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(listUrl)
       .then(r => r.ok ? r.json() : [])
       .then((data: TakeComment[]) => { if (!cancelled) setComments(Array.isArray(data) ? data : []); })
@@ -259,6 +260,7 @@ export function TakeReview({
         : (isRange ? rangeStartMs! : liveMs);
       const end_timestamp_ms = !replyTo && isRange ? liveMs : null;
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(listUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -301,6 +303,7 @@ export function TakeReview({
     const trimmed = commentText.trim();
     if (!trimmed) return;
     const liveMs = playerRef.current?.getCurrentMs() ?? currentMs;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch(listUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -333,6 +336,7 @@ export function TakeReview({
       resolved_at: resolved ? new Date().toISOString() : null,
     } : c));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(itemUrl(commentId), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -355,6 +359,7 @@ export function TakeReview({
       url = `${url}${sep}author_name=${encodeURIComponent(author.name)}`;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(url, { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

@@ -345,6 +345,7 @@ export function NLevelsPanel({
     });
     setBusyStep('list');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/thumbnails/format/n-levels/levels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -404,6 +405,7 @@ export function NLevelsPanel({
     });
     setBusyStep('image');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/thumbnails/format/n-levels/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

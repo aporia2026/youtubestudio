@@ -116,6 +116,7 @@ export function SectionThumbnailCard({ value, onChange, embedded = false }: Sect
       //   1. Ask the server for a presigned PUT URL keyed to this file.
       //   2. PUT the bytes directly to R2 from the browser, bypassing
       //      Vercel's ~4.5 MB request-body limit.
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const presignRes = await fetch('/api/production-doc/thumbnail/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -139,6 +140,7 @@ export function SectionThumbnailCard({ value, onChange, embedded = false }: Sect
         throw new Error(presign.error ?? `Upload presign failed (${presignRes.status})`);
       }
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const putRes = await fetch(presign.uploadUrl, {
         method: 'PUT',
         body: file,

@@ -25,6 +25,7 @@ export default function CompetitorDashboardPage() {
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/competitors/summary?lookbackDays=14&minVsMedian=2.5', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setData((await res.json()) as SummaryResponse);

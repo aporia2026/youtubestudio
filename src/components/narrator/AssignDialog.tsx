@@ -33,6 +33,7 @@ export function AssignDialog({ projectId, scriptId, scriptText, scriptVersion, o
 
   useEffect(() => {
     Promise.all([
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/narrator/profiles').then(r => r.json()),
       splitSections(),
     ]).then(([profiles]) => {
@@ -45,6 +46,7 @@ export function AssignDialog({ projectId, scriptId, scriptText, scriptVersion, o
   async function splitSections() {
     setSplitting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/narrator/split-sections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -58,6 +60,7 @@ export function AssignDialog({ projectId, scriptId, scriptText, scriptVersion, o
   async function handleCreateNarrator() {
     if (!newNarratorName.trim()) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/narrator/profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -76,6 +79,7 @@ export function AssignDialog({ projectId, scriptId, scriptText, scriptVersion, o
     if (!selectedNarratorId || sections.length === 0) return;
     setCreating(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/narrator/assignments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -93,6 +93,7 @@ export function ReferenceLibraryPicker({ open, onClose, excludeYoutubeIds = [], 
         const params = new URLSearchParams();
         if (search.trim()) params.set('q', search.trim());
         params.set('limit', '100');
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch(`/api/reference-library?${params}`);
         if (res.ok) {
           const data = await res.json();
@@ -110,6 +111,7 @@ export function ReferenceLibraryPicker({ open, onClose, excludeYoutubeIds = [], 
     setPicking(item.id);
     try {
       // Fetch the full record so we have the analysis JSON.
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/reference-library/${item.id}`);
       if (!res.ok) throw new Error('Failed to load reference');
       const { reference } = await res.json();
@@ -135,6 +137,7 @@ export function ReferenceLibraryPicker({ open, onClose, excludeYoutubeIds = [], 
     if (!confirm(`Remove "${item.title}" from your library? This deletes the cached analysis.`)) return;
     setDeleting(item.id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/reference-library/${item.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to delete');
       setItems(prev => prev.filter(i => i.id !== item.id));

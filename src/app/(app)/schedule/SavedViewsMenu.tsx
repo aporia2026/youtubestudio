@@ -23,6 +23,7 @@ export function SavedViewsMenu({ channelId, currentConfig, onApply }: Props) {
   const [newName, setNewName] = useState('');
 
   async function load() {
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     const res = await fetch('/api/schedule/saved-views');
     const data = await res.json();
     setViews(data.views || []);
@@ -31,6 +32,7 @@ export function SavedViewsMenu({ channelId, currentConfig, onApply }: Props) {
 
   async function save() {
     if (!newName.trim()) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/schedule/saved-views', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -47,6 +49,7 @@ export function SavedViewsMenu({ channelId, currentConfig, onApply }: Props) {
   }
 
   async function remove(id: string) {
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
     const res = await fetch(`/api/schedule/saved-views/${id}`, { method: 'DELETE' });
     if (res.ok) { load(); toast.success('Removed'); }
   }

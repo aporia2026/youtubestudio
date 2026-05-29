@@ -41,6 +41,7 @@ export function ListView({ items, statuses, channels, onSelect, onPatch, onDelet
   async function bulkAssignChannels(channelIds: string[], mode: 'add' | 'replace') {
     if (channelIds.length === 0) return;
     const count = selected.size;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/schedule/bulk-assign-channels', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

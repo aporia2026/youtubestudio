@@ -28,6 +28,7 @@ export function ShareDialog({ channelId, channelName, onClose }: Props) {
 
   async function load() {
     setLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     const res = await fetch('/api/schedule/share');
     const data = await res.json();
     setShares((data.shares || []).filter((s: Share) =>
@@ -42,6 +43,7 @@ export function ShareDialog({ channelId, channelName, onClose }: Props) {
     const expires_at = expiresDays
       ? new Date(Date.now() + Number(expiresDays) * 86400000).toISOString()
       : null;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/schedule/share', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,6 +66,7 @@ export function ShareDialog({ channelId, channelName, onClose }: Props) {
 
   async function revoke(id: string) {
     if (!window.confirm('Revoke this share link?')) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
     const res = await fetch(`/api/schedule/share?id=${id}`, { method: 'DELETE' });
     if (res.ok) { toast.success('Revoked'); load(); }
     else toast.error('Failed');

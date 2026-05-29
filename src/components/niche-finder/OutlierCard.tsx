@@ -115,6 +115,7 @@ export function OutlierCard({
     setMonetLoading(true);
     setMonetError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/niche-finder/monetization-check', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

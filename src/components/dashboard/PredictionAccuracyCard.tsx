@@ -39,6 +39,7 @@ export function PredictionAccuracyCard() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/dashboard/prediction-accuracy?lookbackDays=30', {
           cache: 'no-store',
         });

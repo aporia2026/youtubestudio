@@ -27,6 +27,7 @@ export default function SpendPage() {
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/spend/summary?windowDays=${windowDays}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();

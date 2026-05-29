@@ -77,7 +77,9 @@ export default function CatalogPage() {
     void (async () => {
       try {
         const [chRes, svRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch('/api/channels', { cache: 'no-store' }),
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch('/api/catalog/saved-views', { cache: 'no-store' }),
         ]);
         if (!cancelled && chRes.ok) {
@@ -101,6 +103,7 @@ export default function CatalogPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/catalog/videos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -175,12 +178,14 @@ export default function CatalogPage() {
     ) {
       return;
     }
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
     const res = await fetch(`/api/catalog/saved-views/${id}`, { method: 'DELETE' });
     if (res.ok) setSavedViews((vs) => vs.filter((v) => v.id !== id));
   }
 
   async function saveCurrent() {
     if (!saveDraft.trim()) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     const res = await fetch('/api/catalog/saved-views', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -65,6 +65,7 @@ export function VoiceoverRegenModal({
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/elevenlabs/voices');
         if (!res.ok) throw new Error(`Voices fetch failed: HTTP ${res.status}`);
         const data = (await res.json()) as { voices?: ElevenLabsVoice[] };
@@ -95,6 +96,7 @@ export function VoiceoverRegenModal({
     if (!selectedVoiceId) return;
     setRegenState({ kind: 'generating' });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/voiceover/regenerate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

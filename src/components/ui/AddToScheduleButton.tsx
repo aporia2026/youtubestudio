@@ -50,6 +50,7 @@ export function AddToScheduleButton({
 
   useEffect(() => {
     const controller = new AbortController();
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/channels', { signal: controller.signal })
       .then(r => r.json())
       .then(d => {
@@ -85,6 +86,7 @@ export function AddToScheduleButton({
     try {
       // Server accepts `pillar` on POST now, so we save the artifact in one
       // round-trip. No follow-up PATCH means no silent half-written state.
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -93,6 +93,7 @@ export function ReviewerTasksTab({ entry, onOpenSurface }: ReviewerTasksTabProps
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/team-hub/${entry.id}/reviewer-tasks`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();

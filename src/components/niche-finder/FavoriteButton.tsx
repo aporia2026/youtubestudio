@@ -103,6 +103,7 @@ function NicheFavoriteHeart({ slug, name, scores, sourceTab, variant = 'inline' 
       try {
         if (isFavorited) {
           applyOptimisticUnfavorite(canonical);
+          // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
           const res = await fetch(`/api/niche-finder/favorites/${encodeURIComponent(canonical)}`, {
             method: 'DELETE',
           });
@@ -129,6 +130,7 @@ function NicheFavoriteHeart({ slug, name, scores, sourceTab, variant = 'inline' 
             deleted_at: null,
           };
           applyOptimisticFavorite(placeholder);
+          // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
           const res = await fetch('/api/niche-finder/favorites', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -208,6 +210,7 @@ function VideoFavoriteHeart({ video, activeNicheContext, sourceTab, variant = 'o
           deleted_at: null,
         };
         applyOptimisticFavorite(placeholder);
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const createRes = await fetch('/api/niche-finder/favorites', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -249,6 +252,7 @@ function VideoFavoriteHeart({ video, activeNicheContext, sourceTab, variant = 'o
         added_by_user_id: null,
       };
       applyOptimisticAddVideo(canonical, placeholderVideo);
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(
         `/api/niche-finder/favorites/${encodeURIComponent(canonical)}/videos`,
         {
@@ -279,6 +283,7 @@ function VideoFavoriteHeart({ video, activeNicheContext, sourceTab, variant = 'o
           // is one attachment; the loop handles multi-niche cleanly.
           for (const a of attachments) {
             applyOptimisticRemoveVideo(a.niche_slug, video.videoId);
+            // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
             const res = await fetch(
               `/api/niche-finder/favorites/${encodeURIComponent(a.niche_slug)}/videos/${encodeURIComponent(video.videoId)}`,
               { method: 'DELETE' },

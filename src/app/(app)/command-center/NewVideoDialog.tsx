@@ -175,6 +175,7 @@ export function NewVideoDialog({ open, onClose, channels, onCreated }: Props) {
     const needDrafts = topTab === 'open';
     if (needIdeas && ideas === null && !loadingIdeas) {
       setLoadingIdeas(true);
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/ideas?limit=100', { cache: 'no-store' })
         .then(r => r.ok ? r.json() : { ideas: [] })
         .then(d => setIdeas((d.ideas as IdeaRow[]) ?? []))
@@ -183,6 +184,7 @@ export function NewVideoDialog({ open, onClose, channels, onCreated }: Props) {
     }
     if (needSchedule && scheduleItems === null && !loadingSchedule) {
       setLoadingSchedule(true);
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/schedule/picker', { cache: 'no-store' })
         .then(r => r.ok ? r.json() : { items: [] })
         .then(d => setScheduleItems((d.items as ScheduleRow[]) ?? []))
@@ -191,6 +193,7 @@ export function NewVideoDialog({ open, onClose, channels, onCreated }: Props) {
     }
     if (needProjects && projects === null && !loadingProjects) {
       setLoadingProjects(true);
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/command-center/cards', { cache: 'no-store' })
         .then(r => r.ok ? r.json() : { cards: [] })
         .then(d => setProjects((d.cards as ProjectRow[]) ?? []))
@@ -199,6 +202,7 @@ export function NewVideoDialog({ open, onClose, channels, onCreated }: Props) {
     }
     if (needDrafts && drafts === null && !loadingDrafts) {
       setLoadingDrafts(true);
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/drafts', { cache: 'no-store' })
         .then(r => r.ok ? r.json() : { drafts: [] })
         .then(d => setDrafts((d.drafts as DraftRow[]) ?? []))
@@ -239,6 +243,7 @@ export function NewVideoDialog({ open, onClose, channels, onCreated }: Props) {
       has_schedule: !!args.scheduledFor,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/videos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

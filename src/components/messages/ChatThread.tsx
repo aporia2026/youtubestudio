@@ -66,6 +66,7 @@ export function ChatThread({ loadUrl, postUrl, counterpart: initialCounterpart, 
 
   const load = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(loadUrl, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -117,6 +118,7 @@ export function ChatThread({ loadUrl, postUrl, counterpart: initialCounterpart, 
     if (!body || sending) return;
     setSending(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(postUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

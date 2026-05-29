@@ -97,6 +97,7 @@ export function EditorTasksTab({ entry, onOpenSurface }: EditorTasksTabProps) {
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/team-hub/${entry.id}/editor-tasks`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -117,6 +118,7 @@ export function EditorTasksTab({ entry, onOpenSurface }: EditorTasksTabProps) {
       const before = tasks;
       setTasks(tasks.map((t) => (t.id === id ? { ...t, ...fields } : t)));
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
         const res = await fetch(`/api/team-hub/editor-assignment/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },

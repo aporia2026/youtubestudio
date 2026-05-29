@@ -68,6 +68,7 @@ function CollaboratorSettings({ entry, onChanged }: SettingsTabProps) {
   // collaborator detail on mount).
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(`/api/team/collaborators/${entry.id}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
@@ -92,6 +93,7 @@ function CollaboratorSettings({ entry, onChanged }: SettingsTabProps) {
     }
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/team/collaborators/${entry.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -116,6 +118,7 @@ function CollaboratorSettings({ entry, onChanged }: SettingsTabProps) {
   const handleRevoke = useCallback(async () => {
     setRevoking(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/team/collaborators/${entry.id}/revoke-all`, { method: 'POST' });
       if (!res.ok) throw new Error('revoke failed');
       toast.success('Access revoked');
@@ -329,6 +332,7 @@ function ChannelEditorSettings({ entry, onChanged }: SettingsTabProps) {
     }
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/channel-editors/${editorId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -347,6 +351,7 @@ function ChannelEditorSettings({ entry, onChanged }: SettingsTabProps) {
   const handleRemove = useCallback(async () => {
     setRemoving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/channel-editors/${editorId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('delete failed');
       toast.success('Removed');

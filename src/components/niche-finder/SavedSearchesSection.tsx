@@ -45,6 +45,7 @@ export function SavedSearchesSection({
 
   const refresh = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/niche-finder/watchlist/searches');
       if (!res.ok) return;
       const body = (await res.json()) as { rows: SavedSearchRowProps[] };
@@ -59,6 +60,7 @@ export function SavedSearchesSection({
       if (!confirm('Delete this saved search?')) return;
       setDeleting(slug);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
         await fetch(`/api/niche-finder/watchlist/searches/${encodeURIComponent(slug)}`, {
           method: 'DELETE',
         });

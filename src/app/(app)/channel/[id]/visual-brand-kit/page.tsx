@@ -50,7 +50,9 @@ export default function ChannelVisualBrandKitPage({
     async function load() {
       try {
         const [chanRes, kitRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch('/api/channels'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch(`/api/channels/${id}/visual-brand-kit`),
         ]);
         if (cancelled) return;
@@ -99,6 +101,7 @@ export default function ChannelVisualBrandKitPage({
     setLogoError(null);
     setLogoUploading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const presignRes = await fetch(`/api/channels/${id}/visual-brand-kit/logo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -117,6 +120,7 @@ export default function ChannelVisualBrandKitPage({
         downloadUrl: string;
       };
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -161,6 +165,7 @@ export default function ChannelVisualBrandKitPage({
         logoUrl: logoUrl || undefined,
         channelName: displayName.trim() || undefined,
       };
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const res = await fetch(`/api/channels/${id}/visual-brand-kit`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

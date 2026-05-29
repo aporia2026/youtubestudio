@@ -60,6 +60,7 @@ export function MakeVideoButton({
     setSubmitting(true);
     console.info('[make-video] start', { from, title_chars: title.length, has_niche: !!niche, has_channel: !!channelId });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/videos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

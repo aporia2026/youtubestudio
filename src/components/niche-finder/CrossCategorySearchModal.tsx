@@ -73,6 +73,7 @@ export function CrossCategorySearchModal({
     setError(null);
     setResults(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/niche-finder/taxonomy/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,6 +115,7 @@ export function CrossCategorySearchModal({
   const onDeepDive = useCallback(
     async (match: MatchPayload) => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const res = await fetch('/api/niche-finder/deep-dive', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

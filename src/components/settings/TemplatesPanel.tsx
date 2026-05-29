@@ -53,6 +53,7 @@ export function TemplatesPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/templates');
       if (res.ok) {
         const data = await res.json();
@@ -95,6 +96,7 @@ export function TemplatesPanel() {
     setSaving(true);
     try {
       if (editingId) {
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
         const res = await fetch(`/api/templates/${editingId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -103,6 +105,7 @@ export function TemplatesPanel() {
         if (!res.ok) throw new Error('save failed');
         toast.success('Template updated');
       } else {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const res = await fetch('/api/templates', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -123,6 +126,7 @@ export function TemplatesPanel() {
   async function remove(id: string) {
     if (!confirm('Delete this template?')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       await fetch(`/api/templates/${id}`, { method: 'DELETE' });
       toast.success('Template deleted');
       await load();

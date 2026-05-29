@@ -28,6 +28,7 @@ export default function PresetsListPage() {
   async function refresh() {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/auto-pipeline/presets', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -51,6 +52,7 @@ export default function PresetsListPage() {
     )
       return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/auto-pipeline/presets/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

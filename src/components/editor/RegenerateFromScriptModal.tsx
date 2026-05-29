@@ -56,6 +56,7 @@ export function RegenerateFromScriptModal({
     }
     setRegenState({ kind: 'running' });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/regenerate-from-script`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

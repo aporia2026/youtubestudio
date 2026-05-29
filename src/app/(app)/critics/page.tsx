@@ -86,7 +86,9 @@ export default function CriticsPage() {
     (async () => {
       try {
         const [pRes, listRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch('/api/projects?limit=100'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           fetch('/api/critics/panels?limit=20'),
         ]);
         if (cancelled) return;
@@ -188,6 +190,7 @@ export default function CriticsPage() {
     abortRef.current = abort;
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/critics/panels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,6 +235,7 @@ export default function CriticsPage() {
       setIsRunning(false);
       abortRef.current = null;
       // Refresh history to include the new run.
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       fetch('/api/critics/panels?limit=20', { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => d?.panels && setPanels(d.panels))

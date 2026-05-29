@@ -55,7 +55,9 @@ export default function NarratorsPage() {
   async function loadData() {
     try {
       const [profRes, assignRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch('/api/narrator/profiles'),
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch('/api/narrator/assignments'),
       ]);
       if (profRes.ok) setProfiles(await profRes.json());
@@ -68,6 +70,7 @@ export default function NarratorsPage() {
   async function handleCreate() {
     if (!newName.trim()) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/narrator/profiles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -91,6 +94,7 @@ export default function NarratorsPage() {
 
   async function handleDelete(id: string) {
     if (!confirm('Remove this narrator?')) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
     await fetch(`/api/narrator/profiles/${id}`, { method: 'DELETE' });
     setProfiles(prev => prev.filter(p => p.id !== id));
     toast.success('Narrator removed');

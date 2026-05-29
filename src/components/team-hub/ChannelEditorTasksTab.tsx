@@ -38,6 +38,7 @@ export function ChannelEditorTasksTab({ entry }: ChannelEditorTasksTabProps) {
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(
         `/api/team-hub/channel-editor-tasks?id=${editorId}&channel=${channelId}`,
         { cache: 'no-store' },

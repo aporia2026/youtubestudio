@@ -315,6 +315,7 @@ export default function VideoStudioPage() {
     setRenderProgress(0);
     setRenderDownloadUrl(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/render/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -329,6 +330,7 @@ export default function VideoStudioPage() {
       const renderId = data.renderId;
       renderPollRef.current = setInterval(async () => {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- GET, read
           const s = await fetch(`/api/render/video?renderId=${renderId}`);
           const sd = await s.json() as { status: string; progress: number; downloadUrl?: string | null; error?: string };
           setRenderProgress(sd.progress ?? 0);

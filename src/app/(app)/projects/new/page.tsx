@@ -14,6 +14,7 @@ export default function NewProjectPage() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       if (data.niches?.length) setNiche(data.niches[0].name);
@@ -24,6 +25,7 @@ export default function NewProjectPage() {
     if (!title.trim()) { toast.error('Enter a project title'); return; }
     setCreating(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

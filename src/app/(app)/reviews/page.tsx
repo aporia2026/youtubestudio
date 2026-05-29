@@ -63,7 +63,9 @@ export default function ReviewsPage() {
   async function loadAll() {
     try {
       const [vrRes, narRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch('/api/review/projects'),
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         fetch('/api/narrator/assignments'),
       ]);
       if (vrRes.ok) setProjects(await vrRes.json());
@@ -79,6 +81,7 @@ export default function ReviewsPage() {
     if (!newTitle.trim()) return;
     setCreating(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/review/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -51,10 +51,12 @@ export function CommentInput({
       let drawing_thumbnail_url: string | undefined;
       if (pendingDrawing?.thumbnail) {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
           const blob = await fetch(pendingDrawing.thumbnail).then(r => r.blob());
           const formData = new FormData();
           formData.append('file', blob, 'annotation.png');
           formData.append('type', 'image');
+          // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
           const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
           if (uploadRes.ok) {
             const data = await uploadRes.json();
@@ -69,6 +71,7 @@ export function CommentInput({
       const timestamp_ms = isRange ? rangeStartMs! : currentTimeMs;
       const end_timestamp_ms = isRange ? currentTimeMs : null;
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(postUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

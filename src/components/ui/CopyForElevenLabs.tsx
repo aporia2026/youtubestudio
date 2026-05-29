@@ -38,6 +38,7 @@ export function CopyForElevenLabs({ script, version, voiceContext, buttonClassNa
     setBusy(true);
     const loading = toast.loading(`Formatting for ElevenLabs ${version}…`);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/script/elevenlabs-format', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

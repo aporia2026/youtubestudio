@@ -26,6 +26,7 @@ export default function PipelineListPage() {
   useEffect(() => {
     void (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/auto-pipeline/runs', { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();

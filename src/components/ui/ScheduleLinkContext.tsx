@@ -217,6 +217,7 @@ export function ScheduleLinkProvider({ item: initialItem, children }: ProviderPr
       // between "advanced" and "no-op because already past target". The API
       // returns `advanced: null` when the strict-ordering check fails — surface
       // that to the user instead of going silent.
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/schedule/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -243,6 +244,7 @@ export function ScheduleLinkProvider({ item: initialItem, children }: ProviderPr
                 toast.message('Status already changed — nothing to undo');
                 return;
               }
+              // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
               const r = await fetch(`/api/schedule/${id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
@@ -382,6 +384,7 @@ export function useScheduleAutoStamp({
     }
     if (!payload) return;
     seenRef.current = runKey;
+    // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
     fetch(`/api/schedule/${itemId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

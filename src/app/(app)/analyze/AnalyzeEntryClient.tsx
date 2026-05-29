@@ -114,6 +114,7 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
       if (q) qs.set('q', q);
       if (stageFilter !== 'all') qs.set('stage', stageFilter);
       const url = qs.toString() ? `/api/analyze/youtube-video?${qs.toString()}` : '/api/analyze/youtube-video';
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(url, { method: 'GET' });
       if (!res.ok) return;
       const data = (await res.json()) as { analyses: RecentAnalysisItem[] };
@@ -144,6 +145,7 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
       const previous = recent;
       setRecent((current) => current.filter((r) => r.id !== item.id));
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
         const res = await fetch(`/api/analyze/youtube-video/${item.id}`, { method: 'DELETE' });
         if (!res.ok && res.status !== 204) {
           setRecent(previous);
@@ -173,6 +175,7 @@ export function AnalyzeEntryClient({ initialRecent }: Props): React.ReactElement
       }
       setSubmitting(true);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
         const res = await fetch('/api/analyze/youtube-video', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

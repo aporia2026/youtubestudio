@@ -28,6 +28,7 @@ export function NotificationPrefsPanel({ token, role }: Props) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(`/api/collaborator-prefs/${token}`)
       .then(r => r.ok ? r.json() : null)
       .then(d => {
@@ -42,6 +43,7 @@ export function NotificationPrefsPanel({ token, role }: Props) {
   async function patch(body: Record<string, unknown>) {
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/collaborator-prefs/${token}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

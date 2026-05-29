@@ -52,6 +52,7 @@ export function FeaturePresetManager({ apiBase, title, subtitle, fields }: Props
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(apiBase, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -143,6 +144,7 @@ export function FeaturePresetManager({ apiBase, title, subtitle, fields }: Props
 
     try {
       const isNew = selectedId === '__new__';
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(isNew ? apiBase : `${apiBase}/${selectedId}`, {
         method: isNew ? 'POST' : 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -170,6 +172,7 @@ export function FeaturePresetManager({ apiBase, title, subtitle, fields }: Props
     setDeleting(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`${apiBase}/${selectedId}`, { method: 'DELETE' });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -461,6 +464,7 @@ function RemoteIdPicker({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     void fetch(endpoint, { cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null))
       .then((data: unknown) => {

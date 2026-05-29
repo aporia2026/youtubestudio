@@ -179,6 +179,7 @@ export function PublishToYoutubeModal({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/channels')
       .then((r) => r.json())
       .then((data) => {
@@ -211,6 +212,7 @@ export function PublishToYoutubeModal({
     function tick() {
       // POST to the explicit /poll endpoint — hits YouTube once and
       // returns the refreshed row. The plain GET is DB-only now (M9).
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       fetch(`/api/publishing/${publishRow!.id}/poll`, { method: 'POST' })
         .then((r) => r.json())
         .then((data) => {
@@ -252,6 +254,7 @@ export function PublishToYoutubeModal({
     }
     setSubmitting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/publishing', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -274,6 +277,7 @@ export function PublishToYoutubeModal({
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Publish failed');
       // Fetch the full row so the status panel has all fields.
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const rowRes = await fetch(`/api/publishing/${json.id}`);
       const rowJson = await rowRes.json();
       const row = (rowJson.publish ?? null) as PublishedVideoRow | null;

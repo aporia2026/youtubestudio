@@ -461,6 +461,7 @@ export function TopicCardGridPanel({
     });
     const startedAt = Date.now();
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const presignRes = await fetch('/api/uploads/topic-card-grid-cell', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -471,6 +472,7 @@ export function TopicCardGridPanel({
         throw new Error(data.error || `Presign failed (${presignRes.status})`);
       }
       const { uploadUrl, downloadUrl } = await presignRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type },
@@ -537,6 +539,7 @@ export function TopicCardGridPanel({
     });
     setBusyStep('cards');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/thumbnails/format/topic-card-grid/cards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -607,6 +610,7 @@ export function TopicCardGridPanel({
     });
     setBusyStep('image');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/thumbnails/format/topic-card-grid/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

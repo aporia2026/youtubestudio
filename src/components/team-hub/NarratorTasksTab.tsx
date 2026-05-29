@@ -106,6 +106,7 @@ export function NarratorTasksTab({ entry, onOpenSurface }: NarratorTasksTabProps
     setLoading(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/team-hub/${entry.id}/narrator-tasks`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -126,6 +127,7 @@ export function NarratorTasksTab({ entry, onOpenSurface }: NarratorTasksTabProps
       const before = tasks;
       setTasks(tasks.map((t) => (t.id === id ? { ...t, ...fields } : t)));
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
         const res = await fetch(`/api/narrator/assignments/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },

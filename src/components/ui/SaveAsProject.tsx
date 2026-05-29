@@ -24,6 +24,7 @@ export function SaveAsProject({ script, niche, topic, modelId, onSaved, classNam
     if (!title.trim()) { toast.error('Enter a project title'); return; }
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

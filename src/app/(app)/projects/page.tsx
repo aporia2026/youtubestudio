@@ -57,6 +57,7 @@ export default function ProjectsPage() {
 
   async function fetchProjects() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/projects');
       const data = await res.json();
       setProjects(data.projects || []);
@@ -68,6 +69,7 @@ export default function ProjectsPage() {
   }
   async function fetchChannels() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/channels');
       const data = await res.json();
       // /api/channels returns the richer per-account shape — narrow to the
@@ -95,6 +97,7 @@ export default function ProjectsPage() {
     if (channelIds.length === 0) return;
     const count = selected.size;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/projects/bulk-assign-channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -136,6 +139,7 @@ export default function ProjectsPage() {
     // Optimistic update — flip the card text immediately, revert on failure.
     setProjects(prev => prev.map(p => p.id === project.id ? { ...p, title: next } : p));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH RPC - awaits and uses response
       const res = await fetch(`/api/projects/${project.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -159,6 +163,7 @@ export default function ProjectsPage() {
     // Optimistic remove from the grid; if the request fails we re-fetch.
     setProjects(prev => prev.filter(p => p.id !== project.id));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
       const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('delete failed');
       toast.success('Project deleted');

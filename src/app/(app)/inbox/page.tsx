@@ -187,6 +187,7 @@ export default function InboxPage() {
   const loadInbox = useCallback(async () => {
     try {
       const params = new URLSearchParams({ filter });
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/inbox?${params.toString()}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -299,6 +300,7 @@ export default function InboxPage() {
     // error and surface a toast so the user knows their click didn't take.
     setRows(prev => prev.map(r => r.id === row.id ? { ...r, resolved } : r));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/inbox/resolve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -322,6 +324,7 @@ export default function InboxPage() {
     const snapshot = new Map(targets.map(r => [r.id, r.resolved]));
     setRows(prev => prev.map(r => selectedIds.has(r.id) ? { ...r, resolved } : r));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/inbox/resolve-bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

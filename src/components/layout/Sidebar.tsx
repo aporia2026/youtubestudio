@@ -81,6 +81,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   async function handleLogout() {
     setLoggingOut(true);
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
     await fetch('/api/auth/logout', { method: 'POST' });
     router.push('/login');
   }
@@ -375,6 +376,7 @@ function useMessagesUnread() {
     let alive = true;
     async function load() {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/messages/unread', { cache: 'no-store' });
         if (!res.ok) return;
         const data = await res.json();
@@ -426,6 +428,7 @@ function useCommentsUnread() {
     let alive = true;
     async function load() {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, read
         const res = await fetch('/api/inbox/unread', { cache: 'no-store' });
         if (!res.ok) return;
         const data = await res.json();

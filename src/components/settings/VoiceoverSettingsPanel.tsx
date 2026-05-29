@@ -63,6 +63,7 @@ export function VoiceoverSettingsPanel() {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/workspace/tts-settings')
       .then((r) => r.json())
       .then((data) => {
@@ -85,6 +86,7 @@ export function VoiceoverSettingsPanel() {
     if (!effective) return;
     let cancelled = false;
     setVoicesLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(
       `/api/tts/voices?provider=${encodeURIComponent(effective.defaultProvider)}&languageCode=${encodeURIComponent(effective.defaultLanguageCode)}`,
     )
@@ -107,6 +109,7 @@ export function VoiceoverSettingsPanel() {
   async function patch(next: StoredSettings) {
     setSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT RPC - awaits and uses response
       const res = await fetch('/api/workspace/tts-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

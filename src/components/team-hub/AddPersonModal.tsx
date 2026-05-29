@@ -83,6 +83,7 @@ export function AddPersonModal({ open, onClose, onCreated }: AddPersonModalProps
   // Lazy-load channels when the user picks the channel-editor flow.
   useEffect(() => {
     if (step !== 'channel-editor') return;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch('/api/channels', { cache: 'no-store' })
       .then(async (r) => (r.ok ? r.json() : []))
       .then((data) => {
@@ -106,6 +107,7 @@ export function AddPersonModal({ open, onClose, onCreated }: AddPersonModalProps
     }
     setSubmitting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/team/collaborators', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -138,6 +140,7 @@ export function AddPersonModal({ open, onClose, onCreated }: AddPersonModalProps
     }
     setSubmitting(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch(`/api/channels/${pickedChannelId}/editors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

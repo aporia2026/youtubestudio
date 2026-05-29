@@ -42,6 +42,7 @@ export function OutlierPresetBar({
 
   const refresh = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch('/api/niche-finder/outliers/presets');
       if (!res.ok) {
         setSaved([]);
@@ -67,6 +68,7 @@ export function OutlierPresetBar({
     setSaving(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const res = await fetch('/api/niche-finder/outliers/presets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -92,6 +94,7 @@ export function OutlierPresetBar({
   const onDelete = useCallback(
     async (id: string) => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited DELETE RPC
         await fetch(`/api/niche-finder/outliers/presets/${encodeURIComponent(id)}`, {
           method: 'DELETE',
         });

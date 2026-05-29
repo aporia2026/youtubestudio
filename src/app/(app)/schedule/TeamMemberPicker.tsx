@@ -52,6 +52,7 @@ export function TeamMemberPicker({ role, selectedId, selectedName, selectedColor
   useEffect(() => {
     if (!open || people.length > 0) return;
     setLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
     fetch(`/api/team/collaborators?role=${role}`)
       .then(r => r.ok ? r.json() : [])
       .then((rows: Collaborator[]) => setPeople(rows))

@@ -58,6 +58,7 @@ export function NotificationBell({ token, pollMs = 45_000 }: Props) {
 
   async function load() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, read
       const res = await fetch(`/api/activity/${token}?limit=30`);
       if (!res.ok) return;
       const data = await res.json();
@@ -92,6 +93,7 @@ export function NotificationBell({ token, pollMs = 45_000 }: Props) {
   async function markAllRead() {
     setLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       await fetch(`/api/activity/${token}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -104,6 +106,7 @@ export function NotificationBell({ token, pollMs = 45_000 }: Props) {
 
   async function markOneRead(id: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       await fetch(`/api/activity/${token}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
