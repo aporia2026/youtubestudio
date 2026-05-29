@@ -1058,7 +1058,16 @@ async function buildTitleBarOverlay(
   const fallbackFont: Exclude<LabelFont, 'custom'> =
     titleBar.font === 'custom' ? 'anton' : titleBar.font;
   const font = await resolveLabelFont(minimalStyle, fontResolver, fallbackFont);
-  const safeW = Math.max(16, Math.round(width * 0.94));
+  // Title bar text horizontal safe area. Phase 4.11.1 — bumped from
+  // 94 % of canvas width to a 12 % total horizontal margin (6 % per
+  // side, with a 32 px floor on smaller canvases) so long titles
+  // don't kiss the bar edges. Lines that fit inside this area pass
+  // through unchanged; lines wider than the safe area get scaled to
+  // fit via the post-render resize step below — same belt-and-braces
+  // pattern the cell-label renderer uses.
+  const titleSideMargin = Math.max(32, Math.round(width * 0.06));
+  const maxRenderedW = Math.max(16, width - 2 * titleSideMargin);
+  const safeW = maxRenderedW;
   // Phase 4.10: when a subtitle is present, the main line shrinks to
   // ~45% of bar height (was 55%) to leave a ~22% strip for the
   // subtitle below it, plus breathing room. Without a subtitle, the
@@ -1083,9 +1092,22 @@ async function buildTitleBarOverlay(
     .png()
     .toBuffer();
   mainBuf = await tintPngTo(mainBuf, titleBar.color);
-  const mainMeta = await sharp(mainBuf).metadata();
-  const mainBw = mainMeta.width ?? safeW;
-  const mainBh = mainMeta.height ?? mainSizePx;
+  let mainMeta = await sharp(mainBuf).metadata();
+  let mainBw = mainMeta.width ?? safeW;
+  let mainBh = mainMeta.height ?? mainSizePx;
+  // Phase 4.11.1: if Pango's natural render width exceeds the safe
+  // area (long title, large font, narrow canvas), scale the buffer
+  // to fit. `fit: 'inside'` preserves aspect so the text shrinks
+  // proportionally rather than getting squashed.
+  if (mainBw > maxRenderedW) {
+    mainBuf = await sharp(mainBuf)
+      .resize({ width: maxRenderedW, fit: 'inside' })
+      .png()
+      .toBuffer();
+    mainMeta = await sharp(mainBuf).metadata();
+    mainBw = mainMeta.width ?? maxRenderedW;
+    mainBh = mainMeta.height ?? mainBh;
+  }
 
   // Vertical layout
   //  - bar top in canvas-y: barTop
@@ -1138,9 +1160,21 @@ async function buildTitleBarOverlay(
     .toBuffer();
   const subColor = titleBar.subtitleColor ?? titleBar.color;
   subBuf = await tintPngTo(subBuf, subColor);
-  const subMeta = await sharp(subBuf).metadata();
-  const subBw = subMeta.width ?? safeW;
-  const subBh = subMeta.height ?? subSizePx;
+  let subMeta = await sharp(subBuf).metadata();
+  let subBw = subMeta.width ?? safeW;
+  let subBh = subMeta.height ?? subSizePx;
+  // Phase 4.11.1: subtitle gets the same safe-area clamp as the main
+  // line so a verbose secondary headline can't outgrow the safe area
+  // while the main title sits well within it.
+  if (subBw > maxRenderedW) {
+    subBuf = await sharp(subBuf)
+      .resize({ width: maxRenderedW, fit: 'inside' })
+      .png()
+      .toBuffer();
+    subMeta = await sharp(subBuf).metadata();
+    subBw = subMeta.width ?? maxRenderedW;
+    subBh = subMeta.height ?? subBh;
+  }
 
   // Gap between the two lines; small fraction of bar height keeps
   // the two lines visually paired without colliding.

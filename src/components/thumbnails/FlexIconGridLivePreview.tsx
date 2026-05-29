@@ -266,20 +266,42 @@ export function FlexIconGridLivePreview({
             font: tb.font,
             customFontUrl: tb.customFontUrl,
           });
+          // Phase 4.11.1: clip the title text to the same horizontal
+          // safe area the composer uses. The composer scales long text
+          // to fit (Sharp resize 'inside'); the preview just clips —
+          // both signal "your title won't bleed past the safe margin",
+          // and lines that fit within the area render identical to
+          // the rendered PNG.
+          const titleSideMargin = Math.max(32, Math.round(config.width * 0.06));
+          const clipId = 'fg-preview-title-safe';
+          const clipRect = (
+            <clipPath id={clipId}>
+              <rect
+                x={titleSideMargin}
+                y={tb.position === 'top' ? 0 : config.height - tb.height}
+                width={config.width - 2 * titleSideMargin}
+                height={tb.height}
+              />
+            </clipPath>
+          );
           if (!hasSubtitle) {
             return (
-              <text
-                x={config.width / 2}
-                y={barCenterY}
-                fontFamily={fontFamily}
-                fontSize={mainSize}
-                fontWeight={900}
-                fill={tb.color}
-                textAnchor="middle"
-                dominantBaseline="middle"
-              >
-                {sanitizeUserText(tb.text, 80)}
-              </text>
+              <>
+                <defs>{clipRect}</defs>
+                <text
+                  x={config.width / 2}
+                  y={barCenterY}
+                  fontFamily={fontFamily}
+                  fontSize={mainSize}
+                  fontWeight={900}
+                  fill={tb.color}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  clipPath={`url(#${clipId})`}
+                >
+                  {sanitizeUserText(tb.text, 80)}
+                </text>
+              </>
             );
           }
           const subSize = Math.max(12, Math.round(tb.height * 0.22));
@@ -301,28 +323,32 @@ export function FlexIconGridLivePreview({
               })
             : fontFamily;
           return (
-            <text
-              x={config.width / 2}
-              y={barCenterY}
-              fontFamily={fontFamily}
-              fill={tb.color}
-              textAnchor="middle"
-              dominantBaseline="middle"
-            >
-              <tspan x={config.width / 2} fontSize={mainSize} fontWeight={900}>
-                {sanitizeUserText(tb.text, 80)}
-              </tspan>
-              <tspan
+            <>
+              <defs>{clipRect}</defs>
+              <text
                 x={config.width / 2}
-                dy={subDy}
-                fontFamily={subFontFamily}
-                fontSize={subSize}
-                fontWeight={700}
-                fill={tb.subtitleColor ?? tb.color}
+                y={barCenterY}
+                fontFamily={fontFamily}
+                fill={tb.color}
+                textAnchor="middle"
+                dominantBaseline="middle"
+                clipPath={`url(#${clipId})`}
               >
-                {subtitleText}
-              </tspan>
-            </text>
+                <tspan x={config.width / 2} fontSize={mainSize} fontWeight={900}>
+                  {sanitizeUserText(tb.text, 80)}
+                </tspan>
+                <tspan
+                  x={config.width / 2}
+                  dy={subDy}
+                  fontFamily={subFontFamily}
+                  fontSize={subSize}
+                  fontWeight={700}
+                  fill={tb.subtitleColor ?? tb.color}
+                >
+                  {subtitleText}
+                </tspan>
+              </text>
+            </>
           );
         })()}
 
