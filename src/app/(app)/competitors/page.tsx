@@ -243,6 +243,7 @@ export default function CompetitorsPage() {
   /* Fetch competitors list */
   const fetchCompetitors = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads competitors list
       const res = await fetch('/api/competitors');
       if (!res.ok) throw new Error();
       const data = await res.json();
@@ -257,6 +258,7 @@ export default function CompetitorsPage() {
     if (!channelUrl.trim()) return;
     setAdding(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new competitor — RPC
       const res = await fetch('/api/competitors', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel_url: channelUrl.trim() }),
@@ -273,6 +275,7 @@ export default function CompetitorsPage() {
   async function syncCompetitor(id: string) {
     setSyncingId(id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited sync POST — RPC
       const res = await fetch(`/api/competitors/${id}/sync`, { method: 'POST' });
       if (!res.ok) throw new Error();
       const data = await res.json();
@@ -296,6 +299,7 @@ export default function CompetitorsPage() {
       const c = snapshot[i];
       setSyncingId(c.id);
       try {
+        // eslint-disable-next-line no-restricted-syntax -- awaited sync POST — RPC
         const res = await fetch(`/api/competitors/${c.id}/sync`, { method: 'POST' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -323,6 +327,7 @@ export default function CompetitorsPage() {
     if (!confirm('Remove this competitor and all synced data?')) return;
     setDeletingId(id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE — RPC, returns no body
       const res = await fetch(`/api/competitors/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error();
       setCompetitors(prev => prev.filter(c => c.id !== id));
@@ -342,6 +347,7 @@ export default function CompetitorsPage() {
     setThumbAnalyses({});
     setDetailLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads competitor detail
       const res = await fetch(`/api/competitors/${id}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
@@ -356,6 +362,7 @@ export default function CompetitorsPage() {
     // Don't blank prior analysis — keep it visible until the new one arrives.
     setAnalyzing(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited analyze RPC: returns analysis data
       const res = await fetch(`/api/competitors/${selectedId}/analyze`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelId, niche: analysisNiche || 'General' }),
@@ -373,6 +380,7 @@ export default function CompetitorsPage() {
     if (!selectedId) return;
     setThumbAnalyzing(videoRowId);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited thumbnail-analyze RPC
       const res = await fetch(`/api/competitors/${selectedId}/thumbnail-analyze`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelId, videoRowId }),
@@ -390,6 +398,7 @@ export default function CompetitorsPage() {
     setIdeasLoading(true);
     try {
       const contentGaps = analysis?.content_gaps_for_user?.map(g => g.gap) || [];
+      // eslint-disable-next-line no-restricted-syntax -- awaited ideas RPC: returns ideas list
       const res = await fetch(`/api/competitors/${selectedId}/ideas`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelId, niche: analysisNiche || 'General', userAngle, contentGaps }),
@@ -416,6 +425,7 @@ export default function CompetitorsPage() {
   async function saveIdea(idea: Idea, idx: number) {
     setSavingIdeaIdx(idx);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new idea — RPC
       const res = await fetch('/api/ideas', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -450,6 +460,7 @@ export default function CompetitorsPage() {
     if (!selectedId) return;
     setVideoAnalyzing(videoRowId);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited video-analyze RPC
       const res = await fetch(`/api/competitors/${selectedId}/video-analyze`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelId, videoRowId, niche: analysisNiche, force }),
@@ -468,6 +479,7 @@ export default function CompetitorsPage() {
     setBatchRunning(true);
     setBatchProgress([]);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited video-analyze-batch RPC
       const res = await fetch(`/api/competitors/${selectedId}/video-analyze-batch`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ modelId, niche: analysisNiche, count: batchCount, strategy: batchStrategy }),
@@ -1568,6 +1580,7 @@ function CompetitorInlineNaming({
   async function generate() {
     setGenerating(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads naming context
       const ctxRes = await fetch(`/api/competitors/${competitorId}/naming-context`);
       if (!ctxRes.ok) {
         const e = await ctxRes.json().catch(() => ({}));
@@ -1580,6 +1593,7 @@ function CompetitorInlineNaming({
       // battle on the full naming workspace).
       const modelId = getFeatureDefaultModelId('channel-naming');
 
+      // eslint-disable-next-line no-restricted-syntax -- naming RPC: awaits and uses response
       const genRes = await fetch('/api/channel-naming/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1699,6 +1713,7 @@ function SavedNamesFromCompetitor({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads saved names
     fetch(`/api/competitors/${competitorId}/saved-names`)
       .then(r => r.ok ? r.json() : { saved: [] })
       .then(d => { if (!cancelled) setSaved(d.saved || []); })
@@ -1711,6 +1726,7 @@ function SavedNamesFromCompetitor({
     if (!confirm('Delete this saved name?')) return;
     setDeletingId(id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE — RPC
       const res = await fetch(`/api/channel-naming/saved/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));

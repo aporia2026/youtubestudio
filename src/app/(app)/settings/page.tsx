@@ -66,6 +66,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (activeSection !== 'notifications') return;
     setNotifLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads notification settings
     fetch('/api/notifications/settings')
       .then(r => r.json())
       .then(data => setNotifSettings(prev => ({ ...prev, ...data, owner_email: data.owner_email || '' })))
@@ -76,6 +77,7 @@ export default function SettingsPage() {
   async function saveNotifSettings() {
     setNotifSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for notif settings — RPC with response
       const res = await fetch('/api/notifications/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -94,11 +96,13 @@ export default function SettingsPage() {
     setNotifTesting(true);
     try {
       // Save first so the latest email is used
+      // eslint-disable-next-line no-restricted-syntax -- awaited PUT for notif settings — RPC
       await fetch('/api/notifications/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ owner_email: notifSettings.owner_email }),
       });
+      // eslint-disable-next-line no-restricted-syntax -- awaited test POST — RPC, returns send result
       const res = await fetch('/api/notifications/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const data = await res.json();
       if (data.sent) {
@@ -120,6 +124,7 @@ export default function SettingsPage() {
   async function loadKeyStatus() {
     setKeyStatusLoading(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads key status
       const res = await fetch('/api/settings/key-status');
       if (res.ok) setKeyStatus(await res.json());
     } catch {}
@@ -128,6 +133,7 @@ export default function SettingsPage() {
 
   async function loadGoogleAccount() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads google account
       const res = await fetch('/api/google-account');
       if (res.ok) setGoogleAccount(await res.json());
     } catch {}
@@ -136,6 +142,7 @@ export default function SettingsPage() {
   async function testConnection(provider: string) {
     setTestResults(prev => ({ ...prev, [provider]: { status: 'testing' } }));
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited test-connection RPC: returns ok/error
       const res = await fetch('/api/settings/test-connection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -156,6 +163,7 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads niches on mount
     fetch('/api/niches').then(r => r.json()).then(data => setNiches(data.niches || []));
     loadKeyStatus();
     loadGoogleAccount();
@@ -179,6 +187,7 @@ export default function SettingsPage() {
     if (!newNiche.trim()) return;
     setAddingNiche(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns new niche — RPC
       const res = await fetch('/api/niches', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -194,6 +203,7 @@ export default function SettingsPage() {
       }
       toast.success('Niche added!');
       setNewNiche(''); setNewNicheDesc(''); setNewNicheKeywords('');
+      // eslint-disable-next-line no-restricted-syntax -- GET, reloads niches list
       const data = await (await fetch('/api/niches')).json();
       setNiches(data.niches || []);
     } catch (err) {
@@ -203,6 +213,7 @@ export default function SettingsPage() {
   }
 
   async function toggleNiche(id: string, isActive: boolean) {
+    // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for niche — RPC
     await fetch(`/api/niches/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -212,6 +223,7 @@ export default function SettingsPage() {
   }
 
   async function deleteNiche(id: string) {
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for niche — RPC
     await fetch(`/api/niches/${id}`, { method: 'DELETE' });
     setNiches(n => n.filter(ni => ni.id !== id));
     toast.success('Niche removed');
@@ -221,6 +233,7 @@ export default function SettingsPage() {
     if (!perplexityKeyInput.trim()) return;
     setPerplexityKeySaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to save perplexity key — RPC
       const res = await fetch('/api/settings/perplexity-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -237,6 +250,7 @@ export default function SettingsPage() {
   async function clearPerplexityKey() {
     setPerplexityKeyClearing(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for perplexity key — RPC
       await fetch('/api/settings/perplexity-key', { method: 'DELETE' });
       await loadKeyStatus();
       toast.success('Perplexity API key cleared');
@@ -351,6 +365,7 @@ export default function SettingsPage() {
                       onClick={async () => {
                         setGoogleDisconnecting(true);
                         try {
+                          // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for google account — RPC
                           await fetch('/api/google-account', { method: 'DELETE' });
                           setGoogleAccount({ connected: false });
                           toast.success('Google account disconnected');
@@ -421,6 +436,7 @@ export default function SettingsPage() {
                   onClick={async () => {
                     setDbInitializing(true);
                     try {
+                      // eslint-disable-next-line no-restricted-syntax -- awaited db-init RPC
                       const res = await fetch('/api/db/init', { method: 'POST' });
                       if (res.ok) toast.success('Database tables initialized!');
                       else toast.error('Database init failed — is POSTGRES_URL configured?');

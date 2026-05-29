@@ -61,6 +61,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   const lastSavedRef = useRef<string>('');
 
   const loadScripts = useCallback(async (projectId: string) => {
+    // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts
     const res = await fetch(`/api/projects/${projectId}/scripts`);
     const data = await res.json();
     const list: ScriptRow[] = data.scripts || [];
@@ -78,6 +79,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   async function ensureProject(): Promise<string | null> {
     if (item.project_id) return item.project_id;
     setCreatingProject(true);
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new project — RPC
     const res = await fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -99,6 +101,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
     const projectId = await ensureProject();
     if (!projectId) return;
     setSavingScript(true);
+    // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new script — RPC
     const res = await fetch(`/api/projects/${projectId}/scripts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -146,6 +149,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
   async function suggestTitles() {
     setSuggestingTitles(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- title-from-script RPC: awaits and uses response
       const res = await fetch('/api/schedule/ai/title-from-script', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -201,6 +205,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
       visual_style_override: args.visualStyleOverrideId,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- auto-pipeline run RPC: awaits and uses response
       const res = await fetch('/api/auto-pipeline/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -215,6 +220,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
       // pipeline_run_videos row before the cron picks it up. The
       // response shape from POST /runs is { runId, videoIds[] }.
       if (args.visualStyleOverrideId && Array.isArray(data.videoIds) && data.videoIds[0]) {
+        // eslint-disable-next-line no-restricted-syntax -- awaited action POST — RPC
         await fetch(`/api/auto-pipeline/videos/${data.videoIds[0]}/actions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -391,6 +397,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
               const existing = cf?.review_project_id;
               if (existing) { window.location.href = `/reviews/${existing}`; return; }
               try {
+                // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the review project — RPC
                 const res = await fetch('/api/review/projects', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -401,6 +408,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                 // Persist the link so future clicks deep-link directly + the
                 // ListView badge can pick it up. custom_fields_merge does a
                 // jsonb || merge server-side instead of replacing the whole field.
+                // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for schedule item update — RPC, returns no body
                 await fetch(`/api/schedule/${item.id}`, {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
@@ -427,12 +435,14 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
               if (!item.project_id || !item.script_id || !item.narrator_collaborator_id) return;
               try {
                 // Fetch the script content to pass to the assignment splitter
+                // eslint-disable-next-line no-restricted-syntax -- GET (actually GET path, no body) — loads scripts
                 const scriptRes = await fetch(`/api/projects/${item.project_id}/scripts`);
                 if (!scriptRes.ok) throw new Error('Failed to load script');
                 const scriptsData = await scriptRes.json();
                 const scripts = Array.isArray(scriptsData) ? scriptsData : (scriptsData.scripts || []);
                 const script = scripts.find((s: { id: string }) => s.id === item.script_id) || scripts[0];
                 if (!script?.content) throw new Error('Script content empty');
+                // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns narrator assignment — RPC
                 const res = await fetch('/api/narrator/assignments', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -569,18 +579,21 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                     // is still there as the explicit path.
                     if (!id || !item.project_id || !item.script_id) return;
                     try {
+                      // eslint-disable-next-line no-restricted-syntax -- GET, loads narrator assignments
                       const existingRes = await fetch('/api/narrator/assignments');
                       if (existingRes.ok) {
                         const all: Array<{ project_id?: string; narrator_id?: string }> = await existingRes.json();
                         const dup = all.find(a => a.project_id === item.project_id && a.narrator_id === id);
                         if (dup) return; // assignment already exists, nothing to do
                       }
+                      // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts
                       const scriptsRes = await fetch(`/api/projects/${item.project_id}/scripts`);
                       if (!scriptsRes.ok) return;
                       const scriptsData = await scriptsRes.json();
                       const scripts = Array.isArray(scriptsData) ? scriptsData : (scriptsData.scripts || []);
                       const script = scripts.find((s: { id: string }) => s.id === item.script_id) || scripts[0];
                       if (!script?.content) return;
+                      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns assignment id — RPC
                       const created = await fetch('/api/narrator/assignments', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -699,6 +712,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
                     onClick={async () => {
                       if (!item.youtube_url) { toast.error('Save a YouTube URL first'); return; }
                       toast.message('Pulling from YouTube…');
+                      // eslint-disable-next-line no-restricted-syntax -- pull-youtube-metadata RPC: awaits and uses response
                       const res = await fetch(`/api/schedule/${item.id}/pull-youtube-metadata`, { method: 'POST' });
                       const data: {
                         error?: string;
@@ -807,6 +821,7 @@ export function ItemDetail({ item, channels, statuses, allItems, onClose, onPatc
               hasChildren={!!item.recurrence}
               onChange={rule => onPatch(item.id, { recurrence: rule as RecurrenceRule | null })}
               onRegenerate={async () => {
+                // eslint-disable-next-line no-restricted-syntax -- PUT that returns child schedule items — RPC
                 const res = await fetch(`/api/schedule/${item.id}/children`, { method: 'PUT' });
                 const data = await res.json();
                 if (!res.ok) { toast.error(data.error || 'Could not regenerate'); return; }
@@ -890,7 +905,9 @@ function AutoContinueModal({
     setLoading(true);
     setErr(null);
     void Promise.all([
+      // eslint-disable-next-line no-restricted-syntax -- GET .then, loads presets
       fetch('/api/auto-pipeline/presets', { cache: 'no-store' }).then(r => r.ok ? r.json() : { presets: [] }),
+      // eslint-disable-next-line no-restricted-syntax -- GET .then, loads styles
       fetch('/api/production-doc/styles', { cache: 'no-store' }).then(r => r.ok ? r.json() : { styles: [] }),
     ])
       .then(([presetsList, stylesList]) => {

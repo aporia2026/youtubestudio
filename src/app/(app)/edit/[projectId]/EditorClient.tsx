@@ -51,6 +51,7 @@ import {
 import { reindexForCommand } from '@/lib/editor/reindex-for-command';
 import { toast } from 'sonner';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
+import { mutate } from '@/lib/mutate';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
 import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
@@ -389,6 +390,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         });
         void (async () => {
           try {
+            // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new version for SYNC_SERVER_VERSION; RPC, has its own retry loop
             const res = await fetch(
               `/api/edit/${encodeURIComponent(projectId)}/row-reindex`,
               {
@@ -511,6 +513,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           try {
+            // eslint-disable-next-line no-restricted-syntax -- row-asset attach RPC: returns version for SYNC_SERVER_VERSION; custom MAX_ATTEMPTS retry loop already handles failure classes
             const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/row-asset`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -871,6 +874,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       }
       try {
         const res = await queueImageGen('generate', 'editor-bulk-collage', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response (4 image URLs)
           fetch('/api/generate/production-doc/collage', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -963,6 +967,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       const model = row.image_model || liveState.doc.image_model_default || undefined;
       try {
         const res = await queueImageGen('generate', 'editor-bulk-single', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response (image URL + saliency)
           fetch('/api/generate/production-doc/image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1134,6 +1139,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
       try {
         const res = await queueImageGen('generate', 'editor-regen', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
           fetch('/api/generate/production-doc/image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1416,6 +1422,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads styles list
         const res = await fetch('/api/production-doc/styles');
         if (!res.ok || cancelled) return;
         const data = await res.json() as {
@@ -1479,6 +1486,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     let cancelled = false;
     void (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- voiceover-align RPC: awaits and uses response (alignment data)
         const res = await fetch('/api/voiceovers/align', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1551,12 +1559,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       try {
         let channelId = state.channelId;
         if (!channelId) {
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads active-channel
           const acRes = await fetch('/api/user/settings/active-channel');
           if (!acRes.ok) return;
           const ac = (await acRes.json()) as { active_channel_id: string | null };
           if (cancelled || !ac.active_channel_id) return;
           channelId = ac.active_channel_id;
         }
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads brand kit
         const kitRes = await fetch(`/api/channels/${channelId}/visual-brand-kit`);
         if (!kitRes.ok) return;
         const data = (await kitRes.json()) as { visualBrandKit: ChannelVisualBrandKit | null };
@@ -1594,6 +1604,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       // Flush any pending edits before the server's JSONB merge to
       // avoid racing against the version-bump.
       await flushSave();
+      // eslint-disable-next-line no-restricted-syntax -- captions-regenerate RPC: awaits and uses response
       const res = await fetch(`/api/edit/${encodeURIComponent(projectId)}/captions/regenerate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1680,10 +1691,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   ): Promise<void> {
     try {
       console.info('[editor telemetry] post', { event, projectId });
-      await fetch('/api/editor-telemetry', {
+      // Phase 3.2: route through the durable outbox so a tab close
+      // mid-flight doesn't lose the metric. Fire-and-forget is the
+      // exact case mutate() was designed for.
+      mutate('editor.telemetry', {
+        url: '/api/editor-telemetry',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, project_id: projectId, payload }),
+        body: { event, project_id: projectId, payload },
       });
     } catch (err) {
       console.warn('[editor telemetry] post failed', {
@@ -1786,6 +1800,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads broll-default
         const res = await fetch('/api/user/settings/broll-default', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as { modelId?: string };
@@ -2146,6 +2161,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
     let renderId: string | null = null;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- render RPC: awaits and uses response (render id)
       const res = await fetch('/api/render/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2175,6 +2191,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     if (renderPollRef.current) clearInterval(renderPollRef.current);
     renderPollRef.current = setInterval(async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, polls render status
         const statusRes = await fetch(`/api/render/video?renderId=${renderId}`);
         const statusData = (await statusRes.json().catch(() => ({}))) as {
           status?: string;
@@ -2379,6 +2396,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       for (const { rowIndex, clipId } of brollPollTargets) {
         if (cancelled) return;
         try {
+          // eslint-disable-next-line no-restricted-syntax -- GET, polls broll clip status
           const res = await fetch(`/api/broll/${encodeURIComponent(clipId)}`, {
             cache: 'no-store',
           });
@@ -2622,6 +2640,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
       try {
         const res = await queueImageGen('edit', 'editor-variant-edit', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
           fetch('/api/generate/production-doc/image/edit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2798,6 +2817,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         return next;
       });
       try {
+        // eslint-disable-next-line no-restricted-syntax -- overlay RPC: awaits and uses response
         const res = await fetch('/api/overlay/fetch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2978,6 +2998,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               score: saliencyMap.busyness[idx] ?? 0,
             }))
           : undefined;
+        // eslint-disable-next-line no-restricted-syntax -- overlay RPC: awaits and uses response
         const res = await fetch('/api/overlay/fetch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3233,6 +3254,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       console.info('[editor ai-rmbg] dispatch', { shotIndex });
       try {
         const res = await queueImageGen('edit', 'editor-rmbg', () =>
+          // eslint-disable-next-line no-restricted-syntax -- rmbg RPC: awaits and uses response (cutout URL)
           fetch('/api/generate/production-doc/image/rmbg', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5100,6 +5122,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 console.info('[editor image-edit] apply', { rowIndex, optionId: appliedOption.id });
                 try {
                   const res = await queueImageGen('edit', 'editor-edit-apply', () =>
+                    // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
                     fetch('/api/generate/production-doc/image/edit', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
@@ -5141,6 +5164,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 console.info('[editor image-edit] erase', { rowIndex });
                 try {
                   const res = await queueImageGen('edit', 'editor-erase', () =>
+                    // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
                     fetch('/api/generate/production-doc/image/edit', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
