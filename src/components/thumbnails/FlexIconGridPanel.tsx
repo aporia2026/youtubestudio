@@ -452,6 +452,14 @@ export function FlexIconGridPanel({
   // "Restore palette" chip that returns to the snapshot — a cleaner
   // path than asking the user to remember which preset they were on.
   const [paletteBaseline, setPaletteBaseline] = useState<PaletteSpec | null>(null);
+  // Phase 4.26: ref to the per-cell stroke colour input so the "On"
+  // tristate chip can hand focus to it after the controls render.
+  const strokeColorInputRef = useRef<HTMLInputElement | null>(null);
+  // Phase 4.26: live-preview zoom level. 100 = native fit. Scales
+  // the SVG via CSS transform so the rendered PNG is unaffected.
+  // Local UI state — not persisted. Bounded to the discrete chip
+  // set to keep the math simple and avoid pathological values.
+  const [previewZoom, setPreviewZoom] = useState<number>(100);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1260,7 +1268,13 @@ export function FlexIconGridPanel({
                 color: 'currentColor',
                 opacity: 0.85,
                 verticalAlign: 'middle',
-                letterSpacing: 0.3,
+                // Phase 4.26: em-relative spacing so the pill reads
+                // consistently across system fonts where 0.3 px ≈
+                // varies. ~0.03em ≈ same visual tracking the pill
+                // had in dev (≈10 px font × 0.03 = 0.3 px) but
+                // scales sensibly if the inherited font ever
+                // changes size.
+                letterSpacing: '0.03em',
               }}
               title="The palette has been adjusted since the last preset / Random / custom edit. Tap Restore to return to the baseline."
               aria-label="Palette modified"
@@ -1595,12 +1609,94 @@ export function FlexIconGridPanel({
 
       {/* Live preview */}
       <section style={{ ...sectionStyle, padding: '12px 14px' }}>
-        <h3 style={sectionHeaderStyle}>Live preview · click any cell to edit</h3>
-        <FlexIconGridLivePreview
-          config={config}
-          highlightedCellIndex={selectedCellIndex}
-          onCellClick={(idx) => setSelectedCellIndex(idx)}
-        />
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+          }}
+        >
+          <h3 style={{ ...sectionHeaderStyle, marginBottom: 0 }}>
+            Live preview · click any cell to edit
+          </h3>
+          {/* Phase 4.26: zoom controls. 50 % shows full thumbnail at
+              a glance on small windows; 100 % is native fit;
+              150 % / 200 % are for precision editing of small
+              cells in a dense grid. Uses CSS transform so the
+              rendered PNG geometry is unaffected. The wrapping
+              container handles the resulting overflow with horizontal
+              + vertical scrolling. */}
+          <div
+            role="radiogroup"
+            aria-label="Live preview zoom"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 0,
+              borderRadius: 6,
+              border: '1px solid #2a2a2e',
+              padding: 2,
+              background: '#0e0e10',
+            }}
+          >
+            {[50, 100, 150, 200].map((pct) => {
+              const active = previewZoom === pct;
+              return (
+                <button
+                  key={pct}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setPreviewZoom(pct)}
+                  style={{
+                    background: active ? '#2563eb' : 'transparent',
+                    color: active ? '#fafafa' : '#a1a1aa',
+                    border: 'none',
+                    padding: '3px 8px',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: 11,
+                    fontWeight: active ? 700 : 500,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                  }}
+                  title={`Zoom preview to ${pct}%`}
+                  aria-label={`Zoom ${pct} percent`}
+                >
+                  {pct}%
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div
+          style={{
+            marginTop: 10,
+            // Container scrolls when the inner div outgrows it
+            // (zoom > 100 %). At 100 % the preview fits exactly;
+            // below 100 % it sits in the top-left with empty
+            // surround.
+            overflow: previewZoom > 100 ? 'auto' : 'hidden',
+          }}
+        >
+          <div
+            style={{
+              // Scale via width rather than CSS transform — the SVG
+              // inside renders to `width: 100%` of its parent, so
+              // a parent at 200% width gives a 200%-size SVG that
+              // takes its own layout space (transform wouldn't).
+              // Overflow + scroll work naturally.
+              width: `${previewZoom}%`,
+            }}
+          >
+            <FlexIconGridLivePreview
+              config={config}
+              highlightedCellIndex={selectedCellIndex}
+              onCellClick={(idx) => setSelectedCellIndex(idx)}
+            />
+          </div>
+        </div>
       </section>
 
       {/* Selected cell editor */}
@@ -2000,37 +2096,97 @@ export function FlexIconGridPanel({
               render), this just surfaces it in the UI. */}
           <label style={labelStyle}>Label stroke (this cell)</label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              aria-pressed={!!selectedCell.labelStyle?.stroke}
-              onClick={() => {
-                const currentStroke = selectedCell.labelStyle?.stroke;
-                if (currentStroke) {
-                  // Turn off → null (explicit opt-out, distinct from
-                  // "use default" which is undefined / omitted).
-                  updateCell(selectedCell.index, {
-                    labelStyle: { ...(selectedCell.labelStyle ?? {}), stroke: null },
-                  });
-                } else {
-                  // Turn on → seed with a small white halo (the
-                  // bundled-thumbnail-look default). User can tweak
-                  // colour + thickness immediately after.
-                  updateCell(selectedCell.index, {
-                    labelStyle: {
-                      ...(selectedCell.labelStyle ?? {}),
-                      stroke: { color: '#fbfbf8', thickness: 4 },
-                    },
-                  });
-                }
-              }}
-              style={chipStyle(!!selectedCell.labelStyle?.stroke)}
-              title="Add a contrasting halo around the label glyphs"
-            >
-              {selectedCell.labelStyle?.stroke ? 'Stroke on' : 'Stroke off'}
-            </button>
+            {/* Phase 4.25 → 4.26: tristate.
+                  - Inherit (`stroke === undefined`) → fall back to
+                    `config.defaultLabel.stroke`.
+                  - Off (`stroke === null`) → explicit opt-out even
+                    if the canvas-level default has a stroke set.
+                  - On (`stroke` is an object) → cell-specific
+                    halo; switches the slider/colour controls on.
+                The three states cover both "I want every cell
+                aligned with the default" and "I want THIS cell to
+                explicitly not have a halo even when the default
+                does". */}
+            {(() => {
+              const strokeState: 'inherit' | 'off' | 'on' =
+                selectedCell.labelStyle?.stroke === undefined ||
+                !('stroke' in (selectedCell.labelStyle ?? {}))
+                  ? 'inherit'
+                  : selectedCell.labelStyle?.stroke === null
+                    ? 'off'
+                    : 'on';
+              return (
+                <>
+                  <button
+                    type="button"
+                    aria-pressed={strokeState === 'inherit'}
+                    onClick={() => {
+                      // Drop the `stroke` field entirely so the
+                      // composer's `resolveLabelStyle` spread keeps
+                      // the canvas-level default in place.
+                      if (!selectedCell.labelStyle) return;
+                      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                      const { stroke: _unused, ...rest } = selectedCell.labelStyle;
+                      updateCell(selectedCell.index, {
+                        labelStyle: Object.keys(rest).length > 0 ? rest : undefined,
+                      });
+                    }}
+                    style={chipStyle(strokeState === 'inherit')}
+                    title="Inherit the canvas-level default stroke"
+                  >
+                    Inherit
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={strokeState === 'off'}
+                    onClick={() =>
+                      updateCell(selectedCell.index, {
+                        labelStyle: { ...(selectedCell.labelStyle ?? {}), stroke: null },
+                      })
+                    }
+                    style={chipStyle(strokeState === 'off')}
+                    title="Force no stroke on this cell even if the default has one"
+                  >
+                    Off
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={strokeState === 'on'}
+                    onClick={() => {
+                      updateCell(selectedCell.index, {
+                        labelStyle: {
+                          ...(selectedCell.labelStyle ?? {}),
+                          stroke:
+                            selectedCell.labelStyle?.stroke ?? {
+                              color: '#fbfbf8',
+                              thickness: 4,
+                            },
+                        },
+                      });
+                      // Phase 4.26 caveat fix: focus the colour
+                      // input after the next paint so a keyboard
+                      // user can keep tabbing forward into the
+                      // newly-revealed controls without re-finding
+                      // them. `requestAnimationFrame` defers past
+                      // React's commit so the input element exists.
+                      if (typeof window !== 'undefined') {
+                        window.requestAnimationFrame(() => {
+                          strokeColorInputRef.current?.focus();
+                        });
+                      }
+                    }}
+                    style={chipStyle(strokeState === 'on')}
+                    title="Add a contrasting halo around the label glyphs"
+                  >
+                    On
+                  </button>
+                </>
+              );
+            })()}
             {selectedCell.labelStyle?.stroke && (
               <>
                 <input
+                  ref={strokeColorInputRef}
                   type="color"
                   value={selectedCell.labelStyle.stroke.color}
                   onChange={(e) =>
@@ -4136,17 +4292,24 @@ function colorsEqual(a: readonly string[], b: readonly string[]): boolean {
   return true;
 }
 
-/** Lower-cased `#RRGGBB`. Three-digit shorthand `#RGB` expands to
- *  `#RRGGBB` (each digit doubled). Any other input is returned
- *  lower-cased verbatim — `colorsEqual`'s callers all hand us
- *  hex-shaped strings, and falling through preserves the
- *  defensive-against-future-doctored-config posture. */
+/** Phase 4.25 → 4.26: lower-cased `#RRGGBB`. Three-digit shorthand
+ *  `#RGB` expands to `#RRGGBB`; six-digit hex is lower-cased.
+ *  Phase 4.26 — anything else (malformed `#abcd`, non-`#` prefix,
+ *  whitespace-only) is returned lower-cased AND prefixed with a
+ *  sentinel `bad:` token so two malformed values that happen to be
+ *  identical strings still compare equal, but a malformed value
+ *  never collides with a real `#RRGGBB` colour. Defensive against
+ *  a doctored config whose `#abcd` would otherwise read as equal
+ *  to itself (true) but the comparison would feel coincidental. */
 function normalizeHex(input: string): string {
   const v = input.toLowerCase().trim();
   if (/^#[0-9a-f]{3}$/.test(v)) {
     return `#${v[1]}${v[1]}${v[2]}${v[2]}${v[3]}${v[3]}`;
   }
-  return v;
+  if (/^#[0-9a-f]{6}$/.test(v)) {
+    return v;
+  }
+  return `bad:${v}`;
 }
 
 // ─── Label position preview (Phase 4.19) ────────────────────────────────────
