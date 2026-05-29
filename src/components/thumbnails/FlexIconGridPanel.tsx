@@ -1211,7 +1211,33 @@ export function FlexIconGridPanel({
       </section>
 
       <section style={sectionStyle}>
-        <h3 style={sectionHeaderStyle}>Palette</h3>
+        <h3 style={sectionHeaderStyle}>
+          Palette
+          {/* Phase 4.24: "modified" indicator when a baseline has
+              been captured (i.e. Lighten / Darken / More vivid /
+              Muted has run at least once since the last fresh
+              start). Visual signal that Restore is meaningful;
+              disappears as soon as Restore (or a preset / Random
+              / custom edit) clears the baseline. */}
+          {paletteBaseline !== null && (
+            <span
+              style={{
+                marginLeft: 8,
+                fontSize: 10,
+                fontWeight: 400,
+                padding: '1px 6px',
+                borderRadius: 4,
+                background: '#1e3a5f',
+                color: '#93c5fd',
+                verticalAlign: 'middle',
+              }}
+              title="The palette has been adjusted since the last preset / Random / custom edit. Tap Restore to return to the baseline."
+              aria-label="Palette modified"
+            >
+              modified
+            </span>
+          )}
+        </h3>
         <div style={chipRowStyle}>
           {PALETTE_OPTIONS.map((opt) => {
             const active =
@@ -1372,78 +1398,76 @@ export function FlexIconGridPanel({
               );
             })}
           </div>
-          {/* Phase 4.22 → 4.23: lighten / darken the active palette
-              by 8 percentage points of HSL lightness per click. Each
-              adjustment captures the pre-adjust palette as the
-              baseline (only on the FIRST adjustment of a run) so
-              "Restore palette" can return to it. Locked cells with
-              explicit `backgroundColor` are unaffected — the palette
-              engine skips them entirely. */}
-          <button
-            type="button"
-            onClick={() => {
-              if (paletteBaseline === null) setPaletteBaseline(config.palette);
-              const current = paletteColours(config.palette);
-              const next = shiftPaletteLightness(current, 8);
-              updateConfig({ palette: { type: 'custom', colors: next } });
-            }}
-            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            title="Lighten the palette by ~8% (HSL lightness)"
-            aria-label="Lighten palette"
-          >
-            <span aria-hidden="true">↑</span>
-            Lighten
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (paletteBaseline === null) setPaletteBaseline(config.palette);
-              const current = paletteColours(config.palette);
-              const next = shiftPaletteLightness(current, -8);
-              updateConfig({ palette: { type: 'custom', colors: next } });
-            }}
-            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            title="Darken the palette by ~8% (HSL lightness)"
-            aria-label="Darken palette"
-          >
-            <span aria-hidden="true">↓</span>
-            Darken
-          </button>
-          {/* Phase 4.23: saturate / desaturate the active palette by
-              ~10 percentage points of HSL saturation per click.
-              Pairs with Lighten / Darken — those move along the L
-              axis, these along the S axis. Same baseline-capture +
-              global-clamp spread-preservation pattern. */}
-          <button
-            type="button"
-            onClick={() => {
-              if (paletteBaseline === null) setPaletteBaseline(config.palette);
-              const current = paletteColours(config.palette);
-              const next = shiftPaletteSaturation(current, 10);
-              updateConfig({ palette: { type: 'custom', colors: next } });
-            }}
-            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            title="Saturate the palette by ~10% (HSL saturation)"
-            aria-label="Saturate palette"
-          >
-            <span aria-hidden="true">◐</span>
-            Saturate
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (paletteBaseline === null) setPaletteBaseline(config.palette);
-              const current = paletteColours(config.palette);
-              const next = shiftPaletteSaturation(current, -10);
-              updateConfig({ palette: { type: 'custom', colors: next } });
-            }}
-            style={{ ...chipStyle(false), display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            title="Desaturate the palette by ~10% (HSL saturation)"
-            aria-label="Desaturate palette"
-          >
-            <span aria-hidden="true">◑</span>
-            Desaturate
-          </button>
+          {/* Phase 4.22 → 4.24: lighten / darken / saturate / desat
+              the active palette. Buttons compute their effective
+              delta against the current palette via the same helpers
+              the click handlers use, so when the palette is fully
+              at the relevant clamp (e.g. every colour at L≥95 for
+              Lighten), the button visually dims and its tooltip
+              switches to "at limit" — the click is still wired but
+              becomes a no-op and the user knows why. */}
+          {(() => {
+            const currentColors = paletteColours(config.palette);
+            // Probe each direction's effective delta by running the
+            // first colour of the result against the input — cheap
+            // for ≤16-colour palettes.
+            const lightProbe = shiftPaletteLightness(currentColors, 8);
+            const darkProbe = shiftPaletteLightness(currentColors, -8);
+            const satProbe = shiftPaletteSaturation(currentColors, 10);
+            const mutedProbe = shiftPaletteSaturation(currentColors, -10);
+            const lightAtLimit = colorsEqual(currentColors, lightProbe);
+            const darkAtLimit = colorsEqual(currentColors, darkProbe);
+            const satAtLimit = colorsEqual(currentColors, satProbe);
+            const mutedAtLimit = colorsEqual(currentColors, mutedProbe);
+            return (
+              <>
+                {/* The atLimit booleans below are referenced by the
+                    Lighten / Darken / More vivid / Muted buttons via
+                    closure — kept inline so the values are computed
+                    once per render. */}
+                <PaletteAdjustChip
+                  label="Lighten"
+                  badge="L↑"
+                  atLimit={lightAtLimit}
+                  title="Lighten the palette by ~8% (HSL lightness)"
+                  onClick={() => {
+                    if (paletteBaseline === null) setPaletteBaseline(config.palette);
+                    updateConfig({ palette: { type: 'custom', colors: lightProbe } });
+                  }}
+                />
+                <PaletteAdjustChip
+                  label="Darken"
+                  badge="L↓"
+                  atLimit={darkAtLimit}
+                  title="Darken the palette by ~8% (HSL lightness)"
+                  onClick={() => {
+                    if (paletteBaseline === null) setPaletteBaseline(config.palette);
+                    updateConfig({ palette: { type: 'custom', colors: darkProbe } });
+                  }}
+                />
+                <PaletteAdjustChip
+                  label="More vivid"
+                  badge="S↑"
+                  atLimit={satAtLimit}
+                  title="More vivid: increase saturation by ~10%"
+                  onClick={() => {
+                    if (paletteBaseline === null) setPaletteBaseline(config.palette);
+                    updateConfig({ palette: { type: 'custom', colors: satProbe } });
+                  }}
+                />
+                <PaletteAdjustChip
+                  label="Muted"
+                  badge="S↓"
+                  atLimit={mutedAtLimit}
+                  title="Muted: decrease saturation by ~10%"
+                  onClick={() => {
+                    if (paletteBaseline === null) setPaletteBaseline(config.palette);
+                    updateConfig({ palette: { type: 'custom', colors: mutedProbe } });
+                  }}
+                />
+              </>
+            );
+          })()}
           {/* Phase 4.23: restore-to-baseline chip. Appears whenever a
               baseline has been captured (i.e. an adjust has run) and
               the current palette differs from it. One click swaps
@@ -1500,7 +1524,15 @@ export function FlexIconGridPanel({
         {config.palette.type === 'custom' && (
           <CustomPaletteEditor
             palette={config.palette}
-            onChange={(next) => updateConfig({ palette: next })}
+            onChange={(next) => {
+              // Phase 4.24: a manual edit through the custom editor
+              // is a "the user is taking control" signal. Clear the
+              // baseline so a subsequent Restore can't undo a real
+              // creative choice — they can re-establish a baseline
+              // by tapping Lighten/Darken/Saturate/Desaturate again.
+              updateConfig({ palette: next });
+              setPaletteBaseline(null);
+            }}
           />
         )}
 
@@ -1860,6 +1892,78 @@ export function FlexIconGridPanel({
                 {pos}
               </button>
             ))}
+          </div>
+
+          {/* Phase 4.24: per-cell label colour override. The composer
+              normally picks black/white automatically based on cell
+              background luminance (see `pickLabelColourFor`), but a
+              hero cell with brand-specific colours often wants an
+              explicit hue (e.g. a yellow label on a navy hero).
+              "Use auto" clears the per-cell `color` so the
+              automatic luminance picker takes over again. */}
+          <label style={labelStyle}>Label colour (this cell)</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              aria-pressed={!selectedCell.labelStyle?.color}
+              onClick={() => {
+                if (!selectedCell.labelStyle) {
+                  updateCell(selectedCell.index, { labelStyle: undefined });
+                  return;
+                }
+                // OMIT the color key so the composer's
+                // `resolveLabelStyle` spread doesn't carry `undefined`
+                // through and break the default-vs-auto heuristic.
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                const { color: _unused, ...rest } = selectedCell.labelStyle;
+                updateCell(selectedCell.index, {
+                  labelStyle: Object.keys(rest).length > 0 ? rest : undefined,
+                });
+              }}
+              style={chipStyle(!selectedCell.labelStyle?.color)}
+            >
+              Use auto
+            </button>
+            {selectedCell.labelStyle?.color && (
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 14,
+                  height: 14,
+                  borderRadius: 4,
+                  background: selectedCell.labelStyle.color,
+                  border: '1px solid rgba(255,255,255,0.2)',
+                }}
+                aria-hidden="true"
+              />
+            )}
+            <input
+              type="color"
+              value={selectedCell.labelStyle?.color ?? config.defaultLabel.color}
+              onChange={(e) =>
+                updateCell(selectedCell.index, {
+                  labelStyle: {
+                    ...(selectedCell.labelStyle ?? {}),
+                    color: e.target.value,
+                  },
+                })
+              }
+              aria-label="Label colour for this cell"
+              title="Override the auto-picked label colour for this cell"
+              style={{
+                width: 36,
+                height: 32,
+                padding: 0,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            />
+            {selectedCell.labelStyle?.color && (
+              <span style={{ fontSize: 11, color: '#a1a1aa', fontFamily: 'ui-monospace, monospace' }}>
+                {selectedCell.labelStyle.color}
+              </span>
+            )}
           </div>
 
           {/* Phase 4.8a: per-cell font override. Lets a single cell
@@ -3847,6 +3951,70 @@ function CellSpanEditor({
       </p>
     </div>
   );
+}
+
+// ─── Palette adjust chip (Phase 4.24) ───────────────────────────────────────
+
+/**
+ * Single chip for a one-tap palette adjustment (Lighten / Darken /
+ * More vivid / Muted). Renders the monospace badge + label; when
+ * `atLimit` is true the chip dims, the tooltip switches to the
+ * "at limit" copy, and the button stays clickable (the user can
+ * still confirm — it's just a no-op). Click handler + label
+ * supplied by the caller so the same chip can serve every
+ * adjustment direction without leaking helper imports here.
+ */
+function PaletteAdjustChip({
+  label,
+  badge,
+  atLimit,
+  title,
+  onClick,
+}: {
+  label: string;
+  badge: string;
+  atLimit: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  const limitTitle = atLimit
+    ? `${title} (at limit — every colour is already as ${label.toLowerCase()} as it can go)`
+    : title;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        ...chipStyle(false),
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        opacity: atLimit ? 0.55 : 1,
+      }}
+      title={limitTitle}
+      aria-label={`${label} palette${atLimit ? ' (at limit)' : ''}`}
+    >
+      <span
+        aria-hidden="true"
+        style={{ fontFamily: 'ui-monospace, SFMono-Regular, monospace', fontSize: 10 }}
+      >
+        {badge}
+      </span>
+      {label}
+    </button>
+  );
+}
+
+/** Phase 4.24: shallow-equal two readonly colour arrays. Used to
+ *  detect "adjust would be a no-op" — both arrays come straight
+ *  from `paletteColours` / `shiftPalette*`, so a length + lower-
+ *  case string compare is enough. */
+function colorsEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].toLowerCase() !== b[i].toLowerCase()) return false;
+  }
+  return true;
 }
 
 // ─── Label position preview (Phase 4.19) ────────────────────────────────────
