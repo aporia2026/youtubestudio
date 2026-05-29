@@ -23,6 +23,7 @@ import {
   Sequence,
   useVideoConfig,
 } from 'remotion';
+import { LabelPopOn } from '../components/LabelPopOn';
 import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
 import { MouthSwap } from '../components/MouthSwap';
 import { RealPhotoPunchIn } from '../components/RealPhotoPunchIn';
@@ -31,6 +32,7 @@ import {
   constantRateVisemeSequence,
   visemeSequenceFromAlignment,
 } from '../../lib/viseme-from-alignment';
+import { onsetFromAlignment } from '../../lib/onset-from-alignment';
 import type { BrandKit, PaintExplainerV1Settings, VideoShot } from '../types';
 
 interface MotionSceneProps {
@@ -72,6 +74,10 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
   );
   const realPhotoPunchBeats = useMemo(
     () => beats.filter((b) => b.kind === 'real_photo_punch'),
+    [beats],
+  );
+  const labelPopBeats = useMemo(
+    () => beats.filter((b) => b.kind === 'label_pop'),
     [beats],
   );
 
@@ -229,6 +235,54 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
             <RealPhotoPunchIn
               url={url}
               anchor={beat.anchor}
+              diagnose={shotIndex < 5 && idx === 0}
+            />
+          </Sequence>
+        );
+      })}
+
+      {/* Label-pop beats. Each beat carries the label text in
+          beat.payload.text and the anchor placement on beat.anchor.
+          When alignment data is available for the shot (visemeWords
+          populated), the label's startMs is rebased onto the actual
+          word's onset so the pop-on lands ON the spoken syllable —
+          floating-near-the-word reads as out-of-sync; landing-on-it
+          reads as deliberate. */}
+      {labelPopBeats.map((beat, idx) => {
+        const labelText = (beat.payload?.text ?? '').trim();
+        if (!labelText) return null;
+        const rebasedStartMs = onsetFromAlignment({
+          words: shot.visemeWords,
+          labelText,
+          shotStartMs: shot.startMs,
+          fallbackStartMs: beat.startMs,
+        });
+        const beatStartFrame = Math.max(0, Math.round((rebasedStartMs / 1000) * fps));
+        const beatDurationFrames = Math.max(
+          1,
+          Math.round((beat.durationMs / 1000) * fps),
+        );
+        if (shotIndex < 5 && idx === 0) {
+          console.info('[paint-explainer-v1 label-pop]', {
+            shotIndex,
+            text_head: labelText.slice(0, 40),
+            llm_start_ms: beat.startMs,
+            rebased_start_ms: rebasedStartMs,
+            source: rebasedStartMs === beat.startMs ? 'fallback' : 'alignment-onset',
+            has_alignment: Array.isArray(shot.visemeWords),
+          });
+        }
+        return (
+          <Sequence
+            key={`label-pop-${idx}`}
+            from={beatStartFrame}
+            durationInFrames={beatDurationFrames}
+            layout="none"
+          >
+            <LabelPopOn
+              text={labelText}
+              anchor={beat.anchor}
+              colorHex={paintSettings?.label_color_hex}
               diagnose={shotIndex < 5 && idx === 0}
             />
           </Sequence>
