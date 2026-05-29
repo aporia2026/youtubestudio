@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import {
-  countWorkspaceFontsByR2Key,
   deleteWorkspaceFont,
+  deleteWorkspaceFontAndCountSiblings,
   getWorkspaceFont,
 } from '@/lib/flex-icon-grid-workspace-fonts-db';
 import { deleteImagesObject, getImagesDownloadUrl, isR2Configured } from '@/lib/r2';
@@ -53,39 +53,39 @@ export const DELETE = apiRoute.authed(async (session, req: NextRequest, ctx) => 
   // objects can be reaped by a bucket lifecycle rule), but they're
   // logged so ops can spot persistent failures.
   const reclaim = req.nextUrl.searchParams.get('reclaim') === 'true';
-  let r2Key: string | null = null;
-  if (reclaim) {
-    const font = await getWorkspaceFont(id, session.ws);
-    if (!font) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    r2Key = font.r2_key;
-  }
-  const removed = await deleteWorkspaceFont(id, session.ws);
-  if (!removed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  // Phase 4.11 caveat fix: when reclaim is requested, do the row
+  // delete + sibling-reference count in a single SQL statement (CTE)
+  // so postgres' statement atomicity closes the race window where
+  // another workspace could INSERT after our SELECT and before our
+  // DELETE. Non-reclaim path stays on the simpler single-row DELETE
+  // helper since it doesn't need the sibling count.
   let reclaimed = false;
-  // Phase 4.10 caveat fix: skip R2 delete when SIBLING workspaces
-  // also reference the same r2_key. The DB row is already gone by
-  // this point, so the count we want is "any rows still pointing
-  // here" — if it's > 0, another workspace's row would break.
   let skippedDueToRefs = false;
-  if (reclaim && r2Key) {
-    try {
-      const remaining = await countWorkspaceFontsByR2Key(r2Key);
-      if (remaining > 0) {
+  if (reclaim) {
+    const result = await deleteWorkspaceFontAndCountSiblings(id, session.ws);
+    if (!result.deleted) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    if (result.r2_key) {
+      if (result.remainingRefs > 0) {
         skippedDueToRefs = true;
         console.info('[flex-icon-grid workspace-font] r2 reclaim skipped — sibling workspace still references key', {
-          r2_key: r2Key, remaining_refs: remaining,
+          r2_key: result.r2_key, remaining_refs: result.remainingRefs,
         });
       } else {
-        await deleteImagesObject(r2Key);
-        reclaimed = true;
-        console.info('[flex-icon-grid workspace-font] r2 reclaimed', { r2_key: r2Key });
+        try {
+          await deleteImagesObject(result.r2_key);
+          reclaimed = true;
+          console.info('[flex-icon-grid workspace-font] r2 reclaimed', { r2_key: result.r2_key });
+        } catch (err) {
+          console.warn('[flex-icon-grid workspace-font] r2 reclaim failed', {
+            r2_key: result.r2_key,
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
-    } catch (err) {
-      console.warn('[flex-icon-grid workspace-font] r2 reclaim failed', {
-        r2_key: r2Key,
-        reason: err instanceof Error ? err.message : String(err),
-      });
     }
+  } else {
+    const removed = await deleteWorkspaceFont(id, session.ws);
+    if (!removed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
   return NextResponse.json({ ok: true, reclaimed, skippedDueToRefs });
 });

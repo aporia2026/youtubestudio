@@ -48,6 +48,7 @@ import {
   computeGridLayout,
   escapeSvgText,
   getConsumedCellIndexes,
+  resolveCellShadow,
   sanitizeUserText,
   type CellBackgroundSpec,
   type CellContent,
@@ -58,6 +59,7 @@ import {
   type LabelFont,
   type LabelStyle,
   type RingStyle,
+  type ShadowStyle,
 } from './flex-icon-grid';
 import { inlineIconSvg } from './flex-icon-grid-icons';
 import { pickLabelColourFor, resolveCellBackgrounds } from './flex-icon-grid-palettes';
@@ -381,11 +383,20 @@ export function buildBaseSvg(
   const renderableCells = config.cells.filter((c) => !consumed.has(c.index));
   const cellDefs: string[] = [];
   const cellBgFills: string[] = [];
+  const cellShadows: (ShadowStyle | null)[] = [];
   for (const cell of renderableCells) {
     const resolvedBg = resolveCellBackground(cell, backgrounds[cell.index - 1] ?? '#0a0a0a');
     const { fill, defs } = emitCellBackgroundFill(resolvedBg, cell.index);
     if (defs) cellDefs.push(defs);
     cellBgFills.push(fill);
+    // Phase 4.11: collect each cell's resolved shadow so we can emit
+    // one <filter> per shadowed cell. Cells without a shadow skip the
+    // filter entirely so the existing flat-cell SVG is byte-identical.
+    const resolvedShadow = resolveCellShadow(cell, config);
+    cellShadows.push(resolvedShadow);
+    if (resolvedShadow) {
+      cellDefs.push(emitShadowFilterDef(resolvedShadow, cell.index));
+    }
   }
   if (cellDefs.length > 0) {
     parts.push(`<defs>${cellDefs.join('')}</defs>`);
@@ -401,7 +412,8 @@ export function buildBaseSvg(
     const ring = resolveRing(cell, config);
     const labelStyle = resolveLabelStyle(cell, config);
     const geom = computeCellGeometry(rect.x, rect.y, rect.w, rect.h, labelStyle.position);
-    parts.push(renderCellShape(geom, shape, referenceColour, config.cornerRadius, ring));
+    const shadowFilterId = cellShadows[i] ? `fg-cell-shadow-${cell.index}` : null;
+    parts.push(renderCellShape(geom, shape, referenceColour, config.cornerRadius, ring, shadowFilterId));
     // Inline Lucide icon — done in the base SVG so we get crisp
     // vector at any output resolution. Other content types render
     // as text/image overlays after rasterisation (separate pass).
@@ -560,6 +572,7 @@ function renderCellShape(
   cellBackground: string,
   cornerRadius: number,
   ring: RingStyle,
+  shadowFilterId: string | null,
 ): string {
   const cx = geom.shapeX + geom.shapeW / 2;
   const cy = geom.shapeY + geom.shapeH / 2;
@@ -570,6 +583,10 @@ function renderCellShape(
           : ''
       }`
     : '';
+  // Phase 4.11: shadow is applied via an SVG <filter> defined in the
+  // canvas-level <defs>. Empty string when the cell has no shadow so
+  // existing thumbnails render byte-identical.
+  const shadowAttr = shadowFilterId ? ` filter="url(#${shadowFilterId})"` : '';
   // Shape fill: the icon ring's inner area gets a near-white
   // background so the embedded Lucide icon reads against it (the
   // reference look — icons sit in an off-white disc on the bright
@@ -578,15 +595,15 @@ function renderCellShape(
   const shapeFill = '#fbfbf8';
   if (shape === 'circle') {
     const r = geom.shapeW / 2;
-    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${shapeFill}"${ringAttrs}/>`;
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${shapeFill}"${ringAttrs}${shadowAttr}/>`;
   }
   if (shape === 'rounded-square') {
     const rx = Math.min(cornerRadius, geom.shapeW / 4);
-    return `<rect x="${geom.shapeX}" y="${geom.shapeY}" width="${geom.shapeW}" height="${geom.shapeH}" rx="${rx}" ry="${rx}" fill="${shapeFill}"${ringAttrs}/>`;
+    return `<rect x="${geom.shapeX}" y="${geom.shapeY}" width="${geom.shapeW}" height="${geom.shapeH}" rx="${rx}" ry="${rx}" fill="${shapeFill}"${ringAttrs}${shadowAttr}/>`;
   }
   if (shape === 'hexagon') {
     const points = hexagonPoints(cx, cy, geom.shapeW);
-    return `<polygon points="${points}" fill="${shapeFill}"${ringAttrs}/>`;
+    return `<polygon points="${points}" fill="${shapeFill}"${ringAttrs}${shadowAttr}/>`;
   }
   if (shape === 'pill') {
     const pw = geom.shapeW * 0.55;
@@ -594,7 +611,7 @@ function renderCellShape(
     const px = cx - pw / 2;
     const py = cy - ph / 2;
     const pr = pw / 2;
-    return `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="${pr}" ry="${pr}" fill="${shapeFill}"${ringAttrs}/>`;
+    return `<rect x="${px}" y="${py}" width="${pw}" height="${ph}" rx="${pr}" ry="${pr}" fill="${shapeFill}"${ringAttrs}${shadowAttr}/>`;
   }
   if (shape === 'capsule') {
     const cw = geom.shapeW;
@@ -602,10 +619,30 @@ function renderCellShape(
     const cxr = cx - cw / 2;
     const cyr = cy - ch / 2;
     const cr = ch / 2;
-    return `<rect x="${cxr}" y="${cyr}" width="${cw}" height="${ch}" rx="${cr}" ry="${cr}" fill="${shapeFill}"${ringAttrs}/>`;
+    return `<rect x="${cxr}" y="${cyr}" width="${cw}" height="${ch}" rx="${cr}" ry="${cr}" fill="${shapeFill}"${ringAttrs}${shadowAttr}/>`;
   }
   // square
-  return `<rect x="${geom.shapeX}" y="${geom.shapeY}" width="${geom.shapeW}" height="${geom.shapeH}" fill="${shapeFill}"${ringAttrs}/>`;
+  return `<rect x="${geom.shapeX}" y="${geom.shapeY}" width="${geom.shapeW}" height="${geom.shapeH}" fill="${shapeFill}"${ringAttrs}${shadowAttr}/>`;
+}
+
+/**
+ * Phase 4.11: emit an SVG <filter> definition that produces a drop
+ * shadow with the given offset, blur, colour and opacity. Returned
+ * as a fragment to inline into the canvas-level <defs> block. The
+ * SourceGraphic is overlaid on top of the offset shadow so the
+ * shape itself stays crisp — only the shadow halo is blurred.
+ */
+function emitShadowFilterDef(shadow: NonNullable<ShadowStyle>, cellIndex: number): string {
+  const id = `fg-cell-shadow-${cellIndex}`;
+  return [
+    `<filter id="${id}" x="-25%" y="-25%" width="150%" height="150%">`,
+    `<feGaussianBlur in="SourceAlpha" stdDeviation="${shadow.blur}"/>`,
+    `<feOffset dx="0" dy="${shadow.offsetY}" result="offsetblur"/>`,
+    `<feFlood flood-color="${escapeSvgText(shadow.color)}" flood-opacity="${shadow.opacity}"/>`,
+    `<feComposite in2="offsetblur" operator="in"/>`,
+    `<feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>`,
+    `</filter>`,
+  ].join('');
 }
 
 /**
@@ -1065,13 +1102,32 @@ async function buildTitleBarOverlay(
   }
 
   // With subtitle: pre-render subtitle so we know its height, then
-  // stack both centered around the bar's vertical middle.
+  // stack both centered around the bar's vertical middle. Phase 4.11
+  // — subtitle can now use an independent font; falls back to the
+  // main title's resolved font when `subtitleFont` is absent so
+  // existing single-font subtitles keep working unchanged.
   const subSizePx = Math.max(12, Math.round(titleBar.height * 0.22));
+  let subFont = font;
+  if (titleBar.subtitleFont) {
+    const subStyle: LabelStyle = {
+      position: 'below',
+      font: titleBar.subtitleFont,
+      case: 'as-typed',
+      color: titleBar.subtitleColor ?? titleBar.color,
+      stroke: null,
+      maxLines: 1,
+      customFontUrl: titleBar.subtitleCustomFontUrl,
+      customFontLabel: titleBar.subtitleCustomFontLabel,
+    };
+    const subFallback: Exclude<LabelFont, 'custom'> =
+      titleBar.subtitleFont === 'custom' ? 'anton' : titleBar.subtitleFont;
+    subFont = await resolveLabelFont(subStyle, fontResolver, subFallback);
+  }
   let subBuf = await sharp({
     text: {
       text: escapePangoText(subtitleText),
-      fontfile: font.path,
-      font: `${font.family} ${subSizePx}`,
+      fontfile: subFont.path,
+      font: `${subFont.family} ${subSizePx}`,
       rgba: true,
       width: safeW,
       align: 'centre',

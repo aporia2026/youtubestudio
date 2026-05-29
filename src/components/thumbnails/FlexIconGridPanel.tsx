@@ -27,6 +27,7 @@ import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
 import {
+  DEFAULT_SHADOW,
   getSpanConflicts,
   makeDefaultConfig,
   type CellBackgroundSpec,
@@ -1422,6 +1423,98 @@ export function FlexIconGridPanel({
                 style={{ width: 48, height: 32, border: 'none', background: 'transparent' }}
               />
             </div>
+            {/* Phase 4.11: cell drop shadow. Single toggle for the
+                "sticker on paper" look — gives every cell shape a
+                soft cast. Per-cell overrides live behind the cell
+                editor; this control sets the default. Off by default
+                to keep the flat-cell look the reference channels use. */}
+            <div>
+              <label style={labelStyle}>Cell shadow</label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.defaultShadow}
+                  onClick={() =>
+                    updateConfig({
+                      defaultShadow: config.defaultShadow ? null : DEFAULT_SHADOW,
+                    })
+                  }
+                  style={chipStyle(!!config.defaultShadow)}
+                >
+                  {config.defaultShadow ? 'Shadow on' : 'Shadow off'}
+                </button>
+                {config.defaultShadow && (
+                  <>
+                    <input
+                      type="range"
+                      min={0}
+                      max={24}
+                      step={1}
+                      value={config.defaultShadow.offsetY}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultShadow: {
+                            ...config.defaultShadow!,
+                            offsetY: Number(e.target.value),
+                          },
+                        })
+                      }
+                      aria-label="Shadow vertical offset"
+                      title={`Vertical offset: ${config.defaultShadow.offsetY}px`}
+                      style={{ width: 120 }}
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={32}
+                      step={1}
+                      value={config.defaultShadow.blur}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultShadow: {
+                            ...config.defaultShadow!,
+                            blur: Number(e.target.value),
+                          },
+                        })
+                      }
+                      aria-label="Shadow blur"
+                      title={`Blur: ${config.defaultShadow.blur}px`}
+                      style={{ width: 120 }}
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={config.defaultShadow.opacity}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultShadow: {
+                            ...config.defaultShadow!,
+                            opacity: Number(e.target.value),
+                          },
+                        })
+                      }
+                      aria-label="Shadow opacity"
+                      title={`Opacity: ${Math.round(config.defaultShadow.opacity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <input
+                      type="color"
+                      value={config.defaultShadow.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultShadow: { ...config.defaultShadow!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Shadow colour"
+                      title="Shadow colour"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
             <div>
               <label style={labelStyle}>Title bar</label>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -1463,39 +1556,97 @@ export function FlexIconGridPanel({
               {/* Phase 4.10: optional subtitle (second smaller line).
                   Rendered below the main title at ~half the size,
                   same font/colour by default. Off by default — only
-                  painted when the user types something. */}
+                  painted when the user types something. Phase 4.11
+                  adds an optional independent subtitle font. */}
               {config.titleBar && (
-                <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <input
-                    type="text"
-                    value={config.titleBar.subtitle ?? ''}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      updateConfig({
-                        titleBar: {
-                          ...config.titleBar!,
-                          subtitle: v.length > 0 ? v : undefined,
-                        },
-                      });
-                    }}
-                    maxLength={80}
-                    placeholder="Optional subtitle (smaller second line)"
-                    aria-label="Title bar subtitle"
-                    style={{ ...inputStyle, flex: 1 }}
-                  />
-                  {config.titleBar.subtitle && (
+                <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                     <input
-                      type="color"
-                      value={config.titleBar.subtitleColor ?? config.titleBar.color}
-                      onChange={(e) =>
+                      type="text"
+                      value={config.titleBar.subtitle ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
                         updateConfig({
-                          titleBar: { ...config.titleBar!, subtitleColor: e.target.value },
-                        })
-                      }
-                      aria-label="Subtitle colour"
-                      title="Subtitle colour (defaults to main title colour)"
-                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                          titleBar: {
+                            ...config.titleBar!,
+                            subtitle: v.length > 0 ? v : undefined,
+                          },
+                        });
+                      }}
+                      maxLength={80}
+                      placeholder="Optional subtitle (smaller second line)"
+                      aria-label="Title bar subtitle"
+                      style={{ ...inputStyle, flex: 1 }}
                     />
+                    {config.titleBar.subtitle && (
+                      <input
+                        type="color"
+                        value={config.titleBar.subtitleColor ?? config.titleBar.color}
+                        onChange={(e) =>
+                          updateConfig({
+                            titleBar: { ...config.titleBar!, subtitleColor: e.target.value },
+                          })
+                        }
+                        aria-label="Subtitle colour"
+                        title="Subtitle colour (defaults to main title colour)"
+                        style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                      />
+                    )}
+                  </div>
+                  {/* Phase 4.11: subtitle font picker — only appears
+                      once a subtitle is set. First chip ("Same as
+                      title") clears the override so the subtitle
+                      inherits the main font; remaining chips are the
+                      bundled font set. Custom workspace-font picker
+                      is not surfaced here — most users want the same
+                      face or a contrasting bundled one; a custom
+                      subtitle font can be edited via the JSON if
+                      really needed. */}
+                  {config.titleBar.subtitle && (
+                    <div>
+                      <label style={{ ...labelStyle, marginTop: 0 }}>Subtitle font</label>
+                      <div style={chipRowStyle}>
+                        <button
+                          type="button"
+                          aria-pressed={!config.titleBar.subtitleFont}
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                subtitleFont: undefined,
+                                subtitleCustomFontUrl: undefined,
+                                subtitleCustomFontLabel: undefined,
+                              },
+                            })
+                          }
+                          style={chipStyle(!config.titleBar.subtitleFont)}
+                        >
+                          Same as title
+                        </button>
+                        {FONT_OPTIONS
+                          .filter((opt) => opt.value !== 'custom')
+                          .map((opt) => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              aria-pressed={config.titleBar!.subtitleFont === opt.value}
+                              onClick={() =>
+                                updateConfig({
+                                  titleBar: {
+                                    ...config.titleBar!,
+                                    subtitleFont: opt.value,
+                                    subtitleCustomFontUrl: undefined,
+                                    subtitleCustomFontLabel: undefined,
+                                  },
+                                })
+                              }
+                              style={chipStyle(config.titleBar!.subtitleFont === opt.value)}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

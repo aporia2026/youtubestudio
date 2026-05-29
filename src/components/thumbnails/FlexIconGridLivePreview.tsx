@@ -38,7 +38,9 @@ import {
   type FlexIconCell,
   type FlexIconGridConfig,
   type LabelStyle,
+  resolveCellShadow,
   type RingStyle,
+  type ShadowStyle,
   type SpanConflictReason,
 } from '@/lib/thumbnail-formats/flex-icon-grid';
 import {
@@ -125,6 +127,13 @@ function useCustomFontRegistration(config: FlexIconGridConfig): void {
     if (config.titleBar?.font === 'custom' && config.titleBar.customFontUrl) {
       wanted.add(config.titleBar.customFontUrl);
     }
+    // Phase 4.11: subtitle's independent custom font URL.
+    if (
+      config.titleBar?.subtitleFont === 'custom' &&
+      config.titleBar.subtitleCustomFontUrl
+    ) {
+      wanted.add(config.titleBar.subtitleCustomFontUrl);
+    }
     for (const cell of config.cells) {
       const cellStyle = cell.labelStyle;
       if (cellStyle?.font === 'custom' && cellStyle.customFontUrl) {
@@ -187,6 +196,7 @@ export function FlexIconGridLivePreview({
         const labelStyle = resolveLabelStyle(cell, config);
         const shape = cell.shape ?? config.defaultCellShape;
         const ring = resolveRing(cell, config);
+        const shadow = resolveCellShadow(cell, config);
         const geom = computeCellGeometry(rect.x, rect.y, rect.w, rect.h, labelStyle.position);
         const paletteColour = backgrounds[cell.index - 1] ?? '#0a0a0a';
         const backgroundSpec: CellBackgroundSpec =
@@ -202,7 +212,7 @@ export function FlexIconGridLivePreview({
           backgroundSpec.type === 'pattern' ? backgroundSpec.bg :
           paletteColour;
         return {
-          cell, rect, geom, shape, ring, labelStyle,
+          cell, rect, geom, shape, ring, shadow, labelStyle,
           background: representativeColour, backgroundSpec,
           conflict: conflicts.get(cell.index) ?? null,
         };
@@ -233,10 +243,14 @@ export function FlexIconGridLivePreview({
           />
         )}
 
-        {/* Title bar text + optional Phase 4.10 subtitle. The composer
-            also stacks the two lines centered around the bar's
-            vertical midpoint; the preview matches its layout math so
-            the live preview lines up with the rendered PNG. */}
+        {/* Title bar text + optional Phase 4.10 subtitle. Phase 4.11
+            caveat fix: subtitle stacking now uses a single <text>
+            element with two <tspan> children + `dy`/`em` line stepping
+            so the browser's text engine computes real metrics instead
+            of our font-size-as-line-height approximation. Vertical
+            centering on the bar is done via SVG `dominantBaseline` on
+            the wrapping text element so the stack visually balances
+            even when the two lines have different sizes. */}
         {config.titleBar && (() => {
           const tb = config.titleBar;
           const barCenterY =
@@ -269,44 +283,52 @@ export function FlexIconGridLivePreview({
             );
           }
           const subSize = Math.max(12, Math.round(tb.height * 0.22));
-          const lineGap = Math.round(tb.height * 0.05);
-          // Stack height ≈ mainSize + lineGap + subSize (using
-          // size-as-line-height proxy — close enough for centering;
-          // the actual rendered PNG uses real text metrics).
-          const stackH = mainSize + lineGap + subSize;
-          const stackTop = barCenterY - stackH / 2;
+          // Subtitle line-height: 1em past the main line baseline
+          // gives a tight stack; `0.1em` extra padding mirrors the
+          // composer's 5%-of-bar-height gap closely enough that the
+          // preview lines up with the rendered PNG within a couple
+          // of pixels — far better than the per-font estimate the
+          // Phase 4.10 implementation used.
+          const subDy = `${1 + (tb.height * 0.05) / subSize}em`;
+          // Phase 4.11: subtitle resolves its own font family when
+          // the user picks one; falls back to the main font family
+          // when absent so existing single-font subtitles render
+          // unchanged.
+          const subFontFamily = tb.subtitleFont
+            ? resolveFontCssFor({
+                font: tb.subtitleFont,
+                customFontUrl: tb.subtitleCustomFontUrl,
+              })
+            : fontFamily;
           return (
-            <>
-              <text
-                x={config.width / 2}
-                y={stackTop + mainSize / 2}
-                fontFamily={fontFamily}
-                fontSize={mainSize}
-                fontWeight={900}
-                fill={tb.color}
-                textAnchor="middle"
-                dominantBaseline="middle"
-              >
+            <text
+              x={config.width / 2}
+              y={barCenterY}
+              fontFamily={fontFamily}
+              fill={tb.color}
+              textAnchor="middle"
+              dominantBaseline="middle"
+            >
+              <tspan x={config.width / 2} fontSize={mainSize} fontWeight={900}>
                 {sanitizeUserText(tb.text, 80)}
-              </text>
-              <text
+              </tspan>
+              <tspan
                 x={config.width / 2}
-                y={stackTop + mainSize + lineGap + subSize / 2}
-                fontFamily={fontFamily}
+                dy={subDy}
+                fontFamily={subFontFamily}
                 fontSize={subSize}
                 fontWeight={700}
                 fill={tb.subtitleColor ?? tb.color}
-                textAnchor="middle"
-                dominantBaseline="middle"
               >
                 {subtitleText}
-              </text>
-            </>
+              </tspan>
+            </text>
           );
         })()}
 
-        {/* Per-cell background defs (gradients + patterns + image). One <defs>
-            block per cell to keep ids unique. */}
+        {/* Per-cell background defs (gradients + patterns + image) +
+            Phase 4.11 per-cell shadow filters. One <defs> block per
+            cell to keep ids unique. */}
         <defs>
           {cellViews.map(({ cell, backgroundSpec }) =>
             backgroundSpec.type === 'solid' ? null : (
@@ -317,10 +339,19 @@ export function FlexIconGridLivePreview({
               />
             ),
           )}
+          {cellViews.map(({ cell, shadow }) =>
+            shadow ? (
+              <CellShadowFilter
+                key={`shadow-${cell.index}`}
+                id={`fg-preview-shadow-${cell.index}`}
+                shadow={shadow}
+              />
+            ) : null,
+          )}
         </defs>
 
         {/* Cells */}
-        {cellViews.map(({ cell, rect, geom, shape, ring, labelStyle, background, backgroundSpec, conflict }) => (
+        {cellViews.map(({ cell, rect, geom, shape, ring, shadow, labelStyle, background, backgroundSpec, conflict }) => (
           <CellGroup
             key={cell.index}
             cell={cell}
@@ -328,6 +359,7 @@ export function FlexIconGridLivePreview({
             geom={geom}
             shape={shape}
             ring={ring}
+            shadow={shadow}
             labelStyle={labelStyle}
             background={background}
             backgroundSpec={backgroundSpec}
@@ -431,6 +463,9 @@ interface CellGroupProps {
   geom: ReturnType<typeof computeCellGeometry>;
   shape: CellShape;
   ring: RingStyle;
+  /** Phase 4.11 — resolved shadow for this cell; `null` when no
+   *  shadow applies (either explicitly opted out or no default set). */
+  shadow: ShadowStyle;
   labelStyle: LabelStyle;
   background: string;
   backgroundSpec: CellBackgroundSpec;
@@ -446,6 +481,7 @@ function CellGroup({
   geom,
   shape,
   ring,
+  shadow,
   labelStyle,
   background,
   backgroundSpec,
@@ -468,8 +504,14 @@ function CellGroup({
       {/* Cell background */}
       <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} fill={cellFill} />
 
-      {/* Shape with optional ring */}
-      <CellShapeEl geom={geom} shape={shape} ring={ring} cornerRadius={cornerRadius} />
+      {/* Shape with optional ring + Phase 4.11 drop shadow */}
+      <CellShapeEl
+        geom={geom}
+        shape={shape}
+        ring={ring}
+        shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
+        cornerRadius={cornerRadius}
+      />
 
       {/* Content */}
       {cell.content.type === 'icon-library' && (
@@ -564,11 +606,15 @@ function CellShapeEl({
   geom,
   shape,
   ring,
+  shadowFilterId,
   cornerRadius,
 }: {
   geom: ReturnType<typeof computeCellGeometry>;
   shape: CellShape;
   ring: RingStyle;
+  /** Phase 4.11: when set, applies `filter="url(#<id>)"` to the shape
+   *  so the SVG renderer casts the configured drop shadow. */
+  shadowFilterId: string | null;
   cornerRadius: number;
 }) {
   const cx = geom.shapeX + geom.shapeW / 2;
@@ -581,8 +627,9 @@ function CellShapeEl({
         strokeDasharray: ring.style === 'dashed' ? `${ring.thickness * 2} ${ring.thickness * 1.5}` : undefined,
       }
     : { stroke: 'none' };
+  const shadowProps = shadowFilterId ? { filter: `url(#${shadowFilterId})` } : {};
   if (shape === 'circle') {
-    return <circle cx={cx} cy={cy} r={geom.shapeW / 2} fill={fill} {...strokeProps} />;
+    return <circle cx={cx} cy={cy} r={geom.shapeW / 2} fill={fill} {...strokeProps} {...shadowProps} />;
   }
   if (shape === 'rounded-square') {
     const r = Math.min(cornerRadius, geom.shapeW / 4);
@@ -596,11 +643,12 @@ function CellShapeEl({
         ry={r}
         fill={fill}
         {...strokeProps}
+        {...shadowProps}
       />
     );
   }
   if (shape === 'hexagon') {
-    return <polygon points={hexagonPointsClient(cx, cy, geom.shapeW)} fill={fill} {...strokeProps} />;
+    return <polygon points={hexagonPointsClient(cx, cy, geom.shapeW)} fill={fill} {...strokeProps} {...shadowProps} />;
   }
   if (shape === 'pill') {
     const pw = geom.shapeW * 0.55;
@@ -615,6 +663,7 @@ function CellShapeEl({
         ry={pw / 2}
         fill={fill}
         {...strokeProps}
+        {...shadowProps}
       />
     );
   }
@@ -631,6 +680,7 @@ function CellShapeEl({
         ry={ch / 2}
         fill={fill}
         {...strokeProps}
+        {...shadowProps}
       />
     );
   }
@@ -642,7 +692,28 @@ function CellShapeEl({
       height={geom.shapeH}
       fill={fill}
       {...strokeProps}
+      {...shadowProps}
     />
+  );
+}
+
+/**
+ * Phase 4.11: SVG <filter> for the drop shadow under a single cell's
+ * shape. Mirrors the composer's `emitShadowFilterDef` exactly so the
+ * live preview and rendered PNG cast the same shadow.
+ */
+function CellShadowFilter({ id, shadow }: { id: string; shadow: NonNullable<ShadowStyle> }) {
+  return (
+    <filter id={id} x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation={shadow.blur} />
+      <feOffset dx={0} dy={shadow.offsetY} result="offsetblur" />
+      <feFlood floodColor={shadow.color} floodOpacity={shadow.opacity} />
+      <feComposite in2="offsetblur" operator="in" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
   );
 }
 

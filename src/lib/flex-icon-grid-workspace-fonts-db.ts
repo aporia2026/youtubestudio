@@ -119,6 +119,52 @@ export async function countWorkspaceFontsByR2Key(r2Key: string): Promise<number>
   return rows[0]?.n ?? 0;
 }
 
+/**
+ * Phase 4.11 caveat fix — atomic delete-and-count via a CTE so the
+ * DELETE and the sibling-reference count happen in a single SQL
+ * statement (postgres guarantees statement atomicity), closing the
+ * race window where another workspace could INSERT a row referencing
+ * the same r2_key between our SELECT and our DELETE.
+ *
+ * Returns:
+ *   - `deleted` false → row didn't exist in this workspace (404).
+ *   - `r2_key` → the freshly-deleted row's r2_key (for the R2 delete).
+ *   - `remainingRefs` → count of OTHER rows still pointing at the
+ *     same r2_key (i.e. excluding our deleted one). > 0 means a
+ *     sibling workspace still needs the file.
+ */
+export async function deleteWorkspaceFontAndCountSiblings(
+  id: string,
+  workspaceId: string,
+): Promise<{ deleted: boolean; r2_key: string | null; remainingRefs: number }> {
+  const { rows } = await sql.query<{ r2_key: string; remaining_refs: number }>(
+    `
+    WITH deleted AS (
+      DELETE FROM flex_icon_grid_workspace_fonts
+       WHERE id = $1::uuid AND workspace_id = $2::uuid
+      RETURNING r2_key
+    )
+    SELECT
+      deleted.r2_key,
+      (
+        SELECT COUNT(*)::int
+          FROM flex_icon_grid_workspace_fonts
+         WHERE r2_key = deleted.r2_key
+      ) AS remaining_refs
+    FROM deleted
+    `,
+    [id, workspaceId],
+  );
+  if (rows.length === 0) {
+    return { deleted: false, r2_key: null, remainingRefs: 0 };
+  }
+  return {
+    deleted: true,
+    r2_key: rows[0].r2_key,
+    remainingRefs: rows[0].remaining_refs,
+  };
+}
+
 // Validation now lives in the pure `flex-icon-grid-workspace-fonts-
 // validate.ts` module so vitest can import it without dragging in
 // `@vercel/postgres`. Re-exported at the top of this file.

@@ -33,6 +33,15 @@ import { customFontFamilyName } from './flex-icon-grid-font-family';
 const refCounts = new Map<string, number>();
 const faces = new Map<string, FontFace>();
 
+/** Hard ceiling on FontFace load time. Phase 4.11 — a wedged R2
+ *  fetch (DNS, slow region, signed-URL expiry) would otherwise leave
+ *  the FontFace promise pending indefinitely, holding the refcount
+ *  open even after every subscriber has unmounted. After this
+ *  timeout we drop the face from the registry so the chip falls back
+ *  cleanly to the generic stack and the next `acquireCustomFont` call
+ *  for the same URL gets a fresh load attempt. */
+const FONT_LOAD_TIMEOUT_MS = 8000;
+
 /**
  * Increment the refcount for `url`. The first acquire loads the font;
  * subsequent acquires are cheap no-ops. Safe to call from SSR / non-
@@ -46,16 +55,27 @@ export function acquireCustomFont(url: string): void {
   const family = customFontFamilyName(url);
   const face = new FontFace(family, `url(${url})`);
   faces.set(url, face);
-  void face.load().then((loaded) => {
-    // Guard against a release that fired during the async load — if
-    // every subscriber already left, drop the loaded face instead of
-    // smuggling it into the registry under a zero refcount.
-    if ((refCounts.get(url) ?? 0) > 0) document.fonts.add(loaded);
-  }).catch(() => {
-    // Silent — the picker chip and live preview fall back to the
-    // generic font stack when the load fails. The render log already
-    // surfaces the failure via `fontWarnings` on the server side.
+  // Race the load against a hard timeout so a wedged fetch can't pin
+  // the registry forever. The face object itself remains in `faces`
+  // only while the load is in flight; on timeout / error we drop it
+  // so a subsequent acquire for the same URL retries cleanly.
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('font load timeout')), FONT_LOAD_TIMEOUT_MS);
   });
+  void Promise.race([face.load(), timeoutPromise])
+    .then((loaded) => {
+      // Guard against a release that fired during the async load — if
+      // every subscriber already left, drop the loaded face instead of
+      // smuggling it into the registry under a zero refcount.
+      if ((refCounts.get(url) ?? 0) > 0) document.fonts.add(loaded as FontFace);
+    })
+    .catch(() => {
+      // Drop the failed face from the registry so a future acquire
+      // can retry. The picker chip and live preview fall back to the
+      // generic font stack when the load fails; the render log
+      // surfaces the failure via `fontWarnings` on the server side.
+      faces.delete(url);
+    });
 }
 
 /**

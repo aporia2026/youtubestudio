@@ -183,6 +183,34 @@ export interface LabelStyle {
  */
 export type RingStyle = { color: string; thickness: number; style: 'solid' | 'dashed' } | null;
 
+/**
+ * Phase 4.11: optional drop shadow under the cell's icon shape. Paints
+ * a soft cast underneath the disc/square so the cell reads as a
+ * sticker lifted off the canvas. Off by default — the reference flat-
+ * cell channels don't use it, but the "paper sticker" aesthetic
+ * (Paint Explainer's animated thumbs, Byte Sized Explainer's hero
+ * cells) does.
+ *
+ *   offsetY  vertical offset in cell-relative pixels at the reference
+ *            1280×720 canvas. Composer scales this proportionally
+ *            with the cell width so a shadow looks consistent across
+ *            grid sizes.
+ *   blur     stdDeviation passed to the SVG <feGaussianBlur>. Small
+ *            integer; cell-relative, scaled like offsetY.
+ *   color    RGB hex (#RRGGBB) — opacity is carried separately so
+ *            users can keep a single colour and dial transparency.
+ *   opacity  0..1.
+ *
+ * `null` disables the shadow; `undefined` falls back to the config
+ * default (which is itself usually `null`).
+ */
+export type ShadowStyle = {
+  offsetY: number;
+  blur: number;
+  color: string;
+  opacity: number;
+} | null;
+
 // ─── Background ─────────────────────────────────────────────────────────────
 
 /**
@@ -266,6 +294,19 @@ export interface TitleBarSpec {
    *  for both lines but the option exists for the "muted secondary
    *  line" pattern (e.g. dimmer grey under a stark white title). */
   subtitleColor?: string;
+  /** Phase 4.11: optional independent font for the subtitle. Falls
+   *  back to the main `font` when absent — the common case is a
+   *  matched typeface, but a contrasting subtitle font (e.g.
+   *  Patrick Hand subtitle under an Anton title) is a common
+   *  editorial pattern worth supporting. */
+  subtitleFont?: LabelFont;
+  /** Phase 4.11: required when `subtitleFont === 'custom'`. Same
+   *  shape as `customFontUrl` — R2-hosted TTF URL fetched via the
+   *  byte cache. */
+  subtitleCustomFontUrl?: string;
+  /** Phase 4.11: display label for the subtitle's registered-font
+   *  chip — purely cosmetic. */
+  subtitleCustomFontLabel?: string;
 }
 
 // ─── Per-cell ───────────────────────────────────────────────────────────────
@@ -298,6 +339,11 @@ export interface FlexIconCell {
    *  solid colour respecting the adjacency rule. */
   background?: CellBackgroundSpec;
   ring?: RingStyle;
+  /** Phase 4.11: optional drop shadow under this cell's icon shape.
+   *  Cascade rules: explicit `null` disables the shadow for this
+   *  cell even when the config default has one; `undefined` falls
+   *  back to `FlexIconGridConfig.defaultShadow`. */
+  shadow?: ShadowStyle;
   labelStyle?: Partial<LabelStyle>;
   /** Phase-2 cell-merge: this cell extends across multiple slots,
    *  consuming the cells immediately to the right and below for the
@@ -333,6 +379,11 @@ export interface FlexIconGridConfig {
   defaultCellShape: CellShape;
   defaultRing: RingStyle;
   defaultLabel: LabelStyle;
+  /** Phase 4.11: default drop shadow applied to every cell whose
+   *  own `shadow` field is `undefined`. Cells with an explicit
+   *  `null` shadow opt out. Defaults to `null` (no shadow) so the
+   *  existing flat-cell look is preserved unless the user opts in. */
+  defaultShadow?: ShadowStyle;
   cells: FlexIconCell[];
   titleBar?: TitleBarSpec;
 }
@@ -369,6 +420,17 @@ export const DEFAULT_RING: RingStyle = {
   color: '#0a0a0a',
   thickness: 6,
   style: 'solid',
+};
+
+/** Phase 4.11: default shadow preset used by the panel's "Cell
+ *  shadow on" toggle. Tuned for the 1280×720 reference canvas: 8px
+ *  down, 12px blur, near-black at 35% opacity reads as a soft cast
+ *  on bright cell backgrounds without overpowering the icon. */
+export const DEFAULT_SHADOW: ShadowStyle = {
+  offsetY: 8,
+  blur: 12,
+  color: '#000000',
+  opacity: 0.35,
 };
 
 /**
@@ -529,6 +591,26 @@ export function getConsumedCellIndexes(config: FlexIconGridConfig): Set<number> 
     }
   }
   return consumed;
+}
+
+/**
+ * Phase 4.11: resolve the effective drop shadow for a cell. Cascade
+ * rules:
+ *   - explicit `null` on the cell → shadow disabled (opt-out from
+ *     the config default).
+ *   - explicit object on the cell → use it.
+ *   - `undefined` → fall back to `config.defaultShadow` (which is
+ *     itself usually `null` or undefined, leaving the cell shadowless).
+ * Pure function — exported so the live preview and composer share
+ * the same resolution.
+ */
+export function resolveCellShadow(
+  cell: FlexIconCell,
+  config: FlexIconGridConfig,
+): ShadowStyle {
+  if (cell.shadow === null) return null;
+  if (cell.shadow) return cell.shadow;
+  return config.defaultShadow ?? null;
 }
 
 /**
@@ -788,6 +870,11 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     if (c.shape && !SUPPORTED_CELL_SHAPES.includes(c.shape)) {
       return { ok: false, reason: `cell ${idx} shape ${c.shape} is not supported`, offending_cell_index: idx };
     }
+    // Phase 4.11: shadow shape check. `null` is explicit-off (allowed);
+    // a present object must have valid hex colour + opacity in [0, 1] +
+    // non-negative blur + finite offsetY.
+    const shadowResult = validateShadow(c.shadow, `cell ${idx}`, idx);
+    if (!shadowResult.ok) return shadowResult;
   }
   if (config.titleBar) {
     if (typeof config.titleBar.text !== 'string') {
@@ -811,6 +898,36 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     if (config.titleBar.subtitleColor !== undefined && !HEX_COLOR_RE.test(config.titleBar.subtitleColor)) {
       return { ok: false, reason: 'titleBar.subtitleColor is not a valid hex color' };
     }
+  }
+  const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
+  if (!defaultShadowResult.ok) return defaultShadowResult;
+  return { ok: true };
+}
+
+/** Phase 4.11: shared shadow shape check. `undefined` and `null` are
+ *  both valid (undefined → not configured / inherit; null → explicit
+ *  off). When a populated object is present, every field must be
+ *  finite and within bounds. */
+function validateShadow(
+  shadow: ShadowStyle | undefined,
+  contextLabel: string,
+  offendingCellIndex?: number,
+): ValidationResult {
+  if (shadow === undefined || shadow === null) return { ok: true };
+  if (typeof shadow !== 'object') {
+    return { ok: false, reason: `${contextLabel} shadow must be an object, null, or undefined`, offending_cell_index: offendingCellIndex };
+  }
+  if (!Number.isFinite(shadow.offsetY)) {
+    return { ok: false, reason: `${contextLabel} shadow.offsetY must be a finite number`, offending_cell_index: offendingCellIndex };
+  }
+  if (!Number.isFinite(shadow.blur) || shadow.blur < 0) {
+    return { ok: false, reason: `${contextLabel} shadow.blur must be a non-negative finite number`, offending_cell_index: offendingCellIndex };
+  }
+  if (typeof shadow.color !== 'string' || !HEX_COLOR_RE.test(shadow.color)) {
+    return { ok: false, reason: `${contextLabel} shadow.color must be a hex string`, offending_cell_index: offendingCellIndex };
+  }
+  if (typeof shadow.opacity !== 'number' || shadow.opacity < 0 || shadow.opacity > 1) {
+    return { ok: false, reason: `${contextLabel} shadow.opacity must be between 0 and 1`, offending_cell_index: offendingCellIndex };
   }
   return { ok: true };
 }
@@ -950,6 +1067,9 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     defaultCellShape: parseCellShape(o.defaultCellShape, 'circle'),
     defaultRing: parseRing(o.defaultRing, DEFAULT_RING),
     defaultLabel: parseLabelStyle(o.defaultLabel, DEFAULT_LABEL_STYLE),
+    // Phase 4.11: defaultShadow round-trips with the same opt-out
+    // semantics as ring (null → off, undefined → none configured).
+    defaultShadow: parseShadow(o.defaultShadow),
     cells,
     titleBar: o.titleBar ? parseTitleBar(o.titleBar) : undefined,
   };
@@ -1004,6 +1124,22 @@ function parseRing(v: unknown, fallback: RingStyle): RingStyle {
     color: stringOr(o.color, fallback?.color ?? '#0a0a0a'),
     thickness: numberOr(o.thickness, fallback?.thickness ?? 6),
     style: o.style === 'dashed' ? 'dashed' : 'solid',
+  };
+}
+
+/** Phase 4.11: parse a shadow value tolerantly. `null` round-trips
+ *  as "explicit off" (cell-level opt-out from the default). Missing
+ *  / non-object values return undefined so the field stays absent
+ *  rather than being normalised to a junk shadow. */
+function parseShadow(v: unknown): ShadowStyle | undefined {
+  if (v === null) return null;
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  return {
+    offsetY: numberOr(o.offsetY, DEFAULT_SHADOW!.offsetY),
+    blur: Math.max(0, numberOr(o.blur, DEFAULT_SHADOW!.blur)),
+    color: stringOr(o.color, DEFAULT_SHADOW!.color),
+    opacity: Math.max(0, Math.min(1, numberOr(o.opacity, DEFAULT_SHADOW!.opacity))),
   };
 }
 
@@ -1071,6 +1207,25 @@ function parseTitleBar(v: unknown): TitleBarSpec {
   const subtitleColor = typeof o.subtitleColor === 'string' && o.subtitleColor.length > 0
     ? o.subtitleColor
     : undefined;
+  // Phase 4.11: independent subtitle font. Only round-trips when the
+  // value is one of the supported font tokens; otherwise falls back
+  // to undefined (composer treats undefined as "use the main font").
+  // Custom URL only round-trips when font is actually 'custom' — same
+  // posture as the main title's customFontUrl, so a stale URL from a
+  // previous switch can't bleed into the rendered output.
+  const subtitleFont: LabelFont | undefined =
+    typeof o.subtitleFont === 'string' &&
+    (SUPPORTED_LABEL_FONTS as readonly string[]).includes(o.subtitleFont)
+      ? (o.subtitleFont as LabelFont)
+      : undefined;
+  const subtitleCustomFontUrl =
+    subtitleFont === 'custom' && typeof o.subtitleCustomFontUrl === 'string'
+      ? o.subtitleCustomFontUrl
+      : undefined;
+  const subtitleCustomFontLabel =
+    subtitleFont === 'custom' && typeof o.subtitleCustomFontLabel === 'string'
+      ? o.subtitleCustomFontLabel
+      : undefined;
   return {
     text: stringOr(o.text, ''),
     position: o.position === 'top' ? 'top' : 'bottom',
@@ -1082,6 +1237,9 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     customFontLabel,
     subtitle,
     subtitleColor,
+    subtitleFont,
+    subtitleCustomFontUrl,
+    subtitleCustomFontLabel,
   };
 }
 
@@ -1098,6 +1256,7 @@ function parseCell(raw: unknown, expectedIndex: number): FlexIconCell {
     backgroundColor: typeof o.backgroundColor === 'string' ? o.backgroundColor : undefined,
     background: o.background ? parseCellBackground(o.background) : undefined,
     ring: o.ring === null ? null : o.ring ? parseRing(o.ring, DEFAULT_RING) : undefined,
+    shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
     labelStyle: o.labelStyle && typeof o.labelStyle === 'object'
       ? (o.labelStyle as Partial<LabelStyle>)
       : undefined,

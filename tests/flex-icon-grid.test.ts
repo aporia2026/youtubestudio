@@ -22,6 +22,7 @@ import {
   getSpanConflicts,
   makeDefaultConfig,
   parseConfig,
+  resolveCellShadow,
   sanitizeUserText,
   SUPPORTED_CELL_SHAPES,
   SUPPORTED_CONTENT_TYPES,
@@ -1108,5 +1109,107 @@ describe('Phase 4.10 — title bar subtitle', () => {
     const result = validateConfig(config);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/subtitleColor/);
+  });
+});
+
+// ─── Phase 4.11 — independent subtitle font ─────────────────────────────────
+
+describe('Phase 4.11 — independent subtitle font', () => {
+  it('round-trips subtitleFont through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'TITLE', position: 'top', height: 100,
+      background: '#000', color: '#fff', font: 'anton',
+      subtitle: 'subtitle text', subtitleFont: 'patrick-hand',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.subtitleFont).toBe('patrick-hand');
+  });
+  it('drops subtitleCustomFontUrl when subtitleFont is not custom', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        subtitle: 'y', subtitleFont: 'bowlby-one',
+        subtitleCustomFontUrl: 'https://example.com/stale.ttf',
+      },
+    });
+    expect(reparsed.titleBar?.subtitleCustomFontUrl).toBeUndefined();
+  });
+  it('falls back to undefined for unsupported subtitleFont values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        subtitle: 'y', subtitleFont: 'comic-sans',
+      },
+    });
+    expect(reparsed.titleBar?.subtitleFont).toBeUndefined();
+  });
+});
+
+// ─── Phase 4.11 — per-cell drop shadow ──────────────────────────────────────
+
+describe('Phase 4.11 — per-cell drop shadow', () => {
+  it('round-trips defaultShadow through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.defaultShadow = { offsetY: 6, blur: 10, color: '#000000', opacity: 0.3 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.defaultShadow).toEqual({ offsetY: 6, blur: 10, color: '#000000', opacity: 0.3 });
+  });
+  it('clamps opacity into [0, 1]', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      defaultShadow: { offsetY: 4, blur: 8, color: '#000000', opacity: 1.5 },
+    });
+    expect(reparsed.defaultShadow?.opacity).toBe(1);
+  });
+  it('floors negative blur at 0', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      defaultShadow: { offsetY: 4, blur: -5, color: '#000000', opacity: 0.5 },
+    });
+    expect(reparsed.defaultShadow?.blur).toBe(0);
+  });
+  it('resolveCellShadow returns null when cell.shadow is null even with default set', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultShadow = { offsetY: 4, blur: 8, color: '#000', opacity: 0.5 };
+    config.cells[0].shadow = null;
+    expect(resolveCellShadow(config.cells[0], config)).toBeNull();
+  });
+  it('resolveCellShadow falls back to default when cell.shadow is undefined', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultShadow = { offsetY: 7, blur: 9, color: '#111', opacity: 0.4 };
+    expect(resolveCellShadow(config.cells[0], config)).toEqual({
+      offsetY: 7, blur: 9, color: '#111', opacity: 0.4,
+    });
+  });
+  it('resolveCellShadow uses the cell override when present', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultShadow = { offsetY: 1, blur: 1, color: '#000', opacity: 0.1 };
+    config.cells[0].shadow = { offsetY: 20, blur: 4, color: '#ff0000', opacity: 0.8 };
+    expect(resolveCellShadow(config.cells[0], config)).toEqual({
+      offsetY: 20, blur: 4, color: '#ff0000', opacity: 0.8,
+    });
+  });
+  it('rejects malformed shadow.color on defaultShadow', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultShadow = { offsetY: 4, blur: 8, color: 'red', opacity: 0.5 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/shadow\.color/);
+  });
+  it('rejects shadow.opacity out of [0, 1] on a cell', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].shadow = { offsetY: 4, blur: 8, color: '#000000', opacity: 2 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.offending_cell_index).toBe(1);
   });
 });
