@@ -1576,3 +1576,37 @@ describe('Phase 4.16 — per-cell rotation', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+// ─── Phase 4.17 — JSON round-trip ───────────────────────────────────────────
+
+describe('Phase 4.17 — JSON round-trip', () => {
+  it('survives a full JSON.stringify → JSON.parse → parseConfig cycle', () => {
+    const original = makeDefaultConfig(3, 5);
+    // Touch a representative spread of fields so any silent drop in
+    // the round-trip surfaces here.
+    original.titleBar = {
+      text: 'Hello', position: 'bottom', height: 96,
+      heightFraction: 0.13, background: '#000', color: '#fff', font: 'anton',
+      subtitle: 'World', subtitleColor: '#ccc', subtitleFont: 'patrick-hand',
+    };
+    original.defaultShadow = { offsetY: 8, blur: 12, color: '#000000', opacity: 0.35 };
+    original.paletteShuffleOffset = 2;
+    original.cells[0].rotation = 45;
+    original.cells[0].badge = {
+      text: 'NEW', corner: 'top-right', background: '#fbbf24', color: '#0a0a0a',
+    };
+    original.cells[1].shadow = { offsetY: 4, blur: 6, color: '#000000', opacity: 0.2 };
+    original.cells[2].cellSpan = { rows: 2, cols: 2 };
+
+    const roundTripped = parseConfig(JSON.parse(JSON.stringify(original)));
+
+    expect(roundTripped.titleBar?.subtitle).toBe('World');
+    expect(roundTripped.titleBar?.heightFraction).toBe(0.13);
+    expect(roundTripped.defaultShadow?.opacity).toBe(0.35);
+    expect(roundTripped.paletteShuffleOffset).toBe(2);
+    expect(roundTripped.cells[0].rotation).toBe(45);
+    expect(roundTripped.cells[0].badge?.text).toBe('NEW');
+    expect(roundTripped.cells[1].shadow?.blur).toBe(6);
+    expect(roundTripped.cells[2].cellSpan).toEqual({ rows: 2, cols: 2 });
+  });
+});

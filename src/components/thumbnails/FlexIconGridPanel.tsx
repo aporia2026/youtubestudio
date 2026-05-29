@@ -32,6 +32,7 @@ import {
   STARTER_CELL_SHADOW,
   getSpanConflicts,
   makeDefaultConfig,
+  parseConfig,
   transposeCells,
   type CellBackgroundSpec,
   type CellContent,
@@ -182,6 +183,51 @@ interface SavedPaletteRecord {
  *  palettes surface as chips next to the named presets so they don't
  *  have to expand the disclosure to grab a familiar one. */
 const SAVED_PALETTE_QUICK_LOAD_COUNT = 3;
+
+// ─── Export / import (Phase 4.17) ───────────────────────────────────────────
+
+/**
+ * Phase 4.17: serialise the current config as a pretty-printed JSON
+ * file and trigger a browser download. File name carries a date so
+ * users with many exports can tell them apart in their downloads
+ * folder. Object URL is revoked after the click so we don't leak.
+ */
+function exportConfigJson(config: FlexIconGridConfig): void {
+  const json = JSON.stringify(config, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const datePart = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `flex-icon-grid-${datePart}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/**
+ * Phase 4.17: read the given file as text, parse as JSON, run
+ * through the tolerant `parseConfig` (so older / sibling-version
+ * shapes still import), and hand the result to the panel's
+ * `setConfig`. Any failure surfaces as a toast so the user knows
+ * the file didn't apply rather than silently doing nothing.
+ */
+async function importConfigJson(
+  file: File,
+  setConfig: (next: FlexIconGridConfig) => void,
+): Promise<void> {
+  try {
+    const text = await file.text();
+    const raw = JSON.parse(text) as unknown;
+    const config = parseConfig(raw);
+    setConfig(config);
+    toast.success(`Imported config from ${file.name}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    toast.error(`Import failed: ${message}`);
+  }
+}
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -953,22 +999,37 @@ export function FlexIconGridPanel({
             <span aria-hidden="true">⤵</span>
             Shuffle
           </button>
-          {/* Phase 4.16: reset chip — appears once the user has
-              shuffled at least once. One click returns the offset to
-              0 so the palette engine starts from its canonical
-              ordering again. Locked cells are unaffected (same as
-              Shuffle), only the rotating assignment for unlocked
-              cells resets. */}
+          {/* Phase 4.16 → 4.17: reset + undo chips — appear once
+              the user has shuffled at least once. Undo steps back
+              by one; Reset jumps to 0. Together they let a user
+              freely explore shuffle positions and return to a
+              previous one without re-shuffling the cycle's full
+              length. */}
           {(config.paletteShuffleOffset ?? 0) > 0 && (
-            <button
-              type="button"
-              onClick={() => updateConfig({ paletteShuffleOffset: 0 })}
-              style={chipStyle(false)}
-              title="Reset palette colour rotation to the canonical order"
-              aria-label="Reset palette colour rotation"
-            >
-              Reset
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() =>
+                  updateConfig({
+                    paletteShuffleOffset: Math.max(0, (config.paletteShuffleOffset ?? 0) - 1),
+                  })
+                }
+                style={chipStyle(false)}
+                title="Step back one shuffle position"
+                aria-label="Undo last shuffle"
+              >
+                <span aria-hidden="true">↶</span> Undo
+              </button>
+              <button
+                type="button"
+                onClick={() => updateConfig({ paletteShuffleOffset: 0 })}
+                style={chipStyle(false)}
+                title="Reset palette colour rotation to the canonical order"
+                aria-label="Reset palette colour rotation"
+              >
+                Reset
+              </button>
+            </>
           )}
         </div>
         {config.palette.type === 'custom' && (
@@ -1507,13 +1568,24 @@ export function FlexIconGridPanel({
                 max={180}
                 step={1}
                 value={selectedCell.rotation ?? 0}
-                onChange={(e) =>
+                onChange={(e) => {
+                  // Phase 4.17: hold Shift while dragging to snap to
+                  // 15° increments — useful for hitting common angles
+                  // without releasing the slider. `InputEvent` only
+                  // exposes `shiftKey` on Mouse/Keyboard events, so we
+                  // narrow via a runtime check rather than a type
+                  // assertion. step={1} stays the default so non-Shift
+                  // drags still allow per-degree precision.
+                  const raw = Number(e.target.value);
+                  const native = e.nativeEvent as { shiftKey?: boolean };
+                  const shifted = native.shiftKey === true;
+                  const next = shifted ? Math.round(raw / 15) * 15 : raw;
                   updateCell(selectedCell.index, {
-                    rotation: Number(e.target.value) === 0 ? undefined : Number(e.target.value),
-                  })
-                }
-                aria-label="Cell rotation in degrees"
-                title={`Rotation: ${selectedCell.rotation ?? 0}°`}
+                    rotation: next === 0 ? undefined : next,
+                  });
+                }}
+                aria-label="Cell rotation in degrees (hold Shift to snap to 15°)"
+                title={`Rotation: ${selectedCell.rotation ?? 0}° (hold Shift to snap to 15°)`}
                 style={{ flex: 1, minWidth: 120 }}
               />
               <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}>
@@ -1943,14 +2015,12 @@ export function FlexIconGridPanel({
                   />
                 )}
               </div>
-              {/* Phase 4.16: title bar height slider exposing
-                  `heightFraction` directly. Range 5–30 % of canvas
-                  height covers the typical use (thin caption ↔ tall
-                  headline strip) without letting a runaway slider
-                  consume half the canvas. Updates `heightFraction`
-                  (sticky across aspect-ratio chip clicks) AND the
-                  absolute `height` in one go so the bar resizes
-                  immediately. */}
+              {/* Phase 4.16 → 4.17: title bar height slider exposing
+                  `heightFraction` directly. Range 5–50 % of canvas
+                  height — covers thin caption (~5 %) through hero
+                  banner strip (~50 %). The validator caps the
+                  absolute height at half canvas regardless, so the
+                  slider's 50 % top matches the hard limit. */}
               {config.titleBar && (
                 <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
                   <label style={{ ...labelStyle, marginTop: 0, marginBottom: 0, minWidth: 90 }}>
@@ -1959,7 +2029,7 @@ export function FlexIconGridPanel({
                   <input
                     type="range"
                     min={5}
-                    max={30}
+                    max={50}
                     step={1}
                     value={Math.round(
                       (config.titleBar.heightFraction ?? config.titleBar.height / config.height) * 100,
@@ -2250,6 +2320,36 @@ export function FlexIconGridPanel({
             Download
           </a>
         )}
+        {/* Phase 4.17: export / import config as JSON. Export
+            downloads a pretty-printed JSON file the user can stash
+            or share; import reads a previously-exported file and
+            replaces the current config. Tolerant `parseConfig`
+            handles minor shape drift across format versions. */}
+        <button
+          type="button"
+          onClick={() => exportConfigJson(config)}
+          style={ghostButtonStyle}
+          title="Download the current thumbnail config as JSON"
+          aria-label="Export config as JSON"
+        >
+          Export JSON
+        </button>
+        <label style={{ ...ghostButtonStyle, cursor: 'pointer', display: 'inline-block' }} title="Import a thumbnail config from a previously-exported JSON file">
+          Import JSON
+          <input
+            type="file"
+            accept="application/json,.json"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void importConfigJson(file, setConfig);
+              // Reset value so the same file can be re-selected after
+              // a parse error.
+              e.target.value = '';
+            }}
+            style={{ display: 'none' }}
+            aria-label="Import config from JSON file"
+          />
+        </label>
       </section>
 
       {/* Result */}

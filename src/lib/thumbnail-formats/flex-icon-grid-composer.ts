@@ -1283,18 +1283,29 @@ async function maybeRotateOverlay(
   const rotatedMeta = await sharp(rotated).metadata();
   const newW = rotatedMeta.width ?? origMeta.width ?? 0;
   const newH = rotatedMeta.height ?? origMeta.height ?? 0;
-  // Place the rotated buffer so its centre lands on the pivot.
-  // Variables `origCx` / `origCy` captured above ensure we know the
-  // original overlay centre; the `pivot` parameters give us the
-  // intended rotation centre (usually the shape centre). When the
-  // original overlay is already centred on the shape (typical for
-  // icon overlays sized to fill the shape) the rotated overlay
-  // stays centred on the shape — visually rotation-around-shape.
-  void origCx; void origCy; // retained for future off-pivot extensions
+  // Phase 4.17: rotate the (orig centre → pivot) offset vector by
+  // the same angle so an off-pivot overlay's content rotates AROUND
+  // the pivot while keeping its relative offset. The new centre
+  // lands at `pivot + R(angle) * (origCentre - pivot)`.
+  //
+  // For an on-pivot overlay (origCx ≈ pivotX, origCy ≈ pivotY) the
+  // offset vector is zero and the new centre stays exactly on the
+  // pivot — byte-identical to Phase 4.16 for the common case.
+  // For an off-pivot overlay (text-only positioned slightly low),
+  // the content orbits around the pivot instead of snapping to it.
+  const dx = origCx - pivotX;
+  const dy = origCy - pivotY;
+  const rad = (degrees * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  // Standard 2D rotation matrix; SVG uses CW-positive degrees so we
+  // mirror that here (sin's sign matches the SVG `rotate(N)` convention).
+  const newCx = pivotX + dx * cos - dy * sin;
+  const newCy = pivotY + dx * sin + dy * cos;
   return {
     input: rotated,
-    top: Math.round(pivotY - newH / 2),
-    left: Math.round(pivotX - newW / 2),
+    top: Math.round(newCy - newH / 2),
+    left: Math.round(newCx - newW / 2),
   };
 }
 
