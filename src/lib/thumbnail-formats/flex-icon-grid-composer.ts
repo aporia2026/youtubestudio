@@ -423,12 +423,28 @@ export function buildBaseSvg(
     const labelStyle = resolveLabelStyle(cell, config);
     const geom = computeCellGeometry(rect.x, rect.y, rect.w, rect.h, labelStyle.position);
     const shadowFilterId = cellShadows[i] ? `fg-cell-shadow-${cell.index}` : null;
+    // Phase 4.16: wrap the shape (and inline icon) in a rotation
+    // group when the cell carries a non-zero rotation. The wrapping
+    // group rotates around the shape's geometric centre so the icon
+    // and the shape stay aligned. The label band is OUTSIDE the
+    // wrap so it stays horizontal regardless of rotation — keeps
+    // multi-cell grids readable.
+    const rotation = cell.rotation ?? 0;
+    const needsRotation = rotation !== 0;
+    if (needsRotation) {
+      const cx = geom.shapeX + geom.shapeW / 2;
+      const cy = geom.shapeY + geom.shapeH / 2;
+      parts.push(`<g transform="rotate(${rotation} ${cx} ${cy})">`);
+    }
     parts.push(renderCellShape(geom, shape, referenceColour, config.cornerRadius, ring, shadowFilterId));
     // Inline Lucide icon — done in the base SVG so we get crisp
     // vector at any output resolution. Other content types render
     // as text/image overlays after rasterisation (separate pass).
     if (cell.content.type === 'icon-library') {
       parts.push(renderIconLibrary(cell.content, geom, referenceColour, ring));
+    }
+    if (needsRotation) {
+      parts.push(`</g>`);
     }
   }
   parts.push(`</svg>`);
@@ -745,13 +761,20 @@ async function buildCellOverlays(
   const shape = cell.shape ?? config.defaultCellShape;
   const ring = resolveRing(cell, config);
   const geom = computeCellGeometry(rect.x, rect.y, rect.w, rect.h, labelStyle.position);
+  // Phase 4.16: cell rotation applies to the shape (already rotated
+  // in the base SVG) AND to content overlays that fill the shape
+  // area (upload / emoji / sticker / text-only). Label and badge
+  // overlays stay un-rotated so multi-cell grids stay readable.
+  const rotation = cell.rotation ?? 0;
+  const shapeCx = geom.shapeX + geom.shapeW / 2;
+  const shapeCy = geom.shapeY + geom.shapeH / 2;
 
   const overlays: sharp.OverlayOptions[] = [];
 
   // Content overlays
   if (cell.content.type === 'upload') {
     const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index);
-    if (uploadOverlay) overlays.push(uploadOverlay);
+    if (uploadOverlay) overlays.push(await maybeRotateOverlay(uploadOverlay, rotation, shapeCx, shapeCy));
   } else if (cell.content.type === 'ai-sticker' && cell.content.url) {
     // Generated stickers paint exactly like uploads — the URL points
     // at the sliced quadrant the generate-stickers route uploaded to
@@ -759,13 +782,13 @@ async function buildCellOverlays(
     // the cell falls through to its shape fill (handled by the base
     // SVG) — visible as an empty disc the user can click to generate.
     const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index);
-    if (stickerOverlay) overlays.push(stickerOverlay);
+    if (stickerOverlay) overlays.push(await maybeRotateOverlay(stickerOverlay, rotation, shapeCx, shapeCy));
   } else if (cell.content.type === 'emoji') {
     const emojiOverlay = await buildEmojiOverlay(cell.content.char, geom);
-    if (emojiOverlay) overlays.push(emojiOverlay);
+    if (emojiOverlay) overlays.push(await maybeRotateOverlay(emojiOverlay, rotation, shapeCx, shapeCy));
   } else if (cell.content.type === 'text-only') {
     const textOverlay = await buildTextOnlyOverlay(cell.label, geom, labelStyle, background, fontResolver, defaultFallbackFont(config));
-    if (textOverlay) overlays.push(textOverlay);
+    if (textOverlay) overlays.push(await maybeRotateOverlay(textOverlay, rotation, shapeCx, shapeCy));
   }
   // `icon-library` already painted into the base SVG — no overlay
   // needed.
@@ -1224,6 +1247,55 @@ async function buildTitleBarOverlay(
     left: Math.round((width - subBw) / 2),
   });
   return overlays;
+}
+
+// ─── Overlay rotation helper (Phase 4.16) ───────────────────────────────────
+
+/**
+ * Phase 4.16: rotate a content overlay around a canvas-space pivot
+ * (typically the shape centre). Sharp's `.rotate(angle)` rotates the
+ * image around ITS OWN centre and expands the bounding box to fit,
+ * so after rotation we re-position the overlay so its new centre
+ * lands at the original pivot point.
+ *
+ * No-op when `degrees` is exactly 0 — overlays unchanged.
+ */
+async function maybeRotateOverlay(
+  overlay: sharp.OverlayOptions,
+  degrees: number,
+  pivotX: number,
+  pivotY: number,
+): Promise<sharp.OverlayOptions> {
+  if (degrees === 0) return overlay;
+  const inputBuf = overlay.input as Buffer;
+  if (!Buffer.isBuffer(inputBuf)) return overlay;
+  // Capture the original overlay's centre before rotation so we can
+  // re-place the rotated buffer over the same pivot.
+  const origTop = overlay.top ?? 0;
+  const origLeft = overlay.left ?? 0;
+  const origMeta = await sharp(inputBuf).metadata();
+  const origCx = origLeft + (origMeta.width ?? 0) / 2;
+  const origCy = origTop + (origMeta.height ?? 0) / 2;
+  const rotated = await sharp(inputBuf)
+    .rotate(degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png()
+    .toBuffer();
+  const rotatedMeta = await sharp(rotated).metadata();
+  const newW = rotatedMeta.width ?? origMeta.width ?? 0;
+  const newH = rotatedMeta.height ?? origMeta.height ?? 0;
+  // Place the rotated buffer so its centre lands on the pivot.
+  // Variables `origCx` / `origCy` captured above ensure we know the
+  // original overlay centre; the `pivot` parameters give us the
+  // intended rotation centre (usually the shape centre). When the
+  // original overlay is already centred on the shape (typical for
+  // icon overlays sized to fill the shape) the rotated overlay
+  // stays centred on the shape — visually rotation-around-shape.
+  void origCx; void origCy; // retained for future off-pivot extensions
+  return {
+    input: rotated,
+    top: Math.round(pivotY - newH / 2),
+    left: Math.round(pivotX - newW / 2),
+  };
 }
 
 // ─── Badge overlay (Phase 4.12) ─────────────────────────────────────────────

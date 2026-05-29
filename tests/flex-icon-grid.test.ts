@@ -1511,3 +1511,68 @@ describe('Phase 4.15 — 21:9 ultra-wide preset', () => {
     expect(wide?.height).toBe(720);
   });
 });
+
+// ─── Phase 4.16 — cellSpan transpose ────────────────────────────────────────
+
+describe('Phase 4.16 — transposeCells swaps cellSpan rows/cols', () => {
+  it('swaps cellSpan rows and cols on transpose', () => {
+    const cells = [
+      {
+        index: 1,
+        label: 'hero',
+        content: { type: 'text-only' as const },
+        cellSpan: { rows: 2, cols: 1 },
+      },
+      { index: 2, label: 'b', content: { type: 'text-only' as const } },
+      { index: 3, label: 'c', content: { type: 'text-only' as const } },
+      { index: 4, label: 'd', content: { type: 'text-only' as const } },
+    ];
+    const out = transposeCells(cells, 2, 2);
+    expect(out[0].cellSpan).toEqual({ rows: 1, cols: 2 });
+  });
+  it('leaves un-spanned cells without a cellSpan field', () => {
+    const cells = [
+      { index: 1, label: 'a', content: { type: 'text-only' as const } },
+    ];
+    const out = transposeCells(cells, 1, 1);
+    expect(out[0].cellSpan).toBeUndefined();
+  });
+});
+
+// ─── Phase 4.16 — per-cell rotation ─────────────────────────────────────────
+
+describe('Phase 4.16 — per-cell rotation', () => {
+  it('round-trips rotation through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].rotation = 45;
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].rotation).toBe(45);
+  });
+  it('clamps rotation outside [-180, 180] at parse time', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' }, rotation: 500 }],
+    });
+    expect(reparsed.cells[0].rotation).toBe(180);
+  });
+  it('rounds fractional rotation values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' }, rotation: 45.7 }],
+    });
+    expect(reparsed.cells[0].rotation).toBe(46);
+  });
+  it('rejects rotation outside [-180, 180] at validate time', () => {
+    const config = makeDefaultConfig(1, 1);
+    (config.cells[0] as unknown as { rotation: number }).rotation = 200;
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/rotation/);
+  });
+  it('rejects non-finite rotation at validate time', () => {
+    const config = makeDefaultConfig(1, 1);
+    (config.cells[0] as unknown as { rotation: number }).rotation = Number.NaN;
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+  });
+});

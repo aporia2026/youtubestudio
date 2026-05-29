@@ -433,6 +433,7 @@ export function FlexIconGridPanel({
       ring: undefined,
       shadow: undefined,
       badge: undefined,
+      rotation: undefined,
       labelStyle: undefined,
       cellSpan: undefined,
     });
@@ -952,6 +953,23 @@ export function FlexIconGridPanel({
             <span aria-hidden="true">⤵</span>
             Shuffle
           </button>
+          {/* Phase 4.16: reset chip — appears once the user has
+              shuffled at least once. One click returns the offset to
+              0 so the palette engine starts from its canonical
+              ordering again. Locked cells are unaffected (same as
+              Shuffle), only the rotating assignment for unlocked
+              cells resets. */}
+          {(config.paletteShuffleOffset ?? 0) > 0 && (
+            <button
+              type="button"
+              onClick={() => updateConfig({ paletteShuffleOffset: 0 })}
+              style={chipStyle(false)}
+              title="Reset palette colour rotation to the canonical order"
+              aria-label="Reset palette colour rotation"
+            >
+              Reset
+            </button>
+          )}
         </div>
         {config.palette.type === 'custom' && (
           <CustomPaletteEditor
@@ -1476,6 +1494,51 @@ export function FlexIconGridPanel({
             )}
           </div>
 
+          {/* Phase 4.16: cell shape rotation. Slider from -180 to
+              +180 degrees plus quick-pick chips for common angles.
+              Rotates the shape + icon content but keeps the label
+              band horizontal so multi-cell grids stay readable. */}
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Cell rotation</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                type="range"
+                min={-180}
+                max={180}
+                step={1}
+                value={selectedCell.rotation ?? 0}
+                onChange={(e) =>
+                  updateCell(selectedCell.index, {
+                    rotation: Number(e.target.value) === 0 ? undefined : Number(e.target.value),
+                  })
+                }
+                aria-label="Cell rotation in degrees"
+                title={`Rotation: ${selectedCell.rotation ?? 0}°`}
+                style={{ flex: 1, minWidth: 120 }}
+              />
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}>
+                {selectedCell.rotation ?? 0}°
+              </span>
+            </div>
+            <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[-90, -45, 0, 45, 90].map((angle) => (
+                <button
+                  key={angle}
+                  type="button"
+                  aria-pressed={(selectedCell.rotation ?? 0) === angle}
+                  onClick={() =>
+                    updateCell(selectedCell.index, {
+                      rotation: angle === 0 ? undefined : angle,
+                    })
+                  }
+                  style={chipStyle((selectedCell.rotation ?? 0) === angle)}
+                >
+                  {angle === 0 ? 'No rotation' : `${angle}°`}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Phase 4.12: corner badge editor. Toggle on/off plus
               text input, corner picker, and two colour swatches.
               Stays compact — badges are a small per-cell decoration
@@ -1880,6 +1943,50 @@ export function FlexIconGridPanel({
                   />
                 )}
               </div>
+              {/* Phase 4.16: title bar height slider exposing
+                  `heightFraction` directly. Range 5–30 % of canvas
+                  height covers the typical use (thin caption ↔ tall
+                  headline strip) without letting a runaway slider
+                  consume half the canvas. Updates `heightFraction`
+                  (sticky across aspect-ratio chip clicks) AND the
+                  absolute `height` in one go so the bar resizes
+                  immediately. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <label style={{ ...labelStyle, marginTop: 0, marginBottom: 0, minWidth: 90 }}>
+                    Bar height
+                  </label>
+                  <input
+                    type="range"
+                    min={5}
+                    max={30}
+                    step={1}
+                    value={Math.round(
+                      (config.titleBar.heightFraction ?? config.titleBar.height / config.height) * 100,
+                    )}
+                    onChange={(e) => {
+                      const fraction = Number(e.target.value) / 100;
+                      updateConfig({
+                        titleBar: {
+                          ...config.titleBar!,
+                          heightFraction: fraction,
+                          height: Math.max(16, Math.round(fraction * config.height)),
+                        },
+                      });
+                    }}
+                    aria-label="Title bar height as percent of canvas"
+                    title={`${Math.round(
+                      (config.titleBar.heightFraction ?? config.titleBar.height / config.height) * 100,
+                    )}% of canvas (${config.titleBar.height}px)`}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 60 }}>
+                    {Math.round(
+                      (config.titleBar.heightFraction ?? config.titleBar.height / config.height) * 100,
+                    )}% / {config.titleBar.height}px
+                  </span>
+                </div>
+              )}
               {/* Phase 4.10: optional subtitle (second smaller line).
                   Rendered below the main title at ~half the size,
                   same font/colour by default. Off by default — only
@@ -3124,16 +3231,20 @@ function CellBackgroundEditor({
             title="Return this cell to palette-driven colour assignment"
             aria-label="Restore palette colour for this cell"
           >
+            {/* Phase 4.16: solid swatch matches the Lock chip's
+                visual language; the leading ↻ glyph (and the
+                button label) carry the "this restores" meaning. */}
             <span
               style={{
                 display: 'inline-block',
                 width: 14,
                 height: 14,
                 borderRadius: 4,
-                background: `linear-gradient(135deg, ${palettePreviewColour} 50%, transparent 50%)`,
+                background: palettePreviewColour,
                 border: '1px solid rgba(255,255,255,0.2)',
               }}
             />
+            <span aria-hidden="true">↻</span>
             Restore palette
           </button>
         </div>

@@ -539,40 +539,52 @@ function CellGroup({
       {/* Cell background */}
       <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} fill={cellFill} />
 
-      {/* Shape with optional ring + Phase 4.11 drop shadow */}
-      <CellShapeEl
-        geom={geom}
-        shape={shape}
-        ring={ring}
-        shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
-        cornerRadius={cornerRadius}
-      />
-
-      {/* Content */}
-      {cell.content.type === 'icon-library' && (
-        <IconLibraryContent
-          slug={cell.content.name}
-          geom={geom}
-          ring={ring}
-        />
-      )}
-      {cell.content.type === 'emoji' && (
-        <EmojiContent char={cell.content.char} geom={geom} />
-      )}
-      {cell.content.type === 'upload' && (
-        <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} />
-      )}
-      {cell.content.type === 'ai-sticker' && cell.content.url && (
-        <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} />
-      )}
-      {cell.content.type === 'text-only' && (
-        <TextOnlyContent
-          label={labelText}
-          geom={geom}
-          labelStyle={labelStyle}
-          colour={labelColour}
-        />
-      )}
+      {/* Shape with optional ring + Phase 4.11 drop shadow.
+          Phase 4.16: wrap the shape AND content in a rotation group
+          when `cell.rotation` is non-zero. Label band stays outside
+          the group so it remains horizontal — readable across
+          rotated cells. Mirrors the composer's SVG <g rotate> +
+          rotated-overlay layering. */}
+      {(() => {
+        const rotation = cell.rotation ?? 0;
+        const shapeCx = geom.shapeX + geom.shapeW / 2;
+        const shapeCy = geom.shapeY + geom.shapeH / 2;
+        const inner = (
+          <>
+            <CellShapeEl
+              geom={geom}
+              shape={shape}
+              ring={ring}
+              shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
+              cornerRadius={cornerRadius}
+            />
+            {cell.content.type === 'icon-library' && (
+              <IconLibraryContent slug={cell.content.name} geom={geom} ring={ring} />
+            )}
+            {cell.content.type === 'emoji' && (
+              <EmojiContent char={cell.content.char} geom={geom} />
+            )}
+            {cell.content.type === 'upload' && (
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} />
+            )}
+            {cell.content.type === 'ai-sticker' && cell.content.url && (
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} />
+            )}
+            {cell.content.type === 'text-only' && (
+              <TextOnlyContent
+                label={labelText}
+                geom={geom}
+                labelStyle={labelStyle}
+                colour={labelColour}
+              />
+            )}
+          </>
+        );
+        if (rotation === 0) return inner;
+        return (
+          <g transform={`rotate(${rotation} ${shapeCx} ${shapeCy})`}>{inner}</g>
+        );
+      })()}
 
       {/* Label (skip when content is text-only since the label IS the content). */}
       {labelStyle.position !== 'hidden' && cell.content.type !== 'text-only' && (

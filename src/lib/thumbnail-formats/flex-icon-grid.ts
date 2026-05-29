@@ -392,6 +392,13 @@ export interface FlexIconCell {
    *  solid colour respecting the adjacency rule. */
   background?: CellBackgroundSpec;
   ring?: RingStyle;
+  /** Phase 4.16: optional rotation in degrees applied to the cell's
+   *  shape + icon content. Range −180..180; integer values only.
+   *  Rotates around the shape's centre — the label band stays
+   *  horizontal so multi-cell grids stay readable. Off by default
+   *  (undefined or 0); positive rotates clockwise. Renders byte-
+   *  identical to Phase-4.15 when undefined or 0. */
+  rotation?: number;
   /** Phase 4.11: optional drop shadow under this cell's icon shape.
    *  Cascade rules: explicit `null` disables the shadow for this
    *  cell even when the config default has one; `undefined` falls
@@ -520,7 +527,17 @@ export function transposeCells(
     // After transpose, new grid is colsA rows × rowsA cols.
     // (r, c) on old grid → (c, r) on new grid → new index = c * rowsA + r + 1
     const newIndex = c * rowsA + r + 1;
-    out[newIndex - 1] = { ...cell, index: newIndex };
+    // Phase 4.16: swap cellSpan dimensions too — a {rows:2, cols:1}
+    // hero on the old grid becomes a {rows:1, cols:2} hero on the
+    // transposed grid, preserving the cell's relative visual shape.
+    const swappedSpan = cell.cellSpan
+      ? { rows: cell.cellSpan.cols, cols: cell.cellSpan.rows }
+      : undefined;
+    out[newIndex - 1] = {
+      ...cell,
+      index: newIndex,
+      ...(swappedSpan ? { cellSpan: swappedSpan } : {}),
+    };
   }
   // Fill any missing positions with default empty cells. Shouldn't
   // happen on well-formed input but defensive against history entries
@@ -1086,6 +1103,15 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // Phase 4.12: badge shape check.
     const badgeResult = validateBadge(c.badge, idx);
     if (!badgeResult.ok) return badgeResult;
+    // Phase 4.16: rotation range check.
+    if (c.rotation !== undefined) {
+      if (typeof c.rotation !== 'number' || !Number.isFinite(c.rotation)) {
+        return { ok: false, reason: `cell ${idx} rotation must be a finite number`, offending_cell_index: idx };
+      }
+      if (c.rotation < -180 || c.rotation > 180) {
+        return { ok: false, reason: `cell ${idx} rotation must be between -180 and 180`, offending_cell_index: idx };
+      }
+    }
   }
   if (config.titleBar) {
     if (typeof config.titleBar.text !== 'string') {
@@ -1549,6 +1575,9 @@ function parseCell(raw: unknown, expectedIndex: number): FlexIconCell {
     backgroundColor: typeof o.backgroundColor === 'string' ? o.backgroundColor : undefined,
     background: o.background ? parseCellBackground(o.background) : undefined,
     ring: o.ring === null ? null : o.ring ? parseRing(o.ring, DEFAULT_RING) : undefined,
+    rotation: typeof o.rotation === 'number' && Number.isFinite(o.rotation)
+      ? Math.max(-180, Math.min(180, Math.round(o.rotation)))
+      : undefined,
     shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
     badge: 'badge' in o ? parseBadge(o.badge) : undefined,
     labelStyle: o.labelStyle && typeof o.labelStyle === 'object'
