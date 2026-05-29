@@ -14,6 +14,7 @@ import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
 import { MotionScene } from '../scenes/MotionScene';
 import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
+import { resolveSceneFade } from '../fade-resolution';
 import { RealImageOverlay } from '../components/RealImageOverlay';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { TextOverlayLayer } from '../components/TextOverlayLayer';
@@ -395,7 +396,11 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
       ? findRegion(config, previousShot.thumbnailZoomTo)
       : null;
     const transition = resolveTransition(shot, config.thumbnail.defaultTransition);
-    const zoomFadeEnabled = shot.sceneFade ?? config.sceneFadeEnabled ?? true;
+    const zoomFadeEnabled = resolveSceneFade({
+      shotSceneFade: shot.sceneFade,
+      shotKind: shot.shotKind,
+      docSceneFadeEnabled: config.sceneFadeEnabled,
+    });
     if (shot.imageUrl || shot.videoUrl) {
       console.info('[scene router] thumbnail-zoom won over row image', {
         shotIndex,
@@ -420,13 +425,23 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
   }
 
   const suppressLowerThirds = config.suppressLowerThirds === true;
-  // Resolve the scene-to-scene cross-fade for this shot. Order:
-  // per-row `sceneFade` → doc-level `sceneFadeEnabled` → historical
-  // default (`true`). `false` here disables the SceneTransition
-  // overlay AND the opening fade-in on the first shot AND the
-  // closing fade-out on the last shot. See plan
-  // _plans/2026-05-17-scene-transition-controls.md.
-  const fadeEnabled = shot.sceneFade ?? config.sceneFadeEnabled ?? true;
+  // Resolve the scene-to-scene cross-fade for this shot. Priority,
+  // top wins:
+  //   1. shot.shotKind === 'hard_cut' (paint_explainer_v1)
+  //   2. per-row `sceneFade`
+  //   3. doc-level `sceneFadeEnabled`
+  //   4. historical default (true)
+  //
+  // `false` here disables the SceneTransition overlay AND the
+  // opening fade-in on the first shot AND the closing fade-out on
+  // the last shot. See _plans/2026-05-17-scene-transition-controls.md
+  // and §15 PR 3 of
+  // `_plans/2026-05-28-paint-explainer-v1-architecture.md`.
+  const fadeEnabled = resolveSceneFade({
+    shotSceneFade: shot.sceneFade,
+    shotKind: shot.shotKind,
+    docSceneFadeEnabled: config.sceneFadeEnabled,
+  });
   if (shotIndex === 0 || shot.sceneFade !== undefined) {
     console.info('[scene-fade resolved]', {
       shotIndex,
