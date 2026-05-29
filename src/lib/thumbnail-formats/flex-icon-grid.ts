@@ -399,6 +399,14 @@ export interface FlexIconCell {
    *  (undefined or 0); positive rotates clockwise. Renders byte-
    *  identical to Phase-4.15 when undefined or 0. */
   rotation?: number;
+  /** Phase 4.19: mirror the cell's shape + icon content horizontally
+   *  (left ↔ right). Independent of rotation; combined freely. Off
+   *  by default; label band stays un-mirrored. */
+  flipX?: boolean;
+  /** Phase 4.19: mirror the cell's shape + icon content vertically
+   *  (top ↔ bottom). Independent of rotation; combined freely. Off
+   *  by default; label band stays un-mirrored. */
+  flipY?: boolean;
   /** Phase 4.11: optional drop shadow under this cell's icon shape.
    *  Cascade rules: explicit `null` disables the shadow for this
    *  cell even when the config default has one; `undefined` falls
@@ -1578,6 +1586,8 @@ function parseCell(raw: unknown, expectedIndex: number): FlexIconCell {
     rotation: typeof o.rotation === 'number' && Number.isFinite(o.rotation)
       ? Math.max(-180, Math.min(180, Math.round(o.rotation)))
       : undefined,
+    flipX: o.flipX === true ? true : undefined,
+    flipY: o.flipY === true ? true : undefined,
     shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
     badge: 'badge' in o ? parseBadge(o.badge) : undefined,
     labelStyle: o.labelStyle && typeof o.labelStyle === 'object'

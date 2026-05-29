@@ -197,8 +197,23 @@ const SAVED_PALETTE_QUICK_LOAD_COUNT = 3;
  * within the same minute still differ. Object URL is revoked after
  * click to avoid leaks.
  */
+/** Phase 4.19: bumped each phase a feature lands that changes the
+ *  wire format. Imports tolerate any version (parseConfig is
+ *  forgiving) but a future migration step can key off this field. */
+const EXPORT_FORMAT_VERSION = '4.19';
+
 function exportConfigJson(config: FlexIconGridConfig): void {
-  const json = JSON.stringify(config, null, 2);
+  // Phase 4.19: wrap the config in an envelope carrying
+  // `formatVersion` + `exportedAt` so future imports can detect old
+  // shapes and either migrate or warn. The envelope is the OUTER
+  // object; the parser tolerates either form (envelope vs raw config)
+  // so old exports keep importing unchanged.
+  const envelope = {
+    formatVersion: EXPORT_FORMAT_VERSION,
+    exportedAt: new Date().toISOString(),
+    config,
+  };
+  const json = JSON.stringify(envelope, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -214,9 +229,12 @@ function exportConfigJson(config: FlexIconGridConfig): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-/** Phase 4.18: lower-kebab-case slug capped at 40 chars, suitable
- *  for a download filename. Strips diacritics + symbols, collapses
- *  whitespace, and drops trailing hyphens that would look ugly. */
+/** Phase 4.18 → 4.19: lower-kebab-case slug capped at 40 chars,
+ *  suitable for a download filename. Strips diacritics via NFKD
+ *  followed by the Unicode combining-mark range (`̀-ͯ`),
+ *  encoded as escapes so a future editor's encoding can't corrupt
+ *  the regex. Then collapses non-alphanumerics to hyphens and trims
+ *  any leading/trailing ones. */
 function slugifyForFilename(raw: string | undefined): string {
   if (!raw) return '';
   return raw
@@ -244,7 +262,15 @@ async function importConfigJson(
   try {
     const text = await file.text();
     const raw = JSON.parse(text) as unknown;
-    const config = parseConfig(raw);
+    // Phase 4.19: tolerant envelope unwrap. If the JSON is a wrapper
+    // `{ formatVersion, exportedAt, config }`, peel the envelope;
+    // otherwise treat the root as a raw config. This lets both old
+    // (pre-4.19) and new exports import the same way.
+    const candidate =
+      raw && typeof raw === 'object' && 'config' in (raw as Record<string, unknown>)
+        ? (raw as { config: unknown }).config
+        : raw;
+    const config = parseConfig(candidate);
     const result = validateConfig(config);
     if (!result.ok) {
       toast.error(`Import rejected: ${result.reason}`);
@@ -515,6 +541,8 @@ export function FlexIconGridPanel({
       shadow: undefined,
       badge: undefined,
       rotation: undefined,
+      flipX: undefined,
+      flipY: undefined,
       labelStyle: undefined,
       cellSpan: undefined,
     });
@@ -543,6 +571,8 @@ export function FlexIconGridPanel({
             ring: source.ring,
             shadow: source.shadow,
             rotation: source.rotation,
+            flipX: source.flipX,
+            flipY: source.flipY,
             labelStyle: source.labelStyle,
             badge: source.badge,
           };
@@ -1420,11 +1450,12 @@ export function FlexIconGridPanel({
             />
           )}
 
-          {/* Phase 4.18: per-cell label position override. The
-              composer cascades via `resolveLabelStyle` (defaults
-              merged then per-cell override). Picking "Use default"
-              clears the per-cell `position` field so the cell falls
-              back to the grid's `defaultLabel.position`. */}
+          {/* Phase 4.18 → 4.19: per-cell label position override.
+              Each chip carries a tiny SVG preview so the meaning
+              ("overlay" sits on the shape, "hidden" omits the label
+              band entirely, etc.) is obvious without reading docs.
+              "Use default" resets the per-cell `position` so the
+              cell falls back to the grid's `defaultLabel.position`. */}
           <label style={labelStyle}>Label position (this cell)</label>
           <div style={chipRowStyle}>
             <button
@@ -1454,8 +1485,9 @@ export function FlexIconGridPanel({
                     },
                   })
                 }
-                style={chipStyle(selectedCell.labelStyle?.position === pos)}
+                style={{ ...chipStyle(selectedCell.labelStyle?.position === pos), display: 'inline-flex', alignItems: 'center', gap: 6 }}
               >
+                <LabelPositionPreview position={pos} />
                 {pos}
               </button>
             ))}
@@ -1731,6 +1763,38 @@ export function FlexIconGridPanel({
                 </button>
               ))}
             </div>
+            {/* Phase 4.19: flip toggles, separate from rotation.
+                Mirror the cell's shape + icon content horizontally /
+                vertically. Combined freely with rotation; label band
+                stays un-mirrored so multi-cell grids remain readable. */}
+            <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                aria-pressed={selectedCell.flipX === true}
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    flipX: selectedCell.flipX === true ? undefined : true,
+                  })
+                }
+                style={chipStyle(selectedCell.flipX === true)}
+                title="Mirror left ↔ right"
+              >
+                ⇆ Flip X
+              </button>
+              <button
+                type="button"
+                aria-pressed={selectedCell.flipY === true}
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    flipY: selectedCell.flipY === true ? undefined : true,
+                  })
+                }
+                style={chipStyle(selectedCell.flipY === true)}
+                title="Mirror top ↔ bottom"
+              >
+                ⇅ Flip Y
+              </button>
+            </div>
           </div>
 
           {/* Phase 4.12: corner badge editor. Toggle on/off plus
@@ -1817,28 +1881,22 @@ export function FlexIconGridPanel({
             )}
           </div>
 
-          {/* Phase 4.18: bulk apply this cell's style to every other
-              cell. Asks for confirmation since it's a sweeping change
-              the user might not undo easily. Copies shape, ring,
-              shadow, rotation, labelStyle, badge — NOT content,
-              label, colour, or cellSpan (those typically stay
-              per-cell). */}
-          <button
-            type="button"
-            onClick={() => {
-              if (
-                confirm(
-                  `Apply this cell's style (shape, ring, shadow, rotation, label style, badge) to all ${totalCells - 1} other cells?`,
-                )
-              ) {
-                applyStyleToAllCells(selectedCell.index);
-                toast.success('Style applied to all cells');
-              }
+          {/* Phase 4.18 → 4.19: bulk apply this cell's style to every
+              other cell. Uses a non-blocking 2-tap confirm — first
+              click flips the button into an "Confirm?" state for 4s;
+              second click inside that window commits the apply.
+              Replaces the Phase-4.18 native `confirm()` dialog which
+              was both visually jarring and harder to dismiss on
+              mobile. Copies shape, ring, shadow, rotation,
+              labelStyle, badge — NOT content, label, colour, or
+              cellSpan (those typically stay per-cell). */}
+          <BulkApplyStyleButton
+            otherCellCount={totalCells - 1}
+            onConfirm={() => {
+              applyStyleToAllCells(selectedCell.index);
+              toast.success('Style applied to all cells');
             }}
-            style={{ ...ghostButtonStyle, marginTop: 12 }}
-          >
-            Apply style to all cells
-          </button>
+          />
 
           {/* Reset everything */}
           <button
@@ -3355,6 +3413,109 @@ function CellSpanEditor({
         the config but are skipped at render time.
       </p>
     </div>
+  );
+}
+
+// ─── Label position preview (Phase 4.19) ────────────────────────────────────
+
+/**
+ * Tiny SVG glyph showing where the label band sits relative to the
+ * shape for each `LabelStyle['position']` variant. Used inside the
+ * per-cell label-position chips so the visual meaning of "overlay"
+ * / "hidden" / "above" / "below" is obvious at a glance — no docs
+ * reading required. 22 × 16 viewport keeps the chip compact.
+ */
+function LabelPositionPreview({ position }: { position: 'below' | 'above' | 'overlay' | 'hidden' }) {
+  const shape = '#fafafa';
+  const band = '#71717a';
+  return (
+    <svg width={22} height={16} viewBox="0 0 22 16" aria-hidden="true" focusable="false">
+      <rect x={0} y={0} width={22} height={16} rx={2} ry={2} fill="transparent" stroke="rgba(255,255,255,0.15)" />
+      {position === 'below' && (
+        <>
+          <circle cx={11} cy={6} r={3.5} fill={shape} />
+          <rect x={2} y={11} width={18} height={3} fill={band} />
+        </>
+      )}
+      {position === 'above' && (
+        <>
+          <rect x={2} y={2} width={18} height={3} fill={band} />
+          <circle cx={11} cy={10} r={3.5} fill={shape} />
+        </>
+      )}
+      {position === 'overlay' && (
+        <>
+          <circle cx={11} cy={8} r={5} fill={shape} />
+          <rect x={2} y={10} width={18} height={3} fill={band} fillOpacity={0.7} />
+        </>
+      )}
+      {position === 'hidden' && (
+        <circle cx={11} cy={8} r={5} fill={shape} />
+      )}
+    </svg>
+  );
+}
+
+// ─── Bulk apply button (Phase 4.19) ─────────────────────────────────────────
+
+/**
+ * Two-tap "Apply style to all cells" button. First tap flips the
+ * button to a confirm state for 4 seconds; second tap inside that
+ * window commits the apply. After the timeout the button silently
+ * returns to its primary state. Replaces the native `confirm()` so
+ * the affordance lives inline with the other controls instead of
+ * popping a system dialog.
+ */
+function BulkApplyStyleButton({
+  otherCellCount,
+  onConfirm,
+}: {
+  otherCellCount: number;
+  onConfirm: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+  const handleClick = () => {
+    if (armed) {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+      setArmed(false);
+      onConfirm();
+      return;
+    }
+    setArmed(true);
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      setArmed(false);
+      timerRef.current = null;
+    }, 4000);
+  };
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      style={{
+        ...ghostButtonStyle,
+        marginTop: 12,
+        borderColor: armed ? '#fbbf24' : undefined,
+        color: armed ? '#fbbf24' : undefined,
+      }}
+      aria-pressed={armed}
+      title={
+        armed
+          ? `Click again to confirm — applies to ${otherCellCount} other cells`
+          : `Apply this cell's style to ${otherCellCount} other cells`
+      }
+    >
+      {armed
+        ? `Click again to confirm (${otherCellCount} cells)`
+        : 'Apply style to all cells'}
+    </button>
   );
 }
 

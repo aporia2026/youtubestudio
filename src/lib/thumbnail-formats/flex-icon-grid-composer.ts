@@ -423,18 +423,30 @@ export function buildBaseSvg(
     const labelStyle = resolveLabelStyle(cell, config);
     const geom = computeCellGeometry(rect.x, rect.y, rect.w, rect.h, labelStyle.position);
     const shadowFilterId = cellShadows[i] ? `fg-cell-shadow-${cell.index}` : null;
-    // Phase 4.16: wrap the shape (and inline icon) in a rotation
-    // group when the cell carries a non-zero rotation. The wrapping
-    // group rotates around the shape's geometric centre so the icon
-    // and the shape stay aligned. The label band is OUTSIDE the
-    // wrap so it stays horizontal regardless of rotation — keeps
-    // multi-cell grids readable.
+    // Phase 4.16 → 4.19: wrap the shape (and inline icon) in a
+    // transform group when the cell carries rotation OR flipX/flipY.
+    // Rotation is applied AFTER the flip so the user's "rotate 45°"
+    // intuition holds — flips swap axes, then the result is rotated.
+    // The wrapping group's pivot is the shape's geometric centre so
+    // both transforms compose around the same point. Label band is
+    // OUTSIDE the wrap so it stays upright + readable.
     const rotation = cell.rotation ?? 0;
-    const needsRotation = rotation !== 0;
-    if (needsRotation) {
+    const flipX = cell.flipX === true;
+    const flipY = cell.flipY === true;
+    const needsTransform = rotation !== 0 || flipX || flipY;
+    if (needsTransform) {
       const cx = geom.shapeX + geom.shapeW / 2;
       const cy = geom.shapeY + geom.shapeH / 2;
-      parts.push(`<g transform="rotate(${rotation} ${cx} ${cy})">`);
+      // SVG transform list applies right-to-left. To get
+      // "rotate then scale around the shape centre" we translate to
+      // origin, scale, rotate, translate back. Coalesce to a single
+      // matrix-equivalent transform string so the emitted SVG stays
+      // compact.
+      const sx = flipX ? -1 : 1;
+      const sy = flipY ? -1 : 1;
+      parts.push(
+        `<g transform="translate(${cx} ${cy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-cx} ${-cy})">`,
+      );
     }
     parts.push(renderCellShape(geom, shape, referenceColour, config.cornerRadius, ring, shadowFilterId));
     // Inline Lucide icon — done in the base SVG so we get crisp
@@ -443,7 +455,7 @@ export function buildBaseSvg(
     if (cell.content.type === 'icon-library') {
       parts.push(renderIconLibrary(cell.content, geom, referenceColour, ring));
     }
-    if (needsRotation) {
+    if (needsTransform) {
       parts.push(`</g>`);
     }
   }
@@ -771,10 +783,17 @@ async function buildCellOverlays(
 
   const overlays: sharp.OverlayOptions[] = [];
 
+  // Phase 4.19: per-cell flip flags applied alongside rotation so the
+  // overlay content matches the SVG shape's transform exactly. Flips
+  // happen FIRST (in the same way as the SVG transform) so the user's
+  // "flip then rotate 45°" intuition holds.
+  const flipX = cell.flipX === true;
+  const flipY = cell.flipY === true;
+
   // Content overlays
   if (cell.content.type === 'upload') {
     const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index);
-    if (uploadOverlay) overlays.push(await maybeRotateOverlay(uploadOverlay, rotation, shapeCx, shapeCy));
+    if (uploadOverlay) overlays.push(await maybeTransformOverlay(uploadOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'ai-sticker' && cell.content.url) {
     // Generated stickers paint exactly like uploads — the URL points
     // at the sliced quadrant the generate-stickers route uploaded to
@@ -782,13 +801,13 @@ async function buildCellOverlays(
     // the cell falls through to its shape fill (handled by the base
     // SVG) — visible as an empty disc the user can click to generate.
     const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index);
-    if (stickerOverlay) overlays.push(await maybeRotateOverlay(stickerOverlay, rotation, shapeCx, shapeCy));
+    if (stickerOverlay) overlays.push(await maybeTransformOverlay(stickerOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'emoji') {
     const emojiOverlay = await buildEmojiOverlay(cell.content.char, geom);
-    if (emojiOverlay) overlays.push(await maybeRotateOverlay(emojiOverlay, rotation, shapeCx, shapeCy));
+    if (emojiOverlay) overlays.push(await maybeTransformOverlay(emojiOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'text-only') {
     const textOverlay = await buildTextOnlyOverlay(cell.label, geom, labelStyle, background, fontResolver, defaultFallbackFont(config));
-    if (textOverlay) overlays.push(await maybeRotateOverlay(textOverlay, rotation, shapeCx, shapeCy));
+    if (textOverlay) overlays.push(await maybeTransformOverlay(textOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
   }
   // `icon-library` already painted into the base SVG — no overlay
   // needed.
@@ -1260,13 +1279,20 @@ async function buildTitleBarOverlay(
  *
  * No-op when `degrees` is exactly 0 — overlays unchanged.
  */
-async function maybeRotateOverlay(
+async function maybeTransformOverlay(
   overlay: sharp.OverlayOptions,
   degrees: number,
+  flipX: boolean,
+  flipY: boolean,
   pivotX: number,
   pivotY: number,
 ): Promise<sharp.OverlayOptions> {
-  if (degrees === 0) return overlay;
+  // Phase 4.19: extended from the Phase-4.16 rotation-only helper to
+  // also handle flipX/flipY. Sharp's `.flop()` is horizontal mirror,
+  // `.flip()` is vertical mirror. Apply flips BEFORE rotation so the
+  // overlay matches the SVG shape's `scale → rotate` order around
+  // the shape pivot.
+  if (degrees === 0 && !flipX && !flipY) return overlay;
   const inputBuf = overlay.input as Buffer;
   if (!Buffer.isBuffer(inputBuf)) return overlay;
   // Capture the original overlay's centre before rotation so we can
@@ -1276,10 +1302,17 @@ async function maybeRotateOverlay(
   const origMeta = await sharp(inputBuf).metadata();
   const origCx = origLeft + (origMeta.width ?? 0) / 2;
   const origCy = origTop + (origMeta.height ?? 0) / 2;
-  const rotated = await sharp(inputBuf)
-    .rotate(degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png()
-    .toBuffer();
+  // Phase 4.19: chain flips before rotation. Sharp's `.flip()` is
+  // vertical (mirror top↔bottom); `.flop()` is horizontal (mirror
+  // left↔right). The Sharp pipeline is lazy until `.toBuffer()` so
+  // chaining is cheap.
+  let pipeline = sharp(inputBuf);
+  if (flipY) pipeline = pipeline.flip();
+  if (flipX) pipeline = pipeline.flop();
+  if (degrees !== 0) {
+    pipeline = pipeline.rotate(degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+  }
+  const rotated = await pipeline.png().toBuffer();
   const rotatedMeta = await sharp(rotated).metadata();
   const newW = rotatedMeta.width ?? origMeta.width ?? 0;
   const newH = rotatedMeta.height ?? origMeta.height ?? 0;

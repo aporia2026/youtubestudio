@@ -1579,6 +1579,29 @@ describe('Phase 4.16 — per-cell rotation', () => {
 
 // ─── Phase 4.17 — JSON round-trip ───────────────────────────────────────────
 
+describe('Phase 4.19 — per-cell flip', () => {
+  it('round-trips flipX through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].flipX = true;
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].flipX).toBe(true);
+  });
+  it('round-trips flipY through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].flipY = true;
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].flipY).toBe(true);
+  });
+  it('coerces non-boolean flip values to undefined', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' }, flipX: 1, flipY: 'yes' }],
+    });
+    expect(reparsed.cells[0].flipX).toBeUndefined();
+    expect(reparsed.cells[0].flipY).toBeUndefined();
+  });
+});
+
 describe('Phase 4.17 — JSON round-trip', () => {
   it('survives a full JSON.stringify → JSON.parse → parseConfig cycle', () => {
     const original = makeDefaultConfig(3, 5);

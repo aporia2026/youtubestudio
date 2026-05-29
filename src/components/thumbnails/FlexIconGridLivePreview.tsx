@@ -540,15 +540,22 @@ function CellGroup({
       <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} fill={cellFill} />
 
       {/* Shape with optional ring + Phase 4.11 drop shadow.
-          Phase 4.16: wrap the shape AND content in a rotation group
-          when `cell.rotation` is non-zero. Label band stays outside
-          the group so it remains horizontal — readable across
-          rotated cells. Mirrors the composer's SVG <g rotate> +
-          rotated-overlay layering. */}
+          Phase 4.16 → 4.19: wrap the shape AND content in a
+          transform group when `cell.rotation` is non-zero OR the
+          cell has flipX/flipY. Combined as
+          `translate(cx cy) rotate(N) scale(sx sy) translate(-cx -cy)`
+          so both transforms compose around the shape centre — same
+          ordering the composer uses, so on-screen lines up with PNG.
+          Label band stays outside the group so it remains horizontal. */}
       {(() => {
         const rotation = cell.rotation ?? 0;
+        const flipX = cell.flipX === true;
+        const flipY = cell.flipY === true;
         const shapeCx = geom.shapeX + geom.shapeW / 2;
         const shapeCy = geom.shapeY + geom.shapeH / 2;
+        const sx = flipX ? -1 : 1;
+        const sy = flipY ? -1 : 1;
+        const needsTransform = rotation !== 0 || flipX || flipY;
         const inner = (
           <>
             <CellShapeEl
@@ -580,9 +587,13 @@ function CellGroup({
             )}
           </>
         );
-        if (rotation === 0) return inner;
+        if (!needsTransform) return inner;
         return (
-          <g transform={`rotate(${rotation} ${shapeCx} ${shapeCy})`}>{inner}</g>
+          <g
+            transform={`translate(${shapeCx} ${shapeCy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-shapeCx} ${-shapeCy})`}
+          >
+            {inner}
+          </g>
         );
       })()}
 
