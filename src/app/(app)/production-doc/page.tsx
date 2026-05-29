@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
-import { mutate } from '@/lib/mutate';
+import { mutate, getState as getOutboxState } from '@/lib/mutate';
 import { getPref, setPref } from '@/lib/user-prefs';
 import { CollageTesterPanel } from '@/components/production-doc/CollageTesterPanel';
 import type { ScheduleItem } from '@/lib/schedule';
@@ -2721,6 +2721,20 @@ function ProductionDocPage() {
     // as before.
     docOverride?: ProductionDoc,
   ) => {
+    // Circuit breaker check — same gate as generateImageForRow. A
+    // variant is also a paid Atlas Edit call; suppressing it when the
+    // outbox is paused prevents money burn during outages.
+    const outbox = getOutboxState();
+    if (outbox.breaker === 'open') {
+      const secs = outbox.breakerReopenAt
+        ? Math.max(0, Math.ceil((outbox.breakerReopenAt - Date.now()) / 1000))
+        : 0;
+      toast.error(
+        `Saving is paused — retry in ${secs}s. Variant generations are blocked until your connection clears.`,
+        { duration: 5000 },
+      );
+      return;
+    }
     const activeDoc = docOverride ?? doc;
     if (!activeDoc) return;
     const variantRow = activeDoc.rows[variantIndex];
@@ -6298,6 +6312,27 @@ function ProductionDocPage() {
     } = {},
     signal?: AbortSignal,
   ): Promise<boolean> {
+    // Circuit breaker check — when the persistence outbox is paused
+    // (repeated drain failures), refuse new paid generations. The
+    // image would render in the UI but its persist call would queue
+    // into a broken pipe; better to surface the outage clearly than
+    // burn provider credits on a write that can't land.
+    const outbox = getOutboxState();
+    if (outbox.breaker === 'open') {
+      const secs = outbox.breakerReopenAt
+        ? Math.max(0, Math.ceil((outbox.breakerReopenAt - Date.now()) / 1000))
+        : 0;
+      toast.error(
+        `Saving is paused — retry in ${secs}s. New generations are blocked until your connection clears.`,
+        { duration: 5000 },
+      );
+      setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'error', error: 'Saving paused (network outage)' };
+        return next;
+      });
+      return false;
+    }
     setRowImages(prev => {
       const next = [...prev];
       next[rowIndex] = { ...next[rowIndex], status: 'loading' };
