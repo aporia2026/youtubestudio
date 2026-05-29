@@ -37,9 +37,63 @@ import { sql } from '@/lib/db';
 import { apiRoute } from '@/lib/route-helpers';
 import { tryClaimIntent } from '@/lib/mutation-ids';
 import { logger } from '@/lib/logger';
+import { encrypt, decrypt } from '@/lib/crypto';
 
 const MAX_KEY_LEN = 120;
 const MAX_VALUE_BYTES = 32_768;
+
+// Keys whose value is encrypted at rest with AES-256-GCM. Read +
+// write paths transparently encrypt / decrypt for these so the
+// client receives plaintext on GET and sends plaintext on PUT — the
+// only difference vs a regular pref is the on-disk shape, which is
+// `{ "__enc": "<base64 ciphertext>" }` instead of the raw value.
+//
+// Adding a key here means the next write of that key will be
+// encrypted. Existing plaintext values continue to read correctly
+// (the GET path falls back to the raw value when the row's JSONB
+// doesn't carry the `__enc` envelope).
+//
+// Do NOT add a key here without also rotating it on the client side
+// — the prior plaintext copy persists in localStorage and could be
+// scraped by anything with DOM access. The Settings UI's "save key"
+// flow should clear the legacy localStorage key after the first
+// encrypted write lands.
+const ENCRYPTED_KEYS = new Set<string>([
+  'perplexity_api_key',
+  'elevenlabs_api_key',
+]);
+
+/** Wrap any JSON-serialisable value in the encryption envelope.
+ *  Format: { __enc: <base64 of aes-256-gcm(iv|tag|ciphertext)> }. */
+function encryptEnvelope(value: unknown): { __enc: string } {
+  const plaintext = JSON.stringify(value);
+  return { __enc: encrypt(plaintext) };
+}
+
+/** Reverse `encryptEnvelope`. Returns the unwrapped value when the
+ *  row carries the envelope; returns the raw value as-is when it
+ *  doesn't (back-compat for any pre-encryption rows in the DB at
+ *  the time the encryption list was extended). Failure to decrypt
+ *  (key rotated, ciphertext corrupted) returns `null` and logs;
+ *  the client treats null as "no value" and falls back to its
+ *  default, which is safer than throwing a 500 and bricking the
+ *  whole settings GET. */
+function decryptEnvelopeIfNeeded(value: unknown, key: string): unknown {
+  if (value && typeof value === 'object' && '__enc' in value) {
+    const enc = (value as { __enc: unknown }).__enc;
+    if (typeof enc !== 'string') return null;
+    try {
+      return JSON.parse(decrypt(enc));
+    } catch (err) {
+      logger.warn('[user-prefs decrypt failed]', {
+        key,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+  return value;
+}
 
 interface PutBody {
   key?: unknown;
@@ -60,7 +114,9 @@ export const GET = apiRoute.authed(async (session) => {
        WHERE user_id = ${session.uid}::uuid
     `;
     const prefs: Record<string, unknown> = {};
-    for (const r of rows) prefs[r.key] = r.value;
+    for (const r of rows) {
+      prefs[r.key] = decryptEnvelopeIfNeeded(r.value, r.key);
+    }
     logger.info('[user-prefs get]', { user_id: session.uid, count: rows.length });
     return NextResponse.json({ prefs });
   } catch (err) {
@@ -130,9 +186,14 @@ export const PUT = apiRoute.authed(async (session, req: NextRequest) => {
     }
   }
 
-  // Size guard so a misbehaving client can't write 10 MB of garbage
-  // into one row.
-  const serialized = JSON.stringify(body.value);
+  // For encrypted keys, wrap in the envelope BEFORE the size check
+  // so we account for the ciphertext expansion (~33% base64 + IV +
+  // tag overhead). The cap stays at 32 KB which is plenty for an
+  // API key but loose enough that the envelope overhead doesn't
+  // trip legitimate writes.
+  const isEncrypted = ENCRYPTED_KEYS.has(key);
+  const storedValue = isEncrypted ? encryptEnvelope(body.value) : body.value;
+  const serialized = JSON.stringify(storedValue);
   if (serialized.length > MAX_VALUE_BYTES) {
     return NextResponse.json(
       { error: `value too large (${serialized.length} > ${MAX_VALUE_BYTES} bytes)` },
@@ -148,7 +209,12 @@ export const PUT = apiRoute.authed(async (session, req: NextRequest) => {
          SET value = EXCLUDED.value,
              updated_at = NOW()
     `;
-    logger.info('[user-prefs set]', { user_id: session.uid, key, bytes: serialized.length });
+    logger.info('[user-prefs set]', {
+      user_id: session.uid,
+      key,
+      bytes: serialized.length,
+      encrypted: isEncrypted,
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     logger.error('[user-prefs set] failed', {
