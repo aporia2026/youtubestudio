@@ -37,8 +37,19 @@ export type EditOptionId =
   | 'seedream-v4'
   | 'flux-kontext-pro'
   | 'flux-kontext-max'
-  // Atlas Cloud — sibling to Kie's GPT Image 2 edit family at ~30%
-  // the cost. See _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+  // GPT Image 2 edit — dispatched through the vendor-agnostic
+  // `generateGptImage2Edit` helper. Primary vendor (Atlas Cloud Edit
+  // or Kie i2i) is per-user; the other vendor is the automatic
+  // fallback. Per-call cost varies by which vendor served:
+  //   - Atlas: ~$0.011/edit
+  //   - Kie:   ~$0.05/edit
+  // The catalog row's `pricePerImage` shows the default (Atlas) cost;
+  // the route logs the real cost from the dispatcher. The id keeps
+  // the legacy `'-atlas-'` infix for back-compat with stored callers
+  // (composeVariantEditRequest, auto-pipeline) — renaming would
+  // require coordinated migration across remotion/utils.ts and
+  // production-doc-image-gen.ts. See
+  // _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md.
   | 'gpt-image-2-atlas-edit';
 
 /**
@@ -236,32 +247,31 @@ export const EDIT_OPTIONS: readonly EditOption[] = [
     pricePerImage: null,
     backend: { kind: 'flux-kontext', kieModel: 'flux-kontext-max' },
   },
-  // Atlas Cloud GPT Image 2 Edit — added 2026-05-25 alongside the Atlas
-  // t2i entry in image-models.ts. Same OpenAI model the Kie GPT-4o path
-  // covers, routed through Atlas's cheaper invoice. Atlas Edit is
-  // token-billed (~$0.01/call estimate; the dispatcher logs the actual
-  // token counts so we can true up after a week of traffic). No mask
-  // support, so this option deliberately sits in the prompt-only group
-  // below — the eraser flow on /api/overlay/edit filters by
-  // `maskCapable: true` and won't surface this entry.
+  // GPT Image 2 Edit. Originally Atlas-only (2026-05-25); on 2026-05-29
+  // the route now dispatches through `generateGptImage2Edit`, which
+  // reads the user's `gpt_image_2_edit_primary` setting and tries the
+  // primary vendor (Atlas Cloud Edit or Kie i2i) first, falling back
+  // to the other on failure. The catalog row's `pricePerImage` shows
+  // the Atlas-primary cost ($0.011); the dispatcher returns the real
+  // per-vendor cost and the route writes that into the audit row, so
+  // the cost dashboard's spend total stays honest when fallback fires.
+  // No mask support on either vendor — this option deliberately sits
+  // in the prompt-only group below; the eraser flow on
+  // /api/overlay/edit filters by `maskCapable: true` and won't
+  // surface this entry. The atlasSize / atlasQuality fields are
+  // preserved for back-compat but no longer read at dispatch time —
+  // the dispatcher hardcodes 1536×1024 + low for Atlas internally,
+  // and Kie i2i ignores both. See
+  // _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md.
   {
     id: 'gpt-image-2-atlas-edit',
-    label: 'GPT Image 2 Edit (Atlas)',
-    tagline: 'Cheap prompt-only edit — Atlas Cloud, ~$0.011 at 2K + low',
+    label: 'GPT Image 2 Edit',
+    tagline: 'Prompt-only — Atlas primary (~$0.011) with Kie fallback (~$0.05). Picker in Editor settings.',
     maskCapable: false,
     pricePerImage: 0.011,
     backend: {
       kind: 'atlas',
       atlasModel: 'openai/gpt-image-2/edit',
-      // Atlas Edit's `size` enum is documented as 1024x1024 / 1024x1536 /
-      // 1536x1024 only — the 2560x1440 size the playground exposes is
-      // T2I-only and was never valid for Edit. Sending it produced
-      // `404 {code, msg: "not found"}` because Atlas's router rejects
-      // unsupported (endpoint, size) combos at HTTP-routing layer
-      // before dispatching to the model. Verified against the docs page
-      // for openai/gpt-image-2/edit on 2026-05-27. 1536x1024 is 3:2
-      // landscape — the closest match to our 16:9 production-doc
-      // canvas; Recraft Crisp Upscale brings it to ~4K downstream.
       atlasSize: '1536x1024',
       atlasQuality: 'low',
     },

@@ -11,7 +11,8 @@ import {
   pollGpt4oImageResultThenUpscale,
   pollKieResultThenUpscale,
 } from '@/lib/kie-poll';
-import { generateAtlasEdit } from '@/lib/atlas-cloud-images';
+import { generateGptImage2Edit } from '@/lib/gpt-image-2-edit';
+import { getUserSettings } from '@/lib/user-settings';
 import {
   PROMPT_VERSION,
   isShortVariantPromptEnabled,
@@ -90,6 +91,15 @@ interface EditRequestBody {
   /** Override the default Erase backend per-request (settings layer
    *  reads/writes user preference; the client passes it through). */
   eraseOptionId?: string;
+  /** Primary vendor for the GPT Image 2 edit dispatcher. Editor reads
+   *  the user's localStorage setting and passes it through; the
+   *  dispatcher falls back to the other vendor on failure. When
+   *  absent, the route falls back to `UserSettings.gpt_image_2_edit_primary`
+   *  from the database (for clients that haven't been upgraded to
+   *  send this field), and ultimately to `'atlas'`. Only consulted
+   *  when the resolved option's backend kind is `'atlas'`. See
+   *  _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md. */
+  gptImage2EditPrimary?: 'atlas' | 'kie';
 }
 
 /** Pick the EditOption to dispatch for this request. Encapsulates the
@@ -241,6 +251,12 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // Captured per-branch; fed into markDelivered so the provider's
     // billing dashboard can be cross-referenced from a single row.
     let providerRequestId: string | null = null;
+    // Default to the catalog's static `pricePerImage`. The `atlas`
+    // branch (now routed through generateGptImage2Edit's fallback
+    // dispatcher) may override this with the per-vendor cost that
+    // actually applied — Atlas $0.011 vs Kie $0.05 — so the audit row
+    // reflects the real spend instead of the catalog estimate.
+    let actualCostUsd: number | null = option.pricePerImage;
 
     switch (option.backend.kind) {
       case 'kie-standard': {
@@ -286,15 +302,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         break;
       }
       case 'atlas': {
-        // Atlas Cloud GPT Image 2 Edit. Prompt-only flow — masks are
-        // not exposed by Atlas, so this case never sees `maskUrl` (the
-        // catalog row has `maskCapable: false` and the mask validation
-        // above runs only when `option.maskCapable === true`). Atlas
-        // Edit preserves input aspect, so 16:9 inputs come back at
-        // 16:9 with no crop step required — `upscaleViaRecraft` takes
-        // the vendor URL directly. Token telemetry is logged so we can
-        // true up the $0.01/call estimate against real usage. See
-        // _plans/2026-05-25-atlas-cloud-gpt-image-2.md.
+        // GPT Image 2 Edit — routed through the vendor-agnostic
+        // dispatcher (`generateGptImage2Edit`) which reads the user's
+        // primary preference (`gpt_image_2_edit_primary`) and falls
+        // back to the other vendor automatically on failure. Both
+        // vendors (Atlas Cloud Edit, Kie i2i) deliver a 16:9 image at
+        // ~1K — the dispatcher absorbs Atlas's 1536×1024 → 1536×864
+        // crop step internally so this branch stays agnostic. See
+        // _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md.
+        //
+        // Mask handling: neither Atlas Edit nor Kie i2i exposes a
+        // mask field — the catalog row carries `maskCapable: false`
+        // and the mask validation above only fires when true.
+        //
         // Foundation telemetry (Stage 0). The edit route doesn't know
         // the active style — variants come from `composeVariantEditRequest`
         // which composes against the base row's style upstream. ref_count
@@ -312,24 +332,44 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
           flag_short_variant: isShortVariantPromptEnabled(),
           flag_trimmed_suffix: isTrimmedSuffixEnabled(),
         } satisfies ImageGenTelemetry);
-        const atlasResult = await generateAtlasEdit({
+        // Resolution order for the dispatcher's primary vendor:
+        //   1. request body (`gptImage2EditPrimary`) — client-side
+        //      localStorage propagated through. Highest priority
+        //      because it reflects the most recent user choice.
+        //   2. `UserSettings.gpt_image_2_edit_primary` — server-synced
+        //      setting (when Phase 3.1 mutate() outbox writes through).
+        //      Catches clients that haven't been upgraded to send the
+        //      body field.
+        //   3. `'atlas'` — cost-optimal default.
+        let primary: 'atlas' | 'kie' = body.gptImage2EditPrimary ?? 'atlas';
+        if (!body.gptImage2EditPrimary) {
+          const settings = await getUserSettings(session.uid);
+          primary = settings.gpt_image_2_edit_primary ?? 'atlas';
+        }
+        const dispatched = await generateGptImage2Edit({
           prompt,
-          images: [originalImageUrl],
-          size: option.backend.atlasSize,
-          quality: option.backend.atlasQuality,
+          sourceImageUrl: originalImageUrl,
+          primary,
         });
-        providerRequestId = atlasResult.predictionId ?? null;
+        providerRequestId = dispatched.providerRequestId;
         console.info('[image-edit task]', {
-          predictionId: atlasResult.predictionId,
+          predictionId: dispatched.providerRequestId,
           optionId: option.id,
-          kind: 'atlas',
-          predictMs: atlasResult.predictTimeMs,
-          inputTokens: atlasResult.tokens?.input,
-          outputTokens: atlasResult.tokens?.output,
-          imageTokens: atlasResult.tokens?.image,
+          kind: 'gpt2-edit',
+          vendorUsed: dispatched.vendorUsed,
+          fallbackUsed: dispatched.fallbackUsed,
+          durationMs: dispatched.durationMs,
+          costUsd: dispatched.costUsd,
         });
-        const upscale = await upscaleViaRecraft(atlasResult.url);
+        const upscale = await upscaleViaRecraft(dispatched.url);
         resultUrl = upscale.url;
+        // Per-call cost reflects the vendor that actually served, not
+        // the catalog row's static `pricePerImage`. The audit row's
+        // `provider` field still says 'atlas' from the upstream
+        // recordIntent call — that's a known minor mis-attribution
+        // when the fallback fires; the cost dashboard's spend total
+        // remains accurate because actualCostUsd is honest.
+        actualCostUsd = dispatched.costUsd;
         break;
       }
     }
@@ -369,7 +409,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       id: editIntent.id,
       providerRequestId,
       responseUrl: imageUrl,
-      costUsd: option.pricePerImage,
+      costUsd: actualCostUsd,
       durationMs: Date.now() - taskStart,
     });
     pendingIntentId = null;

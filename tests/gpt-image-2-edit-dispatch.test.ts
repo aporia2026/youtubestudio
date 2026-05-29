@@ -1,0 +1,182 @@
+/**
+ * Tests for the `generateGptImage2Edit` dispatcher.
+ *
+ * Covers the primary-success / primary-fail-fallback-success /
+ * both-fail paths plus cost attribution for each vendor. See
+ * _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md.
+ *
+ * The dispatcher's two vendor branches are stubbed via vi.mock — we
+ * don't exercise live Atlas / Kie traffic here. The point is to
+ * verify the fallback logic + the cost / vendor attribution; the
+ * actual vendor calls are covered by the existing
+ * `atlas-cloud-images.test.ts` and Kie integration tests.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Stub the upstream vendor modules BEFORE importing the dispatcher.
+vi.mock('@/lib/atlas-cloud-images', () => ({
+  generateAtlasEdit: vi.fn(),
+}));
+vi.mock('@/lib/kie-poll', () => ({
+  createKieTask: vi.fn(),
+  pollKieResult: vi.fn(),
+}));
+vi.mock('@/lib/image-gen-dispatch', () => ({
+  cropTo16x9AndUpload: vi.fn(async (srcUrl: string) => `${srcUrl}#cropped`),
+}));
+vi.mock('@/lib/logger', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+import { generateGptImage2Edit, ATLAS_EDIT_COST_USD, KIE_I2I_COST_USD } from '@/lib/gpt-image-2-edit';
+import { generateAtlasEdit } from '@/lib/atlas-cloud-images';
+import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+
+describe('generateGptImage2Edit dispatcher', () => {
+  beforeEach(() => {
+    process.env.KIE_API_KEY = 'test-kie-key';
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.KIE_API_KEY;
+  });
+
+  it('primary=atlas success: returns Atlas-cropped url at Atlas cost, no fallback', async () => {
+    vi.mocked(generateAtlasEdit).mockResolvedValue({
+      url: 'https://atlas.example/raw-1536x1024.png',
+      predictionId: 'atlas-pred-123',
+      predictTimeMs: 1234,
+    });
+
+    const result = await generateGptImage2Edit({
+      prompt: 'raise the right eyebrow',
+      sourceImageUrl: 'https://r2.example/base.png',
+      primary: 'atlas',
+    });
+
+    expect(result.vendorUsed).toBe('atlas');
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.costUsd).toBe(ATLAS_EDIT_COST_USD);
+    expect(result.url).toBe('https://atlas.example/raw-1536x1024.png#cropped');
+    expect(result.providerRequestId).toBe('atlas-pred-123');
+    expect(generateAtlasEdit).toHaveBeenCalledTimes(1);
+    expect(createKieTask).not.toHaveBeenCalled();
+  });
+
+  it('primary=kie success: returns Kie url at Kie cost, no fallback, no crop', async () => {
+    vi.mocked(createKieTask).mockResolvedValue('kie-task-456');
+    vi.mocked(pollKieResult).mockResolvedValue('https://kie.example/i2i-16x9.png');
+
+    const result = await generateGptImage2Edit({
+      prompt: 'change pose',
+      sourceImageUrl: 'https://r2.example/base.png',
+      primary: 'kie',
+    });
+
+    expect(result.vendorUsed).toBe('kie');
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.costUsd).toBe(KIE_I2I_COST_USD);
+    // Kie URL passes through without crop suffix.
+    expect(result.url).toBe('https://kie.example/i2i-16x9.png');
+    expect(result.providerRequestId).toBe('kie-task-456');
+    expect(generateAtlasEdit).not.toHaveBeenCalled();
+  });
+
+  it('Atlas primary fails → Kie fallback succeeds: cost = Kie, fallbackUsed=true', async () => {
+    vi.mocked(generateAtlasEdit).mockRejectedValue(
+      new Error('[atlas-images] error 402: insufficient balance'),
+    );
+    vi.mocked(createKieTask).mockResolvedValue('kie-task-fallback');
+    vi.mocked(pollKieResult).mockResolvedValue('https://kie.example/fallback.png');
+
+    const result = await generateGptImage2Edit({
+      prompt: 'fallback path',
+      sourceImageUrl: 'https://r2.example/base.png',
+      primary: 'atlas',
+    });
+
+    expect(result.vendorUsed).toBe('kie');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.costUsd).toBe(KIE_I2I_COST_USD);
+    expect(result.url).toBe('https://kie.example/fallback.png');
+    expect(generateAtlasEdit).toHaveBeenCalledTimes(1);
+    expect(createKieTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('Kie primary fails → Atlas fallback succeeds: cost = Atlas, fallbackUsed=true', async () => {
+    vi.mocked(createKieTask).mockRejectedValue(new Error('Kie.ai error 401'));
+    vi.mocked(generateAtlasEdit).mockResolvedValue({
+      url: 'https://atlas.example/fallback-3x2.png',
+      predictionId: 'atlas-fallback',
+      predictTimeMs: 999,
+    });
+
+    const result = await generateGptImage2Edit({
+      prompt: 'kie down',
+      sourceImageUrl: 'https://r2.example/base.png',
+      primary: 'kie',
+    });
+
+    expect(result.vendorUsed).toBe('atlas');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.costUsd).toBe(ATLAS_EDIT_COST_USD);
+    expect(result.url).toBe('https://atlas.example/fallback-3x2.png#cropped');
+  });
+
+  it('both vendors fail: throws with both error messages', async () => {
+    vi.mocked(generateAtlasEdit).mockRejectedValue(new Error('Atlas explodes'));
+    vi.mocked(createKieTask).mockRejectedValue(new Error('Kie also explodes'));
+
+    await expect(
+      generateGptImage2Edit({
+        prompt: 'doomed',
+        sourceImageUrl: 'https://r2.example/base.png',
+        primary: 'atlas',
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        message: expect.stringMatching(/Atlas explodes[\s\S]*Kie also explodes/),
+      }),
+    );
+  });
+
+  it('Kie primary requires KIE_API_KEY env var', async () => {
+    delete process.env.KIE_API_KEY;
+    // Atlas as the fallback also fails so we surface the Kie error
+    // first to confirm the env-var check fires before any network call.
+    vi.mocked(generateAtlasEdit).mockRejectedValue(new Error('atlas-also-down'));
+
+    await expect(
+      generateGptImage2Edit({
+        prompt: 'no key',
+        sourceImageUrl: 'https://r2.example/base.png',
+        primary: 'kie',
+      }),
+    ).rejects.toThrow(/KIE_API_KEY is not configured/);
+    // Kie's create was never called because the env-var check
+    // short-circuited before we hit the network.
+    expect(createKieTask).not.toHaveBeenCalled();
+  });
+
+  it('Atlas crop applies to fallback when Kie primary fails', async () => {
+    vi.mocked(createKieTask).mockRejectedValue(new Error('kie down'));
+    vi.mocked(generateAtlasEdit).mockResolvedValue({
+      url: 'https://atlas.example/raw.png',
+      predictionId: 'atlas-id',
+      predictTimeMs: 100,
+    });
+
+    const result = await generateGptImage2Edit({
+      prompt: 'p',
+      sourceImageUrl: 'https://r2.example/src.png',
+      primary: 'kie',
+    });
+
+    expect(result.url).toBe('https://atlas.example/raw.png#cropped');
+  });
+});

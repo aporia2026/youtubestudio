@@ -28,7 +28,9 @@ import { resolveStyle } from '../production-doc-styles';
 import { loadStyleReferences } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
-import { generateAtlasEdit, generateAtlasT2I } from './../atlas-cloud-images';
+import { generateAtlasT2I } from './../atlas-cloud-images';
+import { generateGptImage2Edit } from '../gpt-image-2-edit';
+import { getUserSettings } from '../user-settings';
 import { composeCollagePrompt } from '../collage-prompt';
 import { detectMalformedCollage } from '../collage-detect';
 import { sliceCollage } from '../collage-slicer';
@@ -393,30 +395,30 @@ export async function generateVariantImage(args: {
   // character heads + bottom text in the destroy band.
   composedPrompt += SAFE_FRAMING_EDIT_SUFFIX;
 
+  // Read the owner's vendor preference once per pipeline call. Default
+  // 'atlas' matches the legacy behaviour when the setting is unset.
+  // ownerId may be null in legacy test paths; getUserSettings returns
+  // defaults in that case.
+  const ownerSettings = await getUserSettings(ownerId ?? '');
+  const editPrimary = ownerSettings.gpt_image_2_edit_primary ?? 'atlas';
   const intent = await recordIntent({
     userId: ownerId,
     workspaceId,
     route: 'auto-pipeline:generateVariantImage',
-    provider: 'atlas',
+    provider: editPrimary,
     providerModel: 'openai/gpt-image-2/edit',
   });
   try {
-    const atlasResult = await generateAtlasEdit({
+    // 1536×1024 → cropTo16x9AndUpload (when Atlas served) → Recraft
+    // upscale. The dispatcher returns a 16:9 URL regardless of vendor
+    // (it crops Atlas internally; Kie i2i returns 16:9 natively), so
+    // this caller's downstream chain is unchanged.
+    const dispatched = await generateGptImage2Edit({
       prompt: composedPrompt,
-      images: [sourceImageUrl],
-      size: '1536x1024',
-      quality: 'low',
+      sourceImageUrl,
+      primary: editPrimary,
     });
-    // Atlas Edit returns 3:2 (1536×1024). Center-crop to 16:9 (1536×864)
-    // before upscale so the rendered variant lands in the 16:9 canvas
-    // without the BRollScene's object-fit:cover slicing 7.8% off the top
-    // and bottom at render time. The collage route and the manual t2i
-    // dispatcher both do this; this path used to skip it (verified
-    // 2026-05-27 against the cropping issue user-reported on project
-    // 7fafe333). Same R2 prefix as the dispatcher so all Atlas-crop
-    // intermediates land in one place.
-    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
-    const upscale = await upscaleViaRecraft(croppedUrl);
+    const upscale = await upscaleViaRecraft(dispatched.url);
     let imageUrl = upscale.url;
     try {
       const imgRes = await fetch(upscale.url);
@@ -441,22 +443,24 @@ export async function generateVariantImage(args: {
     }
     void markDelivered({
       id: intent.id,
-      providerRequestId: atlasResult.predictionId ?? null,
+      providerRequestId: dispatched.providerRequestId,
       responseUrl: imageUrl,
-      costUsd: 0.011,
-      durationMs: atlasResult.predictTimeMs,
+      costUsd: dispatched.costUsd,
+      durationMs: dispatched.durationMs,
     });
     logger.info('[pipeline image-gen variant] succeeded', {
       group_id: groupId,
       variant_index: variantIdx,
-      predict_ms: atlasResult.predictTimeMs,
-      cost_usd: 0.011,
+      vendor_used: dispatched.vendorUsed,
+      fallback_used: dispatched.fallbackUsed,
+      duration_ms: dispatched.durationMs,
+      cost_usd: dispatched.costUsd,
     });
     return {
       imageUrl,
       durationMs: Date.now() - t0,
       modelUsed: 'openai/gpt-image-2/edit',
-      costUsd: 0.011,
+      costUsd: dispatched.costUsd,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -466,7 +470,7 @@ export async function generateVariantImage(args: {
     });
     // error-level: variant failures leave the group's V1/V2/V3 column empty
     // and the renderer falls through to the base, masking the loss visually.
-    logger.error('[atlas-edit-failed pipeline variant]', { detail: msg.slice(0, 200) });
+    logger.error('[gpt2-edit-failed pipeline variant]', { detail: msg.slice(0, 200) });
     return { error: msg.slice(0, 200), durationMs: Date.now() - t0, costUsd: 0 };
   }
 }
@@ -506,9 +510,13 @@ export async function generateVariantImage(args: {
 export async function generateMouthRemovedForCharacter(args: {
   baseImageUrl: string;
   characterId: string;
+  /** Owner of the doc — used to read `gpt_image_2_edit_primary`.
+   *  Optional for back-compat with legacy callers / tests; defaults
+   *  to whatever `getUserSettings('')` returns ('atlas' currently). */
+  ownerId?: string | null;
 }): Promise<PipelineImageResult> {
   const t0 = Date.now();
-  const { baseImageUrl, characterId } = args;
+  const { baseImageUrl, characterId, ownerId = null } = args;
   if (!baseImageUrl.trim()) {
     return { error: 'empty_base_image_url', durationMs: Date.now() - t0, costUsd: 0 };
   }
@@ -517,13 +525,15 @@ export async function generateMouthRemovedForCharacter(args: {
   }
 
   try {
-    const removal = await generateMouthRemovedBase(baseImageUrl);
-    // Same crop+upscale+mirror chain as `generateVariantImage`. The
+    const ownerSettings = await getUserSettings(ownerId ?? '');
+    const editPrimary = ownerSettings.gpt_image_2_edit_primary ?? 'atlas';
+    // Dispatcher returns a 16:9 URL (Atlas: cropped from 1536×1024; Kie:
+    // native 16:9). Same downstream chain as generateVariantImage — the
     // mouth-removed PNG must end up at the same 16:9 aspect and post-
     // upscale resolution as the row's `image_url` base so the Remotion
     // `<MouthSwap>` overlay lines up with the underlying face.
-    const croppedUrl = await cropTo16x9AndUpload(removal.url, 'prodoc-images-atlas-crop');
-    const upscale = await upscaleViaRecraft(croppedUrl);
+    const removal = await generateMouthRemovedBase(baseImageUrl, editPrimary);
+    const upscale = await upscaleViaRecraft(removal.url);
     let mouthRemovedUrl = upscale.url;
     try {
       const imgRes = await fetch(upscale.url);
@@ -548,14 +558,16 @@ export async function generateMouthRemovedForCharacter(args: {
     }
     logger.info('[pipeline image-gen mouth-removed] succeeded', {
       character_id: characterId,
+      vendor_used: removal.vendorUsed,
+      fallback_used: removal.fallbackUsed,
       predict_ms: removal.predictTimeMs,
-      cost_usd: 0.011,
+      cost_usd: removal.costUsd,
     });
     return {
       imageUrl: mouthRemovedUrl,
       durationMs: Date.now() - t0,
       modelUsed: 'openai/gpt-image-2/edit',
-      costUsd: 0.011,
+      costUsd: removal.costUsd,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -563,7 +575,7 @@ export async function generateMouthRemovedForCharacter(args: {
     // <MouthSwap> overlay's lip-sync motion beats — the renderer falls
     // back to the static base and the video ships without the planned
     // animation. Easy to miss without a loud signal.
-    logger.error('[atlas-edit-failed pipeline mouth-removed]', {
+    logger.error('[gpt2-edit-failed pipeline mouth-removed]', {
       character_id: characterId,
       detail: msg.slice(0, 200),
     });
@@ -656,32 +668,25 @@ export async function generateCharacterContinuationImage(args: {
     buildCharacterContinuationEditPrompt(newScenePrompt),
     characterDescriptions,
   );
+  const ownerSettings = await getUserSettings(ownerId ?? '');
+  const editPrimary = ownerSettings.gpt_image_2_edit_primary ?? 'atlas';
   const intent = await recordIntent({
     userId: ownerId,
     workspaceId,
     route: 'auto-pipeline:generateCharacterContinuationImage',
-    provider: 'atlas',
+    provider: editPrimary,
     providerModel: 'openai/gpt-image-2/edit',
   });
   try {
-    const edit = await generateAtlasEdit({
+    // Dispatcher absorbs the per-vendor quirks (Atlas's 1536×1024 → 16:9
+    // crop; Kie i2i returns 16:9 natively). The returned URL is 16:9 at
+    // ~1K; downstream Recraft upscale brings it to ~4K.
+    const dispatched = await generateGptImage2Edit({
       prompt: editPrompt,
-      images: [baseImageUrl],
-      // 1536x1024 (3:2), not 2560x1440. Atlas's Edit endpoint rejects
-      // 2560x1440 with HTTP 404 (verified 2026-05-27 in image-edit-pricing.ts;
-      // user-confirmed 2026-05-28). The 2560x1440 size is a T2I-only option
-      // exposed by the playground; the Edit endpoint validates against the
-      // documented enum (1024x1024 / 1024x1536 / 1536x1024). Sending 2560x1440
-      // here caused every character-continuation call to silently fail and
-      // fall through to a fresh i2i, defeating the character cache.
-      size: '1536x1024',
-      quality: 'low',
+      sourceImageUrl: baseImageUrl,
+      primary: editPrimary,
     });
-    // 1536x1024 (3:2) → 1536x864 (16:9) — same center-crop pipeline the
-    // variant path uses. Recraft upscale brings the cropped image back up
-    // to ~4K downstream.
-    const croppedUrl = await cropTo16x9AndUpload(edit.url, 'prodoc-images-atlas-crop');
-    const upscale = await upscaleViaRecraft(croppedUrl);
+    const upscale = await upscaleViaRecraft(dispatched.url);
     let finalUrl = upscale.url;
     try {
       const imgRes = await fetch(upscale.url);
@@ -706,31 +711,32 @@ export async function generateCharacterContinuationImage(args: {
     }
     void markDelivered({
       id: intent.id,
-      providerRequestId: edit.predictionId ?? null,
+      providerRequestId: dispatched.providerRequestId,
       responseUrl: finalUrl,
-      costUsd: 0.011,
-      durationMs: edit.predictTimeMs,
+      costUsd: dispatched.costUsd,
+      durationMs: dispatched.durationMs,
     });
     logger.info('[pipeline image-gen character-continuation] succeeded', {
       character_id: characterId,
-      predict_ms: edit.predictTimeMs,
-      cost_usd: 0.011,
+      vendor_used: dispatched.vendorUsed,
+      fallback_used: dispatched.fallbackUsed,
+      duration_ms: dispatched.durationMs,
+      cost_usd: dispatched.costUsd,
     });
     return {
       imageUrl: finalUrl,
       durationMs: Date.now() - t0,
       modelUsed: 'openai/gpt-image-2/edit',
-      costUsd: 0.011,
+      costUsd: dispatched.costUsd,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     void markFailed({ id: intent.id, failureReason: msg });
     // error-level (not warn): a continuation failure silently bypasses the
     // character cache and the row regenerates from scratch, defeating identity
-    // preservation. The 2026-05-28 incident (Atlas Edit 2560x1440 → 404) hid
-    // for two days under a warn-level log. error-level surfaces in the
-    // Vercel error feed so the next contradiction is caught the same day.
-    logger.error('[atlas-edit-failed pipeline character-continuation]', {
+    // preservation. error-level surfaces in the Vercel error feed so a
+    // dispatcher both-vendors-failed contradiction is caught the same day.
+    logger.error('[gpt2-edit-failed pipeline character-continuation]', {
       character_id: characterId,
       detail: msg.slice(0, 200),
     });
@@ -783,25 +789,22 @@ export async function generateSceneContinuationImage(args: {
     buildSceneContinuationEditPrompt(newScenePrompt),
     characterDescriptions,
   );
+  const ownerSettings = await getUserSettings(ownerId ?? '');
+  const editPrimary = ownerSettings.gpt_image_2_edit_primary ?? 'atlas';
   const intent = await recordIntent({
     userId: ownerId,
     workspaceId,
     route: 'auto-pipeline:generateSceneContinuationImage',
-    provider: 'atlas',
+    provider: editPrimary,
     providerModel: 'openai/gpt-image-2/edit',
   });
   try {
-    const edit = await generateAtlasEdit({
+    const dispatched = await generateGptImage2Edit({
       prompt: editPrompt,
-      images: [baseImageUrl],
-      // Same fix as generateCharacterContinuationImage above: Atlas Edit's
-      // size enum is 1024x1024 / 1024x1536 / 1536x1024 only. 2560x1440 is
-      // T2I-only and returns HTTP 404 on the Edit endpoint.
-      size: '1536x1024',
-      quality: 'low',
+      sourceImageUrl: baseImageUrl,
+      primary: editPrimary,
     });
-    const croppedUrl = await cropTo16x9AndUpload(edit.url, 'prodoc-images-atlas-crop');
-    const upscale = await upscaleViaRecraft(croppedUrl);
+    const upscale = await upscaleViaRecraft(dispatched.url);
     let finalUrl = upscale.url;
     try {
       const imgRes = await fetch(upscale.url);
@@ -826,21 +829,23 @@ export async function generateSceneContinuationImage(args: {
     }
     void markDelivered({
       id: intent.id,
-      providerRequestId: edit.predictionId ?? null,
+      providerRequestId: dispatched.providerRequestId,
       responseUrl: finalUrl,
-      costUsd: 0.011,
-      durationMs: edit.predictTimeMs,
+      costUsd: dispatched.costUsd,
+      durationMs: dispatched.durationMs,
     });
     logger.info('[pipeline image-gen scene-continuation] succeeded', {
       scene_id: sceneId,
-      predict_ms: edit.predictTimeMs,
-      cost_usd: 0.011,
+      vendor_used: dispatched.vendorUsed,
+      fallback_used: dispatched.fallbackUsed,
+      duration_ms: dispatched.durationMs,
+      cost_usd: dispatched.costUsd,
     });
     return {
       imageUrl: finalUrl,
       durationMs: Date.now() - t0,
       modelUsed: 'openai/gpt-image-2/edit',
-      costUsd: 0.011,
+      costUsd: dispatched.costUsd,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -848,7 +853,7 @@ export async function generateSceneContinuationImage(args: {
     // error-level: see generateCharacterContinuationImage's catch for the
     // rationale. Scene cache misses caused by silent Edit failures look
     // identical to fresh-row generations downstream, hiding the bug.
-    logger.error('[atlas-edit-failed pipeline scene-continuation]', {
+    logger.error('[gpt2-edit-failed pipeline scene-continuation]', {
       scene_id: sceneId,
       detail: msg.slice(0, 200),
     });

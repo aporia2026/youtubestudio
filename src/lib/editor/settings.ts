@@ -43,6 +43,12 @@ const KEY_PREVIEW_FIT_MODE = 'editor.preview.fitMode';
 const KEY_LAST_EDIT_OPTION = 'editor.imageEdit.lastOptionId';
 const KEY_DEFAULT_ERASE_BACKEND = 'editor.imageEdit.defaultEraseBackendId';
 const KEY_SHOW_EDIT_PRICES = 'editor.imageEdit.showPrices';
+// 2026-05-29 — GPT Image 2 edit primary vendor. Drives the dispatcher
+// in src/lib/gpt-image-2-edit.ts which all variant/character/scene/
+// mouth-removal edits run through. Two values: 'atlas' | 'kie'. The
+// other vendor is always the automatic fallback. See
+// _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md.
+const KEY_GPT2_EDIT_PRIMARY = 'editor.imageEdit.gptImage2Primary';
 // 2026-05-23 Phase 2 — editor timeline + shots UX overhaul.
 //   - showNarrationStrip: hide the "now reading" strip if the user
 //     finds it distracting.
@@ -298,6 +304,31 @@ export function setDefaultEraseBackendId(id: string): void {
 
 const DEFAULT_SHOW_EDIT_PRICES = true;
 
+// ─── GPT Image 2 edit primary vendor ─────────────────────────────
+//
+// Read by the dispatcher whenever the editor invokes an edit (variant
+// button, character/scene continuity from the inspector). Server-side
+// callers (auto-pipeline) read the user_settings table instead — see
+// `UserSettings.gpt_image_2_edit_primary`. The two layers must stay
+// in sync; the editor writes both on change (localStorage for
+// instant reads, mutate() outbox for server sync).
+
+export type Gpt2EditPrimary = 'atlas' | 'kie';
+const GPT2_EDIT_PRIMARIES: readonly Gpt2EditPrimary[] = ['atlas', 'kie'];
+const DEFAULT_GPT2_EDIT_PRIMARY: Gpt2EditPrimary = 'atlas';
+
+export function getGptImage2EditPrimary(): Gpt2EditPrimary {
+  const raw = safeRead(KEY_GPT2_EDIT_PRIMARY);
+  if (raw === null) return DEFAULT_GPT2_EDIT_PRIMARY;
+  if (GPT2_EDIT_PRIMARIES.includes(raw as Gpt2EditPrimary)) return raw as Gpt2EditPrimary;
+  return DEFAULT_GPT2_EDIT_PRIMARY;
+}
+
+export function setGptImage2EditPrimary(vendor: Gpt2EditPrimary): void {
+  if (!GPT2_EDIT_PRIMARIES.includes(vendor)) return;
+  safeWrite(KEY_GPT2_EDIT_PRIMARY, vendor);
+}
+
 export function getShowEditModelPrices(): boolean {
   const raw = safeRead(KEY_SHOW_EDIT_PRICES);
   if (raw === null) return DEFAULT_SHOW_EDIT_PRICES;
@@ -460,7 +491,10 @@ export const __testing = {
   KEY_LAST_EDIT_OPTION,
   KEY_DEFAULT_ERASE_BACKEND,
   KEY_SHOW_EDIT_PRICES,
+  KEY_GPT2_EDIT_PRIMARY,
   DEFAULT_SHOW_EDIT_PRICES,
+  DEFAULT_GPT2_EDIT_PRIMARY,
+  GPT2_EDIT_PRIMARIES,
   DEFAULT_ZOOM_LEVEL,
   DEFAULT_SHOW_THUMBNAILS,
   DEFAULT_SHOW_SHORTCUT_HINTS,

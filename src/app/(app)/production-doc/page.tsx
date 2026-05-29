@@ -2789,7 +2789,17 @@ function ProductionDocPage() {
       return;
     }
 
-    const prepared = composeVariantEditRequest(activeDoc, variantRow, sourceImageUrl);
+    // Propagate the user's GPT Image 2 edit primary preference from
+    // localStorage. Lazy-imported to keep the editor settings module
+    // (browser-only) out of any SSR path that might pull this page.
+    const { getGptImage2EditPrimary } = await import('@/lib/editor/settings');
+    const editPrimary = getGptImage2EditPrimary();
+    const prepared = composeVariantEditRequest(
+      activeDoc,
+      variantRow,
+      sourceImageUrl,
+      editPrimary,
+    );
     if (prepared.kind === 'error') {
       toast.error(prepared.message);
       return;
@@ -2806,6 +2816,7 @@ function ProductionDocPage() {
       variantIdx: currentVariantIdx,
       mode: sourceLabel === 'previous-variant' ? 'chained' : 'parallel',
       sourceRowIndex,
+      edit_primary: editPrimary,
     });
 
     setRowImages(prev => {

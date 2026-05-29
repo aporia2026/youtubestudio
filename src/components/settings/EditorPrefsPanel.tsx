@@ -29,6 +29,7 @@ import {
   getAudioLaneHeight,
   getDefaultPlaybackRate,
   getDefaultZoomLevel,
+  getGptImage2EditPrimary,
   getLeftRailDefaultTab,
   getPreviewFitMode,
   getShowShortcutHints,
@@ -38,11 +39,13 @@ import {
   setAutoRegenCaptions,
   setDefaultPlaybackRate,
   setDefaultZoomLevel,
+  setGptImage2EditPrimary,
   setLeftRailDefaultTab,
   setPreviewFitMode,
   setShowShortcutHints,
   setShowThumbnails,
   setVideoLaneHeight,
+  type Gpt2EditPrimary,
   type LeftRailTab,
   type PlaybackRateValue,
   type PreviewFitMode,
@@ -67,6 +70,7 @@ export function EditorPrefsPanel() {
   const [audioLaneH, setAudioLaneHState] = useState<number>(56);
   const [playbackRate, setPlaybackRateState] = useState<PlaybackRateValue>(1);
   const [fitMode, setFitModeState] = useState<PreviewFitMode>('contain');
+  const [gpt2Primary, setGpt2PrimaryState] = useState<Gpt2EditPrimary>('atlas');
 
   // Hydrate from localStorage. Runs once on client mount; the
   // accessors return the default when nothing is stored, so this
@@ -81,6 +85,7 @@ export function EditorPrefsPanel() {
     setAudioLaneHState(getAudioLaneHeight());
     setPlaybackRateState(getDefaultPlaybackRate());
     setFitModeState(getPreviewFitMode());
+    setGpt2PrimaryState(getGptImage2EditPrimary());
   }, []);
 
   return (
@@ -319,6 +324,46 @@ export function EditorPrefsPanel() {
                 }}
               >
                 {mode === 'contain' ? 'Contain (letterbox)' : 'Fill (stretch)'}
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* GPT Image 2 edit provider. Drives the variant button + every
+          Atlas-Edit auto-pipeline flow (character/scene continuity,
+          mouth removal). The chosen vendor is primary; the other is
+          the automatic fallback when the primary fails. See
+          _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md. */}
+      <Card
+        title="GPT Image 2 edit provider"
+        subtitle="Drives variant generation, character/scene continuity, and mouth removal. The other vendor is the automatic fallback when the primary fails."
+      >
+        <div className="flex gap-1.5">
+          {(['atlas', 'kie'] as const).map((vendor) => {
+            const isActive = gpt2Primary === vendor;
+            const label =
+              vendor === 'atlas'
+                ? 'Atlas (~$0.011/edit) → Kie fallback'
+                : 'Kie (~$0.05/edit) → Atlas fallback';
+            return (
+              <button
+                key={vendor}
+                type="button"
+                onClick={() => {
+                  setGpt2PrimaryState(vendor);
+                  setGptImage2EditPrimary(vendor);
+                }}
+                className="text-sm px-3 py-1.5 rounded-lg transition-colors"
+                style={{
+                  background: isActive ? 'rgba(124,58,237,0.18)' : 'var(--bg-primary)',
+                  border: '1px solid',
+                  borderColor: isActive ? 'var(--accent-purple-bright)' : 'var(--border)',
+                  color: isActive ? 'var(--accent-purple-bright)' : 'var(--text-primary)',
+                  fontWeight: isActive ? 600 : 400,
+                }}
+              >
+                {label}
               </button>
             );
           })}

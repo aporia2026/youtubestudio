@@ -98,8 +98,9 @@ export const VariantPanel: React.FC<VariantPanelProps> = ({
       <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
         Promote this row into a variant group so you can edit minor
         expression / pose changes against the same base. Variants
-        derive from the base image via Atlas GPT Image 2 Edit
-        (~$0.011/call).
+        derive from the base image via GPT Image 2 Edit (Atlas
+        ~$0.011 / Kie ~$0.05 — pick the primary in Editor settings;
+        the other vendor is the automatic fallback).
       </div>
       <div>
         <button
@@ -254,8 +255,9 @@ const BaseRowControls: React.FC<BaseRowControlsProps> = ({
       </div>
 
       <div className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-        Variants derive from this row's image via Atlas Edit
-        (~$0.011 each). Click a thumbnail to jump to it.
+        Variants derive from this row's image via GPT Image 2 Edit
+        (~$0.011 on Atlas, ~$0.05 on Kie — primary picker in Editor
+        settings). Click a thumbnail to jump to it.
       </div>
 
       {variantRows.length > 0 && (
@@ -544,9 +546,9 @@ const VariantRowControls: React.FC<VariantRowControlsProps> = ({
         maxLength={400}
       />
       <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-        Atlas GPT Image 2 Edit composes this with the base prompt for
-        the smallest possible delta. Keep the instruction short
-        ("raise the right eyebrow", "open the mouth into an O shape").
+        GPT Image 2 Edit composes this with the base prompt for the
+        smallest possible delta. Keep the instruction short ("raise
+        the right eyebrow", "open the mouth into an O shape").
       </div>
 
       {/* Generate */}

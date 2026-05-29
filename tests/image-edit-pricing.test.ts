@@ -117,10 +117,10 @@ describe('Atlas Cloud edit entry', () => {
     expect(opt!.pricePerImage).toBe(0.011);
   });
 
-  it('formatted label includes the verified playground price', () => {
+  it('formatted label shows the Atlas-primary price (the row no longer claims a specific vendor because the dispatcher picks per-user — see _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md)', () => {
     const opt = getEditOption('gpt-image-2-atlas-edit')!;
     const label = formatEditOptionLabel(opt);
-    expect(label).toBe('GPT Image 2 Edit (Atlas) — $0.011');
+    expect(label).toBe('GPT Image 2 Edit — $0.011');
   });
 
   it('Atlas Edit backend defaults to 1536x1024 (Edit-supported size) at low quality', () => {

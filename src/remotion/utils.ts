@@ -889,6 +889,15 @@ export interface VariantEditRequest {
   originalImageUrl: string;
   prompt: string;
   optionId: 'gpt-image-2-atlas-edit';
+  /** Optional vendor primary. When set, overrides the server-side
+   *  `UserSettings.gpt_image_2_edit_primary` for this call only —
+   *  lets the editor propagate the user's localStorage preference
+   *  without a server round-trip. Caller reads from
+   *  `getGptImage2EditPrimary()` in `src/lib/editor/settings.ts`
+   *  and passes it through. Omitted ⇒ server uses the synced
+   *  setting, then defaults to `'atlas'`. See
+   *  _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md. */
+  gptImage2EditPrimary?: 'atlas' | 'kie';
 }
 
 /** Outcome of `composeVariantEditRequest` — either a ready-to-POST body
@@ -942,6 +951,13 @@ export function composeVariantEditRequest(
   doc: ProductionDoc,
   variantRow: ProductionRow,
   baseImageUrl: string,
+  /** Optional vendor primary stamped into the request body for the
+   *  GPT Image 2 edit dispatcher. Caller reads from the editor's
+   *  localStorage (`getGptImage2EditPrimary()` in
+   *  `src/lib/editor/settings.ts`). Omitted ⇒ server-side default
+   *  applies. Server-only callers (auto-pipeline) don't go through
+   *  this helper — they read user_settings directly. */
+  gptImage2EditPrimary?: 'atlas' | 'kie',
 ): VariantEditPreparation {
   if (!isVariantRow(variantRow) || (variantRow.variant_index ?? 0) === 0) {
     return {
@@ -1041,13 +1057,15 @@ export function composeVariantEditRequest(
     : composedPrompt;
 
   const baseRowIndex = doc.rows.indexOf(base);
+  const request: VariantEditRequest = {
+    originalImageUrl: trimmedBaseUrl,
+    prompt: finalPrompt,
+    optionId: 'gpt-image-2-atlas-edit',
+    ...(gptImage2EditPrimary ? { gptImage2EditPrimary } : {}),
+  };
   return {
     kind: 'ready',
-    request: {
-      originalImageUrl: trimmedBaseUrl,
-      prompt: finalPrompt,
-      optionId: 'gpt-image-2-atlas-edit',
-    },
+    request,
     costUsd: 0.011,
     baseRowIndex,
     baseImageUrl: trimmedBaseUrl,

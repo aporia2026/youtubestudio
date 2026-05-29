@@ -2624,7 +2624,19 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         return;
       }
 
-      const prepared = composeVariantEditRequest(liveDoc, variantRow, sourceImageUrl);
+      // Propagate the user's GPT Image 2 edit primary preference from
+      // localStorage into the request body so the server dispatcher
+      // honours it without a sync round-trip. Lazy-imported so the
+      // editor settings module (browser-only) doesn't leak into any
+      // SSR path that might import this file.
+      const { getGptImage2EditPrimary } = await import('@/lib/editor/settings');
+      const editPrimary = getGptImage2EditPrimary();
+      const prepared = composeVariantEditRequest(
+        liveDoc,
+        variantRow,
+        sourceImageUrl,
+        editPrimary,
+      );
       if (prepared.kind === 'error') {
         toast.error(prepared.message);
         return;
@@ -2635,6 +2647,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         baseRowIndex,
         sourceRowIndex,
         chained: variantRow.variant_derives_from_previous === true,
+        edit_primary: editPrimary,
       });
       setVariantGenStates((prev) => ({ ...prev, [variantRowIndex]: { kind: 'generating' } }));
 

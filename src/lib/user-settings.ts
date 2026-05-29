@@ -57,6 +57,14 @@ export interface UserSettings {
    *  (e.g. 'US'). Drives `regionCode` on YouTube searches. `null` or
    *  absent means "fall back to 'US'". */
   niche_finder_region?: string | null;
+  /** Per-user primary vendor for the GPT Image 2 edit operation
+   *  (variant button, character/scene continuity, mouth-removal). The
+   *  other vendor is the automatic fallback when the primary fails.
+   *  `'atlas'` keeps the cost-optimal default (~$0.011/edit on Atlas
+   *  Cloud) and falls back to Kie (~$0.05/edit). `'kie'` inverts that.
+   *  `null` or absent ⇒ `'atlas'`. See
+   *  `_plans/2026-05-29-gpt-image-2-edit-provider-fallback.md`. */
+  gpt_image_2_edit_primary?: 'atlas' | 'kie' | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -120,6 +128,11 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.niche_finder_region = obj.niche_finder_region;
   } else if (obj.niche_finder_region === null) {
     out.niche_finder_region = null;
+  }
+  if (obj.gpt_image_2_edit_primary === 'atlas' || obj.gpt_image_2_edit_primary === 'kie') {
+    out.gpt_image_2_edit_primary = obj.gpt_image_2_edit_primary;
+  } else if (obj.gpt_image_2_edit_primary === null) {
+    out.gpt_image_2_edit_primary = null;
   }
   return out;
 }
