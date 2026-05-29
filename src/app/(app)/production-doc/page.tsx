@@ -1109,6 +1109,7 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
       // Fetch as blob so cross-origin R2 URLs save instead of navigating.
       // The browser ignores `download` on cross-origin anchors without
       // matching CORS headers, so a fetch-then-objectURL is the reliable path.
+      // eslint-disable-next-line no-restricted-syntax -- CORS image-blob download, not a mutation
       const res = await fetch(imageUrl, { mode: 'cors' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
@@ -2085,6 +2086,7 @@ function ProductionDocPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads user setting
         const res = await fetch('/api/user/settings/default-style', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as { stylePreset?: string; isExplicit?: boolean };
@@ -2097,6 +2099,7 @@ function ProductionDocPage() {
   const setStyleAsDefault = useCallback(async (slug: string) => {
     setUserDefaultStyle(slug);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- small awaited PUT for a user setting; not a tab-close-loss bug
       await fetch('/api/user/settings/default-style', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -2120,6 +2123,7 @@ function ProductionDocPage() {
    */
   const loadStyles = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads styles list
       const res = await fetch('/api/production-doc/styles');
       if (!res.ok) {
         // Stay on the fallback list — the picker will still work for built-ins.
@@ -2829,6 +2833,7 @@ function ProductionDocPage() {
         }
         try {
           res = await queueImageGen('edit', 'variant-edit', () =>
+            // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response (image URL)
             fetch('/api/generate/production-doc/image/edit', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -3830,6 +3835,7 @@ function ProductionDocPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads broll default setting
         const res = await fetch('/api/user/settings/broll-default', { cache: 'no-store' });
         if (!res.ok) return;
         const data = (await res.json()) as { modelId?: string };
@@ -4096,6 +4102,7 @@ function ProductionDocPage() {
         style_preview: opts.styleDescription.slice(0, 80),
       });
       try {
+        // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response (style sheet URL)
         const res = await fetch('/api/generate/style-sheet', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4258,6 +4265,7 @@ function ProductionDocPage() {
       try {
         const sheetRef = resolveSheetReference(item.row, doc);
         const res = await queueImageGen('generate', 'local-bulk-single', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response (image URL + saliency)
           fetch('/api/generate/production-doc/image', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4658,6 +4666,7 @@ function ProductionDocPage() {
         let collageOk = false;
         try {
           const res = await queueImageGen('generate', 'bulk-collage', () =>
+            // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response (4 image URLs)
             fetch('/api/generate/production-doc/collage', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -4979,7 +4988,9 @@ function ProductionDocPage() {
     (async () => {
       try {
         const [projectRes, scriptsRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads project on mount
           fetch(`/api/projects/${projectIdParam}`),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts on mount
           fetch(`/api/projects/${projectIdParam}/scripts`),
         ]);
         if (cancelled) return;
@@ -5031,6 +5042,7 @@ function ProductionDocPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads video on mount
         const res = await fetch(`/api/videos/${videoIdParam}`);
         if (cancelled) return;
         if (!res.ok) return;
@@ -5051,6 +5063,7 @@ function ProductionDocPage() {
         // endpoint — /api/videos/[id] returns metadata only, not the
         // script body, so we mirror the ?projectId= path for the script.
         try {
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts on mount
           const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
           if (!cancelled && scriptsRes.ok) {
             const scriptsData = await scriptsRes.json();
@@ -5688,6 +5701,7 @@ function ProductionDocPage() {
     if (existing) return existing;
     const title = (doc?.title || topic || niche || 'Untitled production doc').trim();
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST that returns the new project — RPC, not fire-and-forget
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5726,11 +5740,13 @@ function ProductionDocPage() {
     let cancelled = false;
     async function loadChannelKit() {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads active-channel
         const acRes = await fetch('/api/user/settings/active-channel');
         if (!acRes.ok) return;
         const ac = (await acRes.json()) as { active_channel_id: string | null };
         if (cancelled || !ac.active_channel_id) return;
         setActiveChannelId(ac.active_channel_id);
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads brand kit
         const kitRes = await fetch(`/api/channels/${ac.active_channel_id}/visual-brand-kit`);
         if (cancelled || !kitRes.ok) return;
         const { visual_brand_kit } = (await kitRes.json()) as {
@@ -5784,6 +5800,7 @@ function ProductionDocPage() {
     // leave the recent-history list as-is. The deduplication preserves
     // recent ordering (recent first) and appends any configured niches
     // not already present.
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads niches list
     fetch('/api/niches')
       .then(r => (r.ok ? r.json() : null))
       .then((data: { niches?: Array<{ name?: string; is_active?: boolean }> } | null) => {
@@ -5821,6 +5838,7 @@ function ProductionDocPage() {
       return next;
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- analyze RPC: awaits and uses response
       const res = await fetch('/api/analyze/youtube-style', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5881,6 +5899,7 @@ function ProductionDocPage() {
       return next;
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- analyze RPC: awaits and uses response
       const res = await fetch('/api/analyze/image-style', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6006,6 +6025,7 @@ function ProductionDocPage() {
    */
   async function runSaliencyForRow(rowIndex: number, imageUrl: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- saliency RPC: awaits and uses response
       const res = await fetch('/api/images/saliency', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6041,6 +6061,7 @@ function ProductionDocPage() {
       return next;
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: awaits and uses response (upload URL)
       const presignRes = await fetch('/api/uploads/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6051,6 +6072,7 @@ function ProductionDocPage() {
         throw new Error((errBody as { error?: string }).error || `Presign failed (${presignRes.status})`);
       }
       const { uploadUrl, downloadUrl } = await presignRes.json();
+      // eslint-disable-next-line no-restricted-syntax -- PUT directly to presigned R2 URL — file upload, no app-level retry needed
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Type': file.type },
@@ -6096,6 +6118,7 @@ function ProductionDocPage() {
       return next;
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- upload-from-url RPC: awaits and uses response (mirror URL)
       const res = await fetch('/api/uploads/image-from-url', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6149,6 +6172,7 @@ function ProductionDocPage() {
   ): Promise<{ ok: true; imageUrl: string; saliency: ImageSaliencyMap | null } | { ok: false; error: string }> {
     try {
       const res = await queueImageGen('edit', 'editor-edit', () =>
+        // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
         fetch('/api/generate/production-doc/image/edit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -6340,6 +6364,7 @@ function ProductionDocPage() {
       );
       try {
         const res = await queueImageGen('edit', 'character-cache-hit', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC (abortable): awaits and uses response
           fetch('/api/generate/production-doc/image/edit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -6416,6 +6441,7 @@ function ProductionDocPage() {
       );
       try {
         const res = await queueImageGen('edit', 'scene-cache-hit', () =>
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC (abortable): awaits and uses response
           fetch('/api/generate/production-doc/image/edit', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -6468,6 +6494,7 @@ function ProductionDocPage() {
     }
     try {
       const res = await queueImageGen('generate', 'single-regen', () =>
+        // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC (abortable): awaits and uses response
         fetch('/api/generate/production-doc/image', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -6760,6 +6787,7 @@ function ProductionDocPage() {
             score: saliencyMap.busyness[idx] ?? 0,
           }))
         : undefined;
+      // eslint-disable-next-line no-restricted-syntax -- overlay RPC: awaits and uses response (overlay URL)
       const res = await fetch('/api/overlay/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6951,6 +6979,7 @@ function ProductionDocPage() {
     });
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- overlay RPC: awaits and uses response
       const res = await fetch('/api/overlay/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7414,6 +7443,7 @@ function ProductionDocPage() {
       // and a single retry recovers most of them. Aborts and 4xx responses
       // are non-retryable.
       const sendChunk = async (chunkIdx: number): Promise<Response> => {
+        // eslint-disable-next-line no-restricted-syntax -- script-gen RPC (long-running): awaits and uses response (doc payload)
         const doFetch = () => fetch('/api/generate/production-doc', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -7603,6 +7633,7 @@ function ProductionDocPage() {
           searchUrl: rowImages[i]?.searchUrl,
         })),
       };
+      // eslint-disable-next-line no-restricted-syntax -- export RPC: awaits and uses response (sheet URL)
       const res = await fetch('/api/production-doc/export-sheets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7683,6 +7714,7 @@ function ProductionDocPage() {
     setAlignmentDetail(null);
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- alignment RPC: awaits and uses response (timing data)
       const res = await fetch('/api/voiceovers/align', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7847,6 +7879,7 @@ function ProductionDocPage() {
     const stillMissing: MissingClip[] = [];
     for (const m of missing) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, polls broll clip status
         const res = await fetch(`/api/broll/${m.clipId}`, { cache: 'no-store' });
         if (!res.ok) {
           console.warn('[render preflight] reload failed', { rowIndex: m.rowIndex, clipId: m.clipId, status: res.status });
@@ -7988,6 +8021,7 @@ function ProductionDocPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, lists broll clips
         const res = await fetch(
           `/api/broll?productionDocId=${encodeURIComponent(historyEntryId)}&limit=200`,
           { cache: 'no-store' },
@@ -8093,14 +8127,17 @@ function ProductionDocPage() {
   ): Promise<void> {
     try {
       console.info('[editor telemetry] post', { event, projectId: historyEntryId });
-      await fetch('/api/editor-telemetry', {
+      // Phase 3.2: route through the durable outbox so a tab close
+      // mid-flight doesn't lose the metric. Telemetry is the classic
+      // fire-and-forget use case mutate() was designed for.
+      mutate('editor.telemetry', {
+        url: '/api/editor-telemetry',
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           event,
           project_id: historyEntryId,
           payload: extra.payload ?? null,
-        }),
+        },
       });
     } catch (err) {
       console.warn('[editor telemetry] post failed', {
@@ -8257,6 +8294,7 @@ function ProductionDocPage() {
     }
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- render RPC: awaits and uses response (render id)
       const res = await fetch('/api/render/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -8270,6 +8308,7 @@ function ProductionDocPage() {
       // Poll for progress
       renderPollRef.current = setInterval(async () => {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- GET, polls render status
           const statusRes = await fetch(`/api/render/video?renderId=${data.renderId}`);
           const statusData = await statusRes.json() as {
             status: string; progress: number; downloadUrl?: string | null; error?: string;
