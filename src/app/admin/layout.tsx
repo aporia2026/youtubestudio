@@ -52,6 +52,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           >
             Audit log
           </Link>
+          <Link
+            href="/admin/spend"
+            className="text-sm hover:underline"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            Spend leaks
+          </Link>
         </div>
         <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--text-muted)' }}>
           <span>{me.email ?? me.name}</span>
