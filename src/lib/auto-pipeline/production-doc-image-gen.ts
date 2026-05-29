@@ -125,6 +125,12 @@ export interface PipelineImageDoc {
     base_url: string;
     first_seen_row_index: number;
   }>;
+  // ─── paint_explainer_v1 prop cache (2026-05-30) ───────────────────
+  // Per-doc cache of transparent-prop PNGs generated for PropSlideIn
+  // motion beats. Same shape as
+  // ProductionDoc.paint_explainer_v1_prop_cache — re-stated here for
+  // the same reason as above (no React imports in server code).
+  paint_explainer_v1_prop_cache?: Record<string, string>;
   /** Phase 3 — scene cache (server-only mirror of
    *  ProductionDoc.doodle_explainer_2_scene_cache). See
    *  _plans/2026-05-28-doodle-2-scene-cache.md. */

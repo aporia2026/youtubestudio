@@ -488,6 +488,7 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
         suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds}
         lowerThirdVariant={lowerThirdVariant}
         paintSettings={config.paintExplainerV1Settings}
+        propCache={config.paintExplainerV1PropCache}
       />
     );
   }

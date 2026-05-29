@@ -1308,6 +1308,15 @@ export interface ProductionDoc {
    *  fills in the canonical default for any field the user hasn't set.
    *  See §14 of the architecture plan. */
   paint_explainer_v1_settings?: PaintExplainerV1Settings;
+
+  /** paint_explainer_v1 (2026-05-30): per-doc cache of transparent
+   *  prop PNGs generated for `<PropSlideIn>` motion beats. Keyed by
+   *  the LLM's `propPromptHint` so the same prop hint reused across
+   *  multiple beats pays for one Atlas T2I call. The pipeline's
+   *  stage handler writes here after a successful generation; the
+   *  renderer reads via `productionDocToVideoConfig` → VideoConfig.
+   *  Undefined on legacy / non-paint_explainer_v1 docs. */
+  paint_explainer_v1_prop_cache?: Record<string, string>;
 }
 
 /** Canonical defaults applied by `resolvePaintExplainerV1Settings`.
@@ -2109,6 +2118,14 @@ export function productionDocToVideoConfig(
     paintExplainerV1Settings:
       doc.style_preset === 'paint_explainer_v1' || doc.paint_explainer_v1_settings
         ? resolvePaintExplainerV1Settings(doc)
+        : undefined,
+    // Prop cache forwarded only when populated — the cache is the
+    // result of a pipeline-time AI call, so an empty/undefined value
+    // is the common "no prop_slide beats yet" case. Renderer falls
+    // back to beat.payload.assetUrl when the cache is absent.
+    paintExplainerV1PropCache:
+      doc.paint_explainer_v1_prop_cache && Object.keys(doc.paint_explainer_v1_prop_cache).length > 0
+        ? doc.paint_explainer_v1_prop_cache
         : undefined,
   };
 

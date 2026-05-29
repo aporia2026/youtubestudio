@@ -50,6 +50,12 @@ interface MotionSceneProps {
    *  this scene by accident), MotionScene falls back to the same
    *  hardcoded defaults the resolver applies. */
   paintSettings?: Required<PaintExplainerV1Settings>;
+  /** Per-doc prop cache (propPromptHint → URL). When set, MotionScene
+   *  resolves prop_slide beats by looking up
+   *  beat.payload.propPromptHint here before falling back to
+   *  beat.payload.assetUrl. Populated by `productionDocToVideoConfig`
+   *  from `doc.paint_explainer_v1_prop_cache`. */
+  propCache?: Record<string, string>;
 }
 
 export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = ({
@@ -61,6 +67,7 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
   fadeEnabled = true,
   lowerThirdVariant = 'doodle-yellow',
   paintSettings,
+  propCache,
 }) => {
   const { fps } = useVideoConfig();
 
@@ -227,14 +234,23 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
           1,
           Math.round((beat.durationMs / 1000) * fps),
         );
-        const url = beat.payload?.assetUrl;
+        // URL resolution: beat.payload.assetUrl wins (LLM-supplied
+        // direct URL). Else look up beat.payload.propPromptHint in
+        // the doc's prop cache (pipeline-generated transparent prop
+        // PNG). Else skip — no URL means no render, but no broken
+        // image icon either.
+        const promptHint = beat.payload?.propPromptHint;
+        const url =
+          beat.payload?.assetUrl
+          ?? (promptHint && propCache ? propCache[promptHint] : undefined);
         if (!url) {
           if (shotIndex < 5 && idx === 0) {
             console.info('[paint-explainer-v1 prop-slide] skipped — no URL', {
               shotIndex,
               beat_idx: idx,
               has_payload_assetUrl: Boolean(beat.payload?.assetUrl),
-              has_prompt_hint: Boolean(beat.payload?.propPromptHint),
+              has_prompt_hint: Boolean(promptHint),
+              prop_cache_hit: Boolean(promptHint && propCache?.[promptHint]),
             });
           }
           return null;

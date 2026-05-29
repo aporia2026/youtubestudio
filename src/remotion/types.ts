@@ -395,6 +395,12 @@ export interface VideoConfig {
    *  so the renderer doesn't have to re-resolve defaults at frame time.
    *  Undefined on non-paint_explainer_v1 docs. */
   paintExplainerV1Settings?: Required<PaintExplainerV1Settings>;
+  /** paint_explainer_v1 prop cache — `propPromptHint` → public PNG
+   *  URL. Populated by `productionDocToVideoConfig` from
+   *  `doc.paint_explainer_v1_prop_cache`. `<MotionScene>` reads via
+   *  beat.payload.propPromptHint to resolve a prop_slide beat's
+   *  assetUrl when the LLM didn't supply one directly. */
+  paintExplainerV1PropCache?: Record<string, string>;
   /** Composition width in pixels */
   width: number;
   /** Composition height in pixels */

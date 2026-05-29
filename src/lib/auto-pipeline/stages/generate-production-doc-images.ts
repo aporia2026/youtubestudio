@@ -55,6 +55,7 @@ import {
   type PipelineImageRow,
 } from '../production-doc-image-gen';
 import { extractCharacterAnchors } from '../../anchor-vision-pass';
+import { generatePropImage } from '../../prop-generation';
 import { resolveStyle } from '../../production-doc-styles';
 import { loadStyleReferences } from '../../production-doc-styles-refs';
 
@@ -85,6 +86,14 @@ const MAX_MOUTH_REMOVED_PER_TICK = 3;
  *  via the same retry pattern as mouth-removed (cache entry without
  *  `anchors` triggers another attempt). */
 const MAX_VISION_PASS_PER_TICK = 3;
+
+/** Hard cap on how many fresh Atlas T2I prop generations a single
+ *  tick can run. Each call is ~15–25 s; 3 keeps the worst-case tick
+ *  comfortably under the Vercel 300 s budget (mouth-removed + vision
+ *  pass + prop gen all share the same MAX_*_PER_TICK = 3 ceiling).
+ *  Deferred entries come back next tick — the prop_slide beat's
+ *  propPromptHint is still missing from the doc's prop cache. */
+const MAX_PROP_GEN_PER_TICK = 3;
 
 /** Conservative cost per vision-pass call (kie-gemini-3.1-pro). The
  *  exact number depends on Kie's per-token rate at call time;
@@ -848,6 +857,80 @@ export async function handleGenerateProductionDocImages(
     }
   }
 
+  // ─── paint_explainer_v1 prop generation pass ─────────────────────
+  //
+  // After the per-row loop completes, walk every row's prop_slide
+  // beats and collect the propPromptHints that aren't in the doc's
+  // prop cache yet. For each unique hint (deduplicated — the same
+  // hint reused across multiple beats pays for one generation), fire
+  // an Atlas T2I call up to MAX_PROP_GEN_PER_TICK. Cache the URL on
+  // doc.paint_explainer_v1_prop_cache. The renderer reads from there
+  // via productionDocToVideoConfig at render time.
+  //
+  // No-op on non-paint_explainer_v1 docs (the dedupe walks every row
+  // but the kind filter catches nothing). No-op when every hint is
+  // already cached (cache hit short-circuits).
+  let propGenAttempted = 0;
+  let propGenSucceeded = 0;
+  let propGenSkipped = 0;
+  let propGenFailed = 0;
+  if (isPaintExplainerV1) {
+    const cache = doc.paint_explainer_v1_prop_cache ?? {};
+    // Walk all rows once, collect unique hints not yet in cache.
+    const pendingHints = new Set<string>();
+    for (const row of doc.rows) {
+      if (!Array.isArray(row.motion_beats)) continue;
+      for (const beat of row.motion_beats) {
+        if (beat?.kind !== 'prop_slide') continue;
+        // The motion-beat shape on the row is open per the inline
+        // type definition. Cast through unknown to access payload.
+        const payload = (beat as { payload?: { propPromptHint?: string; assetUrl?: string } }).payload;
+        const hint = payload?.propPromptHint?.trim();
+        if (!hint) continue;
+        // Skip when the LLM also supplied an assetUrl — the renderer
+        // uses that directly without a cache lookup.
+        if (typeof payload?.assetUrl === 'string' && payload.assetUrl.length > 0) continue;
+        // Skip when already cached.
+        if (typeof cache[hint] === 'string' && cache[hint].length > 0) continue;
+        pendingHints.add(hint);
+      }
+    }
+    for (const hint of pendingHints) {
+      if (propGenAttempted >= MAX_PROP_GEN_PER_TICK) {
+        propGenSkipped += 1;
+        logger.info('[paint-explainer-v1 prop-generation] deferred to next tick', {
+          pipeline_video_id: video.id,
+          prompt_hint_head: hint.slice(0, 60),
+          cap: MAX_PROP_GEN_PER_TICK,
+        });
+        continue;
+      }
+      const result = await generatePropImage({ promptHint: hint });
+      propGenAttempted += 1;
+      tickCostUsd += result.costUsd;
+      if ('url' in result) {
+        cache[hint] = result.url;
+        propGenSucceeded += 1;
+        logger.info('[paint-explainer-v1 prop-generation] cached', {
+          pipeline_video_id: video.id,
+          prompt_hint_head: hint.slice(0, 60),
+          predict_ms: result.durationMs,
+          cost_usd: result.costUsd,
+        });
+      } else {
+        propGenFailed += 1;
+        logger.warn('[paint-explainer-v1 prop-generation] failed — renderer will skip beat', {
+          pipeline_video_id: video.id,
+          prompt_hint_head: hint.slice(0, 60),
+          error: result.error,
+        });
+      }
+    }
+    if (propGenSucceeded > 0 || propGenFailed > 0 || propGenSkipped > 0) {
+      doc.paint_explainer_v1_prop_cache = cache;
+    }
+  }
+
   // 7) Persist the updated doc back into the artefact's metadata.
   //    UPDATE in place so we don't generate a new artefact row per
   //    tick (and so getLatestArtefact callers always read the
@@ -921,6 +1004,11 @@ export async function handleGenerateProductionDocImages(
     vision_pass_succeeded: visionPassSucceeded,
     vision_pass_skipped: visionPassSkipped,
     vision_pass_failed: visionPassFailed,
+    // paint_explainer_v1 prop-generation sub-stage telemetry.
+    prop_gen_attempted: propGenAttempted,
+    prop_gen_succeeded: propGenSucceeded,
+    prop_gen_skipped: propGenSkipped,
+    prop_gen_failed: propGenFailed,
     // doodle_explainer_2 character-cache telemetry. All zero on
     // non-doodle_explainer_2 docs. A high hit count means the LLM is
     // emitting consistent character_id slugs and the user is getting
