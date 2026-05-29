@@ -262,14 +262,16 @@ async function importConfigJson(
   try {
     const text = await file.text();
     const raw = JSON.parse(text) as unknown;
-    // Phase 4.19: tolerant envelope unwrap. If the JSON is a wrapper
-    // `{ formatVersion, exportedAt, config }`, peel the envelope;
-    // otherwise treat the root as a raw config. This lets both old
-    // (pre-4.19) and new exports import the same way.
-    const candidate =
-      raw && typeof raw === 'object' && 'config' in (raw as Record<string, unknown>)
-        ? (raw as { config: unknown }).config
-        : raw;
+    // Phase 4.19 → 4.20: tolerant envelope unwrap. Treat the root as
+    // an envelope ONLY when it carries BOTH `formatVersion` AND
+    // `config` — the combination is unique to the Phase-4.19 export
+    // shape, while a raw config that happens to have a `config`
+    // property (e.g. an exotic palette name or a future field) won't
+    // be misclassified. Pre-4.19 exports fall through to the raw-
+    // config path unchanged.
+    const rawObj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+    const isEnvelope = !!rawObj && 'config' in rawObj && 'formatVersion' in rawObj;
+    const candidate = isEnvelope ? (rawObj as { config: unknown }).config : raw;
     const config = parseConfig(candidate);
     const result = validateConfig(config);
     if (!result.ok) {
@@ -308,6 +310,12 @@ export function FlexIconGridPanel({
   const [stickerBusy, setStickerBusy] = useState(false);
   const [result, setResult] = useState<FlexIconGridGenerationResult | null>(null);
   const [uploadingCells, setUploadingCells] = useState<Set<number>>(new Set());
+  // Phase 4.20: in-memory cell clipboard. Holds the FULL cell minus
+  // its `index` so paste can drop it into any slot. Survives panel
+  // lifetime; not persisted across page reloads (intentional — the
+  // typical use is "duplicate this cell's setup three times in a
+  // row" rather than "save for next session").
+  const [cellClipboard, setCellClipboard] = useState<Omit<FlexIconCell, 'index'> | null>(null);
 
   // Workspace-registered fonts (Phase 4.8b). Fetched eagerly so the
   // chip row inside the custom-font picker shows up immediately
@@ -546,6 +554,45 @@ export function FlexIconGridPanel({
       labelStyle: undefined,
       cellSpan: undefined,
     });
+  }
+
+  /**
+   * Phase 4.20: copy the selected cell into the in-memory clipboard.
+   * Strips the `index` so the paste target picks its own. Survives
+   * for the panel's lifetime; clipboard chip surfaces "Paste here"
+   * on every other selected cell.
+   */
+  function copyCell(cellIndex: number) {
+    const source = config.cells.find((c) => c.index === cellIndex);
+    if (!source) return;
+    const { index: _index, ...withoutIndex } = source;
+    void _index;
+    setCellClipboard(withoutIndex);
+    toast.success(`Copied cell ${cellIndex}`);
+  }
+
+  /**
+   * Phase 4.20: paste the clipboard cell over the target index.
+   * Replaces EVERY field on the target (content, label, style)
+   * since the user's intent is "make this cell a copy of the
+   * copied one"; if they want to keep some fields they can edit
+   * after pasting.
+   */
+  function pasteCell(targetIndex: number) {
+    if (!cellClipboard) return;
+    // Full replace — not a merge — so the target picks up every
+    // field from the clipboard (including UNSET fields that should
+    // clear existing overrides on the target). Spreading the
+    // clipboard onto an empty `{ index }` base achieves that.
+    setConfig((prev) => ({
+      ...prev,
+      cells: prev.cells.map((c) =>
+        c.index === targetIndex
+          ? ({ index: targetIndex, ...cellClipboard } as FlexIconCell)
+          : c,
+      ),
+    }));
+    toast.success(`Pasted into cell ${targetIndex}`);
   }
 
   /**
@@ -1730,11 +1777,27 @@ export function FlexIconGridPanel({
                   });
                 }}
                 aria-label="Cell rotation in degrees"
-                title={`Rotation: ${selectedCell.rotation ?? 0}°${rotationAlwaysSnap ? ' (snapped to 15°)' : ' (hold Shift to snap to 15°)'}`}
+                title={(() => {
+                  const flipParts: string[] = [];
+                  if (selectedCell.flipX === true) flipParts.push('flipped X');
+                  if (selectedCell.flipY === true) flipParts.push('flipped Y');
+                  const flipNote = flipParts.length > 0 ? ` — ${flipParts.join(' + ')}` : '';
+                  const snapNote = rotationAlwaysSnap ? ' (snapped to 15°)' : ' (hold Shift to snap to 15°)';
+                  return `Rotation: ${selectedCell.rotation ?? 0}°${flipNote}${snapNote}`;
+                })()}
                 style={{ flex: 1, minWidth: 120 }}
               />
-              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}>
+              <span
+                style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}
+                aria-live="off"
+              >
                 {selectedCell.rotation ?? 0}°
+                {/* Phase 4.20: tiny flip indicators surface the cell's
+                    flip state alongside the rotation value so the
+                    user doesn't have to scroll to the flip chips to
+                    see what's active. */}
+                {selectedCell.flipX === true && <span title="Flipped horizontally"> ⇆</span>}
+                {selectedCell.flipY === true && <span title="Flipped vertically"> ⇅</span>}
               </span>
               <button
                 type="button"
@@ -1879,6 +1942,36 @@ export function FlexIconGridPanel({
                 ))}
               </div>
             )}
+          </div>
+
+          {/* Phase 4.20: copy / paste row. Copy snapshots the current
+              cell into the in-memory clipboard; Paste replaces the
+              selected cell with the clipboard's content + style.
+              "Paste" is disabled until something has been copied. */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={() => copyCell(selectedCell.index)}
+              style={{ ...ghostButtonStyle, flex: 1 }}
+              title="Copy this cell to the clipboard"
+              aria-label={`Copy cell ${selectedCell.index} to clipboard`}
+            >
+              Copy cell
+            </button>
+            <button
+              type="button"
+              onClick={() => pasteCell(selectedCell.index)}
+              disabled={!cellClipboard}
+              style={{ ...ghostButtonStyle, flex: 1, opacity: cellClipboard ? 1 : 0.5 }}
+              title={
+                cellClipboard
+                  ? 'Paste the clipboard cell here (full replace)'
+                  : 'Copy a cell first'
+              }
+              aria-label={cellClipboard ? 'Paste clipboard cell here' : 'Paste disabled — no cell copied'}
+            >
+              Paste cell
+            </button>
           </div>
 
           {/* Phase 4.18 → 4.19: bulk apply this cell's style to every
@@ -3426,31 +3519,40 @@ function CellSpanEditor({
  * reading required. 22 × 16 viewport keeps the chip compact.
  */
 function LabelPositionPreview({ position }: { position: 'below' | 'above' | 'overlay' | 'hidden' }) {
-  const shape = '#fafafa';
-  const band = '#71717a';
+  // Phase 4.20: use `currentColor` for the shape and a derived
+  // translucent shade for the band. Inherits the button's text
+  // colour so the glyph stays legible whether the chip is pressed
+  // (high-contrast text) or idle (muted text). No hardcoded greys
+  // means future light-mode theming Just Works.
+  const shape = 'currentColor';
+  const band = 'currentColor';
+  const stroke = 'currentColor';
   return (
     <svg width={22} height={16} viewBox="0 0 22 16" aria-hidden="true" focusable="false">
-      <rect x={0} y={0} width={22} height={16} rx={2} ry={2} fill="transparent" stroke="rgba(255,255,255,0.15)" />
+      <rect
+        x={0} y={0} width={22} height={16} rx={2} ry={2}
+        fill="transparent" stroke={stroke} strokeOpacity={0.25}
+      />
       {position === 'below' && (
         <>
-          <circle cx={11} cy={6} r={3.5} fill={shape} />
-          <rect x={2} y={11} width={18} height={3} fill={band} />
+          <circle cx={11} cy={6} r={3.5} fill={shape} fillOpacity={0.95} />
+          <rect x={2} y={11} width={18} height={3} fill={band} fillOpacity={0.55} />
         </>
       )}
       {position === 'above' && (
         <>
-          <rect x={2} y={2} width={18} height={3} fill={band} />
-          <circle cx={11} cy={10} r={3.5} fill={shape} />
+          <rect x={2} y={2} width={18} height={3} fill={band} fillOpacity={0.55} />
+          <circle cx={11} cy={10} r={3.5} fill={shape} fillOpacity={0.95} />
         </>
       )}
       {position === 'overlay' && (
         <>
-          <circle cx={11} cy={8} r={5} fill={shape} />
-          <rect x={2} y={10} width={18} height={3} fill={band} fillOpacity={0.7} />
+          <circle cx={11} cy={8} r={5} fill={shape} fillOpacity={0.95} />
+          <rect x={2} y={10} width={18} height={3} fill={band} fillOpacity={0.45} />
         </>
       )}
       {position === 'hidden' && (
-        <circle cx={11} cy={8} r={5} fill={shape} />
+        <circle cx={11} cy={8} r={5} fill={shape} fillOpacity={0.95} />
       )}
     </svg>
   );
@@ -3480,42 +3582,61 @@ function BulkApplyStyleButton({
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
   }, []);
+  const disarm = () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = null;
+    setArmed(false);
+  };
   const handleClick = () => {
     if (armed) {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-      setArmed(false);
+      disarm();
       onConfirm();
       return;
     }
     setArmed(true);
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    // Phase 4.20: window bumped 4 s → 6 s for slower readers; the
+    // explicit ✕ cancel button below gives power users an instant
+    // out instead of waiting for the timer.
     timerRef.current = window.setTimeout(() => {
       setArmed(false);
       timerRef.current = null;
-    }, 4000);
+    }, 6000);
   };
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      style={{
-        ...ghostButtonStyle,
-        marginTop: 12,
-        borderColor: armed ? '#fbbf24' : undefined,
-        color: armed ? '#fbbf24' : undefined,
-      }}
-      aria-pressed={armed}
-      title={
-        armed
-          ? `Click again to confirm — applies to ${otherCellCount} other cells`
-          : `Apply this cell's style to ${otherCellCount} other cells`
-      }
-    >
-      {armed
-        ? `Click again to confirm (${otherCellCount} cells)`
-        : 'Apply style to all cells'}
-    </button>
+    <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+      <button
+        type="button"
+        onClick={handleClick}
+        style={{
+          ...ghostButtonStyle,
+          flex: 1,
+          borderColor: armed ? '#fbbf24' : undefined,
+          color: armed ? '#fbbf24' : undefined,
+        }}
+        aria-pressed={armed}
+        title={
+          armed
+            ? `Click again to confirm — applies to ${otherCellCount} other cells`
+            : `Apply this cell's style to ${otherCellCount} other cells`
+        }
+      >
+        {armed
+          ? `Click again to confirm (${otherCellCount} cells)`
+          : 'Apply style to all cells'}
+      </button>
+      {armed && (
+        <button
+          type="button"
+          onClick={disarm}
+          style={{ ...ghostButtonStyle, paddingLeft: 12, paddingRight: 12 }}
+          aria-label="Cancel apply"
+          title="Cancel"
+        >
+          ✕
+        </button>
+      )}
+    </div>
   );
 }
 
