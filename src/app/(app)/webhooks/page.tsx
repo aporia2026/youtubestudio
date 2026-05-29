@@ -25,7 +25,9 @@ export default function WebhooksPage() {
   async function refresh() {
     try {
       const [subsRes, deliveriesRes] = await Promise.all([
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads webhook subscriptions
         fetch('/api/webhooks/subscriptions', { cache: 'no-store' }),
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads webhook deliveries
         fetch('/api/webhooks/deliveries?limit=30', { cache: 'no-store' }),
       ]);
       if (subsRes.ok) setSubs(((await subsRes.json()).subscriptions as WebhookSubscriptionRow[]) || []);
@@ -47,6 +49,7 @@ export default function WebhooksPage() {
     setBusy(true);
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to subscribe - RPC
       const res = await fetch('/api/webhooks/subscriptions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -70,6 +73,7 @@ export default function WebhooksPage() {
 
   async function toggleEnabled(sub: WebhookSubscriptionRow) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for subscription - RPC
       await fetch(`/api/webhooks/subscriptions/${sub.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -83,6 +87,7 @@ export default function WebhooksPage() {
 
   async function updateFilters(sub: WebhookSubscriptionRow, next: string[]) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for subscription - RPC
       await fetch(`/api/webhooks/subscriptions/${sub.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -97,6 +102,7 @@ export default function WebhooksPage() {
   async function deleteSub(id: string) {
     if (!confirm('Delete this webhook subscription?')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for subscription - RPC
       await fetch(`/api/webhooks/subscriptions/${id}`, { method: 'DELETE' });
       await refresh();
     } catch (e) {
@@ -107,6 +113,7 @@ export default function WebhooksPage() {
   async function sendTest(id: string) {
     setTestToast('Sending…');
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited test POST: returns send result
       const res = await fetch(`/api/webhooks/subscriptions/${id}/test`, { method: 'POST' });
       const data = await res.json();
       setTestToast(data.message || (data.ok ? 'Sent.' : 'Failed.'));

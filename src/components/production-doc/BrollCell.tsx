@@ -126,6 +126,7 @@ export async function kickoffBrollGeneration(args: KickoffBrollGenerationArgs): 
   const model = findBrollModel(args.modelId);
   const isI2v = model?.kind === 'image-to-video';
 
+  // eslint-disable-next-line no-restricted-syntax -- broll generation POST: awaits and uses response (clip id)
   const res = await fetch('/api/broll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -273,6 +274,7 @@ async function fetchUserDefault(): Promise<UserDefaults> {
   if (userDefaultPromise) return userDefaultPromise;
   userDefaultPromise = (async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads broll-default setting
       const res = await fetch('/api/user/settings/broll-default', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as Record<string, unknown>;
@@ -295,6 +297,7 @@ async function fetchUserDefault(): Promise<UserDefaults> {
  *  writes into the matching slot (t2v or i2v), leaving the opposite kind's
  *  pin untouched. */
 async function saveUserDefault(modelId: BrollModelId | null): Promise<void> {
+  // eslint-disable-next-line no-restricted-syntax -- awaited PUT for broll-default setting - RPC
   const res = await fetch('/api/user/settings/broll-default', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -517,6 +520,7 @@ export function BrollCell({
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads remembered broll clip
         const res = await fetch(`/api/broll/${remembered}`, { cache: 'no-store' });
         if (!res.ok) {
           // 404 → the clip was deleted server-side; clean up the stale entry.
@@ -567,6 +571,7 @@ export function BrollCell({
 
     const poll = async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET (polling), broll clip status
         const res = await fetch(`/api/broll/${clip.id}`, { cache: 'no-store' });
         if (!res.ok) {
           if (cancelled) return;
@@ -624,6 +629,7 @@ export function BrollCell({
       downgraded: tier.downgraded,
     });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- broll regenerate POST: awaits and uses response
       const res = await fetch('/api/broll', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -711,6 +717,7 @@ export function BrollCell({
       return;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- fire-and-forget DELETE - tolerable; row was already removed locally
       await fetch(`/api/broll/${clip.id}`, { method: 'DELETE' });
     } catch {
       // Best-effort; the row will be reaped if/when the user revisits.

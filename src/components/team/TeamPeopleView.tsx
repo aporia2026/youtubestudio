@@ -130,6 +130,7 @@ export function TeamPeopleView() {
 
   async function loadOverview() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads team overview
       const res = await fetch('/api/team/overview');
       if (res.ok) setCollaborators(await res.json());
     } catch {} finally { setLoading(false); }
@@ -139,6 +140,7 @@ export function TeamPeopleView() {
     if (!newName.trim()) return;
     const roles = newRoles.length > 0 ? newRoles : ['reviewer'];
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to add collaborator - RPC
       const res = await fetch('/api/team/collaborators', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -181,6 +183,7 @@ export function TeamPeopleView() {
     if (editDraft.roles.length === 0) { toast.error('Pick at least one role'); return; }
     setSavingEdit(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for collaborator - RPC
       const res = await fetch(`/api/team/collaborators/${editingId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -205,6 +208,7 @@ export function TeamPeopleView() {
 
   async function handleDelete(id: string) {
     if (!confirm('Remove this collaborator and all their assigned access?')) return;
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for collaborator - RPC
     await fetch(`/api/team/collaborators/${id}`, { method: 'DELETE' });
     setCollaborators(prev => prev.filter(c => c.id !== id));
     if (expandedId === id) { setExpandedId(null); setExpandedData(null); }
@@ -215,6 +219,7 @@ export function TeamPeopleView() {
     if (!confirm('Revoke ALL access for this person? This will delete all their review links and deactivate narrator assignments.')) return;
     setRevoking(id);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited revoke-all POST - RPC
       const res = await fetch(`/api/team/collaborators/${id}/revoke-all`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
@@ -228,6 +233,7 @@ export function TeamPeopleView() {
 
   const loadDetail = useCallback(async (id: string) => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads collaborator detail
       const res = await fetch(`/api/team/collaborators/${id}`);
       if (res.ok) setExpandedData(await res.json());
     } catch {}
@@ -252,6 +258,7 @@ export function TeamPeopleView() {
 
   async function handleDeleteLink(linkId: string, projectId: string) {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for share link - RPC
       await fetch(`/api/review/projects/${projectId}/share`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },

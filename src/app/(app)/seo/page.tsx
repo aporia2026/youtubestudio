@@ -145,6 +145,7 @@ function SeoPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads video on mount
         const res = await fetch(`/api/videos/${videoIdParam}`);
         if (cancelled || !res.ok) return;
         const data = await res.json();
@@ -158,6 +159,7 @@ function SeoPage() {
           setExistingTitle(curr => curr || t);
         }
         if (n) setNiche(curr => curr || n);
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts on mount
         const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
         if (!cancelled && scriptsRes.ok) {
           const scriptsData = await scriptsRes.json();
@@ -176,6 +178,7 @@ function SeoPage() {
 
   useEffect(() => {
     setTopicHints(getRecentTopics());
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads niches
     fetch('/api/niches').then(r => r.json()).then(data => {
       setNiches(data.niches || []);
       // Functional setter so a schedule-link or other prefill that already set
@@ -211,6 +214,7 @@ function SeoPage() {
     setAnalyzerPrefillApplied(true);
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads YouTube analysis
         const res = await fetch(`/api/analyze/youtube-video/${analysisId}`);
         if (!res.ok) {
           toast.error('Could not load analyzer context', {
@@ -278,6 +282,7 @@ function SeoPage() {
     let descriptionStyle: string | undefined;
     if (seoTemplateId) {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads SEO template
         const tplRes = await fetch(`/api/templates/${seoTemplateId}`);
         if (tplRes.ok) {
           const { template } = await tplRes.json();
@@ -313,6 +318,7 @@ function SeoPage() {
         : analyzerContext.block;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- seo-optimize RPC: awaits and uses response
       const res = await fetch('/api/seo/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

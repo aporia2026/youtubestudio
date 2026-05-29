@@ -201,6 +201,7 @@ function QAPage() {
     let cancelled = false;
     (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads video on mount
         const res = await fetch(`/api/videos/${videoIdParam}`);
         if (cancelled || !res.ok) return;
         const data = await res.json();
@@ -212,6 +213,7 @@ function QAPage() {
         if (t) setTopic(curr => curr || t);
         if (n) setNiche(curr => curr || n);
         // Active script body lives on /api/projects/[id]/scripts.
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads scripts on mount
         const scriptsRes = await fetch(`/api/projects/${videoIdParam}/scripts`);
         if (!cancelled && scriptsRes.ok) {
           const scriptsData = await scriptsRes.json();
@@ -374,6 +376,7 @@ function QAPage() {
     });
 
     try {
+      // eslint-disable-next-line no-restricted-syntax -- apply-fixes RPC: awaits and uses response
       const res = await fetch('/api/qa/apply-fixes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -510,6 +513,7 @@ function QAPage() {
       if (projectId) {
         // Fire-and-forget version bump — keepalive so it survives a subsequent
         // handoff-navigation that would otherwise abort the fetch.
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST to save script - RPC
         fetch(`/api/projects/${projectId}/scripts`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -537,6 +541,7 @@ function QAPage() {
     const resolvedTitle = (title || niche || 'Untitled video').trim();
     setSavingProject(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to create project - RPC
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -636,6 +641,7 @@ function QAPage() {
           ].filter(Boolean).join('\n')
         : undefined;
 
+      // eslint-disable-next-line no-restricted-syntax -- qa-analyze RPC: awaits and uses response
       const res = await fetch('/api/qa/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -808,6 +814,7 @@ function QAPage() {
               const targetProjectId = projectId ?? scheduleItem?.project_id ?? null;
               try {
                 if (targetProjectId) {
+                  // eslint-disable-next-line no-restricted-syntax -- awaited POST to save script - RPC
                   const r = await fetch(`/api/projects/${targetProjectId}/scripts`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -820,6 +827,7 @@ function QAPage() {
                   setScriptId(data.script?.id ?? null);
                 } else {
                   const titleSeed = (topic || scheduleItem?.title || '').trim() || 'QA Script';
+                  // eslint-disable-next-line no-restricted-syntax -- awaited POST to create project - RPC
                   const r = await fetch('/api/projects', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

@@ -157,12 +157,18 @@ export default function PresetForm({
     void (async () => {
       try {
         const [editorsRes, tplsRes, seoTplsRes, stylesRes, featurePresetsRes, presetRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET .then, loads collaborators
           fetch('/api/team/collaborators?role=editor', { cache: 'no-store' }).catch(() => null),
+          // eslint-disable-next-line no-restricted-syntax -- GET .then, loads thumbnail templates
           fetch('/api/thumbnail-templates', { cache: 'no-store' }).catch(() => null),
+          // eslint-disable-next-line no-restricted-syntax -- GET .then, loads SEO templates
           fetch('/api/templates?field_type=seo', { cache: 'no-store' }).catch(() => null),
+          // eslint-disable-next-line no-restricted-syntax -- GET .then, loads styles
           fetch('/api/production-doc/styles', { cache: 'no-store' }).catch(() => null),
+          // eslint-disable-next-line no-restricted-syntax -- GET .then, loads feature presets
           fetch('/api/auto-pipeline/feature-presets', { cache: 'no-store' }).catch(() => null),
           presetId
+            // eslint-disable-next-line no-restricted-syntax -- GET, loads preset detail
             ? fetch(`/api/auto-pipeline/presets/${presetId}`, { cache: 'no-store' })
             : Promise.resolve(null),
         ]);
@@ -316,11 +322,13 @@ export default function PresetForm({
     setSaving(true);
     try {
       const res = isNew
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST to create preset - RPC
         ? await fetch('/api/auto-pipeline/presets', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
           })
+        // eslint-disable-next-line no-restricted-syntax -- awaited PATCH to update preset - RPC
         : await fetch(`/api/auto-pipeline/presets/${presetId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },

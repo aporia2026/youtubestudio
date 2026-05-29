@@ -169,6 +169,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
 
   async function loadData() {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads review data
       const res = await fetch(dataUrl);
       if (!res.ok) {
         setError(res.status === 404 ? 'expired' : 'error');
@@ -260,6 +261,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
               const fd = new FormData();
               fd.append('file', blob, 'thumbnail.jpg');
               fd.append('type', 'image');
+              // eslint-disable-next-line no-restricted-syntax -- thumbnail upload POST: awaits and uses response
               const upRes = await fetch('/api/upload', { method: 'POST', body: fd });
               if (upRes.ok) thumbnail_url = (await upRes.json()).url;
             }
@@ -269,6 +271,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
       } catch {}
 
       // 2. Reserve a version + presigned URL via the share-token endpoint.
+      // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL for video
       const reserveRes = await fetch(`/api/review/${token}/upload-video`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -294,6 +297,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
       });
 
       // 4. PATCH metadata.
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH to commit video upload - RPC
       await fetch(`/api/review/${token}/upload-video`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -307,6 +311,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
       // 5. Open the fix-notes modal pre-populated with the previous
       // version's unresolved comments.
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads previous comments
         const r = await fetch(`/api/review/${token}/previous-comments?versionId=${versionId}`);
         if (r.ok) {
           const body = await r.json();
@@ -340,6 +345,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     }
     setFixNotesSaving(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to send fix notes - RPC
       await fetch(`/api/review/${token}/fix-notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -387,6 +393,7 @@ export function ReviewPage({ token, ownerProjectId, initialVersionId, initialCom
     if (!activeVersionId) return;
     const interval = setInterval(async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, reload review data
         const res = await fetch(dataUrl);
         if (res.ok) {
           const fresh: ReviewData = await res.json();

@@ -214,6 +214,7 @@ function ChannelNamingPage() {
   /** Pull the workspace's competitor list for the B-picker dropdown. */
   const fetchCompetitorsList = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads competitors
       const res = await fetch('/api/competitors');
       if (!res.ok) return;
       const data = await res.json();
@@ -240,6 +241,7 @@ function ChannelNamingPage() {
     const seq = ++hydrationSeqRef.current;
     setHydratingCompetitor(true);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads naming context
       const res = await fetch(`/api/competitors/${competitorId}/naming-context`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -365,6 +367,7 @@ function ChannelNamingPage() {
         ...candidates.map(c => c.handle).filter((s): s is string => !!s),
         ...saved.map(s => s.handle).filter((s): s is string => !!s),
       ];
+      // eslint-disable-next-line no-restricted-syntax -- channel-naming-generate RPC: awaits and uses response
       const res = await fetch('/api/channel-naming/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -448,6 +451,7 @@ function ChannelNamingPage() {
   // ---- Saved names ----
   const fetchSaved = useCallback(async () => {
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads saved names
       const res = await fetch('/api/channel-naming/saved');
       if (!res.ok) return;
       const data = await res.json();
@@ -491,6 +495,7 @@ function ChannelNamingPage() {
   async function saveCandidate(c: Candidate) {
     setSavingHandle(c.handle);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to save name - RPC
       const res = await fetch('/api/channel-naming/saved', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -520,6 +525,7 @@ function ChannelNamingPage() {
   async function deleteSaved(id: string) {
     if (!confirm('Delete this saved name?')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for saved name - RPC
       const res = await fetch(`/api/channel-naming/saved/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
@@ -542,6 +548,7 @@ function ChannelNamingPage() {
     try {
       // Auto-derive a handle from a name input (lowercase, strip non-allowed)
       const handleGuess = raw.replace(/^@/, '').toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 30);
+      // eslint-disable-next-line no-restricted-syntax -- awaited check-handle RPC: returns availability
       const res = await fetch('/api/channel-naming/check-handle', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ handle: handleGuess }),

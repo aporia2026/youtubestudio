@@ -47,7 +47,9 @@ export default function CommentsPage() {
     (async () => {
       try {
         const [chRes, vidRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads channels
           fetch('/api/channels'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads video-analytics
           fetch('/api/video-analytics?limit=80'),
         ]);
         if (cancelled) return;
@@ -74,6 +76,7 @@ export default function CommentsPage() {
       if (intent) params.set('intent', intent);
       if (unrepliedOnly) params.set('unrepliedOnly', '1');
       params.set('limit', '200');
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads comments
       const res = await fetch(`/api/comments?${params}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -99,6 +102,7 @@ export default function CommentsPage() {
     setError(null);
     setInfo(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited sync POST - RPC
       const res = await fetch('/api/comments/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -122,6 +126,7 @@ export default function CommentsPage() {
     try {
       const video = filteredVideos.find((v) => v.youtube_video_id === youtubeVideoId);
       const channel = channels.find((c) => c.id === channelDbId);
+      // eslint-disable-next-line no-restricted-syntax -- awaited triage POST - RPC
       const res = await fetch('/api/comments/triage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -149,6 +154,7 @@ export default function CommentsPage() {
   async function reply(c: YoutubeCommentRow, text: string) {
     if (!text.trim()) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited reply POST - RPC
       const res = await fetch(`/api/comments/${c.id}/reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -167,6 +173,7 @@ export default function CommentsPage() {
       return;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited moderate POST - RPC
       const res = await fetch(`/api/comments/${c.id}/moderate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

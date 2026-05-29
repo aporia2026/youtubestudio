@@ -72,7 +72,9 @@ export default function DubPage() {
     (async () => {
       try {
         const [projRes, voiceRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads projects
           fetch('/api/projects?limit=100'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads ElevenLabs voices
           fetch('/api/elevenlabs/voices'),
         ]);
         if (!cancelled) {
@@ -108,6 +110,7 @@ export default function DubPage() {
     }
     let cancelled = false;
     setLoadingScripts(true);
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads scripts
     fetch(`/api/projects/${selectedProjectId}/scripts`)
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(d => {
@@ -132,6 +135,7 @@ export default function DubPage() {
       return;
     }
     let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads dubs
     fetch(`/api/scripts/${selectedScriptId}/dubs`)
       .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(d => !cancelled && setDubs(d.dubs || []))
@@ -168,6 +172,7 @@ export default function DubPage() {
     await Promise.all(
       langs.map(async lang => {
         try {
+          // eslint-disable-next-line no-restricted-syntax -- dub-generate RPC: awaits and uses response
           const res = await fetch(`/api/scripts/${selectedScriptId}/dub`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -193,6 +198,7 @@ export default function DubPage() {
 
     // Refresh the dubs list after all languages settle.
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, reload dubs
       const res = await fetch(`/api/scripts/${selectedScriptId}/dubs`);
       if (res.ok) {
         const d = await res.json();

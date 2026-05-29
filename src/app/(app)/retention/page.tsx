@@ -45,8 +45,11 @@ export default function RetentionPage() {
     (async () => {
       try {
         const [chRes, pRes, listRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads channels
           fetch('/api/channels'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads projects
           fetch('/api/projects?limit=100'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads retention predictions
           fetch('/api/retention/predictions?limit=20'),
         ]);
         if (cancelled) return;
@@ -79,6 +82,7 @@ export default function RetentionPage() {
     setPredicting(true);
     setLatest(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- retention-predict POST: awaits and uses response
       const res = await fetch('/api/retention/predictions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -97,6 +101,7 @@ export default function RetentionPage() {
       setLatest(data.prediction);
       setLatestId(data.id);
       // Refresh history.
+      // eslint-disable-next-line no-restricted-syntax -- GET .then, refresh predictions
       fetch('/api/retention/predictions?limit=20', { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => d?.predictions && setHistory(d.predictions))
@@ -111,6 +116,7 @@ export default function RetentionPage() {
   async function loadHistorical(id: string) {
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads prediction detail
       const res = await fetch(`/api/retention/predictions/${id}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -136,6 +142,7 @@ export default function RetentionPage() {
   async function deletePrediction(id: string) {
     if (!confirm('Delete this prediction?')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for prediction - RPC
       await fetch(`/api/retention/predictions/${id}`, { method: 'DELETE' });
       setHistory((h) => h.filter((r) => r.id !== id));
       if (latestId === id) {

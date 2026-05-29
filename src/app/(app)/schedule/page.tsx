@@ -104,6 +104,7 @@ function SchedulePage() {
     if (statusFilter) params.set('status', statusFilter);
     if (searchText) params.set('search', searchText);
     if (seriesFilter) params.set('series_id', seriesFilter);
+    // eslint-disable-next-line no-restricted-syntax -- GET, loads schedule with filters
     const res = await fetch(`/api/schedule?${params.toString()}`);
     const data = await res.json();
     setItems(data.items || []);
@@ -111,6 +112,7 @@ function SchedulePage() {
 
   // Fetch the unfiltered set once to compute channel-tab counts, and refresh on mutations.
   const fetchCounts = useCallback(async () => {
+    // eslint-disable-next-line no-restricted-syntax -- GET, loads all schedule items
     const res = await fetch('/api/schedule');
     const data = await res.json();
     const all: ScheduleItem[] = data.items || [];
@@ -130,6 +132,7 @@ function SchedulePage() {
   // Channels + counts fetch ONCE on mount + on explicit mutations (via fetchCounts called from patch/delete).
   // Changing filters must not re-download these.
   useEffect(() => {
+    // eslint-disable-next-line no-restricted-syntax -- GET .then, loads channels
     fetch('/api/channels').then(r => r.json()).then(d => setChannels(d.channels || []));
     fetchCounts();
   }, [fetchCounts]);
@@ -157,6 +160,7 @@ function SchedulePage() {
     const controller = new AbortController();
     // Unassigned tab uses the global default pipeline — realChannelId strips "__unassigned".
     const url = realChannelId ? `/api/schedule/statuses?channel_id=${realChannelId}` : '/api/schedule/statuses';
+    // eslint-disable-next-line no-restricted-syntax -- GET .then (abortable), loads statuses
     fetch(url, { signal: controller.signal })
       .then(r => r.json()).then(d => setStatuses(d.statuses || []))
       .catch(err => { if (err.name !== 'AbortError') console.error(err); });
@@ -170,6 +174,7 @@ function SchedulePage() {
 
   const patchItem = useCallback(async (id: string, patch: Partial<ScheduleItem> & { channel_ids?: string[] }) => {
     setItems(curr => curr.map(it => (it.id === id ? { ...it, ...patch } : it)));
+    // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for schedule item - RPC
     const res = await fetch(`/api/schedule/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -195,6 +200,7 @@ function SchedulePage() {
       const idToPosition = new Map(orderedIds.map((id, i) => [id, i + 1]));
       return curr.map(it => (idToPosition.has(it.id) ? { ...it, position: idToPosition.get(it.id)! } : it));
     });
+    // eslint-disable-next-line no-restricted-syntax -- reorder POST: awaits and uses response
     const res = await fetch('/api/schedule/reorder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -207,6 +213,7 @@ function SchedulePage() {
   }, [fetchItems]);
 
   const deleteItem = useCallback(async (id: string, alsoChildren = false) => {
+    // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for schedule item - RPC
     const res = await fetch(`/api/schedule/${id}?children=${alsoChildren}`, { method: 'DELETE' });
     if (res.ok) {
       toast.success('Deleted');

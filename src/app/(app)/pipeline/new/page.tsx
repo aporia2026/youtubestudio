@@ -98,9 +98,13 @@ export default function NewPipelinePage() {
     void (async () => {
       try {
         const [presetsRes, ideasRes, scheduleRes, projectsRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads presets
           fetch('/api/auto-pipeline/presets', { cache: 'no-store' }),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads ideas
           fetch('/api/ideas?saved=true&limit=100', { cache: 'no-store' }).catch(() => null),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads schedule picker
           fetch('/api/schedule/picker', { cache: 'no-store' }).catch(() => null),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads projects picker
           fetch('/api/auto-pipeline/projects-picker', { cache: 'no-store' }).catch(() => null),
         ]);
         if (presetsRes.ok) {
@@ -271,6 +275,7 @@ export default function NewPipelinePage() {
       else if (mode === 'scheduled') body.existingScheduleItemIds = selectedScheduleIds;
       else body.existingProjectIds = selectedProjectIds;
 
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to create run - RPC
       const res = await fetch('/api/auto-pipeline/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -297,6 +302,7 @@ export default function NewPipelinePage() {
       return;
     }
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST to save preset - RPC
       const res = await fetch('/api/auto-pipeline/presets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -310,6 +316,7 @@ export default function NewPipelinePage() {
         throw new Error(data.error || `HTTP ${res.status}`);
       }
       const { id } = await res.json();
+      // eslint-disable-next-line no-restricted-syntax -- GET, reload presets
       const listRes = await fetch('/api/auto-pipeline/presets', { cache: 'no-store' });
       if (listRes.ok) {
         const data = await listRes.json();

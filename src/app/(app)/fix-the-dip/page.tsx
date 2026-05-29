@@ -43,7 +43,9 @@ export default function FixTheDipPage() {
     (async () => {
       try {
         const [vidRes, listRes] = await Promise.all([
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads video-analytics
           fetch('/api/video-analytics?limit=50'),
+          // eslint-disable-next-line no-restricted-syntax -- GET, loads dip-analyses
           fetch('/api/retention/dip-analyses?limit=20'),
         ]);
         if (cancelled) return;
@@ -79,6 +81,7 @@ export default function FixTheDipPage() {
     setAnalyzing(true);
     setLatest(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- dip-analyses POST: awaits and uses response
       const res = await fetch('/api/retention/dip-analyses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -94,6 +97,7 @@ export default function FixTheDipPage() {
       const data = (await res.json()) as CreateResponse;
       setLatestId(data.id);
       // Fetch the full row so we get curve + title + duration for the chart.
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads dip-analysis detail
       const detailRes = await fetch(`/api/retention/dip-analyses/${data.id}`, { cache: 'no-store' });
       if (detailRes.ok) {
         const row = ((await detailRes.json()).analysis as DipAnalysisRow);
@@ -112,6 +116,7 @@ export default function FixTheDipPage() {
         });
       }
       // Refresh history.
+      // eslint-disable-next-line no-restricted-syntax -- GET .then, refresh dip-analyses list
       fetch('/api/retention/dip-analyses?limit=20', { cache: 'no-store' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => d?.analyses && setHistory(d.analyses))
@@ -126,6 +131,7 @@ export default function FixTheDipPage() {
   async function loadHistorical(id: string) {
     setError(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads dip-analysis detail
       const res = await fetch(`/api/retention/dip-analyses/${id}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const row = ((await res.json()).analysis as DipAnalysisRow);
@@ -151,6 +157,7 @@ export default function FixTheDipPage() {
   async function deleteAnalysis(id: string) {
     if (!confirm('Delete this analysis?')) return;
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited DELETE for dip-analysis - RPC
       await fetch(`/api/retention/dip-analyses/${id}`, { method: 'DELETE' });
       setHistory((h) => h.filter((r) => r.id !== id));
       if (latestId === id) {

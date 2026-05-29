@@ -125,6 +125,7 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
     setRefreshing(true);
     console.info('[pipeline detail] refresh_start', { runId });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads pipeline run
       const res = await fetch(`/api/auto-pipeline/runs/${runId}`, { cache: 'no-store' });
       if (!res.ok) {
         if (res.status === 404) throw new Error('Run not found.');
@@ -203,6 +204,7 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
     });
     void (async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- tick POST: awaits and uses response
         const res = await fetch('/api/auto-pipeline/tick', { method: 'POST' });
         const data = await res.json().catch(() => ({}));
         console.info('[pipeline detail] auto_tick_ok', { runId, ...data });
@@ -313,6 +315,7 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ id: s
           onCommit={async () => {
             setCommitting(true);
             try {
+              // eslint-disable-next-line no-restricted-syntax -- rank POST: awaits and uses response
               const res = await fetch(`/api/auto-pipeline/runs/${runId}/rank`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -501,6 +504,7 @@ function ProgressStrip({
     setBatchMessage(null);
     console.info('[pipeline detail] run_action_start', { runId, action });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- actions POST: awaits and uses response
       const res = await fetch(`/api/auto-pipeline/runs/${runId}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -532,6 +536,7 @@ function ProgressStrip({
     setBatchMessage(null);
     console.info('[pipeline detail] manual_tick_start', { runId });
     try {
+      // eslint-disable-next-line no-restricted-syntax -- tick POST: awaits and uses response
       const res = await fetch('/api/auto-pipeline/tick', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -798,6 +803,7 @@ function PresetSwap({
   useEffect(() => {
     if (!open || presets.length > 0) return;
     setLoading(true);
+    // eslint-disable-next-line no-restricted-syntax -- fire-and-forget GET .then, loads presets in background
     void fetch('/api/auto-pipeline/presets', { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : { presets: [] }))
       .then((d) => setPresets((d.presets as PresetListRow[]) ?? []))
@@ -813,6 +819,7 @@ function PresetSwap({
     setSaving(true);
     setErr(null);
     try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited PATCH for pipeline run - RPC
       const res = await fetch(`/api/auto-pipeline/runs/${runId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
