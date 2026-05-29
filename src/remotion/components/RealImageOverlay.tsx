@@ -112,6 +112,24 @@ function zonePosition(
   }
 }
 
+/** Visual treatment for the overlay frame.
+ *
+ *  - 'default' (the legacy treatment): soft elliptical mask that
+ *    feathers the corners, optional saliency-colored halo behind,
+ *    drop shadow tracking the mask shape. Tuned for logo / wordmark
+ *    overlays that need to blend into the scene rather than read as
+ *    a separate sticker.
+ *
+ *  - 'paint-explainer-v1-frame': the "polaroid card" look — a 4px
+ *    solid black rounded-rectangle border around the photo, drop
+ *    shadow grounding it on the doodle canvas, no halo, no soft mask.
+ *    Style-guide §5: "Real photos always framed. … like a polaroid or
+ *    screen bezel. Real media never bleeds to edges." Used on
+ *    paint_explainer_v1 static / hard-cut rows that carry
+ *    `overlay_stock_terms` but no `real_photo_punch` motion beat;
+ *    motion rows already get the polaroid via <RealPhotoPunchIn>. */
+export type RealImageOverlayVariant = 'default' | 'paint-explainer-v1-frame';
+
 interface Props {
   shot: VideoShot;
   /** Override of the area the overlay is positioned within. Defaults to
@@ -120,9 +138,19 @@ interface Props {
    *  of overflowing into the title stripe zone. */
   frameWidth?: number;
   frameHeight?: number;
+  /** Visual treatment. Defaults to 'default' (legacy mask + halo).
+   *  SceneRouter sets 'paint-explainer-v1-frame' when the doc's style
+   *  is paint_explainer_v1 so non-motion shots get the genre's
+   *  polaroid look without needing a parallel component. */
+  variant?: RealImageOverlayVariant;
 }
 
-export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidthOverride, frameHeight: frameHeightOverride }) => {
+export const RealImageOverlay: React.FC<Props> = ({
+  shot,
+  frameWidth: frameWidthOverride,
+  frameHeight: frameHeightOverride,
+  variant = 'default',
+}) => {
   const overlay = shot.overlay;
   const frame = useCurrentFrame();
   const { width: compositionWidth, height: compositionHeight, fps } = useVideoConfig();
@@ -327,6 +355,59 @@ export const RealImageOverlay: React.FC<Props> = ({ shot, frameWidth: frameWidth
   const MASK_FADE_START = 0.80; // fully opaque out to this fraction of half-axis
   const MASK_FADE_END = 1.00;   // transparent right at the box edge
   const radialMask = `radial-gradient(ellipse closest-side at center, rgba(0,0,0,1) 0%, rgba(0,0,0,1) ${MASK_FADE_START * 100}%, rgba(0,0,0,0) ${MASK_FADE_END * 100}%)`;
+
+  // ── paint-explainer-v1-frame variant: polaroid look ───────────────
+  //
+  // When the doc's style is paint_explainer_v1 (passed in via the
+  // `variant` prop from SceneRouter), the overlay drops the soft
+  // elliptical mask and the saliency-colored halo in favour of a
+  // hard 4 px rounded-rectangle frame. This matches the genre's
+  // "real media always framed like a polaroid" rule (style-guide §5).
+  // All the aspect / position / spring-scale math above stays the
+  // same — only the inner container's compositing changes.
+  if (variant === 'paint-explainer-v1-frame') {
+    const FRAME_BORDER_PX = 4;
+    const FRAME_CORNER_RADIUS_PX = 8;
+    const FRAME_BORDER_COLOR = '#1A1A1A';
+    return (
+      <AbsoluteFill style={{ pointerEvents: 'none' }}>
+        <div
+          style={{
+            position: 'absolute',
+            left,
+            top,
+            width: overlayWidthPx,
+            height: overlayHeightPx,
+            opacity,
+            transform: `scale(${scale})`,
+            transformOrigin: 'center center',
+            // Hard frame: 4 px solid black border + 8 px corner radius.
+            // Box-shadow grounds the polaroid against the doodle canvas
+            // — same shape as the frame because box-shadow respects
+            // border-radius (filter:drop-shadow would track the alpha
+            // mask, which is missing here on purpose).
+            border: `${FRAME_BORDER_PX}px solid ${FRAME_BORDER_COLOR}`,
+            borderRadius: FRAME_CORNER_RADIUS_PX,
+            background: '#FCFCFA',
+            overflow: 'hidden',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.22)',
+          }}
+        >
+          <Img
+            src={overlay.url}
+            onLoad={onImgLoad}
+            onError={onImgError}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: 'block',
+            }}
+          />
+        </div>
+      </AbsoluteFill>
+    );
+  }
 
   return (
     <AbsoluteFill style={{ pointerEvents: 'none' }}>

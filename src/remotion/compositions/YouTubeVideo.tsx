@@ -262,11 +262,18 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
                 ABOVE the scene composition but BELOW the section title
                 stripe in z-order. No-op when shot.overlay is undefined.
                 In letterbox mode it positions against the smaller
-                container so it never crosses into the stripe area. */}
+                container so it never crosses into the stripe area.
+                paint_explainer_v1 gets the polaroid frame variant —
+                same component, different visual treatment. */}
             <RealImageOverlay
               shot={shot}
               frameWidth={containerWidth}
               frameHeight={containerHeight}
+              variant={
+                config.styleId === 'paint_explainer_v1'
+                  ? 'paint-explainer-v1-frame'
+                  : 'default'
+              }
             />
           </>
         );
