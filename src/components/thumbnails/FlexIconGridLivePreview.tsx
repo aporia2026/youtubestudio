@@ -781,8 +781,12 @@ export function FlexIconGridLivePreview({
                     numOctaves={2}
                     seed={seed}
                     stitchTiles="stitch"
-                    result="noise"
+                    result="rawNoise"
                   />
+                  {/* Phase 4.45: soften noise-tile boundaries so the
+                      threshold pass doesn't reveal stitch seams as
+                      faint diagonal bands at low densities. */}
+                  <feGaussianBlur in="rawNoise" stdDeviation={1.2} result="noise" />
                   <feComponentTransfer in="noise" result="peaks">
                     <feFuncR type="linear" slope={slope.toFixed(3)} intercept={intercept.toFixed(3)} />
                     <feFuncG type="linear" slope={slope.toFixed(3)} intercept={intercept.toFixed(3)} />
@@ -801,16 +805,70 @@ export function FlexIconGridLivePreview({
                   />
                 </filter>
               </defs>
-              <rect
-                x={0}
-                y={0}
-                width={config.width}
-                height={config.height}
-                fill="transparent"
-                filter="url(#fg-preview-dust)"
-                style={{ mixBlendMode: blendMode }}
-                pointerEvents="none"
-              />
+              {/* Phase 4.45: blend mode lives on a wrapping <g>
+                  rather than on the rect's `style` prop. Safari /
+                  WebKit historically rasterises SVG filters into
+                  a layer before evaluating per-element CSS
+                  blends — that fallback path can drop the blend.
+                  Group-level blends apply during the compositing
+                  pass that already follows filter evaluation, so
+                  the result lands consistently across engines. */}
+              <g style={{ mixBlendMode: blendMode }}>
+                <rect
+                  x={0}
+                  y={0}
+                  width={config.width}
+                  height={config.height}
+                  fill="transparent"
+                  filter="url(#fg-preview-dust)"
+                  pointerEvents="none"
+                />
+              </g>
+            </>
+          );
+        })()}
+
+        {/* Phase 4.45: halftone overlay — uniform-dot grid via SVG
+            `<pattern>`. Sits AFTER dust and BEFORE tint to mirror
+            the composer order. Blend mode applied on a wrapping
+            `<g>` (same Safari-safe pattern as dust). `normal`
+            paints flat on top. */}
+        {config.halftone && (() => {
+          const h = config.halftone;
+          const tile = h.spacing;
+          const cx = tile / 2;
+          const cy = tile / 2;
+          // CSS mix-blend-mode value: 'normal' is the literal CSS
+          // keyword for flat painting, matching Sharp's 'over'.
+          const bm = h.blendMode;
+          return (
+            <>
+              <defs>
+                <pattern
+                  id="fg-preview-halftone"
+                  patternUnits="userSpaceOnUse"
+                  width={tile}
+                  height={tile}
+                >
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={h.dotSize}
+                    fill={h.color}
+                    fillOpacity={h.opacity}
+                  />
+                </pattern>
+              </defs>
+              <g style={{ mixBlendMode: bm }}>
+                <rect
+                  x={0}
+                  y={0}
+                  width={config.width}
+                  height={config.height}
+                  fill="url(#fg-preview-halftone)"
+                  pointerEvents="none"
+                />
+              </g>
             </>
           );
         })()}

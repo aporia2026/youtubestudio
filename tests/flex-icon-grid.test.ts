@@ -30,6 +30,7 @@ import {
   computeShadowFilterRegion,
   makeDefaultConfig,
   parseConfig,
+  parseFinishingPatch,
   resolveCellShadow,
   resolveCellStroke,
   sanitizeUserText,
@@ -2395,6 +2396,156 @@ describe('Phase 4.44 — dust / scratches overlay', () => {
     const result = validateConfig(config);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/dust\.density/);
+  });
+});
+
+describe('Phase 4.45 — halftone overlay + parseFinishingPatch', () => {
+  it('round-trips halftone through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.halftone = {
+      color: '#000000',
+      opacity: 0.6,
+      dotSize: 1.2,
+      spacing: 4,
+      blendMode: 'multiply',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.halftone).toEqual({
+      color: '#000000',
+      opacity: 0.6,
+      dotSize: 1.2,
+      spacing: 4,
+      blendMode: 'multiply',
+    });
+  });
+  it('clamps halftone fields to their ranges on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      halftone: {
+        color: '#000000',
+        opacity: 5,
+        dotSize: 50,
+        spacing: 100,
+        blendMode: 'multiply',
+      },
+    });
+    expect(reparsed.halftone?.opacity).toBe(1);
+    expect(reparsed.halftone?.dotSize).toBe(10);
+    expect(reparsed.halftone?.spacing).toBe(40);
+  });
+  it('drops halftone with zero opacity', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      halftone: {
+        color: '#000000',
+        opacity: 0,
+        dotSize: 1.2,
+        spacing: 4,
+        blendMode: 'multiply',
+      },
+    });
+    expect(reparsed.halftone).toBeUndefined();
+  });
+  it('falls back to multiply on unknown halftone.blendMode', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      halftone: {
+        color: '#000000',
+        opacity: 0.6,
+        dotSize: 1.2,
+        spacing: 4,
+        blendMode: 'difference',
+      },
+    });
+    expect(reparsed.halftone?.blendMode).toBe('multiply');
+  });
+  it('rejects halftone.dotSize out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.halftone = {
+      color: '#000000',
+      opacity: 0.5,
+      dotSize: 20,
+      spacing: 4,
+      blendMode: 'multiply',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/halftone\.dotSize/);
+  });
+});
+
+describe('Phase 4.45 — parseFinishingPatch', () => {
+  it('produces a fully-populated patch from a complete raw object', () => {
+    const raw = {
+      vignette: { color: '#000000', intensity: 0.5, radius: 0.6 },
+      grain: { intensity: 0.2, scale: 1, monochrome: true },
+      dust: { color: '#ffffff', intensity: 0.4, density: 0.2 },
+      halftone: {
+        color: '#000000',
+        opacity: 0.5,
+        dotSize: 1.5,
+        spacing: 5,
+        blendMode: 'multiply',
+      },
+      tint: { color: '#ffb27a', intensity: 0.2, blendMode: 'soft-light' },
+      lightLeak: { color: '#ffd28a', intensity: 0.5, radius: 0.7, position: 'top-right' },
+      letterbox: { color: '#000000', top: 60, bottom: 60, left: 0, right: 0 },
+      frame: { color: '#ffffff', thickness: 6, inset: 0 },
+    };
+    const patch = parseFinishingPatch(raw);
+    expect(patch.vignette).toBeDefined();
+    expect(patch.grain).toBeDefined();
+    expect(patch.dust).toBeDefined();
+    expect(patch.halftone).toBeDefined();
+    expect(patch.tint).toBeDefined();
+    expect(patch.lightLeak).toBeDefined();
+    expect(patch.letterbox).toBeDefined();
+    expect(patch.frame).toBeDefined();
+  });
+  it('returns undefined for every field on a fully-corrupt patch', () => {
+    const patch = parseFinishingPatch({
+      vignette: 'bad',
+      grain: null,
+      dust: 42,
+      halftone: { color: 'magenta' },
+      tint: { intensity: 'most' },
+      lightLeak: { position: 'centre' },
+      letterbox: { top: 0, bottom: 0, left: 0, right: 0 },
+      frame: { thickness: 0 },
+    });
+    expect(patch.vignette).toBeUndefined();
+    expect(patch.grain).toBeUndefined();
+    expect(patch.dust).toBeUndefined();
+    expect(patch.halftone).toBeUndefined();
+    expect(patch.tint).toBeUndefined();
+    expect(patch.lightLeak).toBeUndefined();
+    expect(patch.letterbox).toBeUndefined();
+    expect(patch.frame).toBeUndefined();
+  });
+  it('tolerates non-object input by returning an all-undefined patch', () => {
+    expect(parseFinishingPatch(null)).toEqual({
+      vignette: undefined,
+      grain: undefined,
+      dust: undefined,
+      halftone: undefined,
+      tint: undefined,
+      lightLeak: undefined,
+      letterbox: undefined,
+      frame: undefined,
+    });
+    expect(parseFinishingPatch('garbage')).toEqual({
+      vignette: undefined,
+      grain: undefined,
+      dust: undefined,
+      halftone: undefined,
+      tint: undefined,
+      lightLeak: undefined,
+      letterbox: undefined,
+      frame: undefined,
+    });
   });
 });
 

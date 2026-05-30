@@ -36,6 +36,7 @@ import {
   getSpanConflicts,
   makeDefaultConfig,
   parseConfig,
+  parseFinishingPatch,
   transposeCells,
   validateConfig,
   type CellBackgroundSpec,
@@ -3687,16 +3688,15 @@ export function FlexIconGridPanel({
                   >
                     <button
                       type="button"
-                      onClick={() =>
-                        updateConfig({
-                          vignette: p.patch.vignette,
-                          grain: p.patch.grain,
-                          tint: p.patch.tint,
-                          lightLeak: p.patch.lightLeak,
-                          letterbox: p.patch.letterbox,
-                          frame: p.patch.frame,
-                        })
-                      }
+                      onClick={() => {
+                        // Phase 4.45: re-validate the stored patch
+                        // through `parseFinishingPatch` before
+                        // applying — corrupt / stale fields degrade
+                        // to undefined for that field rather than
+                        // silently applying a malformed value.
+                        const validated = parseFinishingPatch(p.patch);
+                        updateConfig(validated);
+                      }}
                       title={`Apply saved finishing "${p.name}"`}
                       style={{
                         background: 'transparent',
@@ -3736,6 +3736,7 @@ export function FlexIconGridPanel({
                     saveUserFinishingPreset(name.trim(), {
                       vignette: config.vignette,
                       grain: config.grain,
+                      dust: config.dust,
                       tint: config.tint,
                       lightLeak: config.lightLeak,
                       letterbox: config.letterbox,
@@ -3886,13 +3887,20 @@ export function FlexIconGridPanel({
                         : { intensity: 0.15, scale: 1, monochrome: true },
                     })
                   }
-                  style={chipStyle(!!config.grain)}
+                  style={{
+                    ...chipStyle(!!config.grain),
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
                   title={
                     config.grain
                       ? 'Click to turn grain off. Preview uses CSS mix-blend-mode: overlay; Sharp uses blend: overlay on render. Both match at default strength; values above ~70% drift slightly because CSS clamps after mixing and Sharp clamps before — the final render is authoritative.'
                       : 'Click to add a film-grain / sensor-noise finishing overlay'
                   }
                 >
+                  {/* Phase 4.45: visual cue — uniform grain glyph. */}
+                  <NoiseGlyph variant="grain" />
                   {config.grain ? 'Grain on' : 'Grain off'}
                 </button>
                 {config.grain && (
@@ -4047,13 +4055,20 @@ export function FlexIconGridPanel({
                         : { color: '#ffffff', intensity: 0.6, density: 0.25 },
                     })
                   }
-                  style={chipStyle(!!config.dust)}
+                  style={{
+                    ...chipStyle(!!config.dust),
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
                   title={
                     config.dust
                       ? 'Click to turn dust / scratches off'
                       : 'Click to add sparse irregular specks (default: white at 25% density)'
                   }
                 >
+                  {/* Phase 4.45: visual cue — sparse specks glyph. */}
+                  <NoiseGlyph variant="dust" />
                   {config.dust ? 'Dust on' : 'Dust off'}
                 </button>
                 {config.dust && (
@@ -4138,6 +4153,168 @@ export function FlexIconGridPanel({
                     >
                       Re-roll
                     </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {/* Phase 4.45: halftone overlay — uniform dot pattern
+                for printed-comic / risograph / newsprint looks.
+                Distinct from grain (random noise) and dust (sparse
+                specks): halftone is deterministic and structural.
+                Off by default; default seed = black dots @ 60%
+                opacity, 1.2px radius, 4px spacing, multiply blend. */}
+            <div>
+              <label style={labelStyle}>
+                Halftone
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (uniform dot pattern)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.halftone}
+                  onClick={() =>
+                    updateConfig({
+                      halftone: config.halftone
+                        ? undefined
+                        : {
+                            color: '#000000',
+                            opacity: 0.6,
+                            dotSize: 1.2,
+                            spacing: 4,
+                            blendMode: 'multiply',
+                          },
+                    })
+                  }
+                  style={chipStyle(!!config.halftone)}
+                  title={
+                    config.halftone
+                      ? 'Click to turn halftone off'
+                      : 'Click to add a uniform dot pattern (printed-comic / risograph look)'
+                  }
+                >
+                  {config.halftone ? 'Halftone on' : 'Halftone off'}
+                </button>
+                {config.halftone && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.halftone.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          halftone: { ...config.halftone!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Halftone dot colour"
+                      title="Dot colour"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 44 }}>Opacity</span>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={config.halftone.opacity}
+                      onChange={(e) =>
+                        updateConfig({
+                          halftone: { ...config.halftone!, opacity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Halftone opacity"
+                      title={`Dot opacity: ${Math.round(config.halftone.opacity * 100)}%`}
+                      style={{ width: 80 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.halftone.opacity}
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      onCommit={(next) =>
+                        updateConfig({ halftone: { ...config.halftone!, opacity: next } })
+                      }
+                      ariaLabel="Halftone opacity (numeric)"
+                      title="Type 0.05–1.0; commits on Enter or blur"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 44 }}>Dot size</span>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={10}
+                      step={0.1}
+                      value={config.halftone.dotSize}
+                      onChange={(e) =>
+                        updateConfig({
+                          halftone: { ...config.halftone!, dotSize: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Halftone dot size"
+                      title={`Dot radius: ${config.halftone.dotSize.toFixed(1)} px`}
+                      style={{ width: 80 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 44 }}>Spacing</span>
+                    <input
+                      type="range"
+                      min={2}
+                      max={40}
+                      step={1}
+                      value={config.halftone.spacing}
+                      onChange={(e) =>
+                        updateConfig({
+                          halftone: { ...config.halftone!, spacing: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Halftone spacing"
+                      title={`Dot spacing: ${config.halftone.spacing} px between centres`}
+                      style={{ width: 80 }}
+                    />
+                    {/* Blend mode picker — multiply (default) darkens
+                        underlying image with hue; screen lightens;
+                        normal paints flat on top with no mixing. */}
+                    {(
+                      [
+                        { value: 'multiply', label: 'Multiply' },
+                        { value: 'screen', label: 'Screen' },
+                        { value: 'overlay', label: 'Overlay' },
+                        { value: 'soft-light', label: 'Soft' },
+                        { value: 'normal', label: 'Flat' },
+                      ] as const
+                    ).map((mode) => (
+                      <button
+                        key={mode.value}
+                        type="button"
+                        aria-pressed={config.halftone!.blendMode === mode.value}
+                        onClick={() =>
+                          updateConfig({
+                            halftone: { ...config.halftone!, blendMode: mode.value },
+                          })
+                        }
+                        style={chipStyle(config.halftone!.blendMode === mode.value)}
+                        title={
+                          mode.value === 'multiply'
+                            ? 'Darken underlying image with dot colour (default printed-comic look)'
+                            : mode.value === 'screen'
+                              ? 'Lighten underlying image — dots act like highlights'
+                              : mode.value === 'overlay'
+                                ? 'Boost contrast and tint mid-tones'
+                                : mode.value === 'soft-light'
+                                  ? 'Subtle wash with dot pattern'
+                                  : 'Paint dots flat on top (no mixing)'
+                        }
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
                   </>
                 )}
               </div>
@@ -7315,6 +7492,57 @@ function RadialLeakSwatch({
 }
 
 /**
+ * Phase 4.45: 14×14 SVG glyph distinguishing Grain (uniform fine
+ * noise) from Dust (sparse specks). Sits inside the on/off chip
+ * for each row so users can tell the two effects apart at a glance
+ * in the densely-packed Advanced panel.
+ *
+ * Both glyphs are deterministic SVG (no feTurbulence — kept
+ * lightweight for re-renders); the visual contrast comes from
+ * dot count + size, not from the actual noise primitives.
+ */
+function NoiseGlyph({ variant }: { variant: 'grain' | 'dust' }) {
+  if (variant === 'grain') {
+    // Uniform fine grain — many small dots evenly distributed.
+    const dots: { x: number; y: number; r: number }[] = [];
+    // Deterministic pseudo-grid offsets so the glyph re-renders
+    // identically without re-noising. Picked to look "noisy" but
+    // not literally regular.
+    const seedPattern = [
+      [2, 2, 0.6], [5, 3, 0.5], [8, 2, 0.7], [11, 4, 0.5],
+      [3, 6, 0.5], [6, 7, 0.7], [9, 6, 0.6], [12, 7, 0.5],
+      [2, 9, 0.7], [5, 10, 0.6], [8, 10, 0.5], [11, 11, 0.6],
+      [4, 12, 0.5], [7, 12, 0.6], [10, 13, 0.5],
+    ];
+    for (const [x, y, r] of seedPattern) dots.push({ x, y, r });
+    return (
+      <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+        <rect x={0.5} y={0.5} width={13} height={13} rx={2} fill="none" stroke="currentColor" strokeOpacity={0.2} />
+        {dots.map((d, i) => (
+          <circle key={i} cx={d.x} cy={d.y} r={d.r} fill="currentColor" fillOpacity={0.8} />
+        ))}
+      </svg>
+    );
+  }
+  // Dust — fewer, larger, irregular specks.
+  const specks: { x: number; y: number; r: number }[] = [
+    { x: 4, y: 3, r: 1.2 },
+    { x: 9, y: 5, r: 0.9 },
+    { x: 11, y: 9, r: 1.4 },
+    { x: 3, y: 10, r: 1 },
+    { x: 7, y: 11, r: 0.7 },
+  ];
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+      <rect x={0.5} y={0.5} width={13} height={13} rx={2} fill="none" stroke="currentColor" strokeOpacity={0.2} />
+      {specks.map((s, i) => (
+        <circle key={i} cx={s.x} cy={s.y} r={s.r} fill="currentColor" />
+      ))}
+    </svg>
+  );
+}
+
+/**
  * Phase 4.42 → 4.43: 22×14 SVG swatch showing the frame style on a
  * small rectangle. Solid/double/dashed each get a recognisable
  * miniature so users can pick at a glance. Stroke colour mirrors
@@ -7424,6 +7652,10 @@ const USER_FINISHING_PRESETS_KEY = 'flex-icon-grid:effects-presets:v1';
 interface UserFinishingPresetPatch {
   vignette: FlexIconGridConfig['vignette'];
   grain: FlexIconGridConfig['grain'];
+  // Phase 4.45: dust joined the finishing suite. Older saved
+  // presets without this key parse as undefined via
+  // parseFinishingPatch (which treats missing fields as "off").
+  dust: FlexIconGridConfig['dust'];
   tint: FlexIconGridConfig['tint'];
   lightLeak: FlexIconGridConfig['lightLeak'];
   letterbox: FlexIconGridConfig['letterbox'];

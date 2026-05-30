@@ -348,6 +348,16 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (dustOverlay) overlays.push(dustOverlay);
     }
 
+    // 3.57) Phase 4.45: halftone overlay — uniform dot grid for
+    //       printed-comic / risograph / newsprint looks. Pushed
+    //       AFTER dust (the dust specks shouldn't sit ON TOP of a
+    //       structured dot grid) and BEFORE tint (the colour grade
+    //       still washes over the dots).
+    if (config.halftone) {
+      const halftoneOverlay = await buildHalftoneOverlay(config);
+      if (halftoneOverlay) overlays.push(halftoneOverlay);
+    }
+
     // 3.6) Phase 4.39 → 4.40: tint overlay — composited AFTER grain
     //      so the tint hue washes over the noise, BEFORE the
     //      vignette so the corner darkening reads through the tint.
@@ -2087,6 +2097,48 @@ async function buildTintOverlays(
   return overlays;
 }
 
+// ─── Halftone overlay (Phase 4.45) ──────────────────────────────────────────
+
+/**
+ * Phase 4.45: build a uniform-dot-pattern PNG for the halftone /
+ * risograph / newsprint look. Uses an SVG `<pattern>` with a single
+ * `<circle>` repeating at the configured spacing — librsvg renders
+ * patterns natively so no special pipeline plumbing required.
+ *
+ * Dot opacity is baked into the pattern (`fill-opacity` on the
+ * circle); the composite blend mode is configurable. `normal`
+ * paints flat on top; the four standard blend modes mix with the
+ * underlying canvas like the tint overlay does.
+ *
+ * The pattern's tile size matches `spacing`, so spacing controls
+ * dot density implicitly — smaller spacing = more dots per area.
+ */
+async function buildHalftoneOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const h = config.halftone;
+  if (!h) return null;
+  const { width, height } = config;
+  const tile = h.spacing;
+  const cx = tile / 2;
+  const cy = tile / 2;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<defs><pattern id="ht" patternUnits="userSpaceOnUse" width="${tile}" height="${tile}">`,
+    `<circle cx="${cx}" cy="${cy}" r="${h.dotSize}" fill="${escapeSvgText(h.color)}" fill-opacity="${h.opacity}"/>`,
+    `</pattern></defs>`,
+    `<rect width="${width}" height="${height}" fill="url(#ht)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  // `normal` blend mode (Sharp's `over`) paints flat on top with
+  // the dot opacity. The four mixing blends layer with the
+  // underlying canvas.
+  const blend: 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'over' =
+    h.blendMode === 'normal' ? 'over' : h.blendMode;
+  return { input: buf, top: 0, left: 0, blend };
+}
+
 // ─── Dust / scratches overlay (Phase 4.44) ──────────────────────────────────
 
 /**
@@ -2134,7 +2186,15 @@ async function buildDustOverlay(
   const threshold = 0.95 - d.density * 0.45;
   const intercept = -threshold;
   const slope = 1 / Math.max(0.05, 1 - threshold);
-  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq.toFixed(4)}" numOctaves="2" seed="${seed}" stitchTiles="stitch" result="noise"/>`;
+  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq.toFixed(4)}" numOctaves="2" seed="${seed}" stitchTiles="stitch" result="rawNoise"/>`;
+  // Phase 4.45: pre-threshold blur. `stitchTiles="stitch"` tiles the
+  // turbulence in a fixed grid, and at low densities the threshold
+  // produces faint diagonal bands at the tile boundaries. A small
+  // Gaussian blur softens the tile edges without smearing the
+  // specks themselves (the threshold step still isolates discrete
+  // peaks). 1.2 px is the sweet spot — strong enough to hide the
+  // grid, weak enough to keep the specks crisp.
+  const seamSoftener = `<feGaussianBlur in="rawNoise" stdDeviation="1.2" result="noise"/>`;
   // Threshold + boost — feFuncR/G/B linear with negative intercept
   // clips dim values to 0 and amplifies the bright ones to 1.
   const thresholded =
@@ -2157,6 +2217,7 @@ async function buildDustOverlay(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
     `<defs><filter id="dust" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">`,
     turbulence,
+    seamSoftener,
     thresholded,
     flood,
     composite,

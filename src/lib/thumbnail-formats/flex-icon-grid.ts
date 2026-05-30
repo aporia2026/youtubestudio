@@ -702,6 +702,35 @@ export interface FlexIconGridConfig {
       | 'right';
     blendMode?: 'multiply' | 'screen' | 'overlay' | 'soft-light';
   };
+  /** Phase 4.45: optional halftone overlay — a regular grid of
+   *  dots painted across the entire canvas, mimicking a printed
+   *  comic / risograph / newsprint look. Distinct from grain
+   *  (uniform random noise) and dust (sparse irregular specks):
+   *  halftone is deterministic, regular, and structural.
+   *
+   *  Note: this is a UNIFORM dot pattern — every dot is the same
+   *  size regardless of underlying luminance. True photographic
+   *  halftone (dot size varies with brightness) would require
+   *  per-pixel sampling which the SVG-filter pipeline can't do
+   *  efficiently. The uniform variant is still useful as a
+   *  finishing texture.
+   *
+   *  Rendered AFTER dust but BEFORE tint so the colour grade can
+   *  still wash over the dot pattern. Off by default.
+   *  - `color` — dot colour.
+   *  - `opacity` (0..1) — dot opacity.
+   *  - `dotSize` (0.5..10) — dot radius in pixels.
+   *  - `spacing` (2..40) — distance between dot centres in pixels.
+   *  - `blendMode` — `multiply` (default — dots darken underlying
+   *    image), `screen`, `overlay`, `soft-light`, or `normal`
+   *    (paints flat on top). */
+  halftone?: {
+    color: string;
+    opacity: number;
+    dotSize: number;
+    spacing: number;
+    blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'normal';
+  };
   /** Phase 4.44: optional dust / scratches overlay — sparse,
    *  irregular bright (or dark) specks scattered across the canvas,
    *  mimicking real film-stock decay. Distinct from `grain` (which
@@ -1629,6 +1658,33 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
       return { ok: false, reason: 'lightLeak.blendMode must be multiply | screen | overlay | soft-light or undefined' };
     }
   }
+  // Phase 4.45: halftone shape check.
+  if (config.halftone !== undefined) {
+    if (typeof config.halftone !== 'object' || config.halftone === null) {
+      return { ok: false, reason: 'halftone must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.halftone.color)) {
+      return { ok: false, reason: 'halftone.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.halftone.opacity) || config.halftone.opacity < 0 || config.halftone.opacity > 1) {
+      return { ok: false, reason: 'halftone.opacity must be a number in [0, 1]' };
+    }
+    if (!Number.isFinite(config.halftone.dotSize) || config.halftone.dotSize < 0.5 || config.halftone.dotSize > 10) {
+      return { ok: false, reason: 'halftone.dotSize must be a number in [0.5, 10]' };
+    }
+    if (!Number.isFinite(config.halftone.spacing) || config.halftone.spacing < 2 || config.halftone.spacing > 40) {
+      return { ok: false, reason: 'halftone.spacing must be a number in [2, 40]' };
+    }
+    if (
+      config.halftone.blendMode !== 'multiply' &&
+      config.halftone.blendMode !== 'screen' &&
+      config.halftone.blendMode !== 'overlay' &&
+      config.halftone.blendMode !== 'soft-light' &&
+      config.halftone.blendMode !== 'normal'
+    ) {
+      return { ok: false, reason: 'halftone.blendMode must be multiply | screen | overlay | soft-light | normal' };
+    }
+  }
   // Phase 4.44: dust shape check.
   if (config.dust !== undefined) {
     if (typeof config.dust !== 'object' || config.dust === null) {
@@ -1829,12 +1885,12 @@ export const FINISHING_PRESETS: readonly FinishingPreset[] = [
   {
     id: 'none',
     label: 'Reset',
-    description: 'Clear every finishing overlay (vignette, grain, tint, leak, letterbox, frame).',
+    description: 'Clear every finishing overlay (vignette, grain, dust, tint, leak, letterbox, frame).',
   },
   {
     id: 'vintage-film',
     label: 'Vintage film',
-    description: 'Mono grain at scale 1.4, soft warm tint, gentle vignette. No frame, no letterbox.',
+    description: 'Mono grain + sparse white dust + soft warm tint + gentle vignette. No frame, no letterbox.',
   },
   {
     id: 'cinematic-239',
@@ -1848,6 +1904,39 @@ export const FINISHING_PRESETS: readonly FinishingPreset[] = [
   },
 ] as const;
 
+/** Phase 4.45: re-validate a raw finishing patch (from a saved
+ *  preset, a clipboard paste, or an external source) by running
+ *  every field through the existing tolerant parsers. Returns a
+ *  fully-typed `FinishingPatch` with each field either populated
+ *  (parsed cleanly) or `undefined` (missing, malformed, or
+ *  out-of-range). The caller can spread the result straight into
+ *  `updateConfig` — corrupt or stale data degrades to "off" for
+ *  that specific field rather than silently applying.
+ *
+ *  Why exists: `applyFinishingPreset` produces patches authored
+ *  in-code that we trust, but user-saved presets in localStorage
+ *  could be doctored, partially migrated, or written by an older
+ *  schema. Re-parsing on apply is the safety net.
+ */
+export type FinishingPatch = Pick<
+  FlexIconGridConfig,
+  'vignette' | 'grain' | 'dust' | 'halftone' | 'tint' | 'lightLeak' | 'letterbox' | 'frame'
+>;
+
+export function parseFinishingPatch(raw: unknown): FinishingPatch {
+  const o = (raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {});
+  return {
+    vignette: parseVignette(o.vignette),
+    grain: parseGrain(o.grain),
+    dust: parseDust(o.dust),
+    halftone: parseHalftone(o.halftone),
+    tint: parseTint(o.tint),
+    lightLeak: parseLightLeak(o.lightLeak),
+    letterbox: parseLetterbox(o.letterbox),
+    frame: parseFrame(o.frame),
+  };
+}
+
 /** Phase 4.43: produce the `Partial<FlexIconGridConfig>` patch that
  *  a given finishing preset should apply on top of the current
  *  config. The caller is expected to spread this directly into
@@ -1859,11 +1948,16 @@ export function applyFinishingPreset(
   preset: FinishingPresetId,
   canvasW: number,
   canvasH: number,
-): Pick<FlexIconGridConfig, 'vignette' | 'grain' | 'tint' | 'lightLeak' | 'letterbox' | 'frame'> {
+): FinishingPatch {
+  // Phase 4.45: `dust` and `halftone` joined the finishing patch
+  // shape — every preset now explicitly clears them so applying
+  // a preset never leaks from a prior state.
   if (preset === 'none') {
     return {
       vignette: undefined,
       grain: undefined,
+      dust: undefined,
+      halftone: undefined,
       tint: undefined,
       lightLeak: undefined,
       letterbox: undefined,
@@ -1874,6 +1968,10 @@ export function applyFinishingPreset(
     return {
       vignette: { color: '#000000', intensity: 0.4, radius: 0.7 },
       grain: { intensity: 0.18, scale: 1.4, monochrome: true },
+      // Subtle white dust at 35 % density for the "worn print"
+      // half of the vintage look.
+      dust: { color: '#ffffff', intensity: 0.35, density: 0.18 },
+      halftone: undefined,
       tint: { color: '#ffb27a', intensity: 0.18, blendMode: 'soft-light' },
       lightLeak: undefined,
       letterbox: undefined,
@@ -1884,6 +1982,8 @@ export function applyFinishingPreset(
     return {
       vignette: { color: '#000000', intensity: 0.55, radius: 0.55 },
       grain: undefined,
+      dust: undefined,
+      halftone: undefined,
       tint: undefined,
       lightLeak: undefined,
       letterbox: { color: '#000000', ...computeLetterboxBars(canvasW, canvasH, 2.39) },
@@ -1894,6 +1994,8 @@ export function applyFinishingPreset(
   return {
     vignette: undefined,
     grain: undefined,
+    dust: undefined,
+    halftone: undefined,
     tint: undefined,
     lightLeak: undefined,
     letterbox: undefined,
@@ -2087,6 +2189,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     grain: parseGrain(o.grain),
     // Phase 4.44: dust / scratches overlay; same tolerant posture.
     dust: parseDust(o.dust),
+    // Phase 4.45: halftone overlay; tolerant.
+    halftone: parseHalftone(o.halftone),
     // Phase 4.39: tint overlay; tolerant posture, drops on bad / zero.
     tint: parseTint(o.tint),
     // Phase 4.40: light-leak overlay; same tolerant pattern.
@@ -2361,6 +2465,54 @@ function parseTint(
     ...(shadows !== undefined ? { shadows } : {}),
     ...(highlights !== undefined ? { highlights } : {}),
     ...(splitToneStrength !== undefined ? { splitToneStrength } : {}),
+  };
+}
+
+/** Phase 4.45: tolerant halftone parser. Drops on missing /
+ *  out-of-range fields or unknown blend mode. Zero opacity OR zero
+ *  dot size both drop so an "off" halftone doesn't round-trip into
+ *  JSON state. */
+function parseHalftone(
+  v: unknown,
+):
+  | {
+      color: string;
+      opacity: number;
+      dotSize: number;
+      spacing: number;
+      blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'normal';
+    }
+  | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const opacity =
+    typeof o.opacity === 'number' && Number.isFinite(o.opacity)
+      ? Math.max(0, Math.min(1, o.opacity))
+      : undefined;
+  const dotSize =
+    typeof o.dotSize === 'number' && Number.isFinite(o.dotSize)
+      ? Math.max(0.5, Math.min(10, o.dotSize))
+      : undefined;
+  const spacing =
+    typeof o.spacing === 'number' && Number.isFinite(o.spacing)
+      ? Math.max(2, Math.min(40, o.spacing))
+      : undefined;
+  if (opacity === undefined || dotSize === undefined || spacing === undefined) return undefined;
+  if (opacity === 0) return undefined;
+  const blendMode =
+    o.blendMode === 'multiply' ||
+    o.blendMode === 'screen' ||
+    o.blendMode === 'overlay' ||
+    o.blendMode === 'soft-light' ||
+    o.blendMode === 'normal'
+      ? (o.blendMode as 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'normal')
+      : 'multiply';
+  return {
+    color: stringOr(o.color, '#000000'),
+    opacity,
+    dotSize,
+    spacing,
+    blendMode,
   };
 }
 
