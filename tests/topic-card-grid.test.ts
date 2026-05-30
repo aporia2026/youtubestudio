@@ -170,10 +170,38 @@ describe('topicCardGridImagePrompt', () => {
 
   it('square mode emits the rectangle-with-strip layout', () => {
     const prompt = topicCardGridImagePrompt({ ...baseInput, cardShape: 'square' });
-    expect(prompt).toMatch(/2-3 px solid black border/);
+    expect(prompt).toMatch(/2-3 px/);
     expect(prompt).toMatch(/white horizontal strip/);
     // No discs
     expect(prompt).not.toMatch(/grid of \d+ discs/);
+  });
+
+  it('square mode emits the unified-cell FORBIDDEN renderings block (r2.1)', () => {
+    // r2.1: the AI was rendering each card as two stacked bordered
+    // rectangles (illustration panel + smaller centred label tag),
+    // breaking horizontal alignment between the illustration and the
+    // composite label band. The prompt now lists each failure mode by
+    // name so the model has to opt out explicitly. Pin every named
+    // failure pattern so a future prompt edit can't silently soften
+    // the language.
+    const prompt = topicCardGridImagePrompt({ ...baseInput, cardShape: 'square' });
+    expect(prompt).toMatch(/ONE single rectangle with ONE solid black border/);
+    expect(prompt).toMatch(/SAME single border/);
+    expect(prompt).toMatch(/FULL card width/);
+    expect(prompt).toMatch(/FORBIDDEN label renderings/);
+    expect(prompt).toMatch(/separate smaller bordered box/);
+    expect(prompt).toMatch(/tag.+badge.+callout.+speech bubble/i);
+    expect(prompt).toMatch(/narrower than the illustration above/);
+    expect(prompt).toMatch(/visible gap, margin, or whitespace between the illustration and the label strip/);
+  });
+
+  it('circle mode does NOT carry the square-mode FORBIDDEN renderings block (r2.1)', () => {
+    // Circle mode renders labels beneath the disc on bare canvas (no
+    // bordered rectangle), so none of those forbidden patterns apply.
+    // Make sure the language stays scoped to square mode.
+    const prompt = topicCardGridImagePrompt({ ...baseInput, cardShape: 'circle' });
+    expect(prompt).not.toMatch(/FORBIDDEN label renderings/);
+    expect(prompt).not.toMatch(/ONE single rectangle with ONE solid black border/);
   });
 
   it('circle mode emits the discs-on-canvas layout and label-below rules', () => {

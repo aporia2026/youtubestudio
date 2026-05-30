@@ -374,14 +374,18 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   //     up outside the composite cell overlay and visible in the
   //     gutter. We wipe four-sides-around the cell before painting the
   //     overlay on top.
-  //   - Pure-prompt cells (useFullCellOverlay = false): the AI's label
-  //     text wraps to two lines if the LLM emitted a too-long label,
-  //     and line 2 can render BELOW the cell's bottom edge in the row
-  //     gutter, where our band overlay doesn't reach. We wipe a single
-  //     strip from the cell's bottom edge down through the row gutter
-  //     at the cell's own width. Horizontal extent is restricted to the
-  //     cell's own width — the column gutter may legitimately hold AI
-  //     border anchors for adjacent columns, so we don't touch it here.
+  //   - Pure-prompt cells (useFullCellOverlay = false): the AI also
+  //     drifts on cellW (it picks tighter column gutters than our
+  //     ~1.1%-of-canvas formula, rendering cells WIDER than we
+  //     predict) AND on label-strip width (it sometimes draws the
+  //     label as a narrower centred sub-frame). Both leave AI-rendered
+  //     border lines and tag-box edges visible just outside our band
+  //     overlay's edges. We wipe the band's left slack, right slack,
+  //     and bottom slack (the row gutter beneath) to absorb both
+  //     drifts. Vertical extent of the side wipes is bounded to the
+  //     band height so the AI's illustration in the top 80% is NEVER
+  //     erased. The top of the band is intentionally not wiped —
+  //     that's the illustration/label seam.
   // Clamped to canvas bounds for edge cells.
   const gutterPad = Math.max(0, Math.round(layout.gutter / 2));
   const wipeOverlays: sharp.OverlayOptions[] = [];
@@ -467,26 +471,67 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     // risks blanking the disc if the layout-derived band misses by a
     // few pixels (the reference sample size for circle mode is small).
     if (cardShape === 'square') {
-      // Row-gutter wipe: AI label text that wrapped to two lines can
-      // render BELOW the cell's bottom edge and survive in the gutter
-      // between rows because our band overlay only covers the cell's
-      // own bottom 20%. Paint a white rectangle from the cell's bottom
-      // edge down to halfway across the gutter (or to the canvas edge
-      // for last-row cells) at the cell's own width. Horizontal extent
-      // is restricted to the cell's width — we deliberately don't wipe
-      // the column gutter, which the AI may legitimately use to anchor
-      // borders on adjacent columns.
-      if (gutterPad > 0) {
-        const wipeTop = rect.y + rect.h;
-        const wipeBottom = Math.min(layout.height, wipeTop + gutterPad);
-        const wipeH = Math.max(0, wipeBottom - wipeTop);
-        if (wipeH > 0) {
-          const wipePng = await sharp({
-            create: { width: rect.w, height: wipeH, channels: 4, background: WHITE },
+      // Three-sided wipe around the band: catches AI cell-width drift
+      // and label overflow. The AI doesn't always honour our cellRect
+      // formula's gutter ratio (~1.1%) — it picks tighter gutters and
+      // renders cells slightly WIDER than we predict, so its outer
+      // border lines and its narrower "label tag" sub-frame can both
+      // appear in the slack around our band overlay. The wipe covers:
+      //   - left slack: from rect.x - gutterPad to rect.x
+      //   - right slack: from rect.x + rect.w to rect.x + rect.w + gutterPad
+      //   - bottom slack: from rect.y + rect.h to rect.y + rect.h + gutterPad
+      //     (only for non-last-row cells — last row has the outer margin
+      //     beneath instead of a row gutter)
+      // Combined the wipe forms an L-shape (or U-shape for non-last
+      // rows) of white pixels framing the band's left/right/bottom.
+      // The top edge is intentionally NOT wiped — that's the
+      // illustration/label hairline and the AI's illustration above
+      // it must be preserved.
+      // Vertical extent of the side wipes matches the band height
+      // (labelH = 20% of cellH) so we don't erase any of the AI's
+      // illustration in the top 80%.
+      const illustrationFracForWipe = 0.8; // mirrors SQUARE_ILLUSTRATION_FRAC
+      const labelH = rect.h - Math.round(rect.h * illustrationFracForWipe);
+      if (gutterPad > 0 && labelH > 0) {
+        const bandTop = rect.y + rect.h - labelH;
+        // Left slack
+        const leftWipeLeft = Math.max(0, rect.x - gutterPad);
+        const leftWipeW = Math.max(0, rect.x - leftWipeLeft);
+        if (leftWipeW > 0) {
+          const leftWipePng = await sharp({
+            create: { width: leftWipeW, height: labelH, channels: 4, background: WHITE },
           })
             .png()
             .toBuffer();
-          wipeOverlays.push({ input: wipePng, top: wipeTop, left: rect.x });
+          wipeOverlays.push({ input: leftWipePng, top: bandTop, left: leftWipeLeft });
+        }
+        // Right slack
+        const rightWipeRight = Math.min(layout.width, rect.x + rect.w + gutterPad);
+        const rightWipeW = Math.max(0, rightWipeRight - (rect.x + rect.w));
+        if (rightWipeW > 0) {
+          const rightWipePng = await sharp({
+            create: { width: rightWipeW, height: labelH, channels: 4, background: WHITE },
+          })
+            .png()
+            .toBuffer();
+          wipeOverlays.push({ input: rightWipePng, top: bandTop, left: rect.x + rect.w });
+        }
+        // Bottom slack (row gutter beneath this cell) — extends to the
+        // cell's full width PLUS the side slack so the L-shape closes
+        // cleanly at the corners.
+        const bottomWipeTop = rect.y + rect.h;
+        const bottomWipeBottom = Math.min(layout.height, bottomWipeTop + gutterPad);
+        const bottomWipeH = Math.max(0, bottomWipeBottom - bottomWipeTop);
+        if (bottomWipeH > 0) {
+          const bottomWipeLeft = leftWipeLeft;
+          const bottomWipeRight = rightWipeRight;
+          const bottomWipeW = Math.max(1, bottomWipeRight - bottomWipeLeft);
+          const bottomWipePng = await sharp({
+            create: { width: bottomWipeW, height: bottomWipeH, channels: 4, background: WHITE },
+          })
+            .png()
+            .toBuffer();
+          wipeOverlays.push({ input: bottomWipePng, top: bottomWipeTop, left: bottomWipeLeft });
         }
       }
       const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, rect.w, rect.h);

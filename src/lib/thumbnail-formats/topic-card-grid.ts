@@ -843,11 +843,18 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
 - An evenly-spaced ${gridRows} rows × ${gridCols} columns grid of identical-size cards = ${total} cards total.
 - A WHITE outer margin around the entire grid on all four sides of the canvas (top, bottom, left, right) — same width as the inter-card gutter.
 - WHITE gutters of uniform width separating every card from its neighbours.
-- Each card has a 2-3 px solid black border framing it, clearly visible against the white gutters.
-- Each card is split into two stacked regions:
-  • Top region (~80% of card height): the illustration.
-  • Bottom region (~20% of card height): a pure white horizontal strip containing the card's label.
-- A 1 px black hairline separates the illustration region from the white label strip.`;
+- Each card is ONE single rectangle with ONE solid black border (2-3 px) wrapping the WHOLE card. The illustration AND the label strip share that SAME single border — they are NOT two separate framed boxes.
+- Inside that ONE rectangle, two horizontal regions stack vertically:
+  • Top region (~80% of card height): the illustration. It fills the FULL card width edge-to-edge.
+  • Bottom region (~20% of card height): a pure white horizontal strip containing the card's label. It ALSO fills the FULL card width edge-to-edge — same left edge as the illustration, same right edge as the illustration.
+- A 1 px black hairline separates the illustration region from the white label strip. The hairline runs the full card width.
+- FORBIDDEN label renderings — do NOT produce any of these:
+  • a separate smaller bordered box for the label below the illustration
+  • a label "tag", "badge", "callout", "speech bubble", "polaroid caption", or any kind of floating sub-frame
+  • a label rectangle that is narrower than the illustration above it
+  • a visible gap, margin, or whitespace between the illustration and the label strip
+  • a label strip that has its own border separate from the illustration's border
+  The label strip is part of the SAME bordered rectangle as the illustration, sitting flush against it, sharing its left and right edges.`;
 
   return `Create a YouTube thumbnail in the "Topic Card Grid" format, 16:9.
 

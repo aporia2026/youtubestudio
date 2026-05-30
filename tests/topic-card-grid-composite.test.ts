@@ -262,9 +262,9 @@ describe('applyCellUploads', () => {
     // Pure-prompt mode (no uploads) previously left the row gutter
     // untouched at the cell's own width. If the AI's label rendering
     // wrapped to two lines, line 2 could land in the gutter under the
-    // cell and survive next to our composite label. The new wipe paints
+    // cell and survive next to our composite label. The wipe paints
     // a white strip from the cell's bottom edge through the row gutter
-    // at the cell's own width — for non-last-row cells.
+    // — for non-last-row cells.
     const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
     const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H);
     const out = await applyCellUploads({
@@ -284,14 +284,51 @@ describe('applyCellUploads', () => {
     expect(gr).toBeGreaterThan(240);
     expect(gg).toBeGreaterThan(240);
     expect(gb).toBeGreaterThan(240);
-    // But the gutter INTERSECTION (column gutter × row gutter) at canvas
-    // centre must remain untouched black — we deliberately don't wipe
-    // column gutters because the AI may anchor borders for adjacent
-    // columns there.
-    const [cr, cg, cb] = await pixelAt(out, CANVAS_W / 2, CANVAS_H / 2);
-    expect(cr).toBe(0);
-    expect(cg).toBe(0);
-    expect(cb).toBe(0);
+  });
+
+  it('wipes the band-height left & right column-gutter slack in pure-prompt mode (r2.1)', async () => {
+    // r2.1: the AI uses tighter column gutters than our cellRect
+    // formula predicts, so its cell-border lines and narrower label
+    // sub-frames bleed into the slack just outside our band overlay.
+    // The horizontal slack wipes cover that area (limited to the band
+    // height so the AI's illustration in the top 80% is preserved).
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H);
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'square',
+      uploads: [],
+    });
+    const r1 = cellRect(layout, 1);
+    // Compute the band y-range so we sample inside it. Mirrors the
+    // constants in the production code (illustration is 80% of cell H).
+    const labelH = r1.h - Math.round(r1.h * 0.8);
+    const bandMidY = r1.y + r1.h - Math.floor(labelH / 2);
+    // Left slack: a pixel just to the left of cell 1's left edge, at the
+    // band's vertical middle. With outerMargin == gutter == 8 and
+    // gutterPad == 4, the wipe covers x in [4, 7]. Sample at x=5.
+    const [lr, lg, lb] = await pixelAt(out, r1.x - 3, bandMidY);
+    expect(lr).toBeGreaterThan(240);
+    expect(lg).toBeGreaterThan(240);
+    expect(lb).toBeGreaterThan(240);
+    // Right slack: a pixel just to the right of cell 1's right edge, at
+    // the band's vertical middle. Wipe covers x in [r1.x+r1.w,
+    // r1.x+r1.w+gutterPad-1].
+    const [rr, rg, rb] = await pixelAt(out, r1.x + r1.w + 1, bandMidY);
+    expect(rr).toBeGreaterThan(240);
+    expect(rg).toBeGreaterThan(240);
+    expect(rb).toBeGreaterThan(240);
+    // But the slack ABOVE the band (still in the cell's illustration
+    // region) must remain UNTOUCHED so the AI's illustration above
+    // doesn't get clipped. Sample at the same x but a y well within the
+    // top 80%.
+    const illustrationMidY = r1.y + Math.floor(r1.h * 0.4);
+    const [ar, ag, ab] = await pixelAt(out, r1.x - 3, illustrationMidY);
+    expect(ar).toBe(0);
+    expect(ag).toBe(0);
+    expect(ab).toBe(0);
   });
 
   it('does not wipe a row gutter for circle mode in pure-prompt (r2 scope)', async () => {
