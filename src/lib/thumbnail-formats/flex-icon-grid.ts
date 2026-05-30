@@ -596,6 +596,20 @@ export interface FlexIconGridConfig {
     intensity: number;
     radius: number;
   };
+  /** Phase 4.39: optional colour-grade tint overlay — a flat colour
+   *  layer composited over the whole canvas with a blend mode.
+   *  Rendered AFTER grain but BEFORE the vignette so the corner
+   *  darkening still reads through the tint. Off by default.
+   *  - `color` — the tint hue.
+   *  - `intensity` (0..1) — opacity of the tint layer.
+   *  - `blendMode` — one of `multiply` (saturated colour cast),
+   *    `screen` (lightens with hue), `overlay` (mid-tone push), or
+   *    `soft-light` (subtle warmth / coolness shift). */
+  tint?: {
+    color: string;
+    intensity: number;
+    blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light';
+  };
   /** Phase 4.38: optional film-grain / noise finishing overlay.
    *  Rendered AFTER cells + title bar but BEFORE the vignette so the
    *  grain reads as being baked into the image rather than floating
@@ -604,11 +618,16 @@ export interface FlexIconGridConfig {
    *  - `scale` (0.5..5) — grain size; higher = chunkier grain.
    *  - `monochrome` — when true, noise is luminance-only (classic
    *    silver-halide look); when false, RGB chroma noise mimics
-   *    cheap-sensor video grain. */
+   *    cheap-sensor video grain.
+   *  - `seed` (Phase 4.39, optional 0..9999) — feTurbulence seed
+   *    that drives the noise pattern. When omitted the default `7`
+   *    is used, so renders stay deterministic; users iterating on a
+   *    specific look can dial a custom seed for a different pattern. */
   grain?: {
     intensity: number;
     scale: number;
     monochrome: boolean;
+    seed?: number;
   };
   cells: FlexIconCell[];
   titleBar?: TitleBarSpec;
@@ -1386,6 +1405,26 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
       return { ok: false, reason: 'vignette.radius must be a number in [0.3, 1.5]' };
     }
   }
+  // Phase 4.39: tint shape check.
+  if (config.tint !== undefined) {
+    if (typeof config.tint !== 'object' || config.tint === null) {
+      return { ok: false, reason: 'tint must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.tint.color)) {
+      return { ok: false, reason: 'tint.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.tint.intensity) || config.tint.intensity < 0 || config.tint.intensity > 1) {
+      return { ok: false, reason: 'tint.intensity must be a number in [0, 1]' };
+    }
+    if (
+      config.tint.blendMode !== 'multiply' &&
+      config.tint.blendMode !== 'screen' &&
+      config.tint.blendMode !== 'overlay' &&
+      config.tint.blendMode !== 'soft-light'
+    ) {
+      return { ok: false, reason: 'tint.blendMode must be multiply | screen | overlay | soft-light' };
+    }
+  }
   // Phase 4.38: grain shape check.
   if (config.grain !== undefined) {
     if (typeof config.grain !== 'object' || config.grain === null) {
@@ -1399,6 +1438,12 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     }
     if (typeof config.grain.monochrome !== 'boolean') {
       return { ok: false, reason: 'grain.monochrome must be a boolean' };
+    }
+    if (
+      config.grain.seed !== undefined &&
+      (!Number.isFinite(config.grain.seed) || config.grain.seed < 0 || config.grain.seed > 9999)
+    ) {
+      return { ok: false, reason: 'grain.seed must be a number in [0, 9999] or undefined' };
     }
   }
   // Phase 4.31: defaultCellStroke gets the same hex + non-negative
@@ -1624,6 +1669,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     vignette: parseVignette(o.vignette),
     // Phase 4.38: grain overlay; same tolerant posture as vignette.
     grain: parseGrain(o.grain),
+    // Phase 4.39: tint overlay; tolerant posture, drops on bad / zero.
+    tint: parseTint(o.tint),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1712,14 +1759,54 @@ function parseVignette(
   };
 }
 
+/** Phase 4.39: tolerant tint parser. Drops when required fields
+ *  are missing / non-finite / unknown blend mode. Colour falls back
+ *  to '#ffb27a' (a warm-grade default) so a malformed colour string
+ *  still yields a usable tint. Zero intensity drops the field so an
+ *  "off" tint doesn't round-trip into JSON state. */
+function parseTint(
+  v: unknown,
+):
+  | {
+      color: string;
+      intensity: number;
+      blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light';
+    }
+  | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const intensity =
+    typeof o.intensity === 'number' && Number.isFinite(o.intensity)
+      ? Math.max(0, Math.min(1, o.intensity))
+      : undefined;
+  if (intensity === undefined || intensity === 0) return undefined;
+  const blendMode =
+    o.blendMode === 'multiply' ||
+    o.blendMode === 'screen' ||
+    o.blendMode === 'overlay' ||
+    o.blendMode === 'soft-light'
+      ? (o.blendMode as 'multiply' | 'screen' | 'overlay' | 'soft-light')
+      : undefined;
+  if (blendMode === undefined) return undefined;
+  return {
+    color: stringOr(o.color, '#ffb27a'),
+    intensity,
+    blendMode,
+  };
+}
+
 /** Phase 4.38: tolerant grain parser. Returns undefined when
  *  required fields are missing / non-finite; drops zero-intensity
  *  so an "off" grain doesn't round-trip into JSON state. Scale
  *  clamps to [0.5, 5]; monochrome defaults to true (the more
- *  classic film-grain look). */
+ *  classic film-grain look).
+ *
+ *  Phase 4.39: optional `seed` (0..9999). Only kept when it's a
+ *  finite number in range; otherwise dropped so the composer's
+ *  fallback (7) is used. */
 function parseGrain(
   v: unknown,
-): { intensity: number; scale: number; monochrome: boolean } | undefined {
+): { intensity: number; scale: number; monochrome: boolean; seed?: number } | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const o = v as Record<string, unknown>;
   const intensity =
@@ -1732,10 +1819,15 @@ function parseGrain(
       : undefined;
   if (intensity === undefined || scale === undefined) return undefined;
   if (intensity === 0) return undefined;
+  const seed =
+    typeof o.seed === 'number' && Number.isFinite(o.seed) && o.seed >= 0 && o.seed <= 9999
+      ? Math.round(o.seed)
+      : undefined;
   return {
     intensity,
     scale,
     monochrome: typeof o.monochrome === 'boolean' ? o.monochrome : true,
+    ...(seed !== undefined ? { seed } : {}),
   };
 }
 

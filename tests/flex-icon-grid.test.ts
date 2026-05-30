@@ -1784,6 +1784,78 @@ describe('Phase 4.38 — grain finishing overlay', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/grain\.monochrome/);
   });
+  it('round-trips grain.seed when provided in range', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.grain = { intensity: 0.2, scale: 1, monochrome: true, seed: 4242 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.grain?.seed).toBe(4242);
+  });
+  it('drops grain.seed when out of [0, 9999]', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      grain: { intensity: 0.2, scale: 1, monochrome: true, seed: 12345 },
+    });
+    expect(reparsed.grain?.seed).toBeUndefined();
+  });
+  it('rejects grain.seed > 9999 on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.grain = { intensity: 0.2, scale: 1, monochrome: true, seed: 50000 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/grain\.seed/);
+  });
+});
+
+describe('Phase 4.39 — colour-grade tint overlay', () => {
+  it('round-trips tint through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.tint = { color: '#ffb27a', intensity: 0.35, blendMode: 'soft-light' };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.tint).toEqual({ color: '#ffb27a', intensity: 0.35, blendMode: 'soft-light' });
+  });
+  it('clamps tint intensity to [0, 1] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      tint: { color: '#3a80c0', intensity: 3, blendMode: 'multiply' },
+    });
+    expect(reparsed.tint?.intensity).toBe(1);
+  });
+  it('drops tint with zero intensity', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      tint: { color: '#3a80c0', intensity: 0, blendMode: 'screen' },
+    });
+    expect(reparsed.tint).toBeUndefined();
+  });
+  it('drops tint with unknown blend mode', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      tint: { color: '#3a80c0', intensity: 0.5, blendMode: 'difference' },
+    });
+    expect(reparsed.tint).toBeUndefined();
+  });
+  it('rejects malformed tint.color on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.tint = { color: 'orange', intensity: 0.3, blendMode: 'overlay' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/tint\.color/);
+  });
+  it('rejects unknown tint.blendMode on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.tint = {
+      color: '#3a80c0',
+      intensity: 0.3,
+      blendMode: 'difference' as 'multiply',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/tint\.blendMode/);
+  });
 });
 
 describe('Phase 4.36 — image filter modes', () => {

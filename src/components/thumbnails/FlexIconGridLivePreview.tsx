@@ -679,11 +679,14 @@ export function FlexIconGridLivePreview({
                 filterUnits="userSpaceOnUse"
                 primitiveUnits="userSpaceOnUse"
               >
+                {/* Phase 4.39: octaves scale with grain size + seed
+                    threaded from config so preview matches the
+                    composer's render exactly. */}
                 <feTurbulence
                   type="fractalNoise"
                   baseFrequency={(0.9 / config.grain.scale).toFixed(4)}
-                  numOctaves={2}
-                  seed={7}
+                  numOctaves={Math.max(2, Math.min(5, 2 + Math.round(config.grain.scale / 2)))}
+                  seed={config.grain.seed ?? 7}
                   stitchTiles="stitch"
                   result="noise"
                 />
@@ -734,6 +737,24 @@ export function FlexIconGridLivePreview({
               pointerEvents="none"
             />
           </>
+        )}
+
+        {/* Phase 4.39: tint overlay — composited AFTER grain and
+            BEFORE vignette to mirror the composer's overlay order.
+            Uses CSS `mix-blend-mode` matching the configured Sharp
+            blend mode so the on-screen result lines up with the
+            rendered PNG. */}
+        {config.tint && (
+          <rect
+            x={0}
+            y={0}
+            width={config.width}
+            height={config.height}
+            fill={config.tint.color}
+            fillOpacity={config.tint.intensity}
+            style={{ mixBlendMode: config.tint.blendMode }}
+            pointerEvents="none"
+          />
         )}
 
         {/* Phase 4.37 → 4.38: vignette overlay — rendered LAST so it

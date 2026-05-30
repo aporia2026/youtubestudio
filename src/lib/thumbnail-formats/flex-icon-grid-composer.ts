@@ -336,9 +336,19 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (grainOverlay) overlays.push(grainOverlay);
     }
 
-    // 3.6) Phase 4.37: vignette overlay — pushed LAST so it sits on
-    //      top of cells + title bar (and grain), darkening the
-    //      canvas corners uniformly. A single full-canvas
+    // 3.6) Phase 4.39: tint overlay — composited AFTER grain so the
+    //      tint hue washes over the noise, BEFORE the vignette so
+    //      the corner darkening reads through the tint. A single
+    //      flat-colour PNG composited with the configured blend
+    //      mode.
+    if (config.tint) {
+      const tintOverlay = await buildTintOverlay(config);
+      if (tintOverlay) overlays.push(tintOverlay);
+    }
+
+    // 3.7) Phase 4.37: vignette overlay — pushed LAST so it sits on
+    //      top of cells + title bar (and grain + tint), darkening
+    //      the canvas corners uniformly. A single full-canvas
     //      radial-gradient PNG.
     if (config.vignette) {
       const vignetteOverlay = await buildVignetteOverlay(config);
@@ -1837,6 +1847,30 @@ async function buildVignetteOverlay(
   return { input: buf, top: 0, left: 0 };
 }
 
+// ─── Tint overlay (Phase 4.39) ──────────────────────────────────────────────
+
+/**
+ * Phase 4.39: build a flat-colour PNG covering the whole canvas at
+ * the configured intensity, composited with the configured blend
+ * mode. The four supported blend modes map 1:1 to Sharp's composite
+ * blend strings (`multiply`, `screen`, `overlay`, `soft-light`) so
+ * the on-screen `mix-blend-mode` and the rendered output match.
+ */
+async function buildTintOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const t = config.tint;
+  if (!t) return null;
+  const { width, height } = config;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<rect width="${width}" height="${height}" fill="${escapeSvgText(t.color)}" fill-opacity="${t.intensity}"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0, blend: t.blendMode };
+}
+
 // ─── Grain overlay (Phase 4.38) ─────────────────────────────────────────────
 
 /**
@@ -1865,11 +1899,19 @@ async function buildGrainOverlay(
   if (!g) return null;
   const { width, height } = config;
   const baseFreq = (0.9 / g.scale).toFixed(4);
-  // Two octaves give the grain enough texture variation to read as
-  // film, not as a regular dot pattern. Seed fixed so the output is
-  // deterministic for caching / diffing purposes — picking a random
-  // seed each render would defeat regression tests.
-  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq}" numOctaves="2" seed="7" stitchTiles="stitch" result="noise"/>`;
+  // Phase 4.39 caveat fix: octaves scale with grain size. At
+  // scale=1 (fine grain) two octaves are enough to read as film;
+  // at scale=4 (chunky grain) only two octaves makes the pattern
+  // look like repeating static — adding higher-octave detail keeps
+  // the fine variation the eye expects of organic grain. Clamp to
+  // [2, 5] so we don't pay for octaves that aren't visible.
+  const numOctaves = Math.max(2, Math.min(5, 2 + Math.round(g.scale / 2)));
+  // Phase 4.39 caveat fix: seed exposed via config. Defaults to 7
+  // when omitted, so existing presets / round-tripped configs stay
+  // visually identical. Range is enforced at parse + validate time
+  // (0..9999) so we can plug it straight into the SVG.
+  const seed = g.seed ?? 7;
+  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq}" numOctaves="${numOctaves}" seed="${seed}" stitchTiles="stitch" result="noise"/>`;
   // Contrast remap: tableValues "0 1 0 1 0 1" turns the smooth
   // turbulence into a higher-frequency on/off pattern that reads
   // like silver-halide grain rather than smoke.

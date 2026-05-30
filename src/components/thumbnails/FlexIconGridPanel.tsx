@@ -22,7 +22,7 @@
  * `onResultChange` and land in history.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -3687,23 +3687,19 @@ export function FlexIconGridPanel({
                       title={`Strength: ${Math.round(config.vignette.intensity * 100)}%`}
                       style={{ width: 100 }}
                     />
-                    <input
-                      type="number"
+                    <BufferedNumericInput
+                      value={config.vignette.intensity}
                       min={0.01}
                       max={1}
                       step={0.01}
-                      value={config.vignette.intensity.toFixed(2)}
-                      onChange={(e) => {
-                        const raw = Number(e.target.value);
-                        if (!Number.isFinite(raw)) return;
-                        const clamped = Math.max(0.01, Math.min(1, raw));
+                      onCommit={(next) =>
                         updateConfig({
-                          vignette: { ...config.vignette!, intensity: clamped },
-                        });
-                      }}
-                      aria-label="Vignette intensity (numeric)"
-                      title="Type any value 0.01–1.00 for precise control"
-                      style={{ ...inputStyle, width: 64, padding: '4px 6px', fontSize: 12 }}
+                          vignette: { ...config.vignette!, intensity: next },
+                        })
+                      }
+                      ariaLabel="Vignette intensity (numeric)"
+                      title="Type any value 0.01–1.00; commits on Enter or blur"
+                      style={{ width: 64, padding: '4px 6px', fontSize: 12 }}
                     />
                     <span style={{ fontSize: 10, color: '#71717a', minWidth: 24 }}>Radius</span>
                     <input
@@ -3759,6 +3755,11 @@ export function FlexIconGridPanel({
                     })
                   }
                   style={chipStyle(!!config.grain)}
+                  title={
+                    config.grain
+                      ? 'Click to turn grain off. Preview uses CSS mix-blend-mode: overlay; Sharp uses blend: overlay on render. Both match at default strength; values above ~70% drift slightly because CSS clamps after mixing and Sharp clamps before — the final render is authoritative.'
+                      : 'Click to add a film-grain / sensor-noise finishing overlay'
+                  }
                 >
                   {config.grain ? 'Grain on' : 'Grain off'}
                 </button>
@@ -3780,23 +3781,19 @@ export function FlexIconGridPanel({
                       title={`Strength: ${Math.round(config.grain.intensity * 100)}%`}
                       style={{ width: 100 }}
                     />
-                    <input
-                      type="number"
+                    <BufferedNumericInput
+                      value={config.grain.intensity}
                       min={0.01}
                       max={1}
                       step={0.01}
-                      value={config.grain.intensity.toFixed(2)}
-                      onChange={(e) => {
-                        const raw = Number(e.target.value);
-                        if (!Number.isFinite(raw)) return;
-                        const clamped = Math.max(0.01, Math.min(1, raw));
+                      onCommit={(next) =>
                         updateConfig({
-                          grain: { ...config.grain!, intensity: clamped },
-                        });
-                      }}
-                      aria-label="Grain intensity (numeric)"
-                      title="Type any value 0.01–1.00 for precise control"
-                      style={{ ...inputStyle, width: 64, padding: '4px 6px', fontSize: 12 }}
+                          grain: { ...config.grain!, intensity: next },
+                        })
+                      }
+                      ariaLabel="Grain intensity (numeric)"
+                      title="Type any value 0.01–1.00; commits on Enter or blur"
+                      style={{ width: 64, padding: '4px 6px', fontSize: 12 }}
                     />
                     <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Size</span>
                     <input
@@ -3831,6 +3828,171 @@ export function FlexIconGridPanel({
                     >
                       {config.grain.monochrome ? 'Mono' : 'Colour'}
                     </button>
+                    {/* Phase 4.39: seed control — lets users iterate
+                        on a specific grain pattern. Default 7 (the
+                        composer fallback). Re-roll button picks a
+                        random integer in [0, 9999]. */}
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Seed</span>
+                    <BufferedNumericInput
+                      value={config.grain.seed ?? 7}
+                      min={0}
+                      max={9999}
+                      step={1}
+                      onCommit={(next) =>
+                        updateConfig({
+                          grain: { ...config.grain!, seed: next },
+                        })
+                      }
+                      ariaLabel="Grain seed (numeric)"
+                      title="Pattern seed (0–9999); commits on Enter or blur"
+                      style={{ width: 64, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateConfig({
+                          grain: {
+                            ...config.grain!,
+                            seed: Math.floor(Math.random() * 10000),
+                          },
+                        })
+                      }
+                      style={chipStyle(false)}
+                      title="Re-roll the grain pattern with a new random seed"
+                    >
+                      Re-roll
+                    </button>
+                  </>
+                )}
+              </div>
+              {/* Phase 4.39: surface the known preview/render
+                  divergence at high strengths so users aren't
+                  surprised when the final PNG looks slightly
+                  different from the live preview. */}
+              {config.grain && config.grain.intensity > 0.7 && (
+                <p
+                  style={{
+                    margin: '4px 0 0',
+                    fontSize: 10,
+                    color: '#fbbf24',
+                    fontStyle: 'italic',
+                  }}
+                >
+                  Heads up: above ~70% strength the live preview drifts slightly from the final render (CSS vs Sharp blend-order). Final render is authoritative.
+                </p>
+              )}
+            </div>
+            {/* Phase 4.39: colour-grade tint overlay. Flat colour
+                composited over the whole canvas with a blend mode —
+                warm grade, cool grade, mid-tone push, etc. Off by
+                default; turning it on seeds a warm soft-light at 25%
+                (a common editorial-thumbnail look). */}
+            <div>
+              <label style={labelStyle}>
+                Colour grade
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (tint with blend mode)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.tint}
+                  onClick={() =>
+                    updateConfig({
+                      tint: config.tint
+                        ? undefined
+                        : { color: '#ffb27a', intensity: 0.25, blendMode: 'soft-light' },
+                    })
+                  }
+                  style={chipStyle(!!config.tint)}
+                  title={
+                    config.tint
+                      ? 'Click to turn the colour grade off. CSS mix-blend-mode mirrors Sharp blend on render.'
+                      : 'Click to add a colour-grade tint over the whole canvas'
+                  }
+                >
+                  {config.tint ? 'Grade on' : 'Grade off'}
+                </button>
+                {config.tint && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.tint.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          tint: { ...config.tint!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Tint colour"
+                      title="Tint hue"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    <input
+                      type="range"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.tint.intensity}
+                      onChange={(e) =>
+                        updateConfig({
+                          tint: { ...config.tint!, intensity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Tint intensity"
+                      title={`Strength: ${Math.round(config.tint.intensity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.tint.intensity}
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      onCommit={(next) =>
+                        updateConfig({
+                          tint: { ...config.tint!, intensity: next },
+                        })
+                      }
+                      ariaLabel="Tint intensity (numeric)"
+                      title="Type any value 0.01–1.00; commits on Enter or blur"
+                      style={{ width: 64, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    {/* Blend mode chip-row picker. Each mode gives
+                        a distinct look — multiply is the most
+                        saturated cast; soft-light is the gentlest
+                        warming/cooling. */}
+                    {(
+                      [
+                        { value: 'soft-light', label: 'Soft', hint: 'Subtle warmth / coolness shift (default)' },
+                        { value: 'overlay', label: 'Overlay', hint: 'Boost contrast and tint mid-tones' },
+                        { value: 'multiply', label: 'Multiply', hint: 'Saturated colour cast — darkens overall' },
+                        { value: 'screen', label: 'Screen', hint: 'Lifts the image with a coloured wash' },
+                      ] as const
+                    ).map((mode) => (
+                      <button
+                        key={mode.value}
+                        type="button"
+                        aria-pressed={config.tint!.blendMode === mode.value}
+                        onClick={() =>
+                          updateConfig({
+                            tint: { ...config.tint!, blendMode: mode.value },
+                          })
+                        }
+                        style={chipStyle(config.tint!.blendMode === mode.value)}
+                        title={mode.hint}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
                   </>
                 )}
               </div>
@@ -5879,6 +6041,119 @@ function ImageFitPicker({
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Phase 4.39: buffered numeric input. Holds a local string state so
+ * the user can type intermediate values like "0.0" or "" without
+ * the parent committing a partial / zero value mid-keystroke
+ * (which, for the vignette / grain intensity fields, drops the
+ * whole overlay because the parser treats 0 as "off"). Commits on
+ * blur or Enter; reverts on Esc. Invalid intermediate values flash
+ * the input border red so the user knows the keystroke isn't yet
+ * applied. The committed value is clamped to [min, max].
+ */
+function BufferedNumericInput({
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+  ariaLabel,
+  title,
+  style,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (next: number) => void;
+  ariaLabel: string;
+  title?: string;
+  style?: React.CSSProperties;
+}) {
+  // Format the committed value as a fixed-decimal string so the
+  // displayed precision matches the step granularity. `2` for a
+  // 0.01 step keeps the input from showing "0.15000000000002" etc.
+  const decimals = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) : 0;
+  const formatValue = useCallback(
+    (v: number) => v.toFixed(decimals),
+    [decimals],
+  );
+  const [draft, setDraft] = useState<string>(() => formatValue(value));
+  const [invalid, setInvalid] = useState(false);
+  // Sync external value changes (e.g. slider movement) into the
+  // draft, unless the user is mid-edit on this field. We detect
+  // mid-edit via the input being focused.
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (document.activeElement !== ref.current) {
+      setDraft(formatValue(value));
+      setInvalid(false);
+    }
+  }, [value, formatValue]);
+
+  const commit = () => {
+    const raw = Number(draft);
+    if (!Number.isFinite(raw)) {
+      // Revert to the last good value on blur with garbage input.
+      setDraft(formatValue(value));
+      setInvalid(false);
+      return;
+    }
+    const clamped = Math.max(min, Math.min(max, raw));
+    setDraft(formatValue(clamped));
+    setInvalid(false);
+    if (clamped !== value) onCommit(clamped);
+  };
+
+  return (
+    <input
+      ref={ref}
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      onChange={(e) => {
+        const next = e.target.value;
+        setDraft(next);
+        // Invalid if empty, non-numeric, out of range, or below the
+        // floor (which would clamp the live value away under the
+        // user's feet). Flag visually without committing.
+        const parsed = Number(next);
+        const bad =
+          next.trim() === '' ||
+          !Number.isFinite(parsed) ||
+          parsed < min ||
+          parsed > max;
+        setInvalid(bad);
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+          ref.current?.blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setDraft(formatValue(value));
+          setInvalid(false);
+          ref.current?.blur();
+        }
+      }}
+      aria-label={ariaLabel}
+      aria-invalid={invalid || undefined}
+      title={title}
+      style={{
+        ...inputStyle,
+        ...style,
+        // Red flash on invalid keystrokes so the user sees the
+        // input is in an uncommitted state.
+        borderColor: invalid ? '#f87171' : (inputStyle as React.CSSProperties).borderColor,
+      }}
+    />
   );
 }
 
