@@ -888,54 +888,62 @@ export function FlexIconGridLivePreview({
           );
         })()}
 
-        {/* Phase 4.42: letterbox bars — rendered AFTER vignette
-            but BEFORE the frame so the frame stroke wraps around
-            the bars. Each side renders independently; 0 means no
-            bar on that side. */}
-        {config.letterbox && (
-          <>
-            {config.letterbox.top > 0 && (
-              <rect
-                x={0}
-                y={0}
-                width={config.width}
-                height={config.letterbox.top}
-                fill={config.letterbox.color}
-                pointerEvents="none"
-              />
-            )}
-            {config.letterbox.bottom > 0 && (
-              <rect
-                x={0}
-                y={config.height - config.letterbox.bottom}
-                width={config.width}
-                height={config.letterbox.bottom}
-                fill={config.letterbox.color}
-                pointerEvents="none"
-              />
-            )}
-            {config.letterbox.left > 0 && (
-              <rect
-                x={0}
-                y={0}
-                width={config.letterbox.left}
-                height={config.height}
-                fill={config.letterbox.color}
-                pointerEvents="none"
-              />
-            )}
-            {config.letterbox.right > 0 && (
-              <rect
-                x={config.width - config.letterbox.right}
-                y={0}
-                width={config.letterbox.right}
-                height={config.height}
-                fill={config.letterbox.color}
-                pointerEvents="none"
-              />
-            )}
-          </>
-        )}
+        {/* Phase 4.42 → 4.43: letterbox bars — rendered AFTER
+            vignette but BEFORE the frame so the frame stroke wraps
+            around the bars. Each side renders independently; 0
+            means no bar on that side. fillOpacity defaults to 1 so
+            existing configs render pixel-identical. */}
+        {config.letterbox && (() => {
+          const opacity = config.letterbox.opacity ?? 1;
+          return (
+            <>
+              {config.letterbox.top > 0 && (
+                <rect
+                  x={0}
+                  y={0}
+                  width={config.width}
+                  height={config.letterbox.top}
+                  fill={config.letterbox.color}
+                  fillOpacity={opacity}
+                  pointerEvents="none"
+                />
+              )}
+              {config.letterbox.bottom > 0 && (
+                <rect
+                  x={0}
+                  y={config.height - config.letterbox.bottom}
+                  width={config.width}
+                  height={config.letterbox.bottom}
+                  fill={config.letterbox.color}
+                  fillOpacity={opacity}
+                  pointerEvents="none"
+                />
+              )}
+              {config.letterbox.left > 0 && (
+                <rect
+                  x={0}
+                  y={0}
+                  width={config.letterbox.left}
+                  height={config.height}
+                  fill={config.letterbox.color}
+                  fillOpacity={opacity}
+                  pointerEvents="none"
+                />
+              )}
+              {config.letterbox.right > 0 && (
+                <rect
+                  x={config.width - config.letterbox.right}
+                  y={0}
+                  width={config.letterbox.right}
+                  height={config.height}
+                  fill={config.letterbox.color}
+                  fillOpacity={opacity}
+                  pointerEvents="none"
+                />
+              )}
+            </>
+          );
+        })()}
 
         {/* Phase 4.41 → 4.42: outer frame — rendered LAST so the
             stroke sits on top of every other finishing layer

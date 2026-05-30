@@ -11,16 +11,19 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  applyFinishingPreset,
   applyLabelCase,
   ASPECT_RATIO_PRESETS,
   computeCellGeometry,
   computeCellRect,
   computeFrameRects,
   computeGridLayout,
+  computeLetterboxBars,
   computeRegions,
   DEFAULT_CANVAS,
   DEFAULT_LABEL_STYLE,
   escapeSvgText,
+  FINISHING_PRESETS,
   getAspectRatioPreset,
   getConsumedCellIndexes,
   getSpanConflicts,
@@ -2190,6 +2193,107 @@ describe('Phase 4.42 — letterbox bars', () => {
     const result = validateConfig(config);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/letterbox\.top/);
+  });
+});
+
+describe('Phase 4.43 — letterbox.opacity + computeLetterboxBars', () => {
+  it('round-trips letterbox.opacity through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.letterbox = { color: '#000000', top: 60, bottom: 60, left: 0, right: 0, opacity: 0.4 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.letterbox?.opacity).toBe(0.4);
+  });
+  it('drops letterbox.opacity when out of range', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      letterbox: { color: '#000000', top: 60, bottom: 60, left: 0, right: 0, opacity: 2 },
+    });
+    expect(reparsed.letterbox?.opacity).toBeUndefined();
+  });
+  it('rejects letterbox.opacity out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.letterbox = { color: '#000000', top: 60, bottom: 60, left: 0, right: 0, opacity: 1.5 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/letterbox\.opacity/);
+  });
+  it('computeLetterboxBars returns top/bottom bars for ratios wider than canvas', () => {
+    const bars = computeLetterboxBars(1280, 720, 2.39);
+    expect(bars.top).toBeGreaterThan(0);
+    expect(bars.bottom).toEqual(bars.top);
+    expect(bars.left).toBe(0);
+    expect(bars.right).toBe(0);
+    // 1280 / 2.39 ≈ 535.5, so each bar ≈ (720 - 536) / 2 ≈ 92.
+    expect(bars.top).toBe(92);
+  });
+  it('computeLetterboxBars returns left/right bars for ratios narrower than canvas', () => {
+    const bars = computeLetterboxBars(1280, 720, 1); // square crop on 16:9
+    expect(bars.top).toBe(0);
+    expect(bars.bottom).toBe(0);
+    expect(bars.left).toBeGreaterThan(0);
+    expect(bars.right).toEqual(bars.left);
+    // 720 * 1 = 720, so each bar = (1280 - 720) / 2 = 280.
+    expect(bars.left).toBe(280);
+  });
+  it('computeLetterboxBars returns no bars when ratio matches canvas', () => {
+    const bars = computeLetterboxBars(1280, 720, 1280 / 720);
+    expect(bars).toEqual({ top: 0, bottom: 0, left: 0, right: 0 });
+  });
+});
+
+describe('Phase 4.43 — finishing presets', () => {
+  it('FINISHING_PRESETS includes all four expected ids', () => {
+    const ids = FINISHING_PRESETS.map((p) => p.id);
+    expect(ids).toEqual(['none', 'vintage-film', 'cinematic-239', 'editorial-clean']);
+  });
+  it('applyFinishingPreset(none) clears every finishing field', () => {
+    const patch = applyFinishingPreset('none', 1280, 720);
+    expect(patch.vignette).toBeUndefined();
+    expect(patch.grain).toBeUndefined();
+    expect(patch.tint).toBeUndefined();
+    expect(patch.lightLeak).toBeUndefined();
+    expect(patch.letterbox).toBeUndefined();
+    expect(patch.frame).toBeUndefined();
+  });
+  it('applyFinishingPreset(vintage-film) sets vignette + grain + tint, leaves the rest cleared', () => {
+    const patch = applyFinishingPreset('vintage-film', 1280, 720);
+    expect(patch.vignette).toBeDefined();
+    expect(patch.grain).toBeDefined();
+    expect(patch.grain?.monochrome).toBe(true);
+    expect(patch.tint).toBeDefined();
+    expect(patch.lightLeak).toBeUndefined();
+    expect(patch.letterbox).toBeUndefined();
+    expect(patch.frame).toBeUndefined();
+  });
+  it('applyFinishingPreset(cinematic-239) computes bars from canvas dims', () => {
+    const patch = applyFinishingPreset('cinematic-239', 1280, 720);
+    expect(patch.letterbox?.top).toBe(92);
+    expect(patch.letterbox?.bottom).toBe(92);
+    expect(patch.frame?.style).toBe('solid');
+    expect(patch.grain).toBeUndefined();
+    // On a square canvas (1280×1280) the same preset should still
+    // compute valid bars without crashing.
+    const square = applyFinishingPreset('cinematic-239', 1280, 1280);
+    expect(square.letterbox?.top).toBeGreaterThan(0);
+  });
+  it('applyFinishingPreset(editorial-clean) returns a double-line frame only', () => {
+    const patch = applyFinishingPreset('editorial-clean', 1280, 720);
+    expect(patch.frame?.style).toBe('double');
+    expect(patch.vignette).toBeUndefined();
+    expect(patch.grain).toBeUndefined();
+    expect(patch.tint).toBeUndefined();
+    expect(patch.lightLeak).toBeUndefined();
+    expect(patch.letterbox).toBeUndefined();
+  });
+  it('each preset patch produces a config that passes validation when merged', () => {
+    for (const preset of FINISHING_PRESETS) {
+      const base = makeDefaultConfig(2, 2);
+      const patch = applyFinishingPreset(preset.id, base.width, base.height);
+      const merged = { ...base, ...patch };
+      const result = validateConfig(merged);
+      expect(result.ok, `preset ${preset.id} merged invalid: ${!result.ok ? result.reason : ''}`).toBe(true);
+    }
   });
 });
 

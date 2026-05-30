@@ -29,7 +29,10 @@ import type { ThumbnailRegion } from '@/remotion/types';
 import {
   ASPECT_RATIO_PRESETS,
   DEFAULT_SHADOW,
+  FINISHING_PRESETS,
   STARTER_CELL_SHADOW,
+  applyFinishingPreset,
+  computeLetterboxBars,
   getSpanConflicts,
   makeDefaultConfig,
   parseConfig,
@@ -3617,6 +3620,47 @@ export function FlexIconGridPanel({
                 )}
               </div>
             </div>
+            {/* Phase 4.43: finishing-effect presets — one-click
+                bundles that overwrite all six finishing fields
+                (vignette + grain + tint + leak + letterbox + frame)
+                with a coherent named look. The "Reset" chip clears
+                every finishing field without touching cells /
+                labels / palette. Sits at the top of the finishing
+                section so users can pick a starting look before
+                fine-tuning individual rows below. */}
+            <div>
+              <label style={labelStyle}>
+                Finishing preset
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (overwrites all six finishing rows below)
+                </span>
+              </label>
+              <div style={chipRowStyle}>
+                {FINISHING_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() =>
+                      updateConfig(
+                        applyFinishingPreset(preset.id, config.width, config.height),
+                      )
+                    }
+                    style={chipStyle(false)}
+                    title={preset.description}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {/* Phase 4.37: vignette overlay. A subtle radial-gradient
                 darkening at the canvas edges; common in modern
                 editorial thumbnails. Off by default. Painted AFTER
@@ -4418,20 +4462,10 @@ export function FlexIconGridPanel({
                     if (config.letterbox) {
                       updateConfig({ letterbox: undefined });
                     } else {
-                      // 2.39:1 default for the 16:9 canvas works
-                      // out to ~75px bars top+bottom on a 1280x720.
-                      // Compute dynamically so non-16:9 canvases
-                      // still get a reasonable seed.
-                      const visibleH = config.width / 2.39;
-                      const bar = Math.max(0, Math.round((config.height - visibleH) / 2));
+                      // 2.39:1 default seed via shared helper.
+                      const bars = computeLetterboxBars(config.width, config.height, 2.39);
                       updateConfig({
-                        letterbox: {
-                          color: '#000000',
-                          top: bar,
-                          bottom: bar,
-                          left: 0,
-                          right: 0,
-                        },
+                        letterbox: { color: '#000000', ...bars },
                       });
                     }
                   }}
@@ -4444,6 +4478,49 @@ export function FlexIconGridPanel({
                 >
                   {config.letterbox ? 'Letterbox on' : 'Letterbox off'}
                 </button>
+                {/* Phase 4.43: snap-to-ratio chip row. Each chip
+                    computes exact bar pixels for the current
+                    canvas via `computeLetterboxBars`. The chosen
+                    ratio is highlighted by comparing the current
+                    side bars against the recomputed values — saves
+                    storing a separate "active ratio" field. */}
+                {config.letterbox && (
+                  <>
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 32 }}>Ratio</span>
+                    {(
+                      [
+                        { value: 1, label: '1:1' },
+                        { value: 4 / 3, label: '4:3' },
+                        { value: 2, label: '2:1' },
+                        { value: 2.35, label: '2.35' },
+                        { value: 2.39, label: '2.39' },
+                      ] as const
+                    ).map((opt) => {
+                      const bars = computeLetterboxBars(config.width, config.height, opt.value);
+                      const active =
+                        config.letterbox!.top === bars.top &&
+                        config.letterbox!.bottom === bars.bottom &&
+                        config.letterbox!.left === bars.left &&
+                        config.letterbox!.right === bars.right;
+                      return (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() =>
+                            updateConfig({
+                              letterbox: { ...config.letterbox!, ...bars },
+                            })
+                          }
+                          style={chipStyle(active)}
+                          title={`Snap to ${opt.label} (${bars.top || bars.left}px bars)`}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
                 {config.letterbox && (
                   <>
                     <input
@@ -4457,6 +4534,44 @@ export function FlexIconGridPanel({
                       aria-label="Letterbox bar colour"
                       title="Bar colour (typically black)"
                       style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    {/* Phase 4.43: opacity slider for translucent
+                        bars. Hidden when bars are fully opaque
+                        (the common cinematic-crop case) to keep
+                        the row uncluttered — surfaced via the
+                        "Translucent" chip when needed. */}
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 44 }}>Opacity</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={config.letterbox.opacity ?? 1}
+                      onChange={(e) =>
+                        updateConfig({
+                          letterbox: {
+                            ...config.letterbox!,
+                            opacity: Number(e.target.value),
+                          },
+                        })
+                      }
+                      aria-label="Letterbox bar opacity"
+                      title={`Bar opacity: ${Math.round((config.letterbox.opacity ?? 1) * 100)}% (lower = cells peek through)`}
+                      style={{ width: 80 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.letterbox.opacity ?? 1}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      onCommit={(next) =>
+                        updateConfig({
+                          letterbox: { ...config.letterbox!, opacity: next },
+                        })
+                      }
+                      ariaLabel="Letterbox opacity (numeric)"
+                      title="Type any value 0–1; 1 = fully opaque (default)"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
                     />
                     {/* Per-side numeric controls. Slider+numeric
                         for each so users can dial subtle (10–20px)
@@ -4660,6 +4775,7 @@ export function FlexIconGridPanel({
                           <FrameStyleSwatch
                             style={opt.value}
                             color={config.frame!.color}
+                            thickness={config.frame!.thickness}
                           />
                           {opt.label}
                         </button>
@@ -6769,6 +6885,20 @@ function BufferedNumericInput({
       setInvalid(false);
     }
   }, [value, formatValue, isFocused]);
+  // Phase 4.43: per-frame coalescer for held-arrow-key autorepeat.
+  // Keystrokes accumulate into `pendingDeltaRef` and flush once per
+  // animation frame so React doesn't re-render on every OS-level
+  // keyrepeat event (which can fire >25/s and stutter the panel).
+  const pendingDeltaRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
 
   const commit = () => {
     const raw = Number(draft);
@@ -6828,15 +6958,32 @@ function BufferedNumericInput({
           // step={0.01} field jumps by 0.1. Override it: ↑ commits
           // value + step, ↓ commits value - step, with Shift for
           // 10× and Alt for 0.1× as common conventions.
+          //
+          // Phase 4.43: held-key autorepeat fires the key event
+          // at the OS rate (~30/s on macOS, ~25/s on Windows) and
+          // a per-keystroke commit re-renders the whole panel +
+          // live preview, which gets choppy. Coalesce the pending
+          // delta into a ref and flush once per animation frame —
+          // the user still sees smooth real-time updates but
+          // React only re-renders ~60 times/s instead of >250.
           e.preventDefault();
           const multiplier = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
           const delta = step * multiplier * (e.key === 'ArrowUp' ? 1 : -1);
-          const raw = Number(draft);
-          const base = Number.isFinite(raw) ? raw : value;
-          const next = Math.max(min, Math.min(max, base + delta));
-          setDraft(formatValue(next));
-          setInvalid(false);
-          if (next !== value) onCommit(next);
+          pendingDeltaRef.current += delta;
+          if (rafRef.current === null) {
+            rafRef.current = requestAnimationFrame(() => {
+              rafRef.current = null;
+              const accumulated = pendingDeltaRef.current;
+              pendingDeltaRef.current = 0;
+              if (accumulated === 0) return;
+              const raw = Number(draft);
+              const base = Number.isFinite(raw) ? raw : value;
+              const next = Math.max(min, Math.min(max, base + accumulated));
+              setDraft(formatValue(next));
+              setInvalid(false);
+              if (next !== value) onCommit(next);
+            });
+          }
         }
       }}
       aria-label={ariaLabel}
@@ -6909,24 +7056,63 @@ function RadialLeakSwatch({
 }
 
 /**
- * Phase 4.42: 22×14 SVG swatch showing the frame style on a small
- * rectangle. Solid/double/dashed each get a recognisable miniature
- * so users can pick at a glance. Stroke colour mirrors the live
- * frame colour so the swatch updates as the user changes the hue.
+ * Phase 4.42 → 4.43: 22×14 SVG swatch showing the frame style on a
+ * small rectangle. Solid/double/dashed each get a recognisable
+ * miniature so users can pick at a glance. Stroke colour mirrors
+ * the live frame colour.
+ *
+ * Phase 4.43: stroke widths scale with the configured frame
+ * `thickness`. A `thickness=30` frame now shows as a chunky double
+ * line in the chip; `thickness=2` shows as a hairline pair. The
+ * mapping is `clamp(thickness * 0.12, 0.6, 3.5)` so the swatch
+ * stays readable at the 22×14 viewBox regardless of input. The
+ * double-style geometry recomputes the inner rect inset from the
+ * scaled stroke width so the two lines never overlap.
  */
 function FrameStyleSwatch({
   style,
   color,
+  thickness,
 }: {
   style: 'solid' | 'double' | 'dashed';
   color: string;
+  thickness: number;
 }) {
   const stroke = color;
+  const scaled = Math.max(0.6, Math.min(3.5, thickness * 0.12));
   if (style === 'double') {
+    // Two parallel rects within the 22×14 viewBox. Outer rect
+    // hugs the chip edge; inner rect is inset by `scaled + gap`
+    // where gap scales with the line width so the pair never
+    // overlap.
+    const gap = Math.max(1, scaled * 0.8);
+    const innerInset = scaled / 2 + gap + scaled / 2;
+    const innerX = 1 + innerInset - scaled / 2;
+    const innerY = 1 + innerInset - scaled / 2;
+    const innerW = Math.max(0, 22 - 2 * innerX);
+    const innerH = Math.max(0, 14 - 2 * innerY);
     return (
       <svg width={22} height={14} viewBox="0 0 22 14" aria-hidden="true" focusable="false">
-        <rect x={1.5} y={1.5} width={19} height={11} fill="none" stroke={stroke} strokeWidth={1} />
-        <rect x={4} y={4} width={14} height={6} fill="none" stroke={stroke} strokeWidth={1} />
+        <rect
+          x={scaled / 2 + 0.5}
+          y={scaled / 2 + 0.5}
+          width={21 - scaled}
+          height={13 - scaled}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={scaled}
+        />
+        {innerW > 0 && innerH > 0 && (
+          <rect
+            x={innerX}
+            y={innerY}
+            width={innerW}
+            height={innerH}
+            fill="none"
+            stroke={stroke}
+            strokeWidth={scaled}
+          />
+        )}
       </svg>
     );
   }
@@ -6934,21 +7120,29 @@ function FrameStyleSwatch({
     return (
       <svg width={22} height={14} viewBox="0 0 22 14" aria-hidden="true" focusable="false">
         <rect
-          x={1.5}
-          y={1.5}
-          width={19}
-          height={11}
+          x={scaled / 2 + 0.5}
+          y={scaled / 2 + 0.5}
+          width={21 - scaled}
+          height={13 - scaled}
           fill="none"
           stroke={stroke}
-          strokeWidth={1.4}
-          strokeDasharray="3 2"
+          strokeWidth={scaled}
+          strokeDasharray={`${(scaled * 2).toFixed(2)} ${(scaled * 1.5).toFixed(2)}`}
         />
       </svg>
     );
   }
   return (
     <svg width={22} height={14} viewBox="0 0 22 14" aria-hidden="true" focusable="false">
-      <rect x={1.5} y={1.5} width={19} height={11} fill="none" stroke={stroke} strokeWidth={1.4} />
+      <rect
+        x={scaled / 2 + 0.5}
+        y={scaled / 2 + 0.5}
+        width={21 - scaled}
+        height={13 - scaled}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={scaled}
+      />
     </svg>
   );
 }

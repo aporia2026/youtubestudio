@@ -636,13 +636,18 @@ export interface FlexIconGridConfig {
    *  the bars. Off by default.
    *  - `color` — bar fill colour (typically black).
    *  - `top` / `bottom` / `left` / `right` (0..240) — bar thickness
-   *    in pixels for each side. 0 means no bar on that side. */
+   *    in pixels for each side. 0 means no bar on that side.
+   *  - `opacity` (Phase 4.43, optional 0..1) — bar opacity. Defaults
+   *    to 1 (fully opaque, classic cinematic crop). Lower values
+   *    turn the bars into a translucent "mat" that lets cells
+   *    peek through — useful for textured coloured bars. */
   letterbox?: {
     color: string;
     top: number;
     bottom: number;
     left: number;
     right: number;
+    opacity?: number;
   };
   /** Phase 4.41: optional outer canvas frame — a stroke line
    *  around the entire image. Rendered LAST (after vignette) so
@@ -1540,6 +1545,14 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
         return { ok: false, reason: `letterbox.${side} must be a number in [0, 240]` };
       }
     }
+    if (
+      config.letterbox.opacity !== undefined &&
+      (!Number.isFinite(config.letterbox.opacity) ||
+        config.letterbox.opacity < 0 ||
+        config.letterbox.opacity > 1)
+    ) {
+      return { ok: false, reason: 'letterbox.opacity must be a number in [0, 1] or undefined' };
+    }
   }
   // Phase 4.41: frame shape check.
   if (config.frame !== undefined) {
@@ -1739,6 +1752,145 @@ export function escapeSvgText(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+/**
+ * Phase 4.43: bundles of finishing-overlay settings that can be
+ * applied to a config in one click. Each preset overwrites all six
+ * finishing fields (`vignette`, `grain`, `tint`, `lightLeak`,
+ * `letterbox`, `frame`) so the canvas swings to a coherent look
+ * rather than partially layering on whatever the user had before.
+ *
+ * The `none` preset clears every finishing field — a quick "reset
+ * effects" shortcut that doesn't disturb cells / labels / palette.
+ *
+ * Letterbox bars are computed at apply-time against the current
+ * canvas dimensions so a preset like `cinematic-239` correctly
+ * sizes its bars on any aspect ratio.
+ */
+export type FinishingPresetId =
+  | 'none'
+  | 'vintage-film'
+  | 'cinematic-239'
+  | 'editorial-clean';
+
+export interface FinishingPreset {
+  id: FinishingPresetId;
+  label: string;
+  description: string;
+}
+
+export const FINISHING_PRESETS: readonly FinishingPreset[] = [
+  {
+    id: 'none',
+    label: 'Reset',
+    description: 'Clear every finishing overlay (vignette, grain, tint, leak, letterbox, frame).',
+  },
+  {
+    id: 'vintage-film',
+    label: 'Vintage film',
+    description: 'Mono grain at scale 1.4, soft warm tint, gentle vignette. No frame, no letterbox.',
+  },
+  {
+    id: 'cinematic-239',
+    label: 'Cinematic 2.39',
+    description: 'Strong vignette + 2.39:1 letterbox bars + slim white frame. The "movie still" look.',
+  },
+  {
+    id: 'editorial-clean',
+    label: 'Editorial clean',
+    description: 'Thin white double-line frame, no other effects. Tight magazine-cover composition.',
+  },
+] as const;
+
+/** Phase 4.43: produce the `Partial<FlexIconGridConfig>` patch that
+ *  a given finishing preset should apply on top of the current
+ *  config. The caller is expected to spread this directly into
+ *  `updateConfig({ ...patch })`. All six finishing fields are
+ *  always present in the patch so each preset is fully
+ *  self-contained — no leaking effects from a previously-applied
+ *  preset. */
+export function applyFinishingPreset(
+  preset: FinishingPresetId,
+  canvasW: number,
+  canvasH: number,
+): Pick<FlexIconGridConfig, 'vignette' | 'grain' | 'tint' | 'lightLeak' | 'letterbox' | 'frame'> {
+  if (preset === 'none') {
+    return {
+      vignette: undefined,
+      grain: undefined,
+      tint: undefined,
+      lightLeak: undefined,
+      letterbox: undefined,
+      frame: undefined,
+    };
+  }
+  if (preset === 'vintage-film') {
+    return {
+      vignette: { color: '#000000', intensity: 0.4, radius: 0.7 },
+      grain: { intensity: 0.18, scale: 1.4, monochrome: true },
+      tint: { color: '#ffb27a', intensity: 0.18, blendMode: 'soft-light' },
+      lightLeak: undefined,
+      letterbox: undefined,
+      frame: undefined,
+    };
+  }
+  if (preset === 'cinematic-239') {
+    return {
+      vignette: { color: '#000000', intensity: 0.55, radius: 0.55 },
+      grain: undefined,
+      tint: undefined,
+      lightLeak: undefined,
+      letterbox: { color: '#000000', ...computeLetterboxBars(canvasW, canvasH, 2.39) },
+      frame: { color: '#ffffff', thickness: 2, inset: 0, style: 'solid' },
+    };
+  }
+  // editorial-clean
+  return {
+    vignette: undefined,
+    grain: undefined,
+    tint: undefined,
+    lightLeak: undefined,
+    letterbox: undefined,
+    frame: { color: '#ffffff', thickness: 8, inset: 16, style: 'double' },
+  };
+}
+
+/**
+ * Phase 4.43: compute the four letterbox bar thicknesses needed to
+ * crop a canvas of dimensions `canvasW x canvasH` to a target
+ * aspect ratio. Returns symmetric top/bottom bars when the canvas
+ * is taller than the target ratio (standard letterbox), and
+ * symmetric left/right bars when the canvas is wider (pillarbox).
+ *
+ * Pure / deterministic — shared by both the panel's snap-to-ratio
+ * chip-row and any downstream code that wants the same calculation.
+ *
+ * Examples on a 1280×720 canvas (1.778:1 native):
+ *   - target 2.39 → top/bottom ≈ 92 px, left/right 0
+ *   - target 1   (square) → left/right ≈ 280 px, top/bottom 0
+ *   - target 1.33 (4:3) → left/right ≈ 160 px, top/bottom 0
+ */
+export function computeLetterboxBars(
+  canvasW: number,
+  canvasH: number,
+  targetRatio: number,
+): { top: number; bottom: number; left: number; right: number } {
+  const canvasRatio = canvasW / canvasH;
+  if (targetRatio > canvasRatio) {
+    // Target is wider than canvas → letterbox (top/bottom bars).
+    const visibleH = canvasW / targetRatio;
+    const bar = Math.max(0, Math.round((canvasH - visibleH) / 2));
+    return { top: bar, bottom: bar, left: 0, right: 0 };
+  }
+  if (targetRatio < canvasRatio) {
+    // Target is narrower than canvas → pillarbox (left/right bars).
+    const visibleW = canvasH * targetRatio;
+    const bar = Math.max(0, Math.round((canvasW - visibleW) / 2));
+    return { top: 0, bottom: 0, left: bar, right: bar };
+  }
+  // Exact match — no bars needed.
+  return { top: 0, bottom: 0, left: 0, right: 0 };
 }
 
 /**
@@ -2001,12 +2153,22 @@ function parseLetterbox(
   const left = sideOr(o.left);
   const right = sideOr(o.right);
   if (top === 0 && bottom === 0 && left === 0 && right === 0) return undefined;
+  // Phase 4.43: opacity optional [0..1]. Drops when out of range so
+  // the composer's default of 1 (fully opaque) kicks in.
+  const opacity =
+    typeof o.opacity === 'number' &&
+    Number.isFinite(o.opacity) &&
+    o.opacity >= 0 &&
+    o.opacity <= 1
+      ? o.opacity
+      : undefined;
   return {
     color: stringOr(o.color, '#000000'),
     top,
     bottom,
     left,
     right,
+    ...(opacity !== undefined ? { opacity } : {}),
   };
 }
 

@@ -1897,12 +1897,20 @@ async function buildLetterboxOverlay(
   const { width, height } = config;
   const bars: string[] = [];
   const fill = escapeSvgText(l.color);
-  if (l.top > 0) bars.push(`<rect x="0" y="0" width="${width}" height="${l.top}" fill="${fill}"/>`);
+  // Phase 4.43: opacity defaults to 1 (fully opaque) when omitted,
+  // so existing configs render pixel-identical. Applied as
+  // fill-opacity on each bar so the underlying canvas / vignette /
+  // grain shows through at low values.
+  const opacity = l.opacity ?? 1;
+  const opacityAttr = opacity < 1 ? ` fill-opacity="${opacity}"` : '';
+  if (l.top > 0)
+    bars.push(`<rect x="0" y="0" width="${width}" height="${l.top}" fill="${fill}"${opacityAttr}/>`);
   if (l.bottom > 0)
-    bars.push(`<rect x="0" y="${height - l.bottom}" width="${width}" height="${l.bottom}" fill="${fill}"/>`);
-  if (l.left > 0) bars.push(`<rect x="0" y="0" width="${l.left}" height="${height}" fill="${fill}"/>`);
+    bars.push(`<rect x="0" y="${height - l.bottom}" width="${width}" height="${l.bottom}" fill="${fill}"${opacityAttr}/>`);
+  if (l.left > 0)
+    bars.push(`<rect x="0" y="0" width="${l.left}" height="${height}" fill="${fill}"${opacityAttr}/>`);
   if (l.right > 0)
-    bars.push(`<rect x="${width - l.right}" y="0" width="${l.right}" height="${height}" fill="${fill}"/>`);
+    bars.push(`<rect x="${width - l.right}" y="0" width="${l.right}" height="${height}" fill="${fill}"${opacityAttr}/>`);
   if (bars.length === 0) return null;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${bars.join('')}</svg>`;
   const buf = await sharp(Buffer.from(svg)).png().toBuffer();
