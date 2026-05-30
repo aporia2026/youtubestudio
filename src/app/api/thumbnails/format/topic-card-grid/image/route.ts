@@ -27,6 +27,7 @@ import {
   DEFAULT_FONT_ID,
   findFontById,
 } from '@/lib/thumbnail-formats/topic-card-grid-fonts';
+import { fontFilePath } from '@/lib/thumbnail-formats/topic-card-grid-fonts-server';
 import {
   applyCellUploads,
   SHARP_INPUT_PIXEL_CAP,
@@ -35,7 +36,10 @@ import {
 import {
   applySharedOverlays,
   parsePostProcessConfig,
+  parseTitleBarRequestPayload,
+  type FontRef,
   type PostProcessConfig,
+  type TitleBarConfig,
 } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import sharp from 'sharp';
 import { assertSafePublicUrl } from '@/lib/url-safety';
@@ -195,6 +199,11 @@ interface ReqBody {
    *  malformed payloads silently degrade to no-op rather than failing
    *  the request. */
   postProcess?: unknown;
+  /** Optional title-bar overlay: text + subtitle + position +
+   *  typography drawn over the composite output. Parsed + clamped
+   *  server-side via `parseTitleBarRequestPayload`; fontId resolution
+   *  happens locally below. */
+  titleBar?: unknown;
 }
 
 /** Set of known style presets, used to validate `body.style` against
@@ -646,32 +655,82 @@ export async function POST(req: NextRequest) {
       output_bytes: finalBytes.byteLength,
     });
 
-    // Post-process pass — filter / vignette / grain. Parsed from the
-    // request body via the shared validator: malformed payloads silently
-    // degrade to null (no-op) rather than failing the request, so a
-    // stale client can't bog down the pipeline by sending garbage. When
-    // the parser returns null we skip the call entirely to avoid the
-    // unnecessary decode + encode round-trip on the (potentially 4K)
-    // composite output.
+    // Post-process pass + title-bar overlay. Both are optional, parsed
+    // from the request body via shared validators. Both run inside one
+    // `applySharedOverlays` call so the (potentially 4K) composite
+    // output is decoded once and re-encoded once regardless of how many
+    // overlay kinds are active. Malformed payloads silently degrade to
+    // null (no-op) per the same shape as the rest of the route's
+    // validation — a stale client can't bog down the pipeline by
+    // sending garbage.
     const postProcess: PostProcessConfig | null = parsePostProcessConfig(body.postProcess);
-    if (postProcess) {
+    const titleBarPayload = parseTitleBarRequestPayload(body.titleBar);
+    let titleBar: TitleBarConfig | undefined;
+    if (titleBarPayload) {
+      // Resolve fontId -> FontRef via the existing per-format font
+      // registry. Unknown ids fall back to the default silently,
+      // mirroring how `fontId` for cell labels resolves elsewhere in
+      // this route — invalid input degrades gracefully instead of
+      // failing the request.
+      const resolveFont = (id: string): FontRef => {
+        const f = findFontById(id) ?? findFontById(DEFAULT_FONT_ID)!;
+        return { family: f.family, filePath: fontFilePath(f) };
+      };
+      titleBar = {
+        text: titleBarPayload.text,
+        subtitle: titleBarPayload.subtitle,
+        position: titleBarPayload.position,
+        heightFraction: titleBarPayload.heightFraction,
+        align: titleBarPayload.align,
+        subtitleAlign: titleBarPayload.subtitleAlign,
+        backgroundColor: titleBarPayload.backgroundColor,
+        backgroundOpacity: titleBarPayload.backgroundOpacity,
+        textColor: titleBarPayload.textColor,
+        subtitleColor: titleBarPayload.subtitleColor,
+        font: resolveFont(titleBarPayload.fontId),
+        subtitleFont: titleBarPayload.subtitleFontId ? resolveFont(titleBarPayload.subtitleFontId) : undefined,
+        shadow: titleBarPayload.shadow,
+      };
+    }
+
+    if (postProcess || titleBar) {
       const postStart = Date.now();
       finalBytes = await applySharedOverlays({
         baseImage: finalBytes,
         canvas: { width: canvasW, height: canvasH },
-        postProcess,
+        postProcess: postProcess ?? undefined,
+        titleBar,
       });
-      logger.info('[topic-card-grid post-process]', {
-        filter: postProcess.filter ?? null,
-        vignette_intensity: postProcess.vignette?.intensity ?? null,
-        vignette_radius: postProcess.vignette?.radius ?? null,
-        vignette_color: postProcess.vignette?.color ?? null,
-        grain_intensity: postProcess.grain?.intensity ?? null,
-        grain_size: postProcess.grain?.size ?? null,
-        grain_monochrome: postProcess.grain?.monochrome ?? null,
-        duration_ms: Date.now() - postStart,
-        output_bytes: finalBytes.byteLength,
-      });
+      if (postProcess) {
+        logger.info('[topic-card-grid post-process]', {
+          filter: postProcess.filter ?? null,
+          vignette_intensity: postProcess.vignette?.intensity ?? null,
+          vignette_radius: postProcess.vignette?.radius ?? null,
+          vignette_color: postProcess.vignette?.color ?? null,
+          grain_intensity: postProcess.grain?.intensity ?? null,
+          grain_size: postProcess.grain?.size ?? null,
+          grain_monochrome: postProcess.grain?.monochrome ?? null,
+          duration_ms: Date.now() - postStart,
+          output_bytes: finalBytes.byteLength,
+        });
+      }
+      if (titleBar) {
+        logger.info('[topic-card-grid title-overlay]', {
+          position: titleBar.position,
+          height_fraction: titleBar.heightFraction,
+          text_length: titleBar.text.length,
+          subtitle_length: titleBar.subtitle?.length ?? 0,
+          align: titleBar.align,
+          font_id: titleBarPayload!.fontId,
+          font_family: titleBar.font.family,
+          background_color: titleBar.backgroundColor,
+          background_opacity: titleBar.backgroundOpacity,
+          text_color: titleBar.textColor,
+          has_shadow: !!titleBar.shadow,
+          duration_ms: Date.now() - postStart,
+          output_bytes: finalBytes.byteLength,
+        });
+      }
     }
 
     // Single R2 upload — prefix records the AI provider and whether the

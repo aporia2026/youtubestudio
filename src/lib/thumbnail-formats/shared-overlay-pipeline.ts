@@ -201,6 +201,161 @@ const KNOWN_FILTERS: ReadonlySet<ImageFilter> = new Set<ImageFilter>([
   'invert',
 ]);
 
+/** Allowlist of title-bar positions. Runtime Set form of the
+ *  `TitleBarPosition` union so the parser can guard without restating
+ *  the union members. */
+const KNOWN_TITLE_BAR_POSITIONS: ReadonlySet<TitleBarPosition> = new Set<TitleBarPosition>([
+  'top',
+  'bottom',
+  'overlay-top',
+  'overlay-bottom',
+]);
+
+/** Allowlist of title-bar alignments. Same shape as
+ *  `KNOWN_TITLE_BAR_POSITIONS` — runtime guard for the parser. */
+const KNOWN_TITLE_ALIGNMENTS: ReadonlySet<TitleAlignment> = new Set<TitleAlignment>([
+  'left',
+  'center',
+  'right',
+]);
+
+/** Hard cap on title / subtitle text length. Protects against pathological
+ *  long inputs from a stale client; Pango handles wrapping at the bar
+ *  width regardless. Identical to the per-cell label cap so the user's
+ *  mental model of "what fits" is the same across surfaces. */
+const TITLE_BAR_TEXT_MAX_LENGTH = 200;
+
+/**
+ * Request-body shape for the title bar. Almost identical to
+ * `TitleBarConfig` but carries font IDs (strings) instead of resolved
+ * `FontRef` pairs — the routes own font registry resolution so this
+ * shared module can stay pure (no disk reads, no registry lookups).
+ *
+ * Route layer pattern:
+ *   const payload = parseTitleBarRequestPayload(body.titleBar);
+ *   if (payload) {
+ *     titleBar = {
+ *       ...payload,
+ *       font: resolveFont(payload.fontId),
+ *       subtitleFont: payload.subtitleFontId ? resolveFont(payload.subtitleFontId) : undefined,
+ *     };
+ *   }
+ */
+export interface TitleBarRequestPayload {
+  text: string;
+  subtitle?: string;
+  position: TitleBarPosition;
+  heightFraction: number;
+  align: TitleAlignment;
+  subtitleAlign?: TitleAlignment | 'match-title';
+  backgroundColor: string;
+  backgroundOpacity: number;
+  textColor: string;
+  subtitleColor?: string;
+  fontId: string;
+  subtitleFontId?: string;
+  shadow?: TitleBarShadow;
+}
+
+/**
+ * Parse and validate a `TitleBarRequestPayload` from an untrusted request
+ * body. Returns the normalised payload or `null` when the input is
+ * absent, malformed, or trivially empty (no text → no overlay to draw).
+ *
+ * Validation is FORGIVING for malformed numerics + colour values
+ * (clamping / falling back to documented defaults), but STRICT for
+ * required structural fields:
+ *   - Unknown / missing position → null (no sensible default; format
+ *     panels MUST tell us where the bar goes)
+ *   - Unknown / missing align → null (same reason)
+ *   - Empty / non-string text → null (no overlay to draw)
+ *   - Non-string fontId → null (we can't resolve a font without it)
+ *
+ * For shadow: the sub-object is dropped (not the whole payload) if
+ * malformed, mirroring the same defensive shape `parsePostProcessConfig`
+ * uses for vignette / grain.
+ */
+export function parseTitleBarRequestPayload(raw: unknown): TitleBarRequestPayload | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+
+  const text = typeof r.text === 'string' ? r.text.trim() : '';
+  if (!text) return null;
+  const position = r.position;
+  if (typeof position !== 'string' || !KNOWN_TITLE_BAR_POSITIONS.has(position as TitleBarPosition)) {
+    return null;
+  }
+  const align = r.align;
+  if (typeof align !== 'string' || !KNOWN_TITLE_ALIGNMENTS.has(align as TitleAlignment)) {
+    return null;
+  }
+  const fontId = typeof r.fontId === 'string' ? r.fontId : '';
+  if (!fontId) return null;
+
+  const subtitle = typeof r.subtitle === 'string' ? r.subtitle.trim() : '';
+  const subtitleAlignRaw = r.subtitleAlign;
+  let subtitleAlign: TitleAlignment | 'match-title' = 'match-title';
+  if (typeof subtitleAlignRaw === 'string') {
+    if (subtitleAlignRaw === 'match-title' || KNOWN_TITLE_ALIGNMENTS.has(subtitleAlignRaw as TitleAlignment)) {
+      subtitleAlign = subtitleAlignRaw as TitleAlignment | 'match-title';
+    }
+  }
+
+  const heightFractionRaw = typeof r.heightFraction === 'number' ? r.heightFraction : 0.2;
+  const heightFraction = clampRange(heightFractionRaw, TITLE_BAR_MIN_HEIGHT_FRACTION, TITLE_BAR_MAX_HEIGHT_FRACTION);
+
+  const backgroundColor = safeHexColor(
+    typeof r.backgroundColor === 'string' ? r.backgroundColor : '#000000',
+    '#000000',
+  );
+  const backgroundOpacityRaw = typeof r.backgroundOpacity === 'number' ? r.backgroundOpacity : 1;
+  const backgroundOpacity = clampUnit(backgroundOpacityRaw);
+
+  const textColor = safeHexColor(typeof r.textColor === 'string' ? r.textColor : '#ffffff', '#ffffff');
+  const subtitleColor = typeof r.subtitleColor === 'string'
+    ? safeHexColor(r.subtitleColor, textColor)
+    : undefined;
+
+  const subtitleFontId = typeof r.subtitleFontId === 'string' && r.subtitleFontId
+    ? r.subtitleFontId
+    : undefined;
+
+  // Shadow sub-object — same forgiving shape vignette / grain use:
+  // malformed shadow is dropped, the rest of the payload survives.
+  let shadow: TitleBarShadow | undefined;
+  if (r.shadow && typeof r.shadow === 'object') {
+    const s = r.shadow as Record<string, unknown>;
+    const shadowOpacityRaw = typeof s.opacity === 'number' ? s.opacity : 0;
+    const shadowOpacity = clampUnit(shadowOpacityRaw);
+    // Only emit shadow when its opacity > 0; an opacity of 0 would
+    // short-circuit the renderer anyway.
+    if (shadowOpacity > 0) {
+      shadow = {
+        offsetPx: clampRange(typeof s.offsetPx === 'number' ? s.offsetPx : 2, 0, 48),
+        blurPx: clampRange(typeof s.blurPx === 'number' ? s.blurPx : 4, 0, 96),
+        opacity: shadowOpacity,
+        color: safeHexColor(typeof s.color === 'string' ? s.color : '#000000', '#000000'),
+      };
+    }
+  }
+
+  return {
+    text: text.slice(0, TITLE_BAR_TEXT_MAX_LENGTH),
+    subtitle: subtitle ? subtitle.slice(0, TITLE_BAR_TEXT_MAX_LENGTH) : undefined,
+    position: position as TitleBarPosition,
+    heightFraction,
+    align: align as TitleAlignment,
+    subtitleAlign,
+    backgroundColor,
+    backgroundOpacity,
+    textColor,
+    subtitleColor,
+    fontId,
+    subtitleFontId,
+    shadow,
+  };
+}
+
 /**
  * Parse and validate a `PostProcessConfig` from an untrusted request body
  * payload. Returns the normalised config or `null` when the input is

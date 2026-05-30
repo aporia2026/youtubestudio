@@ -16,8 +16,16 @@ import {
 import { applyNLevelsOverlays } from '@/lib/thumbnail-formats/n-levels-composite';
 import {
   parsePostProcessConfig,
+  parseTitleBarRequestPayload,
+  type FontRef,
   type PostProcessConfig,
+  type TitleBarConfig,
 } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
+import {
+  DEFAULT_FONT_ID,
+  findFontById,
+} from '@/lib/thumbnail-formats/topic-card-grid-fonts';
+import { fontFilePath } from '@/lib/thumbnail-formats/topic-card-grid-fonts-server';
 import { assertSafePublicUrl } from '@/lib/url-safety';
 import type { ThumbnailRegion } from '@/remotion/types';
 
@@ -74,6 +82,12 @@ interface ReqBody {
    *  `parsePostProcessConfig` — malformed payloads silently degrade to
    *  no-op rather than failing the request. */
   postProcess?: unknown;
+  /** Optional title-bar overlay: text + subtitle + position +
+   *  typography drawn over the AI image. When present, the LLM is told
+   *  `showBottomTitle: false` so it leaves edge-to-edge slices; the
+   *  overlay then paints over the top in the post-render pass. Parsed
+   *  + clamped server-side via `parseTitleBarRequestPayload`. */
+  titleBar?: unknown;
 }
 
 function requireKieKey(): string {
@@ -103,7 +117,13 @@ export async function POST(req: NextRequest) {
     const imageModelId = (body.imageModelId || DEFAULT_IMAGE_MODEL).trim();
     const count = Number(body.count);
     const levels = body.levels;
-    const showBottomTitle = body.showBottomTitle === true;
+    // Parse the title-bar overlay payload early. When present, the
+    // overlay paints over the AI image post-render — and we must tell
+    // the LLM NOT to bake its own bottom title bar (otherwise the
+    // canvas ends up with two title bars stacked). The body's
+    // `showBottomTitle` flag is forced to false in that case.
+    const titleBarPayload = parseTitleBarRequestPayload(body.titleBar);
+    const showBottomTitle = titleBarPayload ? false : body.showBottomTitle === true;
     // Default true: backwards-compatible with old clients that don't send
     // the field. Explicitly false strips labels globally at render time.
     const showLevelLabels = body.showLevelLabels !== false;
@@ -304,40 +324,90 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Optional post-process pass — filter / vignette / grain on top of
-    // the AI image. Skipped entirely when the parser returns null so
-    // requests without overlays pay zero post-render cost. When applied,
-    // the entire pipeline runs in one Sharp composite call inside
-    // `applyNLevelsOverlays` -> `applySharedOverlays`.
+    // Optional post-process pass + title-bar overlay. Both run in one
+    // Sharp composite call inside `applyNLevelsOverlays` ->
+    // `applySharedOverlays`. Skipped entirely when both parsers return
+    // null so requests without overlays pay zero post-render cost.
+    //
+    // Title bar resolution: convert fontId -> FontRef via the shared
+    // font registry. Unknown ids fall back to the default silently,
+    // mirroring the brightness / detail validation shape — invalid
+    // input degrades gracefully instead of failing the request.
     const postProcess: PostProcessConfig | null = parsePostProcessConfig(body.postProcess);
+    let titleBar: TitleBarConfig | undefined;
+    if (titleBarPayload) {
+      const resolveFont = (id: string): FontRef => {
+        const f = findFontById(id) ?? findFontById(DEFAULT_FONT_ID)!;
+        return { family: f.family, filePath: fontFilePath(f) };
+      };
+      titleBar = {
+        text: titleBarPayload.text,
+        subtitle: titleBarPayload.subtitle,
+        position: titleBarPayload.position,
+        heightFraction: titleBarPayload.heightFraction,
+        align: titleBarPayload.align,
+        subtitleAlign: titleBarPayload.subtitleAlign,
+        backgroundColor: titleBarPayload.backgroundColor,
+        backgroundOpacity: titleBarPayload.backgroundOpacity,
+        textColor: titleBarPayload.textColor,
+        subtitleColor: titleBarPayload.subtitleColor,
+        font: resolveFont(titleBarPayload.fontId),
+        subtitleFont: titleBarPayload.subtitleFontId ? resolveFont(titleBarPayload.subtitleFontId) : undefined,
+        shadow: titleBarPayload.shadow,
+      };
+    }
+
     let finalBytes = aiBytes;
-    if (postProcess) {
+    if (postProcess || titleBar) {
       const postStart = Date.now();
       finalBytes = await applyNLevelsOverlays({
         baseImage: aiBytes,
         layout,
-        postProcess,
+        postProcess: postProcess ?? undefined,
+        titleBar,
       });
-      logger.info('[n-levels post-process]', {
-        filter: postProcess.filter ?? null,
-        vignette_intensity: postProcess.vignette?.intensity ?? null,
-        vignette_radius: postProcess.vignette?.radius ?? null,
-        vignette_color: postProcess.vignette?.color ?? null,
-        grain_intensity: postProcess.grain?.intensity ?? null,
-        grain_size: postProcess.grain?.size ?? null,
-        grain_monochrome: postProcess.grain?.monochrome ?? null,
-        duration_ms: Date.now() - postStart,
-        ai_bytes: aiBytes.byteLength,
-        output_bytes: finalBytes.byteLength,
-      });
+      if (postProcess) {
+        logger.info('[n-levels post-process]', {
+          filter: postProcess.filter ?? null,
+          vignette_intensity: postProcess.vignette?.intensity ?? null,
+          vignette_radius: postProcess.vignette?.radius ?? null,
+          vignette_color: postProcess.vignette?.color ?? null,
+          grain_intensity: postProcess.grain?.intensity ?? null,
+          grain_size: postProcess.grain?.size ?? null,
+          grain_monochrome: postProcess.grain?.monochrome ?? null,
+          duration_ms: Date.now() - postStart,
+          ai_bytes: aiBytes.byteLength,
+          output_bytes: finalBytes.byteLength,
+        });
+      }
+      if (titleBar) {
+        logger.info('[n-levels title-overlay]', {
+          position: titleBar.position,
+          height_fraction: titleBar.heightFraction,
+          text_length: titleBar.text.length,
+          subtitle_length: titleBar.subtitle?.length ?? 0,
+          align: titleBar.align,
+          font_id: titleBarPayload!.fontId,
+          font_family: titleBar.font.family,
+          background_color: titleBar.backgroundColor,
+          background_opacity: titleBar.backgroundOpacity,
+          text_color: titleBar.textColor,
+          has_shadow: !!titleBar.shadow,
+          llm_baked_title: 'overridden-by-overlay',
+          duration_ms: Date.now() - postStart,
+          output_bytes: finalBytes.byteLength,
+        });
+      }
     }
 
     // Single R2 upload of the final bytes. The prefix records the AI
-    // provider AND whether post-process ran so an audit can tell at a
-    // glance which artifacts have overlays applied. R2 key shape mirrors
-    // the topic-card-grid sibling's `format-grid-{kie,openai,composite}`
+    // provider AND whether any post-render pass (post-process or
+    // title-bar overlay) ran so an audit can tell at a glance which
+    // artifacts have overlays applied. R2 key shape mirrors the
+    // topic-card-grid sibling's `format-grid-{kie,openai,composite}`
     // convention.
-    const r2Prefix = postProcess
+    const anyOverlay = !!(postProcess || titleBar);
+    const r2Prefix = anyOverlay
       ? 'thumbnails/format-n-levels-post'
       : providerSlug === 'kie'
         ? 'thumbnails/format-n-levels-kie'
@@ -349,6 +419,7 @@ export async function POST(req: NextRequest) {
       r2_key: r2Key,
       final_bytes: finalBytes.byteLength,
       post_process_applied: !!postProcess,
+      title_overlay_applied: !!titleBar,
       provider_slug: providerSlug,
     });
 

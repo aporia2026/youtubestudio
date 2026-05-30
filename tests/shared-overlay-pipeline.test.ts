@@ -12,6 +12,7 @@ import {
   escapePangoText,
   isHexColor,
   parsePostProcessConfig,
+  parseTitleBarRequestPayload,
   safeHexColor,
   titleBarRect,
   type FontRef,
@@ -509,6 +510,139 @@ describe('parsePostProcessConfig', () => {
     expect(out?.filter).toBe('invert');
     expect(out?.vignette).toBeUndefined();
     expect(out?.grain).toBeUndefined();
+  });
+});
+
+// ─── Title bar request-body parser ──────────────────────────────────────────
+
+const MINIMAL_TITLE_BAR_PAYLOAD = {
+  text: 'HELLO',
+  position: 'bottom',
+  heightFraction: 0.2,
+  align: 'center',
+  backgroundColor: '#000000',
+  backgroundOpacity: 1,
+  textColor: '#ffffff',
+  fontId: 'patrick-hand',
+};
+
+describe('parseTitleBarRequestPayload', () => {
+  it('returns null for non-objects', () => {
+    expect(parseTitleBarRequestPayload(null)).toBeNull();
+    expect(parseTitleBarRequestPayload(undefined)).toBeNull();
+    expect(parseTitleBarRequestPayload('not an object')).toBeNull();
+    expect(parseTitleBarRequestPayload(42)).toBeNull();
+  });
+
+  it('returns null when text is empty', () => {
+    expect(parseTitleBarRequestPayload({ ...MINIMAL_TITLE_BAR_PAYLOAD, text: '' })).toBeNull();
+    expect(parseTitleBarRequestPayload({ ...MINIMAL_TITLE_BAR_PAYLOAD, text: '   ' })).toBeNull();
+  });
+
+  it('returns null when fontId is missing', () => {
+    const { fontId: _f, ...rest } = MINIMAL_TITLE_BAR_PAYLOAD;
+    expect(parseTitleBarRequestPayload(rest)).toBeNull();
+  });
+
+  it('returns null for unknown position', () => {
+    expect(
+      parseTitleBarRequestPayload({ ...MINIMAL_TITLE_BAR_PAYLOAD, position: 'sideways' }),
+    ).toBeNull();
+  });
+
+  it('returns null for unknown align', () => {
+    expect(
+      parseTitleBarRequestPayload({ ...MINIMAL_TITLE_BAR_PAYLOAD, align: 'diagonal' }),
+    ).toBeNull();
+  });
+
+  it('accepts the minimal valid payload', () => {
+    const out = parseTitleBarRequestPayload(MINIMAL_TITLE_BAR_PAYLOAD);
+    expect(out).not.toBeNull();
+    expect(out?.text).toBe('HELLO');
+    expect(out?.position).toBe('bottom');
+    expect(out?.align).toBe('center');
+    expect(out?.heightFraction).toBe(0.2);
+    expect(out?.backgroundColor).toBe('#000000');
+    expect(out?.backgroundOpacity).toBe(1);
+    expect(out?.textColor).toBe('#ffffff');
+    expect(out?.fontId).toBe('patrick-hand');
+    // No subtitle provided; default subtitleAlign should still resolve
+    // even though there's no subtitle to apply it to.
+    expect(out?.subtitleAlign).toBe('match-title');
+    expect(out?.subtitle).toBeUndefined();
+    expect(out?.shadow).toBeUndefined();
+  });
+
+  it('clamps heightFraction to the documented range', () => {
+    const low = parseTitleBarRequestPayload({ ...MINIMAL_TITLE_BAR_PAYLOAD, heightFraction: 0 });
+    expect(low?.heightFraction).toBe(0.05);
+    const high = parseTitleBarRequestPayload({ ...MINIMAL_TITLE_BAR_PAYLOAD, heightFraction: 2 });
+    expect(high?.heightFraction).toBe(0.5);
+  });
+
+  it('clamps backgroundOpacity to [0, 1]', () => {
+    const out = parseTitleBarRequestPayload({
+      ...MINIMAL_TITLE_BAR_PAYLOAD,
+      backgroundOpacity: 5,
+    });
+    expect(out?.backgroundOpacity).toBe(1);
+  });
+
+  it('falls back colors to documented defaults when invalid', () => {
+    const out = parseTitleBarRequestPayload({
+      ...MINIMAL_TITLE_BAR_PAYLOAD,
+      backgroundColor: 'garbage',
+      textColor: 'still-garbage',
+    });
+    expect(out?.backgroundColor).toBe('#000000');
+    expect(out?.textColor).toBe('#ffffff');
+  });
+
+  it('drops shadow when opacity is 0', () => {
+    const out = parseTitleBarRequestPayload({
+      ...MINIMAL_TITLE_BAR_PAYLOAD,
+      shadow: { offsetPx: 2, blurPx: 4, opacity: 0, color: '#000000' },
+    });
+    expect(out?.shadow).toBeUndefined();
+  });
+
+  it('parses a valid shadow sub-object', () => {
+    const out = parseTitleBarRequestPayload({
+      ...MINIMAL_TITLE_BAR_PAYLOAD,
+      shadow: { offsetPx: 3, blurPx: 5, opacity: 0.5, color: '#000000' },
+    });
+    expect(out?.shadow).toEqual({
+      offsetPx: 3,
+      blurPx: 5,
+      opacity: 0.5,
+      color: '#000000',
+    });
+  });
+
+  it('truncates text and subtitle to the documented cap', () => {
+    const longText = 'A'.repeat(500);
+    const out = parseTitleBarRequestPayload({
+      ...MINIMAL_TITLE_BAR_PAYLOAD,
+      text: longText,
+      subtitle: longText,
+    });
+    expect(out?.text.length).toBe(200);
+    expect(out?.subtitle?.length).toBe(200);
+  });
+
+  it('accepts subtitle and subtitleFontId', () => {
+    const out = parseTitleBarRequestPayload({
+      ...MINIMAL_TITLE_BAR_PAYLOAD,
+      subtitle: 'sub',
+      subtitleFontId: 'anton',
+      subtitleColor: '#ffff00',
+      subtitleAlign: 'left',
+    });
+    expect(out?.subtitle).toBe('sub');
+    expect(out?.subtitleFontId).toBe('anton');
+    expect(out?.subtitleColor).toBe('#ffff00');
+    expect(out?.subtitleAlign).toBe('left');
   });
 });
 
