@@ -657,6 +657,38 @@ export function FlexIconGridLivePreview({
             onClick={onCellClick}
           />
         ))}
+
+        {/* Phase 4.37: vignette overlay — rendered LAST so it sits
+            on top of cells + title bar. Uses an SVG
+            `<radialGradient>` matching the composer's
+            `buildVignetteOverlay` SVG so on-screen lines up with
+            the rendered PNG. */}
+        {config.vignette && (
+          <>
+            <defs>
+              <radialGradient id="fg-preview-vignette" cx="50%" cy="50%" r="50%">
+                <stop
+                  offset={`${Math.round(config.vignette.radius * 100)}%`}
+                  stopColor={config.vignette.color}
+                  stopOpacity={0}
+                />
+                <stop
+                  offset="100%"
+                  stopColor={config.vignette.color}
+                  stopOpacity={config.vignette.intensity}
+                />
+              </radialGradient>
+            </defs>
+            <rect
+              x={0}
+              y={0}
+              width={config.width}
+              height={config.height}
+              fill="url(#fg-preview-vignette)"
+              pointerEvents="none"
+            />
+          </>
+        )}
       </svg>
     </div>
   );
@@ -1307,6 +1339,97 @@ function EmojiContent({
   );
 }
 
+/** Phase 4.37: stable id per filter mode so multiple cells
+ *  sharing a filter de-duplicate the `<filter>` def. */
+function imageFilterId(mode: string): string {
+  return `fg-preview-image-filter-${mode}`;
+}
+
+/**
+ * Phase 4.37: SVG filter definition for each image filter mode.
+ * Cross-browser (Chromium / Firefox / Safari) since SVG `<filter>`
+ * elements are part of the SVG spec; the previous CSS `filter` on
+ * `<image>` wasn't supported in Safari's WebKit. Each primitive is
+ * tuned to visually match the server-side Sharp output as closely
+ * as possible (see `buildUploadOverlay` in the composer).
+ */
+function PreviewImageFilter({
+  id,
+  mode,
+}: {
+  id: string;
+  mode:
+    | 'grayscale'
+    | 'sepia'
+    | 'high-contrast'
+    | 'low-contrast'
+    | 'invert';
+}) {
+  if (mode === 'grayscale') {
+    // Luminosity grayscale (matches Sharp's .greyscale()).
+    return (
+      <filter id={id}>
+        <feColorMatrix
+          type="matrix"
+          values="0.2126 0.7152 0.0722 0 0
+                  0.2126 0.7152 0.0722 0 0
+                  0.2126 0.7152 0.0722 0 0
+                  0      0      0      1 0"
+        />
+      </filter>
+    );
+  }
+  if (mode === 'sepia') {
+    // Sepia toned to match Sharp's `.greyscale().tint({r:112,g:66,b:20})`.
+    // Slightly warmer + brighter than the canonical sepia matrix.
+    return (
+      <filter id={id}>
+        <feColorMatrix
+          type="matrix"
+          values="0.39 0.77 0.19 0 0
+                  0.35 0.69 0.17 0 0
+                  0.27 0.53 0.13 0 0
+                  0    0    0    1 0"
+        />
+      </filter>
+    );
+  }
+  if (mode === 'high-contrast') {
+    // Match Sharp's `.linear(1.4, -50)` per channel.
+    return (
+      <filter id={id}>
+        <feComponentTransfer>
+          <feFuncR type="linear" slope={1.4} intercept={-0.196} />
+          <feFuncG type="linear" slope={1.4} intercept={-0.196} />
+          <feFuncB type="linear" slope={1.4} intercept={-0.196} />
+        </feComponentTransfer>
+      </filter>
+    );
+  }
+  if (mode === 'low-contrast') {
+    // Match Sharp's `.linear(0.65, 45)`.
+    return (
+      <filter id={id}>
+        <feComponentTransfer>
+          <feFuncR type="linear" slope={0.65} intercept={0.176} />
+          <feFuncG type="linear" slope={0.65} intercept={0.176} />
+          <feFuncB type="linear" slope={0.65} intercept={0.176} />
+        </feComponentTransfer>
+      </filter>
+    );
+  }
+  // invert
+  return (
+    <filter id={id}>
+      <feComponentTransfer>
+        <feFuncR type="table" tableValues="1 0" />
+        <feFuncG type="table" tableValues="1 0" />
+        <feFuncB type="table" tableValues="1 0" />
+      </feComponentTransfer>
+    </filter>
+  );
+}
+
 function UploadContent({
   url,
   geom,
@@ -1376,34 +1499,28 @@ function UploadContent({
           )}
         </clipPath>
       </defs>
+      {/* Phase 4.36 → 4.37: image filter switched from CSS `filter`
+          on `<image>` (which Safari's WebKit doesn't honour) to SVG
+          `<filter>` elements referenced by attribute. Each filter
+          maps to feColorMatrix / feComponentTransfer primitives —
+          cross-browser, no fallback needed. The filter id is shared
+          per mode so multiple filtered cells dedupe. */}
+      {filter && filter !== 'none' && (
+        <defs>
+          <PreviewImageFilter id={imageFilterId(filter)} mode={filter} />
+        </defs>
+      )}
       <image
         href={url}
         x={geom.shapeX}
         y={geom.shapeY}
         width={w}
         height={h}
-        // Phase 4.34: SVG preserveAspectRatio maps:
-        //   - 'cover' → 'xMidYMid slice' (crop to fill)
-        //   - 'contain' → 'xMidYMid meet' (whole image visible)
-        //   - 'fill' → 'none' (stretch)
         preserveAspectRatio={
           fit === 'contain' ? 'xMidYMid meet' : fit === 'fill' ? 'none' : 'xMidYMid slice'
         }
         clipPath={`url(#${clipId})`}
-        // Phase 4.36: CSS filter approximates Sharp's server-side
-        // chain. SVG <image> supports CSS `filter` natively, so
-        // this just sets the `style` attribute with the appropriate
-        // CSS function. Sepia uses a 100% sepia + brightness boost
-        // to match Sharp's tint-on-greyscale approach.
-        style={(() => {
-          if (!filter || filter === 'none') return undefined;
-          if (filter === 'grayscale') return { filter: 'grayscale(1)' };
-          if (filter === 'sepia') return { filter: 'sepia(1) brightness(0.9)' };
-          if (filter === 'high-contrast') return { filter: 'contrast(1.4)' };
-          if (filter === 'low-contrast') return { filter: 'contrast(0.65)' };
-          if (filter === 'invert') return { filter: 'invert(1)' };
-          return undefined;
-        })()}
+        filter={filter && filter !== 'none' ? `url(#${imageFilterId(filter)})` : undefined}
       />
     </>
   );

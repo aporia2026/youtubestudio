@@ -583,6 +583,19 @@ export interface FlexIconGridConfig {
    *  own `cellStroke` field is `undefined`. Cells with an explicit
    *  `null` opt out. Defaults to `null` (no outer stroke). */
   defaultCellStroke?: { color: string; thickness: number } | null;
+  /** Phase 4.37: optional vignette overlay — a radial gradient
+   *  darkening the canvas edges. Rendered AFTER all cells + title
+   *  bar so the effect lands on top of everything. Off by default.
+   *  - `color` is the edge-most colour (typically black-ish).
+   *  - `intensity` is the edge opacity (0..1) at the corners.
+   *  - `radius` controls where the gradient starts fading in,
+   *    as a fraction of canvas half-diagonal (0.5..1.0). Lower =
+   *    tighter centre exposed; higher = subtler edge dimming. */
+  vignette?: {
+    color: string;
+    intensity: number;
+    radius: number;
+  };
   cells: FlexIconCell[];
   titleBar?: TitleBarSpec;
 }
@@ -1344,6 +1357,21 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
   }
   const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
   if (!defaultShadowResult.ok) return defaultShadowResult;
+  // Phase 4.37: vignette shape check.
+  if (config.vignette !== undefined) {
+    if (typeof config.vignette !== 'object' || config.vignette === null) {
+      return { ok: false, reason: 'vignette must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.vignette.color)) {
+      return { ok: false, reason: 'vignette.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.vignette.intensity) || config.vignette.intensity < 0 || config.vignette.intensity > 1) {
+      return { ok: false, reason: 'vignette.intensity must be a number in [0, 1]' };
+    }
+    if (!Number.isFinite(config.vignette.radius) || config.vignette.radius < 0.3 || config.vignette.radius > 1.5) {
+      return { ok: false, reason: 'vignette.radius must be a number in [0.3, 1.5]' };
+    }
+  }
   // Phase 4.31: defaultCellStroke gets the same hex + non-negative
   // thickness check as the per-cell version so a config-level
   // garbage value is caught before reaching the renderer.
@@ -1562,6 +1590,9 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     // Phase 4.30: defaultCellStroke uses the same null/undefined
     // pattern as defaultShadow.
     defaultCellStroke: parseCellStroke(o.defaultCellStroke),
+    // Phase 4.37: vignette overlay parsed tolerantly — drops the
+    // field when required keys are missing or out-of-range.
+    vignette: parseVignette(o.vignette),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1622,6 +1653,31 @@ function parseRing(v: unknown, fallback: RingStyle): RingStyle {
     color: stringOr(o.color, fallback?.color ?? '#0a0a0a'),
     thickness: numberOr(o.thickness, fallback?.thickness ?? 6),
     style: o.style === 'dashed' ? 'dashed' : 'solid',
+  };
+}
+
+/** Phase 4.37: tolerant vignette parser. Returns undefined when
+ *  the object is missing required keys or values are out of range.
+ *  Color falls back to '#000000' (the typical edge tint). */
+function parseVignette(
+  v: unknown,
+): { color: string; intensity: number; radius: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const intensity =
+    typeof o.intensity === 'number' && Number.isFinite(o.intensity)
+      ? Math.max(0, Math.min(1, o.intensity))
+      : undefined;
+  const radius =
+    typeof o.radius === 'number' && Number.isFinite(o.radius)
+      ? Math.max(0.3, Math.min(1.5, o.radius))
+      : undefined;
+  if (intensity === undefined || radius === undefined) return undefined;
+  if (intensity === 0) return undefined;
+  return {
+    color: stringOr(o.color, '#000000'),
+    intensity,
+    radius,
   };
 }
 

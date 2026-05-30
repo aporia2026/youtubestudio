@@ -1689,6 +1689,46 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.37 — vignette overlay', () => {
+  it('round-trips vignette through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.vignette = { color: '#1a0a0a', intensity: 0.6, radius: 0.55 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.vignette).toEqual({ color: '#1a0a0a', intensity: 0.6, radius: 0.55 });
+  });
+  it('clamps vignette intensity to [0, 1] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      vignette: { color: '#000000', intensity: 2.5, radius: 0.6 },
+    });
+    expect(reparsed.vignette?.intensity).toBe(1);
+  });
+  it('clamps vignette radius to [0.3, 1.5] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      vignette: { color: '#000000', intensity: 0.5, radius: 0.1 },
+    });
+    expect(reparsed.vignette?.radius).toBe(0.3);
+  });
+  it('drops vignette with zero intensity (renders as no-op)', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      vignette: { color: '#000000', intensity: 0, radius: 0.6 },
+    });
+    expect(reparsed.vignette).toBeUndefined();
+  });
+  it('rejects malformed vignette.color on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.vignette = { color: 'black', intensity: 0.5, radius: 0.6 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/vignette\.color/);
+  });
+});
+
 describe('Phase 4.36 — image filter modes', () => {
   it('round-trips upload filter through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

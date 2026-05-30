@@ -327,6 +327,14 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (titleOverlays) overlays.push(...titleOverlays);
     }
 
+    // 3.5) Phase 4.37: vignette overlay — pushed LAST so it sits on
+    //      top of cells + title bar, darkening the canvas corners
+    //      uniformly. A single full-canvas radial-gradient PNG.
+    if (config.vignette) {
+      const vignetteOverlay = await buildVignetteOverlay(config);
+      if (vignetteOverlay) overlays.push(vignetteOverlay);
+    }
+
     // 4) Single composite pass — one decode of the base, one encode of
     //    the output, regardless of how many cells / overlays.
     const compositeStart = Date.now();
@@ -995,10 +1003,15 @@ async function buildUploadOverlay(
   if (filter === 'grayscale') {
     imagePipeline = imagePipeline.greyscale();
   } else if (filter === 'sepia') {
-    // Standard sepia tone matrix on greyscale + brown tint.
-    imagePipeline = imagePipeline
-      .greyscale()
-      .tint({ r: 112, g: 66, b: 20 });
+    // Phase 4.36 → 4.37: standard sepia tone via Sharp's recomb
+    // matrix — matches the SVG feColorMatrix the preview uses for
+    // visual parity. The previous .greyscale().tint() pair came
+    // out noticeably darker than the preview's CSS+filter pipeline.
+    imagePipeline = imagePipeline.recomb([
+      [0.39, 0.77, 0.19],
+      [0.35, 0.69, 0.17],
+      [0.27, 0.53, 0.13],
+    ]);
   } else if (filter === 'high-contrast') {
     // .linear(a, b) applies a*x + b per channel. a=1.4 b=-50
     // gives a noticeable contrast boost without crushing midtones.
@@ -1762,6 +1775,43 @@ async function buildBadgeOverlay(
     left = cellRect.x + cellRect.w - pillW - inset;
   }
   return { input: composed, top: Math.round(top), left: Math.round(left) };
+}
+
+// ─── Vignette overlay (Phase 4.37) ──────────────────────────────────────────
+
+/**
+ * Phase 4.37: build a full-canvas radial-gradient PNG overlay for
+ * the vignette effect. The gradient is centred at canvas mid; the
+ * `radius` value controls where the dimming starts to fade in (as a
+ * fraction of the canvas half-diagonal). Below `radius * halfDiag`
+ * the pixels are fully transparent (no dimming); above, they fade
+ * to the vignette colour at the configured intensity.
+ */
+async function buildVignetteOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const v = config.vignette;
+  if (!v) return null;
+  const { width, height } = config;
+  const halfDiag = Math.sqrt(width * width + height * height) / 2;
+  // SVG <radialGradient> centred at the canvas centre. `r` is the
+  // gradient's radius; stops define the transparency ramp.
+  const startStop = v.radius * halfDiag;
+  const endStop = halfDiag;
+  // Express as percentages of `r` (= `endStop`) so SVG offsets are
+  // normalised to the gradient's own coordinate space.
+  const startPct = Math.round((startStop / endStop) * 100);
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<defs><radialGradient id="vg" cx="50%" cy="50%" r="50%">`,
+    `<stop offset="${startPct}%" stop-color="${escapeSvgText(v.color)}" stop-opacity="0"/>`,
+    `<stop offset="100%" stop-color="${escapeSvgText(v.color)}" stop-opacity="${v.intensity}"/>`,
+    `</radialGradient></defs>`,
+    `<rect width="${width}" height="${height}" fill="url(#vg)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0 };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

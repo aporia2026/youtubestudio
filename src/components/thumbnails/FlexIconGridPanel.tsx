@@ -1834,25 +1834,28 @@ export function FlexIconGridPanel({
                           ? {
                               type: 'upload',
                               url: selectedCell.content.type === 'upload' ? selectedCell.content.url : '',
-                              // Phase 4.35: carry fit across the
-                              // upload ↔ ai-sticker boundary so a
-                              // user toggling between modes doesn't
-                              // lose their fit preference.
-                              ...(selectedCell.content.type === 'upload' && selectedCell.content.fit
+                              // Phase 4.35 → 4.37: carry BOTH fit
+                              // AND filter across the upload ↔
+                              // ai-sticker boundary so toggling
+                              // between modes doesn't lose either
+                              // preference.
+                              ...((selectedCell.content.type === 'upload' || selectedCell.content.type === 'ai-sticker') && selectedCell.content.fit
                                 ? { fit: selectedCell.content.fit }
-                                : selectedCell.content.type === 'ai-sticker' && selectedCell.content.fit
-                                  ? { fit: selectedCell.content.fit }
-                                  : {}),
+                                : {}),
+                              ...((selectedCell.content.type === 'upload' || selectedCell.content.type === 'ai-sticker') && selectedCell.content.filter
+                                ? { filter: selectedCell.content.filter }
+                                : {}),
                             }
                           : t === 'ai-sticker'
                             ? {
                                 type: 'ai-sticker',
                                 prompt: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.prompt : '',
-                                ...(selectedCell.content.type === 'ai-sticker' && selectedCell.content.fit
+                                ...((selectedCell.content.type === 'upload' || selectedCell.content.type === 'ai-sticker') && selectedCell.content.fit
                                   ? { fit: selectedCell.content.fit }
-                                  : selectedCell.content.type === 'upload' && selectedCell.content.fit
-                                    ? { fit: selectedCell.content.fit }
-                                    : {}),
+                                  : {}),
+                                ...((selectedCell.content.type === 'upload' || selectedCell.content.type === 'ai-sticker') && selectedCell.content.filter
+                                  ? { filter: selectedCell.content.filter }
+                                  : {}),
                               }
                             : { type: 'text-only' };
                   updateCell(selectedCell.index, { content: initial });
@@ -3595,6 +3598,91 @@ export function FlexIconGridPanel({
                       aria-label="Default label shadow colour"
                       title="Shadow colour"
                       style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
+            {/* Phase 4.37: vignette overlay. A subtle radial-gradient
+                darkening at the canvas edges; common in modern
+                editorial thumbnails. Off by default. Painted AFTER
+                cells + title bar so the effect lands on top of
+                everything. */}
+            <div>
+              <label style={labelStyle}>
+                Vignette
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (darkens canvas corners)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.vignette}
+                  onClick={() =>
+                    updateConfig({
+                      vignette: config.vignette
+                        ? undefined
+                        : { color: '#000000', intensity: 0.45, radius: 0.6 },
+                    })
+                  }
+                  style={chipStyle(!!config.vignette)}
+                >
+                  {config.vignette ? 'Vignette on' : 'Vignette off'}
+                </button>
+                {config.vignette && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.vignette.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          vignette: { ...config.vignette!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Vignette colour"
+                      title="Edge colour (typically black)"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={config.vignette.intensity}
+                      onChange={(e) =>
+                        updateConfig({
+                          vignette: { ...config.vignette!, intensity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Vignette intensity"
+                      title={`Strength: ${Math.round(config.vignette.intensity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 24 }}>Radius</span>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={1}
+                      step={0.05}
+                      value={config.vignette.radius}
+                      onChange={(e) =>
+                        updateConfig({
+                          vignette: { ...config.vignette!, radius: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Vignette radius"
+                      title={`Radius: ${Math.round(config.vignette.radius * 100)}% (lower = tighter centre)`}
+                      style={{ width: 100 }}
                     />
                   </>
                 )}
@@ -5648,6 +5736,107 @@ function ImageFitPicker({
 }
 
 /**
+ * Phase 4.37: 16×16 SVG swatch that renders a small reference
+ * gradient with the picked filter applied. Lets the user see at a
+ * glance what each filter does without having to apply each one.
+ * The gradient covers warm (red), neutral (green), and cool (blue)
+ * hues plus a vertical lightness ramp so every filter has
+ * something visible to operate on.
+ */
+function FilterSwatch({
+  mode,
+}: {
+  mode: 'none' | 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert';
+}) {
+  // Filter id is local to this swatch so multiple swatches don't
+  // collide. Hash the mode into the id; same id is fine across
+  // multiple instances since they all use identical filter defs.
+  const id = `fg-filter-swatch-${mode}`;
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <defs>
+        {/* Reference gradient: 3-stop horizontal red→green→blue plus
+            a vertical lighten so each filter has chroma + lightness
+            to act on. */}
+        <linearGradient id={`${id}-h`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#e53e3e" />
+          <stop offset="50%" stopColor="#48bb78" />
+          <stop offset="100%" stopColor="#3182ce" />
+        </linearGradient>
+        <linearGradient id={`${id}-v`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(255,255,255,0.4)" />
+          <stop offset="100%" stopColor="rgba(0,0,0,0.4)" />
+        </linearGradient>
+        {mode === 'grayscale' && (
+          <filter id={id}>
+            <feColorMatrix
+              type="matrix"
+              values="0.2126 0.7152 0.0722 0 0
+                      0.2126 0.7152 0.0722 0 0
+                      0.2126 0.7152 0.0722 0 0
+                      0      0      0      1 0"
+            />
+          </filter>
+        )}
+        {mode === 'sepia' && (
+          <filter id={id}>
+            <feColorMatrix
+              type="matrix"
+              values="0.39 0.77 0.19 0 0
+                      0.35 0.69 0.17 0 0
+                      0.27 0.53 0.13 0 0
+                      0    0    0    1 0"
+            />
+          </filter>
+        )}
+        {mode === 'high-contrast' && (
+          <filter id={id}>
+            <feComponentTransfer>
+              <feFuncR type="linear" slope={1.4} intercept={-0.196} />
+              <feFuncG type="linear" slope={1.4} intercept={-0.196} />
+              <feFuncB type="linear" slope={1.4} intercept={-0.196} />
+            </feComponentTransfer>
+          </filter>
+        )}
+        {mode === 'low-contrast' && (
+          <filter id={id}>
+            <feComponentTransfer>
+              <feFuncR type="linear" slope={0.65} intercept={0.176} />
+              <feFuncG type="linear" slope={0.65} intercept={0.176} />
+              <feFuncB type="linear" slope={0.65} intercept={0.176} />
+            </feComponentTransfer>
+          </filter>
+        )}
+        {mode === 'invert' && (
+          <filter id={id}>
+            <feComponentTransfer>
+              <feFuncR type="table" tableValues="1 0" />
+              <feFuncG type="table" tableValues="1 0" />
+              <feFuncB type="table" tableValues="1 0" />
+            </feComponentTransfer>
+          </filter>
+        )}
+      </defs>
+      <g filter={mode === 'none' ? undefined : `url(#${id})`}>
+        <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-h)`} />
+        <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-v)`} />
+      </g>
+      {/* Subtle outline so the swatch reads as a tile, not paint
+          inside the chip. */}
+      <rect
+        x={0.5}
+        y={0.5}
+        width={15}
+        height={15}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity={0.2}
+      />
+    </svg>
+  );
+}
+
+/**
  * Phase 4.36: chip-row picker for `upload`/`ai-sticker` cell
  * content filter mode. `none` is the no-filter option; the others
  * map to Sharp-side server filters AND CSS preview filters.
@@ -5682,7 +5871,7 @@ function ImageFilterPicker({
               type="button"
               aria-pressed={active}
               onClick={() => onChange(opt.value)}
-              style={chipStyle(active)}
+              style={{ ...chipStyle(active), display: 'inline-flex', alignItems: 'center', gap: 6 }}
               title={
                 opt.value === 'none'
                   ? 'No filter — render the image as-is'
@@ -5697,6 +5886,7 @@ function ImageFilterPicker({
                           : 'Colour inversion'
               }
             >
+              <FilterSwatch mode={opt.value} />
               {opt.label}
             </button>
           );
