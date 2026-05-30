@@ -112,6 +112,10 @@ export interface TopicCardGridDraftState {
    *  before the Post-process section shipped restore with this field
    *  undefined, which the panel treats as "all effects off". */
   postProcess?: PanelPostProcessState;
+  /** Title-bar overlay (text + position + typography + optional shadow).
+   *  Drafts saved before the Title bar section shipped restore with
+   *  this field undefined, which the panel treats as "title bar off". */
+  titleBar?: PanelTitleBarState;
 }
 
 /** Image-filter ids understood by the post-process pipeline. Mirrored
@@ -164,6 +168,46 @@ const DEFAULT_POST_PROCESS_STATE: PanelPostProcessState = {
   grainMonochrome: true,
 };
 
+/** Title-bar position. Mirrored from `TitleBarPosition` in
+ *  `src/lib/thumbnail-formats/shared-overlay-pipeline.ts` so this
+ *  client component doesn't depend on a server-only module. */
+export type PanelTitleBarPosition = 'top' | 'bottom' | 'overlay-top' | 'overlay-bottom';
+export type PanelTitleAlignment = 'left' | 'center' | 'right';
+
+/** Panel-side shape for the Title bar section's state. Flat fields
+ *  (no nested shadow / typography sub-objects) for the same reasons
+ *  the Post-process state is flat — granular fields are easier to
+ *  bind to individual controls and survive partial JSON restore from
+ *  older drafts cleanly. The wire-shape builder collapses these back
+ *  into the server's `TitleBarRequestPayload`. */
+export interface PanelTitleBarState {
+  enabled: boolean;
+  text: string;
+  subtitle: string;
+  position: PanelTitleBarPosition;
+  /** 0.05 - 0.5 (fraction of canvas height). */
+  heightFraction: number;
+  align: PanelTitleAlignment;
+  /** `'match-title'` means "use the title alignment". */
+  subtitleAlign: PanelTitleAlignment | 'match-title';
+  backgroundColor: string;
+  /** 0 - 1. */
+  backgroundOpacity: number;
+  textColor: string;
+  subtitleColor: string;
+  fontId: string;
+  /** Empty string means "use the title font". */
+  subtitleFontId: string;
+  shadowEnabled: boolean;
+  /** 0 - 48 px. */
+  shadowOffsetPx: number;
+  /** 0 - 96 px (Sharp converts to a Gaussian sigma internally). */
+  shadowBlurPx: number;
+  /** 0 - 1. */
+  shadowOpacity: number;
+  shadowColor: string;
+}
+
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const GRID_PRESETS: { label: string; rows: number; cols: number }[] = [
@@ -199,6 +243,34 @@ const FONT_ID_PREF_KEY = 'topic_card_grid_default_font_id';
  *  blob is cheaper to read / write than nine keys, and the panel only
  *  ever reads / writes the whole object, never individual fields. */
 const POST_PROCESS_PREF_KEY = 'topic_card_grid_default_post_process';
+/** Single localStorage key for the whole Title-bar section. Same shape
+ *  as POST_PROCESS_PREF_KEY — one JSON blob covers eighteen fields. */
+const TITLE_BAR_PREF_KEY = 'topic_card_grid_default_title_bar';
+
+/** Default Title-bar state. Off by default. When the user flips the
+ *  toggle on, sensible defaults are pre-filled so they see a working
+ *  bar immediately rather than landing on an invisible 0-opacity
+ *  empty rect. */
+const DEFAULT_TITLE_BAR_STATE: PanelTitleBarState = {
+  enabled: false,
+  text: '',
+  subtitle: '',
+  position: 'bottom',
+  heightFraction: 0.2,
+  align: 'center',
+  subtitleAlign: 'match-title',
+  backgroundColor: '#000000',
+  backgroundOpacity: 1,
+  textColor: '#ffffff',
+  subtitleColor: '#ffffff',
+  fontId: DEFAULT_FONT_ID,
+  subtitleFontId: '',
+  shadowEnabled: false,
+  shadowOffsetPx: 2,
+  shadowBlurPx: 4,
+  shadowOpacity: 0.5,
+  shadowColor: '#000000',
+};
 
 /** Label-size multiplier bounds. Mirrored from
  *  `LABEL_SIZE_MIN` / `LABEL_SIZE_MAX` in
@@ -327,6 +399,124 @@ function buildPostProcessRequestPayload(s: PanelPostProcessState): {
   }
   if (!out.filter && !out.vignette && !out.grain) return undefined;
   return out;
+}
+
+/** Title-bar position chips. Labels lean human ("Top overlay" vs the
+ *  internal "overlay-top") so a lazy user doesn't need the docs to
+ *  understand which option produces which look. */
+const TITLE_BAR_POSITION_OPTIONS: { value: PanelTitleBarPosition; label: string }[] = [
+  { value: 'top', label: 'Top' },
+  { value: 'bottom', label: 'Bottom' },
+  { value: 'overlay-top', label: 'Top overlay' },
+  { value: 'overlay-bottom', label: 'Bottom overlay' },
+];
+
+const TITLE_ALIGN_OPTIONS: { value: PanelTitleAlignment; label: string }[] = [
+  { value: 'left', label: 'Left' },
+  { value: 'center', label: 'Center' },
+  { value: 'right', label: 'Right' },
+];
+
+/** Coerce a raw localStorage JSON read into a `PanelTitleBarState`.
+ *  Defends against partial / corrupt payloads by clamping every numeric
+ *  field, dropping unknown position / alignment ids, and falling back
+ *  invalid hex colours to documented defaults. Same forgiving shape
+ *  the server's `parseTitleBarRequestPayload` uses. */
+function coerceTitleBarState(raw: unknown): PanelTitleBarState {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_TITLE_BAR_STATE };
+  const r = raw as Record<string, unknown>;
+  const clamp = (n: unknown, lo: number, hi: number, fb: number): number => {
+    if (typeof n !== 'number' || !Number.isFinite(n)) return fb;
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  };
+  const hex = (v: unknown, fb: string): string =>
+    typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : fb;
+  const positionValid = r.position === 'top' || r.position === 'bottom'
+    || r.position === 'overlay-top' || r.position === 'overlay-bottom';
+  const alignValid = (v: unknown): v is PanelTitleAlignment =>
+    v === 'left' || v === 'center' || v === 'right';
+  const subtitleAlignValid = r.subtitleAlign === 'match-title' || alignValid(r.subtitleAlign);
+  return {
+    enabled: r.enabled === true,
+    text: typeof r.text === 'string' ? r.text : DEFAULT_TITLE_BAR_STATE.text,
+    subtitle: typeof r.subtitle === 'string' ? r.subtitle : DEFAULT_TITLE_BAR_STATE.subtitle,
+    position: positionValid ? (r.position as PanelTitleBarPosition) : DEFAULT_TITLE_BAR_STATE.position,
+    heightFraction: clamp(r.heightFraction, 0.05, 0.5, DEFAULT_TITLE_BAR_STATE.heightFraction),
+    align: alignValid(r.align) ? r.align : DEFAULT_TITLE_BAR_STATE.align,
+    subtitleAlign: subtitleAlignValid
+      ? (r.subtitleAlign as PanelTitleAlignment | 'match-title')
+      : DEFAULT_TITLE_BAR_STATE.subtitleAlign,
+    backgroundColor: hex(r.backgroundColor, DEFAULT_TITLE_BAR_STATE.backgroundColor),
+    backgroundOpacity: clamp(r.backgroundOpacity, 0, 1, DEFAULT_TITLE_BAR_STATE.backgroundOpacity),
+    textColor: hex(r.textColor, DEFAULT_TITLE_BAR_STATE.textColor),
+    subtitleColor: hex(r.subtitleColor, DEFAULT_TITLE_BAR_STATE.subtitleColor),
+    fontId: typeof r.fontId === 'string' && findFontById(r.fontId) ? r.fontId : DEFAULT_TITLE_BAR_STATE.fontId,
+    subtitleFontId: typeof r.subtitleFontId === 'string' && (r.subtitleFontId === '' || findFontById(r.subtitleFontId))
+      ? r.subtitleFontId
+      : DEFAULT_TITLE_BAR_STATE.subtitleFontId,
+    shadowEnabled: r.shadowEnabled === true,
+    shadowOffsetPx: clamp(r.shadowOffsetPx, 0, 48, DEFAULT_TITLE_BAR_STATE.shadowOffsetPx),
+    shadowBlurPx: clamp(r.shadowBlurPx, 0, 96, DEFAULT_TITLE_BAR_STATE.shadowBlurPx),
+    shadowOpacity: clamp(r.shadowOpacity, 0, 1, DEFAULT_TITLE_BAR_STATE.shadowOpacity),
+    shadowColor: hex(r.shadowColor, DEFAULT_TITLE_BAR_STATE.shadowColor),
+  };
+}
+
+/** Wire-shape title-bar request payload. Mirrors
+ *  `TitleBarRequestPayload` from `shared-overlay-pipeline.ts` minus the
+ *  type-import dependency — kept local for the same client-boundary
+ *  reasons as `PanelImageFilter`. */
+interface TitleBarRequestPayloadShape {
+  text: string;
+  subtitle?: string;
+  position: PanelTitleBarPosition;
+  heightFraction: number;
+  align: PanelTitleAlignment;
+  subtitleAlign?: PanelTitleAlignment | 'match-title';
+  backgroundColor: string;
+  backgroundOpacity: number;
+  textColor: string;
+  subtitleColor?: string;
+  fontId: string;
+  subtitleFontId?: string;
+  shadow?: { offsetPx: number; blurPx: number; opacity: number; color: string };
+}
+
+/** Build the wire-shape `titleBar` payload from the panel's state.
+ *  Returns `undefined` when the bar is disabled or has no text — the
+ *  server then short-circuits the overlay entirely. Subtitle-related
+ *  fields only emit when subtitle text is non-empty so a stale
+ *  subtitleColor / subtitleFontId from a previous edit doesn't leak
+ *  into the request. */
+function buildTitleBarRequestPayload(s: PanelTitleBarState): TitleBarRequestPayloadShape | undefined {
+  const trimmedText = s.text.trim();
+  if (!s.enabled || !trimmedText) return undefined;
+  const trimmedSubtitle = s.subtitle.trim();
+  const hasSubtitle = trimmedSubtitle.length > 0;
+  return {
+    text: trimmedText,
+    subtitle: hasSubtitle ? trimmedSubtitle : undefined,
+    position: s.position,
+    heightFraction: s.heightFraction,
+    align: s.align,
+    subtitleAlign: hasSubtitle ? s.subtitleAlign : undefined,
+    backgroundColor: s.backgroundColor,
+    backgroundOpacity: s.backgroundOpacity,
+    textColor: s.textColor,
+    subtitleColor: hasSubtitle ? s.subtitleColor : undefined,
+    fontId: s.fontId,
+    subtitleFontId: hasSubtitle && s.subtitleFontId ? s.subtitleFontId : undefined,
+    shadow: s.shadowEnabled && s.shadowOpacity > 0
+      ? {
+          offsetPx: s.shadowOffsetPx,
+          blurPx: s.shadowBlurPx,
+          opacity: s.shadowOpacity,
+          color: s.shadowColor,
+        }
+      : undefined,
+  };
 }
 
 /** Allowed MIME types for per-cell uploads. Matches the presign route's
@@ -559,6 +749,32 @@ export function TopicCardGridPanel({
     setPostProcess((prev) => ({ ...prev, ...patch }));
   }
 
+  // Title-bar overlay state. Same one-JSON-blob persistence shape as
+  // Post-process; same `update<X>({ patch })` helper for granular
+  // onChange wiring. Off by default so existing renders are unaffected
+  // until the user explicitly flips the bar on.
+  const [titleBar, setTitleBar] = useState<PanelTitleBarState>(() => {
+    if (typeof window === 'undefined') return { ...DEFAULT_TITLE_BAR_STATE };
+    try {
+      const raw = localStorage.getItem(TITLE_BAR_PREF_KEY);
+      if (!raw) return { ...DEFAULT_TITLE_BAR_STATE };
+      return coerceTitleBarState(JSON.parse(raw));
+    } catch {
+      /* fall through */
+    }
+    return { ...DEFAULT_TITLE_BAR_STATE };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(TITLE_BAR_PREF_KEY, JSON.stringify(titleBar));
+    } catch {
+      /* ignore */
+    }
+  }, [titleBar]);
+  function updateTitleBar(patch: Partial<PanelTitleBarState>) {
+    setTitleBar((prev) => ({ ...prev, ...patch }));
+  }
+
   // Per-cell uploads. Keyed by 1-based card index so the same number that
   // appears in the LLM's TopicCard.index is the lookup key. Values are
   // R2 download URLs returned by the presign upload route.
@@ -643,6 +859,9 @@ export function TopicCardGridPanel({
       // boot reads through.
       setPostProcess(coercePostProcessState(restoredDraftState.postProcess));
     }
+    if (restoredDraftState.titleBar) {
+      setTitleBar(coerceTitleBarState(restoredDraftState.titleBar));
+    }
     console.info('[topic-card-grid panel draft] hydrated', {
       card_count: restoredDraftState.cards?.length ?? 0,
       grid_mode: restoredDraftState.gridMode,
@@ -676,12 +895,13 @@ export function TopicCardGridPanel({
       labelSize,
       fontId,
       postProcess,
+      titleBar,
     });
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
     cardShape, uploads, style, styleFreeForm, labelSize, fontId,
-    postProcess,
+    postProcess, titleBar,
     onDraftStateChange,
   ]);
 
@@ -939,6 +1159,7 @@ export function TopicCardGridPanel({
           labelSize,
           fontId,
           postProcess: buildPostProcessRequestPayload(postProcess),
+          titleBar: buildTitleBarRequestPayload(titleBar),
         }),
       });
       if (!res.ok) {
@@ -1670,6 +1891,433 @@ export function TopicCardGridPanel({
                 Reset
               </button>
             </div>
+          </div>
+
+          {/* Title bar — text + position + typography overlay drawn on
+              top of the composited image. Same Sharp pipeline as the
+              Post-process section above, so tweaks re-render without
+              an AI call. Off by default so existing renders are
+              unaffected. The hasSubtitle gating below hides subtitle-
+              specific controls (alignment, colour, font) until the
+              user actually types a subtitle, keeping the section short
+              for the common single-line case. */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Title bar
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  console.info('[topic-card-grid panel title-bar toggle]', {
+                    from: titleBar.enabled,
+                    to: !titleBar.enabled,
+                  });
+                  updateTitleBar({ enabled: !titleBar.enabled });
+                }}
+                className="px-2 py-0.5 rounded text-[10px]"
+                style={{
+                  background: titleBar.enabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                  color: titleBar.enabled ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-pressed={titleBar.enabled}
+              >
+                {titleBar.enabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            {titleBar.enabled && (
+              <div className="space-y-3">
+                {/* Text + subtitle inputs */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Text</p>
+                  <input
+                    type="text"
+                    className="input-field w-full text-xs"
+                    value={titleBar.text}
+                    onChange={(e) => updateTitleBar({ text: e.target.value })}
+                    placeholder="MAIN TITLE"
+                    maxLength={200}
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Subtitle (optional)</p>
+                  <input
+                    type="text"
+                    className="input-field w-full text-xs"
+                    value={titleBar.subtitle}
+                    onChange={(e) => updateTitleBar({ subtitle: e.target.value })}
+                    placeholder="subtitle line"
+                    maxLength={200}
+                  />
+                </div>
+
+                {/* Position chips */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Position</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TITLE_BAR_POSITION_OPTIONS.map((opt) => {
+                      const active = titleBar.position === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => updateTitleBar({ position: opt.value })}
+                          className="px-2.5 py-1 rounded text-xs"
+                          style={{
+                            background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                            color: active ? '#fff' : 'var(--text-secondary)',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Height % */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Height</p>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {Math.round(titleBar.heightFraction * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={0.5}
+                    step={0.01}
+                    value={titleBar.heightFraction}
+                    onChange={(e) => {
+                      const v = Number.parseFloat(e.target.value);
+                      if (Number.isFinite(v)) updateTitleBar({ heightFraction: v });
+                    }}
+                    className="w-full"
+                    style={{ accentColor: 'var(--accent-pink)' }}
+                  />
+                </div>
+
+                {/* Alignment chips */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Alignment</p>
+                  <div className="flex gap-1.5">
+                    {TITLE_ALIGN_OPTIONS.map((opt) => {
+                      const active = titleBar.align === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => updateTitleBar({ align: opt.value })}
+                          className="px-2.5 py-1 rounded text-xs"
+                          style={{
+                            background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                            color: active ? '#fff' : 'var(--text-secondary)',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Subtitle alignment — only when subtitle has content */}
+                {titleBar.subtitle.trim() && (
+                  <div>
+                    <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Subtitle alignment</p>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => updateTitleBar({ subtitleAlign: 'match-title' })}
+                        className="px-2.5 py-1 rounded text-xs"
+                        style={{
+                          background: titleBar.subtitleAlign === 'match-title' ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                          color: titleBar.subtitleAlign === 'match-title' ? '#fff' : 'var(--text-secondary)',
+                          border: '1px solid var(--border)',
+                        }}
+                      >
+                        Match title
+                      </button>
+                      {TITLE_ALIGN_OPTIONS.map((opt) => {
+                        const active = titleBar.subtitleAlign === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => updateTitleBar({ subtitleAlign: opt.value })}
+                            className="px-2.5 py-1 rounded text-xs"
+                            style={{
+                              background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                              color: active ? '#fff' : 'var(--text-secondary)',
+                              border: '1px solid var(--border)',
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Colours: background + opacity, text, subtitle text */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={titleBar.backgroundColor}
+                      onChange={(e) => updateTitleBar({ backgroundColor: e.target.value })}
+                      className="rounded cursor-pointer"
+                      style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                      aria-label="Background colour"
+                    />
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      Background {titleBar.backgroundColor}
+                    </span>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Background opacity</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {Math.round(titleBar.backgroundOpacity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={titleBar.backgroundOpacity}
+                      onChange={(e) => {
+                        const v = Number.parseFloat(e.target.value);
+                        if (Number.isFinite(v)) updateTitleBar({ backgroundOpacity: v });
+                      }}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-pink)' }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={titleBar.textColor}
+                      onChange={(e) => updateTitleBar({ textColor: e.target.value })}
+                      className="rounded cursor-pointer"
+                      style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                      aria-label="Text colour"
+                    />
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      Text {titleBar.textColor}
+                    </span>
+                  </div>
+                  {titleBar.subtitle.trim() && (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={titleBar.subtitleColor}
+                        onChange={(e) => updateTitleBar({ subtitleColor: e.target.value })}
+                        className="rounded cursor-pointer"
+                        style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                        aria-label="Subtitle colour"
+                      />
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        Subtitle {titleBar.subtitleColor}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Font picker. Reuses the same THUMBNAIL_FONTS registry
+                    + @font-face declarations already injected by the
+                    Font section above, so dropdown options render in
+                    their own typeface without an extra style block. */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Title font</p>
+                  <select
+                    className="input-field w-full text-sm"
+                    value={titleBar.fontId}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!findFontById(next)) return;
+                      updateTitleBar({ fontId: next });
+                    }}
+                    style={{ fontFamily: `'${(findFontById(titleBar.fontId) ?? findFontById(DEFAULT_FONT_ID)!).family}', system-ui, sans-serif` }}
+                  >
+                    {THUMBNAIL_FONT_CATEGORIES.map((cat) => (
+                      <optgroup key={cat} label={THUMBNAIL_FONT_CATEGORY_LABELS[cat]}>
+                        {THUMBNAIL_FONTS.filter((f) => f.category === cat).map((f) => (
+                          <option
+                            key={f.id}
+                            value={f.id}
+                            style={{ fontFamily: `'${f.family}', system-ui, sans-serif` }}
+                          >
+                            {f.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Subtitle font — only when subtitle has content. Empty
+                    string value = "match title font", same convention
+                    `subtitleAlign === 'match-title'` uses. */}
+                {titleBar.subtitle.trim() && (
+                  <div>
+                    <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Subtitle font</p>
+                    <select
+                      className="input-field w-full text-sm"
+                      value={titleBar.subtitleFontId}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (next === '' || findFontById(next)) {
+                          updateTitleBar({ subtitleFontId: next });
+                        }
+                      }}
+                      style={{
+                        fontFamily: titleBar.subtitleFontId
+                          ? `'${(findFontById(titleBar.subtitleFontId) ?? findFontById(DEFAULT_FONT_ID)!).family}', system-ui, sans-serif`
+                          : 'system-ui, sans-serif',
+                      }}
+                    >
+                      <option value="">Match title font</option>
+                      {THUMBNAIL_FONT_CATEGORIES.map((cat) => (
+                        <optgroup key={cat} label={THUMBNAIL_FONT_CATEGORY_LABELS[cat]}>
+                          {THUMBNAIL_FONTS.filter((f) => f.category === cat).map((f) => (
+                            <option
+                              key={f.id}
+                              value={f.id}
+                              style={{ fontFamily: `'${f.family}', system-ui, sans-serif` }}
+                            >
+                              {f.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Shadow toggle + sliders. Mirrors Vignette / Grain
+                    pattern — toggle on the top row, sub-controls only
+                    render when the toggle is on. */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Text shadow</p>
+                    <button
+                      type="button"
+                      onClick={() => updateTitleBar({ shadowEnabled: !titleBar.shadowEnabled })}
+                      className="px-2 py-0.5 rounded text-[10px]"
+                      style={{
+                        background: titleBar.shadowEnabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                        color: titleBar.shadowEnabled ? '#fff' : 'var(--text-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                      aria-pressed={titleBar.shadowEnabled}
+                    >
+                      {titleBar.shadowEnabled ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  {titleBar.shadowEnabled && (
+                    <div className="space-y-2">
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Offset</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {titleBar.shadowOffsetPx}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={20}
+                          step={1}
+                          value={titleBar.shadowOffsetPx}
+                          onChange={(e) => {
+                            const v = Number.parseInt(e.target.value, 10);
+                            if (Number.isFinite(v)) updateTitleBar({ shadowOffsetPx: v });
+                          }}
+                          className="w-full"
+                          style={{ accentColor: 'var(--accent-pink)' }}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Blur</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {titleBar.shadowBlurPx}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={48}
+                          step={1}
+                          value={titleBar.shadowBlurPx}
+                          onChange={(e) => {
+                            const v = Number.parseInt(e.target.value, 10);
+                            if (Number.isFinite(v)) updateTitleBar({ shadowBlurPx: v });
+                          }}
+                          className="w-full"
+                          style={{ accentColor: 'var(--accent-pink)' }}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Opacity</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {Math.round(titleBar.shadowOpacity * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={titleBar.shadowOpacity}
+                          onChange={(e) => {
+                            const v = Number.parseFloat(e.target.value);
+                            if (Number.isFinite(v)) updateTitleBar({ shadowOpacity: v });
+                          }}
+                          className="w-full"
+                          style={{ accentColor: 'var(--accent-pink)' }}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={titleBar.shadowColor}
+                          onChange={(e) => updateTitleBar({ shadowColor: e.target.value })}
+                          className="rounded cursor-pointer"
+                          style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                          aria-label="Shadow colour"
+                        />
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          Shadow {titleBar.shadowColor}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Drawn on top after the AI image. Re-renders without a new AI call.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTitleBar({ ...DEFAULT_TITLE_BAR_STATE })}
+                    className="text-[10px] underline"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Mode chips */}
