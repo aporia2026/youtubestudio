@@ -40,6 +40,7 @@ import {
   type LabelStyle,
   computeShadowFilterRegion,
   resolveCellShadow,
+  resolveCellStroke,
   type BadgeStyle,
   type RingStyle,
   type ShadowStyle,
@@ -205,6 +206,7 @@ export function FlexIconGridLivePreview({
         const shape = cell.shape ?? config.defaultCellShape;
         const ring = resolveRing(cell, config);
         const shadow = resolveCellShadow(cell, config);
+        const cellStroke = resolveCellStroke(cell, config);
         const geom = computeCellGeometry(rect.x, rect.y, rect.w, rect.h, labelStyle.position);
         const paletteColour = backgrounds[cell.index - 1] ?? '#0a0a0a';
         const backgroundSpec: CellBackgroundSpec =
@@ -220,7 +222,7 @@ export function FlexIconGridLivePreview({
           backgroundSpec.type === 'pattern' ? backgroundSpec.bg :
           paletteColour;
         return {
-          cell, rect, geom, shape, ring, shadow, labelStyle,
+          cell, rect, geom, shape, ring, shadow, cellStroke, labelStyle,
           background: representativeColour, backgroundSpec,
           conflict: conflicts.get(cell.index) ?? null,
         };
@@ -326,15 +328,19 @@ export function FlexIconGridLivePreview({
             font: tb.font,
             customFontUrl: tb.customFontUrl,
           });
-          // Phase 4.11.1: clip the title text to the same horizontal
-          // safe area the composer uses. The composer scales long text
-          // to fit (Sharp resize 'inside'); the preview just clips —
-          // both signal "your title won't bleed past the safe margin",
-          // and lines that fit within the area render identical to
-          // the rendered PNG.
+          // Phase 4.11.1 → 4.30: clip the title text to the same
+          // horizontal safe area the composer uses. The composer
+          // scales long text to fit (Sharp resize 'inside'); the
+          // preview just clips. Phase 4.30 — when the bar is
+          // transparent there's no backing rect to clip against, so
+          // we skip the clipPath entirely (`undefined` on the text
+          // elements means no clip). Cleaner emitted SVG and the
+          // text is visually unconstrained, matching the composer's
+          // transparent-bar behaviour.
           const titleSideMargin = Math.max(32, Math.round(config.width * 0.06));
+          const isTransparentBar = tb.backgroundTransparent === true;
           const clipId = 'fg-preview-title-safe';
-          const clipRect = (
+          const clipRect = isTransparentBar ? null : (
             <clipPath id={clipId}>
               <rect
                 x={titleSideMargin}
@@ -344,22 +350,22 @@ export function FlexIconGridLivePreview({
               />
             </clipPath>
           );
-          // Phase 4.29: horizontal alignment maps to SVG textAnchor +
-          // x position. 'center' (default) keeps the pre-4.29 behaviour;
-          // 'left' / 'right' anchor against the same safe-area edges
-          // the composer uses, so on-screen matches the PNG.
-          const textX =
-            tb.textAlign === 'left'
-              ? titleSideMargin
-              : tb.textAlign === 'right'
-                ? config.width - titleSideMargin
-                : config.width / 2;
-          const anchor: 'start' | 'middle' | 'end' =
-            tb.textAlign === 'left'
-              ? 'start'
-              : tb.textAlign === 'right'
-                ? 'end'
-                : 'middle';
+          const clipPathRef = isTransparentBar ? undefined : `url(#${clipId})`;
+          // Phase 4.29 → 4.30: horizontal alignment maps to SVG
+          // textAnchor + x position. 'center' (default) keeps the
+          // pre-4.29 behaviour. Phase 4.30 — subtitle uses its own
+          // alignment when set, falling back to the main alignment.
+          const computeAnchor = (
+            align: 'left' | 'center' | 'right' | undefined,
+          ): { x: number; anchor: 'start' | 'middle' | 'end' } => {
+            if (align === 'left') return { x: titleSideMargin, anchor: 'start' };
+            if (align === 'right') return { x: config.width - titleSideMargin, anchor: 'end' };
+            return { x: config.width / 2, anchor: 'middle' };
+          };
+          const main = computeAnchor(tb.textAlign);
+          const sub = computeAnchor(tb.subtitleTextAlign ?? tb.textAlign);
+          const textX = main.x;
+          const anchor = main.anchor;
           if (!hasSubtitle) {
             return (
               <>
@@ -373,7 +379,7 @@ export function FlexIconGridLivePreview({
                   fill={tb.color}
                   textAnchor={anchor}
                   dominantBaseline="middle"
-                  clipPath={`url(#${clipId})`}
+                  clipPath={clipPathRef}
                 >
                   {sanitizeUserText(tb.text, 80)}
                 </text>
@@ -398,31 +404,78 @@ export function FlexIconGridLivePreview({
                 customFontUrl: tb.subtitleCustomFontUrl,
               })
             : fontFamily;
+          // Phase 4.30: when the subtitle has its own alignment, the
+          // single-<text> approach (which shares textAnchor across
+          // both lines via the parent) can't satisfy both. Split
+          // into two <text> blocks if the alignments differ; share
+          // a single <text> with two <tspan>s when they match (the
+          // common case — keeps the dy-based line-height honest).
+          const sameAlign = main.anchor === sub.anchor && main.x === sub.x;
+          if (sameAlign) {
+            return (
+              <>
+                <defs>{clipRect}</defs>
+                <text
+                  x={textX}
+                  y={barCenterY}
+                  fontFamily={fontFamily}
+                  fill={tb.color}
+                  textAnchor={anchor}
+                  dominantBaseline="middle"
+                  clipPath={clipPathRef}
+                >
+                  <tspan x={textX} fontSize={mainSize} fontWeight={900}>
+                    {sanitizeUserText(tb.text, 80)}
+                  </tspan>
+                  <tspan
+                    x={textX}
+                    dy={subDy}
+                    fontFamily={subFontFamily}
+                    fontSize={subSize}
+                    fontWeight={700}
+                    fill={tb.subtitleColor ?? tb.color}
+                  >
+                    {subtitleText}
+                  </tspan>
+                </text>
+              </>
+            );
+          }
+          // Split path: the subtitle is rendered as a separate
+          // <text> at its own anchor; the main stays as before but
+          // without the subtitle <tspan>. We approximate the
+          // baseline-offset distance the dy-based stack used so the
+          // visual stacking stays roughly the same as the unified
+          // case.
+          const subOffsetY = mainSize / 2 + Math.round(tb.height * 0.05) + subSize / 2;
           return (
             <>
               <defs>{clipRect}</defs>
               <text
                 x={textX}
-                y={barCenterY}
+                y={barCenterY - subSize / 2}
                 fontFamily={fontFamily}
+                fontSize={mainSize}
+                fontWeight={900}
                 fill={tb.color}
                 textAnchor={anchor}
                 dominantBaseline="middle"
-                clipPath={`url(#${clipId})`}
+                clipPath={clipPathRef}
               >
-                <tspan x={textX} fontSize={mainSize} fontWeight={900}>
-                  {sanitizeUserText(tb.text, 80)}
-                </tspan>
-                <tspan
-                  x={textX}
-                  dy={subDy}
-                  fontFamily={subFontFamily}
-                  fontSize={subSize}
-                  fontWeight={700}
-                  fill={tb.subtitleColor ?? tb.color}
-                >
-                  {subtitleText}
-                </tspan>
+                {sanitizeUserText(tb.text, 80)}
+              </text>
+              <text
+                x={sub.x}
+                y={barCenterY + subOffsetY - mainSize / 2}
+                fontFamily={subFontFamily}
+                fontSize={subSize}
+                fontWeight={700}
+                fill={tb.subtitleColor ?? tb.color}
+                textAnchor={sub.anchor}
+                dominantBaseline="middle"
+                clipPath={clipPathRef}
+              >
+                {subtitleText}
               </text>
             </>
           );
@@ -454,7 +507,7 @@ export function FlexIconGridLivePreview({
         </defs>
 
         {/* Cells */}
-        {cellViews.map(({ cell, rect, geom, shape, ring, shadow, labelStyle, background, backgroundSpec, conflict }) => (
+        {cellViews.map(({ cell, rect, geom, shape, ring, shadow, cellStroke, labelStyle, background, backgroundSpec, conflict }) => (
           <CellGroup
             key={cell.index}
             cell={cell}
@@ -463,6 +516,7 @@ export function FlexIconGridLivePreview({
             shape={shape}
             ring={ring}
             shadow={shadow}
+            cellStroke={cellStroke}
             labelStyle={labelStyle}
             background={background}
             backgroundSpec={backgroundSpec}
@@ -569,6 +623,10 @@ interface CellGroupProps {
   /** Phase 4.11 — resolved shadow for this cell; `null` when no
    *  shadow applies (either explicitly opted out or no default set). */
   shadow: ShadowStyle;
+  /** Phase 4.30 — resolved outer cell stroke; `null` when no
+   *  stroke applies. Painted on top of the cell background fill
+   *  and underneath the inner shape. */
+  cellStroke: { color: string; thickness: number } | null;
   labelStyle: LabelStyle;
   background: string;
   backgroundSpec: CellBackgroundSpec;
@@ -585,6 +643,7 @@ function CellGroup({
   shape,
   ring,
   shadow,
+  cellStroke,
   labelStyle,
   background,
   backgroundSpec,
@@ -606,6 +665,22 @@ function CellGroup({
     >
       {/* Cell background */}
       <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} fill={cellFill} />
+
+      {/* Phase 4.30: outer cell stroke. Painted ABOVE the fill and
+          BELOW the inner shape so it reads as a frame around the
+          whole cell. Inset by half the thickness so the stroke
+          stays inside the cell rect. */}
+      {cellStroke && cellStroke.thickness > 0 && (
+        <rect
+          x={rect.x + cellStroke.thickness / 2}
+          y={rect.y + cellStroke.thickness / 2}
+          width={rect.w - cellStroke.thickness}
+          height={rect.h - cellStroke.thickness}
+          fill="none"
+          stroke={cellStroke.color}
+          strokeWidth={cellStroke.thickness}
+        />
+      )}
 
       {/* Shape with optional ring + Phase 4.11 drop shadow.
           Phase 4.16 → 4.19: wrap the shape AND content in a

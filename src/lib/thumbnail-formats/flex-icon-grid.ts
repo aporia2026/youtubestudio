@@ -343,12 +343,19 @@ export interface TitleBarSpec {
    *  a backing strip. Overrides both `background` and
    *  `backgroundGradient` when set. */
   backgroundTransparent?: boolean;
-  /** Phase 4.29: horizontal alignment for the title text (and
-   *  subtitle). Defaults to 'center' — the pre-4.29 behaviour.
-   *  'left' aligns to the canvas-relative safe area's left edge;
-   *  'right' to the right edge. Helps editorial-style thumbnails
-   *  where the title is meant to anchor visually. */
+  /** Phase 4.29: horizontal alignment for the title text. Defaults
+   *  to 'center' — the pre-4.29 behaviour. 'left' aligns to the
+   *  canvas-relative safe area's left edge; 'right' to the right
+   *  edge. Helps editorial-style thumbnails where the title is
+   *  meant to anchor visually. */
   textAlign?: 'left' | 'center' | 'right';
+  /** Phase 4.30: optional independent horizontal alignment for the
+   *  subtitle. Falls back to `textAlign` when undefined so a single-
+   *  alignment thumbnail stays consistent. A user wanting a
+   *  left-aligned title with a centred kicker subtitle (the common
+   *  editorial layout) sets `textAlign: 'left'` + `subtitleTextAlign:
+   *  'center'`. Same value space as `textAlign`. */
+  subtitleTextAlign?: 'left' | 'center' | 'right';
   background: string;
   color: string;
   font: LabelFont;
@@ -416,6 +423,13 @@ export interface FlexIconCell {
    *  solid colour respecting the adjacency rule. */
   background?: CellBackgroundSpec;
   ring?: RingStyle;
+  /** Phase 4.30: optional outer stroke drawn around the cell's
+   *  bounding rectangle (NOT the inner shape — that's `ring`).
+   *  Gives the "framed card" look common to ranked-list thumbnails
+   *  where each cell reads as a discrete tile. `null` opts out
+   *  explicitly even if a future canvas-level default sets one;
+   *  `undefined` falls back to the default. */
+  cellStroke?: { color: string; thickness: number } | null;
   /** Phase 4.16: optional rotation in degrees applied to the cell's
    *  shape + icon content. Range −180..180; integer values only.
    *  Rotates around the shape's centre — the label band stays
@@ -489,6 +503,10 @@ export interface FlexIconGridConfig {
    *  `null` shadow opt out. Defaults to `null` (no shadow) so the
    *  existing flat-cell look is preserved unless the user opts in. */
   defaultShadow?: ShadowStyle;
+  /** Phase 4.30: default outer stroke applied to every cell whose
+   *  own `cellStroke` field is `undefined`. Cells with an explicit
+   *  `null` opt out. Defaults to `null` (no outer stroke). */
+  defaultCellStroke?: { color: string; thickness: number } | null;
   cells: FlexIconCell[];
   titleBar?: TitleBarSpec;
 }
@@ -793,6 +811,34 @@ export function getConsumedCellIndexes(config: FlexIconGridConfig): Set<number> 
     }
   }
   return consumed;
+}
+
+/**
+ * Phase 4.30: resolve the effective outer cell stroke for a cell.
+ * Cascade rules mirror `resolveCellShadow` — explicit `null` opts
+ * out, undefined inherits the config default, object overrides.
+ * Pure function — exported so composer + live preview share the
+ * same resolution.
+ */
+export function resolveCellStroke(
+  cell: FlexIconCell,
+  config: FlexIconGridConfig,
+): { color: string; thickness: number } | null {
+  if (cell.cellStroke === null) return null;
+  if (cell.cellStroke) return cell.cellStroke;
+  return config.defaultCellStroke ?? null;
+}
+
+/** Phase 4.30: tolerant parser for cell stroke. `null` round-trips
+ *  as "explicit off"; missing / non-object → undefined. */
+function parseCellStroke(v: unknown): { color: string; thickness: number } | null | undefined {
+  if (v === null) return null;
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  return {
+    color: stringOr(o.color, '#0a0a0a'),
+    thickness: Math.max(0, numberOr(o.thickness, 4)),
+  };
 }
 
 /**
@@ -1135,6 +1181,18 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // Phase 4.12: badge shape check.
     const badgeResult = validateBadge(c.badge, idx);
     if (!badgeResult.ok) return badgeResult;
+    // Phase 4.30: cell outer stroke shape check.
+    if (c.cellStroke !== undefined && c.cellStroke !== null) {
+      if (typeof c.cellStroke !== 'object') {
+        return { ok: false, reason: `cell ${idx} cellStroke must be an object, null, or undefined`, offending_cell_index: idx };
+      }
+      if (typeof c.cellStroke.color !== 'string' || !HEX_COLOR_RE.test(c.cellStroke.color)) {
+        return { ok: false, reason: `cell ${idx} cellStroke.color is not a valid hex color`, offending_cell_index: idx };
+      }
+      if (!Number.isFinite(c.cellStroke.thickness) || c.cellStroke.thickness < 0) {
+        return { ok: false, reason: `cell ${idx} cellStroke.thickness must be a non-negative number`, offending_cell_index: idx };
+      }
+    }
     // Phase 4.16: rotation range check.
     if (c.rotation !== undefined) {
       if (typeof c.rotation !== 'number' || !Number.isFinite(c.rotation)) {
@@ -1384,6 +1442,9 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     // Phase 4.11: defaultShadow round-trips with the same opt-out
     // semantics as ring (null → off, undefined → none configured).
     defaultShadow: parseShadow(o.defaultShadow),
+    // Phase 4.30: defaultCellStroke uses the same null/undefined
+    // pattern as defaultShadow.
+    defaultCellStroke: parseCellStroke(o.defaultCellStroke),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1626,6 +1687,10 @@ function parseTitleBar(v: unknown): TitleBarSpec {
       o.textAlign === 'left' || o.textAlign === 'right' || o.textAlign === 'center'
         ? o.textAlign
         : undefined,
+    subtitleTextAlign:
+      o.subtitleTextAlign === 'left' || o.subtitleTextAlign === 'right' || o.subtitleTextAlign === 'center'
+        ? o.subtitleTextAlign
+        : undefined,
   };
 }
 
@@ -1653,6 +1718,7 @@ function parseCell(raw: unknown, expectedIndex: number): FlexIconCell {
     backgroundColor: typeof o.backgroundColor === 'string' ? o.backgroundColor : undefined,
     background: o.background ? parseCellBackground(o.background) : undefined,
     ring: o.ring === null ? null : o.ring ? parseRing(o.ring, DEFAULT_RING) : undefined,
+    cellStroke: 'cellStroke' in o ? parseCellStroke(o.cellStroke) : undefined,
     rotation: typeof o.rotation === 'number' && Number.isFinite(o.rotation)
       ? Math.max(-180, Math.min(180, Math.round(o.rotation)))
       : undefined,

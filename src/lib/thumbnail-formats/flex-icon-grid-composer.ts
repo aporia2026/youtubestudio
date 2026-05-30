@@ -50,6 +50,7 @@ import {
   escapeSvgText,
   getConsumedCellIndexes,
   resolveCellShadow,
+  resolveCellStroke,
   sanitizeUserText,
   type CellBackgroundSpec,
   type CellContent,
@@ -418,6 +419,18 @@ export function buildBaseSvg(
     const referenceColour =
       cell.backgroundColor ?? backgrounds[cell.index - 1] ?? '#0a0a0a';
     parts.push(renderCellBackgroundRect(rect, bgFill));
+    // Phase 4.30: outer cell stroke. Painted AFTER the background
+    // fill so the stroke sits on top of the fill but underneath
+    // the shape + content. Inset by half the thickness so the
+    // stroke renders inside the cell rectangle instead of
+    // overflowing into the neighbouring cell.
+    const cellStroke = resolveCellStroke(cell, config);
+    if (cellStroke && cellStroke.thickness > 0) {
+      const inset = cellStroke.thickness / 2;
+      parts.push(
+        `<rect x="${rect.x + inset}" y="${rect.y + inset}" width="${rect.w - cellStroke.thickness}" height="${rect.h - cellStroke.thickness}" fill="none" stroke="${escapeSvgText(cellStroke.color)}" stroke-width="${cellStroke.thickness}"/>`,
+      );
+    }
     const shape = cell.shape ?? config.defaultCellShape;
     const ring = resolveRing(cell, config);
     const labelStyle = resolveLabelStyle(cell, config);
@@ -1247,18 +1260,21 @@ async function buildTitleBarOverlay(
   const barTop = titleBar.position === 'top' ? 0 : height - titleBar.height;
   const overlays: sharp.OverlayOptions[] = [];
 
-  // Phase 4.29: horizontal alignment. `center` (default) keeps the
-  // pre-4.29 placement; `left` and `right` snap to the safe-area
-  // edges so editorial-style headlines anchor consistently.
-  const horizontalLeft = (bw: number): number => {
-    if (titleBar.textAlign === 'left') return titleSideMargin;
-    if (titleBar.textAlign === 'right') return width - titleSideMargin - bw;
+  // Phase 4.29 → 4.30: horizontal alignment. `center` (default)
+  // keeps the pre-4.29 placement; `left` and `right` snap to the
+  // safe-area edges. Phase 4.30 — `subtitleTextAlign` lets the
+  // subtitle anchor independently (falls back to `textAlign`).
+  const alignLeft = (align: 'left' | 'center' | 'right' | undefined, bw: number): number => {
+    if (align === 'left') return titleSideMargin;
+    if (align === 'right') return width - titleSideMargin - bw;
     return Math.round((width - bw) / 2);
   };
+  const mainAlign = titleBar.textAlign;
+  const subAlign = titleBar.subtitleTextAlign ?? titleBar.textAlign;
 
   if (!hasSubtitle) {
     const top = Math.round(barTop + (titleBar.height - mainBh) / 2);
-    overlays.push({ input: mainBuf, top, left: Math.round(horizontalLeft(mainBw)) });
+    overlays.push({ input: mainBuf, top, left: Math.round(alignLeft(mainAlign, mainBw)) });
     return overlays;
   }
 
@@ -1324,12 +1340,12 @@ async function buildTitleBarOverlay(
   overlays.push({
     input: mainBuf,
     top: stackTop,
-    left: Math.round(horizontalLeft(mainBw)),
+    left: Math.round(alignLeft(mainAlign, mainBw)),
   });
   overlays.push({
     input: subBuf,
     top: stackTop + mainBh + lineGap,
-    left: Math.round(horizontalLeft(subBw)),
+    left: Math.round(alignLeft(subAlign, subBw)),
   });
   return overlays;
 }

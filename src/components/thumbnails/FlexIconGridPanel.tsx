@@ -698,6 +698,7 @@ export function FlexIconGridPanel({
       rotation: undefined,
       flipX: undefined,
       flipY: undefined,
+      cellStroke: undefined,
       labelStyle: undefined,
       cellSpan: undefined,
     });
@@ -770,6 +771,7 @@ export function FlexIconGridPanel({
       rotation: cellClipboard.rotation,
       flipX: cellClipboard.flipX,
       flipY: cellClipboard.flipY,
+      cellStroke: cellClipboard.cellStroke,
       labelStyle: cellClipboard.labelStyle,
       badge: cellClipboard.badge,
     });
@@ -801,6 +803,7 @@ export function FlexIconGridPanel({
             rotation: source.rotation,
             flipX: source.flipX,
             flipY: source.flipY,
+            cellStroke: source.cellStroke,
             labelStyle: source.labelStyle,
             badge: source.badge,
           };
@@ -1697,21 +1700,27 @@ export function FlexIconGridPanel({
                 list="fg-preview-zoom-presets"
                 style={{ width: 110, position: 'absolute', top: 0, left: 0 }}
               />
+              {/* Phase 4.29 → 4.30: tick row positioned inside the
+                  usable track range. The native slider thumb is ≈8 px
+                  half-width on most browsers, so the usable track
+                  shrinks by ~16 px total. We inset the tick container
+                  by 8 px on each side so the marks line up with the
+                  thumb centre at each preset value across browsers. */}
               <div
                 aria-hidden="true"
                 style={{
                   position: 'absolute',
                   top: 14,
-                  left: 0,
-                  right: 0,
+                  left: 8,
+                  right: 8,
                   height: 4,
                   pointerEvents: 'none',
                 }}
               >
                 {[50, 100, 150, 200].map((pct) => {
-                  // Map zoom % into slider track position.
-                  // Track span: 25–300 (275 wide). Account for the
-                  // ~8 px thumb half-width on each side.
+                  // Map zoom % into the inset track range. Span is
+                  // now `width - 16`; tick centres sit at fractional
+                  // positions of that inset span.
                   const trackFraction = (pct - 25) / (300 - 25);
                   return (
                     <span
@@ -2534,6 +2543,85 @@ export function FlexIconGridPanel({
             )}
           </div>
 
+          {/* Phase 4.30: per-cell outer stroke (frame outline). Same
+              tristate pattern as cell shadow — Inherit / Off /
+              Custom. Custom mode reveals colour + thickness inputs.
+              Painted around the cell rectangle (not the inner shape;
+              that's `ring`). */}
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Cell outer stroke</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                aria-pressed={selectedCell.cellStroke === undefined}
+                onClick={() => updateCell(selectedCell.index, { cellStroke: undefined })}
+                style={{ ...chipStyle(selectedCell.cellStroke === undefined), fontStyle: 'italic', borderStyle: 'dashed' }}
+                title={`Inherit the canvas-level default (currently ${config.defaultCellStroke ? 'on' : 'off'})`}
+              >
+                Inherit
+              </button>
+              <button
+                type="button"
+                aria-pressed={selectedCell.cellStroke === null}
+                onClick={() => updateCell(selectedCell.index, { cellStroke: null })}
+                style={chipStyle(selectedCell.cellStroke === null)}
+              >
+                Off
+              </button>
+              <button
+                type="button"
+                aria-pressed={
+                  selectedCell.cellStroke !== undefined && selectedCell.cellStroke !== null
+                }
+                onClick={() =>
+                  updateCell(selectedCell.index, {
+                    cellStroke: selectedCell.cellStroke && selectedCell.cellStroke !== null
+                      ? selectedCell.cellStroke
+                      : (config.defaultCellStroke ?? { color: '#0a0a0a', thickness: 4 }),
+                  })
+                }
+                style={chipStyle(
+                  selectedCell.cellStroke !== undefined && selectedCell.cellStroke !== null,
+                )}
+              >
+                Custom
+              </button>
+            </div>
+            {selectedCell.cellStroke && selectedCell.cellStroke !== null && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="color"
+                  value={selectedCell.cellStroke.color}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      cellStroke: { ...selectedCell.cellStroke!, color: e.target.value },
+                    })
+                  }
+                  aria-label="Outer stroke colour"
+                  style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={16}
+                  step={1}
+                  value={selectedCell.cellStroke.thickness}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      cellStroke: { ...selectedCell.cellStroke!, thickness: Number(e.target.value) },
+                    })
+                  }
+                  aria-label="Outer stroke thickness"
+                  title={`Thickness: ${selectedCell.cellStroke.thickness}px`}
+                  style={{ width: 100 }}
+                />
+                <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 28, textAlign: 'right' }}>
+                  {selectedCell.cellStroke.thickness}px
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Phase 4.16 → 4.18: cell shape rotation. Slider from -180
               to +180 degrees plus quick-pick chips for common angles
               + a "Snap 15°" persistent toggle. When the toggle is on,
@@ -3195,6 +3283,57 @@ export function FlexIconGridPanel({
                       );
                     })}
                   </div>
+                  {/* Phase 4.30: subtitle alignment can differ from
+                      the main title. "Match title" (the default)
+                      clears the field so the subtitle follows the
+                      main alignment; the explicit chips lock to a
+                      direction. Only shown once a subtitle is set. */}
+                  {config.titleBar.subtitle && (
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ ...labelStyle, marginTop: 0, fontSize: 11 }}>
+                        Subtitle alignment
+                      </label>
+                      <div style={chipRowStyle}>
+                        <button
+                          type="button"
+                          aria-pressed={!config.titleBar.subtitleTextAlign}
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                subtitleTextAlign: undefined,
+                              },
+                            })
+                          }
+                          style={chipStyle(!config.titleBar.subtitleTextAlign)}
+                        >
+                          Match title
+                        </button>
+                        {(['left', 'center', 'right'] as const).map((align) => {
+                          const active = config.titleBar!.subtitleTextAlign === align;
+                          return (
+                            <button
+                              key={align}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() =>
+                                updateConfig({
+                                  titleBar: {
+                                    ...config.titleBar!,
+                                    subtitleTextAlign: align,
+                                  },
+                                })
+                              }
+                              style={chipStyle(active)}
+                              title={`Align subtitle to ${align}`}
+                            >
+                              {align}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {/* Phase 4.10: optional subtitle (second smaller line).
@@ -3555,14 +3694,13 @@ export function FlexIconGridPanel({
                         <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
                           {config.titleBar.backgroundGradient.angle}°
                         </span>
-                        {/* Phase 4.29: tiny SVG compass showing the
-                            gradient direction. On a wide-but-short
-                            title bar the SVG-rendered gradient can
-                            look ambiguous between similar angles —
-                            this gives the user an unambiguous
-                            indication of WHICH direction they're
-                            choosing, independent of how the rect's
-                            aspect ratio renders it. */}
+                        {/* Phase 4.29 → 4.30: compass showing the
+                            gradient direction. Phase 4.30 — uses the
+                            CSS / SVG `rotate(angle)` convention
+                            (0° = →, 90° = ↓) so the needle points
+                            the same way as the gradient's `from →
+                            to` axis. Matches what the user sees on
+                            the actual rendered bar. */}
                         <svg
                           width={20}
                           height={20}
@@ -3582,8 +3720,8 @@ export function FlexIconGridPanel({
                           <line
                             x1={10}
                             y1={10}
-                            x2={10 + 7 * Math.sin((config.titleBar.backgroundGradient.angle * Math.PI) / 180)}
-                            y2={10 - 7 * Math.cos((config.titleBar.backgroundGradient.angle * Math.PI) / 180)}
+                            x2={10 + 7 * Math.cos((config.titleBar.backgroundGradient.angle * Math.PI) / 180)}
+                            y2={10 + 7 * Math.sin((config.titleBar.backgroundGradient.angle * Math.PI) / 180)}
                             stroke="currentColor"
                             strokeWidth={1.5}
                           />

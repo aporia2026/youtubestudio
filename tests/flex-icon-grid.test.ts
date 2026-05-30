@@ -26,6 +26,7 @@ import {
   makeDefaultConfig,
   parseConfig,
   resolveCellShadow,
+  resolveCellStroke,
   sanitizeUserText,
   transposeCells,
   SUPPORTED_CELL_SHAPES,
@@ -1686,6 +1687,75 @@ function seededRng(seq: number[]): () => number {
     return v;
   };
 }
+
+describe('Phase 4.30 — cell outer stroke + subtitle alignment', () => {
+  it('round-trips cellStroke through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].cellStroke = { color: '#ff8800', thickness: 6 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].cellStroke).toEqual({ color: '#ff8800', thickness: 6 });
+  });
+  it('round-trips null cellStroke as explicit opt-out', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' }, cellStroke: null }],
+    });
+    expect(reparsed.cells[0].cellStroke).toBeNull();
+  });
+  it('round-trips defaultCellStroke at the config level', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.defaultCellStroke = { color: '#222222', thickness: 3 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.defaultCellStroke).toEqual({ color: '#222222', thickness: 3 });
+  });
+  it('resolveCellStroke returns null when cell.cellStroke is null even with default set', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultCellStroke = { color: '#000', thickness: 4 };
+    config.cells[0].cellStroke = null;
+    expect(resolveCellStroke(config.cells[0], config)).toBeNull();
+  });
+  it('resolveCellStroke falls back to default when cell.cellStroke is undefined', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultCellStroke = { color: '#333', thickness: 2 };
+    expect(resolveCellStroke(config.cells[0], config)).toEqual({ color: '#333', thickness: 2 });
+  });
+  it('rejects negative cellStroke thickness on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].cellStroke = { color: '#000000', thickness: -2 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/cellStroke\.thickness/);
+  });
+  it('rejects malformed hex on cellStroke.color', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.cells[0].cellStroke = { color: 'red', thickness: 4 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/cellStroke\.color/);
+  });
+  it('round-trips subtitleTextAlign through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000', color: '#fff', font: 'anton',
+      textAlign: 'left', subtitleTextAlign: 'center',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.subtitleTextAlign).toBe('center');
+  });
+  it('drops invalid subtitleTextAlign values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        subtitleTextAlign: 'justify',
+      },
+    });
+    expect(reparsed.titleBar?.subtitleTextAlign).toBeUndefined();
+  });
+});
 
 describe('Phase 4.29 — title bar transparent + text alignment', () => {
   it('round-trips backgroundTransparent through parseConfig', () => {
