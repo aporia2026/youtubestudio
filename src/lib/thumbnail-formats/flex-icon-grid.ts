@@ -320,7 +320,13 @@ export type PaletteSpec =
  */
 export interface TitleBarSpec {
   text: string;
-  position: 'top' | 'bottom';
+  /** Phase 4.33: `'overlay-top'` / `'overlay-bottom'` place the bar
+   *  ON TOP of the cell grid without shrinking the grid area —
+   *  cells go edge-to-edge of the canvas, and the bar sits over
+   *  them. Common pairing: transparent or low-opacity background
+   *  so the cells stay visible underneath. The pre-4.33 `'top'` /
+   *  `'bottom'` modes still displace the grid as before. */
+  position: 'top' | 'bottom' | 'overlay-top' | 'overlay-bottom';
   /** Pixel height of the strip. Composer scales font to fit. */
   height: number;
   /** Phase 4.15: optional remembered height as a fraction of the
@@ -1715,7 +1721,10 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     : undefined;
   return {
     text: stringOr(o.text, ''),
-    position: o.position === 'top' ? 'top' : 'bottom',
+    position:
+      o.position === 'top' || o.position === 'overlay-top' || o.position === 'overlay-bottom'
+        ? o.position
+        : 'bottom',
     height: numberOr(o.height, 96),
     heightFraction,
     background: stringOr(o.background, '#0a0a0a'),

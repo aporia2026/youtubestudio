@@ -494,7 +494,11 @@ function renderCanvasBackground(config: FlexIconGridConfig): string {
 function renderTitleBarBackground(config: FlexIconGridConfig): string {
   const { titleBar, width, height } = config;
   if (!titleBar) return '';
-  const y = titleBar.position === 'top' ? 0 : height - titleBar.height;
+  // Phase 4.33: overlay-top + overlay-bottom render at the same y
+  // as their non-overlay counterparts; the difference is only at
+  // the layout level (overlay positions don't displace the grid).
+  const isTopPos = titleBar.position === 'top' || titleBar.position === 'overlay-top';
+  const y = isTopPos ? 0 : height - titleBar.height;
   // Phase 4.28 → 4.29: resolve the bar fill — transparent (when
   // set) beats gradient beats solid. Transparent renders the rect
   // with `fill="none"` (or skipped entirely when there's also no
@@ -535,12 +539,15 @@ function renderTitleBarBackground(config: FlexIconGridConfig): string {
   // on its own pass and doesn't get a bar-level shadow either.
   if (titleBar.shadow && !isTransparent) {
     const filterId = 'fg-title-bar-shadow';
+    // Phase 4.33: bottom-style positions (regular + overlay) flip
+    // the shadow direction so it casts away from the canvas edge.
+    const isBottomPos =
+      titleBar.position === 'bottom' || titleBar.position === 'overlay-bottom';
     const directedShadow: NonNullable<ShadowStyle> = {
       ...titleBar.shadow,
-      offsetY:
-        titleBar.position === 'bottom'
-          ? -Math.abs(titleBar.shadow.offsetY)
-          : Math.abs(titleBar.shadow.offsetY),
+      offsetY: isBottomPos
+        ? -Math.abs(titleBar.shadow.offsetY)
+        : Math.abs(titleBar.shadow.offsetY),
     };
     const filterDef = emitShadowFilterDef(directedShadow, -1, titleBar.height);
     // Override the auto-generated cellIndex-based id since this is
@@ -1183,16 +1190,56 @@ async function buildLabelOverlay(
   return { input: buf, top, left };
 }
 
+/** Phase 4.33: LRU-ish cache for alpha-mask uniform RGBA buffers
+ *  used inside `wrapTextWithShadow`. Keyed on `${w}x${h}@${opacity}`.
+ *  Bounded so a thumbnail with many shadowed labels doesn't grow
+ *  the cache without limit; evicts the oldest entry when full.
+ *  Sharp's `create` is cheap but not free — caching halves the cost
+ *  for repeated identical shadows (the common case where every
+ *  cell label shares the canvas-level default shadow). */
+const ALPHA_MASK_CACHE = new Map<string, Buffer>();
+const ALPHA_MASK_CACHE_MAX = 64;
+
+async function getAlphaMaskBuffer(w: number, h: number, opacity: number): Promise<Buffer> {
+  const key = `${w}x${h}@${opacity}`;
+  const hit = ALPHA_MASK_CACHE.get(key);
+  if (hit) {
+    // Refresh insertion order so eviction is LRU.
+    ALPHA_MASK_CACHE.delete(key);
+    ALPHA_MASK_CACHE.set(key, hit);
+    return hit;
+  }
+  const buf = await sharp({
+    create: {
+      width: w,
+      height: h,
+      channels: 4,
+      background: { r: 255, g: 255, b: 255, alpha: opacity },
+    },
+  })
+    .png()
+    .toBuffer();
+  ALPHA_MASK_CACHE.set(key, buf);
+  if (ALPHA_MASK_CACHE.size > ALPHA_MASK_CACHE_MAX) {
+    const oldest = ALPHA_MASK_CACHE.keys().next().value;
+    if (oldest !== undefined) ALPHA_MASK_CACHE.delete(oldest);
+  }
+  return buf;
+}
+
 /**
- * Phase 4.31: wrap a tinted text buffer with an optional drop shadow.
- * The shadow is built by cloning the source, recolouring it with the
- * shadow colour, scaling its alpha by `shadow.opacity`, blurring it,
- * and then compositing the original text on top with the requested
- * `offsetY`. Output buffer is sized to fit BOTH the shadow halo + the
- * main text so the returned size is correct for downstream centring.
+ * Phase 4.31 → 4.33: wrap a tinted text buffer with an optional drop
+ * shadow. The shadow is built by cloning the source, recolouring it
+ * with the shadow colour, scaling its alpha by `shadow.opacity`,
+ * blurring it, and then compositing the original text on top with
+ * the requested `offsetY`. Output buffer is sized to fit BOTH the
+ * shadow halo + the main text so the returned size is correct for
+ * downstream centring.
  *
- * No-op when `shadow` is null/undefined — the original buffer is
- * returned with no allocation.
+ * Phase 4.33 — the alpha-mask buffer is cached per (w, h, opacity)
+ * via `getAlphaMaskBuffer`; subsequent renders with the same
+ * dimensions reuse the cached mask. No-op when `shadow` is
+ * null/undefined.
  */
 async function wrapTextWithShadow(
   textBuf: Buffer,
@@ -1212,24 +1259,13 @@ async function wrapTextWithShadow(
 
   // Build the shadow layer: recolour + alpha-scale + blur.
   let shadowBuf = await tintPngTo(textBuf, shadow.color);
-  // Phase 4.31 → 4.32: scale the alpha by the requested opacity via
-  // a `dest-in` composite. Uses Sharp's `create()` to mint a uniform
-  // RGBA buffer instead of round-tripping through an SVG string —
-  // avoids the SVG parser and roughly halves this step's cost.
+  // Phase 4.31 → 4.32 → 4.33: scale the alpha by the requested
+  // opacity via a `dest-in` composite. Phase 4.33 — the uniform RGBA
+  // alpha mask is now cached by `getAlphaMaskBuffer`, so repeated
+  // shadows with the same dimensions skip the create+png pipeline.
+  const alphaMask = await getAlphaMaskBuffer(w, h, shadow.opacity);
   shadowBuf = await sharp(shadowBuf)
-    .composite([
-      {
-        input: {
-          create: {
-            width: w,
-            height: h,
-            channels: 4,
-            background: { r: 255, g: 255, b: 255, alpha: shadow.opacity },
-          },
-        },
-        blend: 'dest-in',
-      },
-    ])
+    .composite([{ input: alphaMask, blend: 'dest-in' }])
     .png()
     .toBuffer();
   if (shadow.blur > 0) {
@@ -1350,7 +1386,11 @@ async function buildTitleBarOverlay(
   //  - bar top in canvas-y: barTop
   //  - main centered vertically when there's no subtitle
   //  - main shifted up + subtitle below it when there is one
-  const barTop = titleBar.position === 'top' ? 0 : height - titleBar.height;
+  // Phase 4.33: same overlay handling as the background.
+  const barTop =
+    titleBar.position === 'top' || titleBar.position === 'overlay-top'
+      ? 0
+      : height - titleBar.height;
   const overlays: sharp.OverlayOptions[] = [];
 
   // Phase 4.29 → 4.30: horizontal alignment. `center` (default)

@@ -3271,6 +3271,129 @@ export function FlexIconGridPanel({
                 )}
               </div>
             </div>
+            {/* Phase 4.33: canvas-level default label shadow. Mirrors
+                the per-cell label shadow control (in the cell editor)
+                but applies to every cell unless its own labelStyle
+                overrides. Off by default — only useful when labels
+                need extra contrast against busy cell backgrounds. */}
+            <div>
+              <label style={labelStyle}>
+                Label shadow
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (default for every cell unless overridden)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.defaultLabel.textShadow}
+                  onClick={() =>
+                    updateConfig({
+                      defaultLabel: {
+                        ...config.defaultLabel,
+                        textShadow: config.defaultLabel.textShadow ? undefined : DEFAULT_SHADOW,
+                      },
+                    })
+                  }
+                  style={chipStyle(!!config.defaultLabel.textShadow)}
+                >
+                  {config.defaultLabel.textShadow ? 'Shadow on' : 'Shadow off'}
+                </button>
+                {config.defaultLabel.textShadow && (
+                  <>
+                    <input
+                      type="range"
+                      min={0}
+                      max={24}
+                      step={1}
+                      value={config.defaultLabel.textShadow.offsetY}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultLabel: {
+                            ...config.defaultLabel,
+                            textShadow: {
+                              ...config.defaultLabel.textShadow!,
+                              offsetY: Number(e.target.value),
+                            },
+                          },
+                        })
+                      }
+                      aria-label="Default label shadow offset"
+                      title={`Offset: ${config.defaultLabel.textShadow.offsetY}px`}
+                      style={{ width: 120 }}
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={24}
+                      step={1}
+                      value={config.defaultLabel.textShadow.blur}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultLabel: {
+                            ...config.defaultLabel,
+                            textShadow: {
+                              ...config.defaultLabel.textShadow!,
+                              blur: Number(e.target.value),
+                            },
+                          },
+                        })
+                      }
+                      aria-label="Default label shadow blur"
+                      title={`Blur: ${config.defaultLabel.textShadow.blur}px`}
+                      style={{ width: 120 }}
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={config.defaultLabel.textShadow.opacity}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultLabel: {
+                            ...config.defaultLabel,
+                            textShadow: {
+                              ...config.defaultLabel.textShadow!,
+                              opacity: Number(e.target.value),
+                            },
+                          },
+                        })
+                      }
+                      aria-label="Default label shadow opacity"
+                      title={`Opacity: ${Math.round(config.defaultLabel.textShadow.opacity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <input
+                      type="color"
+                      value={config.defaultLabel.textShadow.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultLabel: {
+                            ...config.defaultLabel,
+                            textShadow: {
+                              ...config.defaultLabel.textShadow!,
+                              color: e.target.value,
+                            },
+                          },
+                        })
+                      }
+                      aria-label="Default label shadow colour"
+                      title="Shadow colour"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                  </>
+                )}
+              </div>
+            </div>
             {/* Phase 4.31: canvas-level default cell stroke. Same
                 toggle pattern as Cell shadow — when on, every cell
                 gets a frame outline unless its own `cellStroke` is
@@ -3392,6 +3515,50 @@ export function FlexIconGridPanel({
                   />
                 )}
               </div>
+              {/* Phase 4.33: title bar position picker. Top / bottom
+                  displace the cell grid (the pre-4.33 default).
+                  Overlay top / overlay bottom sit OVER the grid
+                  edge-to-edge — cells stay at full canvas size and
+                  the bar floats on top. Common pairing: transparent
+                  background + text shadow so the bar reads without
+                  hiding cells beneath. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ ...labelStyle, marginTop: 0 }}>Title bar position</label>
+                  <div style={chipRowStyle}>
+                    {(
+                      [
+                        { value: 'top', label: 'Top' },
+                        { value: 'bottom', label: 'Bottom' },
+                        { value: 'overlay-top', label: 'Overlay top' },
+                        { value: 'overlay-bottom', label: 'Overlay bottom' },
+                      ] as const
+                    ).map((opt) => {
+                      const active = config.titleBar!.position === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: { ...config.titleBar!, position: opt.value },
+                            })
+                          }
+                          style={chipStyle(active)}
+                          title={
+                            opt.value.startsWith('overlay')
+                              ? 'Sit over the cells edge-to-edge (grid stays full canvas size)'
+                              : 'Displace the cell grid'
+                          }
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {/* Phase 4.16 → 4.17: title bar height slider exposing
                   `heightFraction` directly. Range 5–50 % of canvas
                   height — covers thin caption (~5 %) through hero
@@ -4035,7 +4202,11 @@ export function FlexIconGridPanel({
                             })
                           }
                           style={{ ...chipStyle(config.titleBar.subtitleTextShadow === undefined), fontStyle: 'italic', borderStyle: 'dashed' }}
-                          title="Inherit the main title's text shadow"
+                          title={
+                            config.titleBar.textShadow
+                              ? `Inherit the main title's text shadow (currently ${config.titleBar.textShadow.color} @ ${Math.round(config.titleBar.textShadow.opacity * 100)}%)`
+                              : 'Inherit the main title\'s text shadow (currently none)'
+                          }
                         >
                           Inherit
                         </button>

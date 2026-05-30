@@ -1689,6 +1689,60 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.33 — title bar overlay position', () => {
+  it('round-trips overlay-top through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.titleBar = {
+      text: 'X', position: 'overlay-top', height: 100,
+      background: '#000', color: '#fff', font: 'anton',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.position).toBe('overlay-top');
+  });
+  it('round-trips overlay-bottom through parseConfig', () => {
+    const original = makeDefaultConfig(2, 2);
+    original.titleBar = {
+      text: 'X', position: 'overlay-bottom', height: 100,
+      background: '#000', color: '#fff', font: 'anton',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.position).toBe('overlay-bottom');
+  });
+  it('overlay-top does NOT displace the grid', () => {
+    const config = makeDefaultConfig(2, 2);
+    config.titleBar = {
+      text: 'X', position: 'overlay-top', height: 100,
+      background: '#000', color: '#fff', font: 'anton',
+    };
+    const layout = computeGridLayout(config);
+    // Without titleBar: y = outerPadding (0), h = 720. Overlay
+    // should match.
+    expect(layout.y).toBe(0);
+    expect(layout.h).toBe(720);
+  });
+  it('regular top STILL displaces the grid (back-compat)', () => {
+    const config = makeDefaultConfig(2, 2);
+    config.titleBar = {
+      text: 'X', position: 'top', height: 100,
+      background: '#000', color: '#fff', font: 'anton',
+    };
+    const layout = computeGridLayout(config);
+    expect(layout.y).toBe(100);
+    expect(layout.h).toBe(620);
+  });
+  it('falls back to bottom for unrecognised positions', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'middle', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+      },
+    });
+    expect(reparsed.titleBar?.position).toBe('bottom');
+  });
+});
+
 describe('Phase 4.32 — subtitle text shadow + per-cell label shadow', () => {
   it('round-trips subtitleTextShadow through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

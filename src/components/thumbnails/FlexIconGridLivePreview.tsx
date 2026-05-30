@@ -275,7 +275,7 @@ export function FlexIconGridLivePreview({
                       shadow={{
                         ...tb.shadow,
                         offsetY:
-                          tb.position === 'bottom'
+                          tb.position === 'bottom' || tb.position === 'overlay-bottom'
                             ? -Math.abs(tb.shadow.offsetY)
                             : Math.abs(tb.shadow.offsetY),
                       }}
@@ -295,7 +295,11 @@ export function FlexIconGridLivePreview({
               )}
               <rect
                 x={0}
-                y={tb.position === 'top' ? 0 : config.height - tb.height}
+                y={
+                  tb.position === 'top' || tb.position === 'overlay-top'
+                    ? 0
+                    : config.height - tb.height
+                }
                 width={config.width}
                 height={tb.height}
                 fill={fill}
@@ -316,7 +320,7 @@ export function FlexIconGridLivePreview({
         {config.titleBar && (() => {
           const tb = config.titleBar;
           const barCenterY =
-            tb.position === 'top'
+            tb.position === 'top' || tb.position === 'overlay-top'
               ? tb.height / 2
               : config.height - tb.height / 2;
           const subtitleText = tb.subtitle
@@ -344,7 +348,11 @@ export function FlexIconGridLivePreview({
             <clipPath id={clipId}>
               <rect
                 x={titleSideMargin}
-                y={tb.position === 'top' ? 0 : config.height - tb.height}
+                y={
+                  tb.position === 'top' || tb.position === 'overlay-top'
+                    ? 0
+                    : config.height - tb.height
+                }
                 width={config.width - 2 * titleSideMargin}
                 height={tb.height}
               />
@@ -586,9 +594,11 @@ export function FlexIconGridLivePreview({
           );
         })()}
 
-        {/* Per-cell background defs (gradients + patterns + image) +
-            Phase 4.11 per-cell shadow filters. One <defs> block per
-            cell to keep ids unique. */}
+        {/* Per-cell background defs (gradients + patterns + image),
+            per-cell shape shadows, and Phase 4.32 → 4.33 per-cell
+            label text shadows — all in ONE top-level <defs> block.
+            Phase 4.33 consolidates the label filter entries that
+            were previously emitted inside each LabelText. */}
         <defs>
           {cellViews.map(({ cell, backgroundSpec }) =>
             backgroundSpec.type === 'solid' ? null : (
@@ -606,6 +616,15 @@ export function FlexIconGridLivePreview({
                 id={`fg-preview-shadow-${cell.index}`}
                 shadow={shadow}
                 shapeSize={geom.shapeW}
+              />
+            ) : null,
+          )}
+          {cellViews.map(({ cell, labelStyle }) =>
+            labelStyle.textShadow ? (
+              <LabelShadowFilterDef
+                key={`label-shadow-${cell.index}`}
+                cellIndex={cell.index}
+                labelStyle={labelStyle}
               />
             ) : null,
           )}
@@ -1358,52 +1377,70 @@ function LabelText({
     12,
     Math.round(bandH * (labelStyle.maxLines === 2 ? 0.42 : 0.62)),
   );
-  // Phase 4.32: optional label text shadow rendered via SVG filter.
-  // Unique id per cell so multiple shadowed labels in one grid
-  // don't collide. Region from `computeShadowFilterRegion` keyed on
-  // the label's rendered size so big shadows don't clip.
+  // Phase 4.32 → 4.33: label text shadow filter id keyed on cell.
+  // The filter <defs> itself lives in a single top-level block (see
+  // the parent component's defs map) so a grid with N shadowed
+  // labels emits N filter entries inside ONE defs block instead of
+  // N separate defs blocks scattered through the SVG tree.
   const ts = labelStyle.textShadow;
   const tsId = ts ? `fg-preview-label-shadow-${cellIndex}` : null;
-  const tsRegion = ts ? computeShadowFilterRegion(ts, sizePx) : null;
   return (
-    <>
-      {ts && tsRegion && (
-        <defs>
-          <filter
-            id={tsId!}
-            x={`${tsRegion.x}%`}
-            y={`${tsRegion.y}%`}
-            width={`${tsRegion.w}%`}
-            height={`${tsRegion.h}%`}
-          >
-            <feGaussianBlur in="SourceAlpha" stdDeviation={ts.blur} />
-            <feOffset dx={0} dy={ts.offsetY} result="off" />
-            <feFlood floodColor={ts.color} floodOpacity={ts.opacity} />
-            <feComposite in2="off" operator="in" />
-            <feMerge>
-              <feMergeNode />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-      )}
-      <text
-        x={geom.labelX + geom.labelW / 2}
-        y={geom.labelY + geom.labelH / 2}
-        fontFamily={resolveFontCssFor(labelStyle)}
-        fontSize={sizePx}
-        fontWeight={900}
-        fill={colour}
-        stroke={labelStyle.stroke ? labelStyle.stroke.color : undefined}
-        strokeWidth={labelStyle.stroke ? labelStyle.stroke.thickness : undefined}
-        paintOrder="stroke fill"
-        textAnchor="middle"
-        dominantBaseline="middle"
-        filter={tsId ? `url(#${tsId})` : undefined}
-      >
-        {label}
-      </text>
-    </>
+    <text
+      x={geom.labelX + geom.labelW / 2}
+      y={geom.labelY + geom.labelH / 2}
+      fontFamily={resolveFontCssFor(labelStyle)}
+      fontSize={sizePx}
+      fontWeight={900}
+      fill={colour}
+      stroke={labelStyle.stroke ? labelStyle.stroke.color : undefined}
+      strokeWidth={labelStyle.stroke ? labelStyle.stroke.thickness : undefined}
+      paintOrder="stroke fill"
+      textAnchor="middle"
+      dominantBaseline="middle"
+      filter={tsId ? `url(#${tsId})` : undefined}
+    >
+      {label}
+    </text>
+  );
+}
+
+/**
+ * Phase 4.33: helper that emits a single `<filter>` entry for a
+ * cell's resolved label shadow. Used inside the top-level shared
+ * `<defs>` block so multiple shadowed labels collapse into one
+ * defs block instead of polluting the SVG tree.
+ */
+function LabelShadowFilterDef({
+  cellIndex,
+  labelStyle,
+}: {
+  cellIndex: number;
+  labelStyle: LabelStyle;
+}) {
+  const ts = labelStyle.textShadow;
+  if (!ts) return null;
+  // Estimate the rendered size for the filter region. Matches the
+  // sizing math in LabelText; the actual size is recomputed there.
+  const bandH = labelStyle.position === 'overlay' ? 60 : 60;
+  const sizePx = Math.max(12, Math.round(bandH * (labelStyle.maxLines === 2 ? 0.42 : 0.62)));
+  const region = computeShadowFilterRegion(ts, sizePx);
+  return (
+    <filter
+      id={`fg-preview-label-shadow-${cellIndex}`}
+      x={`${region.x}%`}
+      y={`${region.y}%`}
+      width={`${region.w}%`}
+      height={`${region.h}%`}
+    >
+      <feGaussianBlur in="SourceAlpha" stdDeviation={ts.blur} />
+      <feOffset dx={0} dy={ts.offsetY} result="off" />
+      <feFlood floodColor={ts.color} floodOpacity={ts.opacity} />
+      <feComposite in2="off" operator="in" />
+      <feMerge>
+        <feMergeNode />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
   );
 }
 
