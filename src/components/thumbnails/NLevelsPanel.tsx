@@ -2291,7 +2291,15 @@ interface ResultProps {
   busy: boolean;
 }
 
+/** Preview zoom presets (mirrors TopicCardGridPanel's PREVIEW_ZOOM_PRESETS
+ *  and the Flex Icon Grid convention). */
+const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
+
 function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy }: ResultProps) {
+  // Preview zoom on the rendered image. Same shape as TopicCardGridPanel:
+  // 1.0 = fits viewport width, above 1.0 scrolls horizontally, below 1.0
+  // centres the image at reduced size. Ephemeral per ResultState mount.
+  const [previewZoom, setPreviewZoom] = useState(1);
   return (
     <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(34,197,94,0.2)' }}>
       <div className="flex items-center justify-between">
@@ -2309,46 +2317,103 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onR
         </label>
       </div>
 
-      <div
-        className="relative w-full rounded-lg overflow-hidden"
-        style={{ border: '1px solid var(--border)', aspectRatio: `${result.outputWidth} / ${result.outputHeight}` }}
-      >
-        <img
-          src={result.imageUrl}
-          alt="Generated thumbnail"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        />
-        {regionOverlayOn && (
-          <svg
-            viewBox={`0 0 ${result.outputWidth} ${result.outputHeight}`}
-            preserveAspectRatio="none"
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
-          >
-            {result.regions.map((r, i) => (
-              <g key={r.id}>
-                <rect
-                  x={r.x}
-                  y={r.y}
-                  width={r.w}
-                  height={r.h}
-                  fill="none"
-                  stroke="rgba(124,58,237,0.85)"
-                  strokeWidth={Math.max(2, result.outputWidth * 0.003)}
-                  strokeDasharray={`${Math.max(6, result.outputWidth * 0.01)} ${Math.max(4, result.outputWidth * 0.006)}`}
-                />
-                <text
-                  x={r.x + 8}
-                  y={r.y + Math.max(20, result.outputWidth * 0.025)}
-                  fill="rgba(124,58,237,1)"
-                  fontSize={Math.max(14, result.outputWidth * 0.018)}
-                  fontFamily="ui-monospace, monospace"
+      {/* Zoom controls — preset chips + fine slider. Same shape as the
+          Topic Card Grid sibling so muscle memory carries between
+          formats. */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <div className="flex gap-1 flex-wrap">
+            {PREVIEW_ZOOM_PRESETS.map((z) => {
+              const active = Math.abs(previewZoom - z) < 0.001;
+              return (
+                <button
+                  key={z}
+                  type="button"
+                  onClick={() => setPreviewZoom(z)}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: active ? 'var(--accent-purple-bright)' : 'var(--bg-secondary)',
+                    color: active ? '#fff' : 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
                 >
-                  L{i + 1}
-                </text>
-              </g>
-            ))}
-          </svg>
-        )}
+                  {Math.round(z * 100)}%
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            {Math.round(previewZoom * 100)}%
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0.25}
+          max={3}
+          step={0.05}
+          value={previewZoom}
+          onChange={(e) => {
+            const v = Number.parseFloat(e.target.value);
+            if (Number.isFinite(v)) setPreviewZoom(v);
+          }}
+          className="w-full"
+          style={{ accentColor: 'var(--accent-purple-bright)' }}
+        />
+      </div>
+
+      <div
+        className="rounded-lg"
+        style={{
+          border: '1px solid var(--border)',
+          overflow: previewZoom > 1 ? 'auto' : 'hidden',
+          background: 'var(--bg-card)',
+        }}
+      >
+        <div
+          className="relative"
+          style={{
+            width: `${Math.round(previewZoom * 100)}%`,
+            aspectRatio: `${result.outputWidth} / ${result.outputHeight}`,
+            margin: previewZoom < 1 ? '0 auto' : undefined,
+          }}
+        >
+          <img
+            src={result.imageUrl}
+            alt="Generated thumbnail"
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+          {regionOverlayOn && (
+            <svg
+              viewBox={`0 0 ${result.outputWidth} ${result.outputHeight}`}
+              preserveAspectRatio="none"
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+            >
+              {result.regions.map((r, i) => (
+                <g key={r.id}>
+                  <rect
+                    x={r.x}
+                    y={r.y}
+                    width={r.w}
+                    height={r.h}
+                    fill="none"
+                    stroke="rgba(124,58,237,0.85)"
+                    strokeWidth={Math.max(2, result.outputWidth * 0.003)}
+                    strokeDasharray={`${Math.max(6, result.outputWidth * 0.01)} ${Math.max(4, result.outputWidth * 0.006)}`}
+                  />
+                  <text
+                    x={r.x + 8}
+                    y={r.y + Math.max(20, result.outputWidth * 0.025)}
+                    fill="rgba(124,58,237,1)"
+                    fontSize={Math.max(14, result.outputWidth * 0.018)}
+                    fontFamily="ui-monospace, monospace"
+                  >
+                    L{i + 1}
+                  </text>
+                </g>
+              ))}
+            </svg>
+          )}
+        </div>
       </div>
       <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
         {result.outputWidth}×{result.outputHeight} · {result.regions.length} slice region{result.regions.length === 1 ? '' : 's'} ready for production-doc{result.showBottomTitle ? ` · Title: "${result.count} LEVELS OF ${result.titleTopic}${result.titleTagline ? ` [${result.titleTagline}]` : ''}"` : ' · no bottom title bar'}

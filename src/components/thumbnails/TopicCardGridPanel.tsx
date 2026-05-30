@@ -3084,8 +3084,21 @@ interface ResultProps {
   busy: boolean;
 }
 
+/** Preview zoom presets (per Flex Icon Grid convention). Custom values
+ *  via the slider land between presets; preset chips snap to known
+ *  reference points. */
+const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
+
 function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, onRegenerateImage, busy }: ResultProps) {
   const aspect = result.outputHeight / result.outputWidth;
+  // Preview zoom on the rendered image. 1.0 = fits container width
+  // (default). Above 1.0 the inner image is wider than the outer
+  // viewport, triggering horizontal scroll. Below 1.0 the image sits
+  // centred at reduced size. State is ephemeral per ResultState mount —
+  // a user who clicks "Edit cards" and comes back lands on 100% again,
+  // which matches how Flex Icon Grid's preview zoom works in its own
+  // unmount path.
+  const [previewZoom, setPreviewZoom] = useState(1);
   return (
     <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(34,197,94,0.2)' }}>
       <div className="flex items-center justify-between">
@@ -3103,15 +3116,75 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, on
         </label>
       </div>
 
-      <div
-        className="relative w-full rounded-lg overflow-hidden"
-        style={{ border: '1px solid var(--border)', aspectRatio: `${result.outputWidth} / ${result.outputHeight}` }}
-      >
-        <img
-          src={result.imageUrl}
-          alt="Generated thumbnail"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+      {/* Zoom controls — preset chips + fine slider. Slider step matches
+          Flex Icon Grid's 5% increments. */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <div className="flex gap-1 flex-wrap">
+            {PREVIEW_ZOOM_PRESETS.map((z) => {
+              const active = Math.abs(previewZoom - z) < 0.001;
+              return (
+                <button
+                  key={z}
+                  type="button"
+                  onClick={() => setPreviewZoom(z)}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                    color: active ? '#fff' : 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  {Math.round(z * 100)}%
+                </button>
+              );
+            })}
+          </div>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            {Math.round(previewZoom * 100)}%
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0.25}
+          max={3}
+          step={0.05}
+          value={previewZoom}
+          onChange={(e) => {
+            const v = Number.parseFloat(e.target.value);
+            if (Number.isFinite(v)) setPreviewZoom(v);
+          }}
+          className="w-full"
+          style={{ accentColor: 'var(--accent-pink)' }}
         />
+      </div>
+
+      {/* Scrollable viewport. The outer div has overflow:auto so values
+          above 100% trigger horizontal (and vertical, on very tall
+          aspects) scroll. The inner div carries the aspect ratio and the
+          zoom-scaled width — at 100% it fills the viewport, at 200% it's
+          twice as wide. Below 100% the image sits centred via margin auto. */}
+      <div
+        className="rounded-lg"
+        style={{
+          border: '1px solid var(--border)',
+          overflow: previewZoom > 1 ? 'auto' : 'hidden',
+          background: 'var(--bg-card)',
+        }}
+      >
+        <div
+          className="relative"
+          style={{
+            width: `${Math.round(previewZoom * 100)}%`,
+            aspectRatio: `${result.outputWidth} / ${result.outputHeight}`,
+            margin: previewZoom < 1 ? '0 auto' : undefined,
+          }}
+        >
+          <img
+            src={result.imageUrl}
+            alt="Generated thumbnail"
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
         {regionOverlayOn && (
           <svg
             viewBox={`0 0 ${result.outputWidth} ${result.outputHeight}`}
@@ -3167,6 +3240,7 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, on
             })}
           </svg>
         )}
+        </div>
       </div>
       <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
         Aspect {Math.round(1 / aspect * 10) / 10}:1 · {result.outputWidth}×{result.outputHeight} · {result.regions.length} region{result.regions.length === 1 ? '' : 's'} ready for production-doc.
