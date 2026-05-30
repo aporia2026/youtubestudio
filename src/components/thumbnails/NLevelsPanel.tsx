@@ -15,6 +15,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
+import {
+  DEFAULT_FONT_ID,
+  findFontById,
+  fontBrowserUrl,
+  THUMBNAIL_FONTS,
+  THUMBNAIL_FONT_CATEGORIES,
+  THUMBNAIL_FONT_CATEGORY_LABELS,
+  type ThumbnailFont,
+} from '@/lib/thumbnail-formats/topic-card-grid-fonts';
 import type { ThumbnailRegion } from '@/remotion/types';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
@@ -55,6 +64,12 @@ export interface NLevelsDraftState {
    *  before the Post-process section shipped restore with this field
    *  undefined, which the panel treats as "all effects off". */
   postProcess?: PanelPostProcessState;
+  /** Title-bar overlay (text + position + typography + optional shadow).
+   *  When this overlay is enabled, the route forces the LLM's
+   *  `showBottomTitle` flag to false so the AI image leaves edge-to-edge
+   *  slices and the overlay paints on top. Drafts saved before this
+   *  section shipped restore with the field undefined. */
+  titleBar?: PanelTitleBarState;
 }
 
 /** Image-filter ids understood by the post-process pipeline. Mirrored
@@ -107,6 +122,43 @@ const DEFAULT_POST_PROCESS_STATE: PanelPostProcessState = {
   grainMonochrome: true,
 };
 
+/** Title-bar position. Mirrored from `TitleBarPosition` in
+ *  `src/lib/thumbnail-formats/shared-overlay-pipeline.ts` so this
+ *  client component doesn't depend on a server-only module. */
+export type PanelTitleBarPosition = 'top' | 'bottom' | 'overlay-top' | 'overlay-bottom';
+export type PanelTitleAlignment = 'left' | 'center' | 'right';
+
+/** Panel-side shape for the Title bar section's state. Identical to the
+ *  same-named interface in TopicCardGridPanel — kept local per the
+ *  format-panel convention. */
+export interface PanelTitleBarState {
+  enabled: boolean;
+  text: string;
+  subtitle: string;
+  position: PanelTitleBarPosition;
+  /** 0.05 - 0.5 (fraction of canvas height). */
+  heightFraction: number;
+  align: PanelTitleAlignment;
+  /** `'match-title'` means "use the title alignment". */
+  subtitleAlign: PanelTitleAlignment | 'match-title';
+  backgroundColor: string;
+  /** 0 - 1. */
+  backgroundOpacity: number;
+  textColor: string;
+  subtitleColor: string;
+  fontId: string;
+  /** Empty string means "use the title font". */
+  subtitleFontId: string;
+  shadowEnabled: boolean;
+  /** 0 - 48 px. */
+  shadowOffsetPx: number;
+  /** 0 - 96 px. */
+  shadowBlurPx: number;
+  /** 0 - 1. */
+  shadowOpacity: number;
+  shadowColor: string;
+}
+
 export interface NLevelsGenerationResult {
   imageUrl: string;
   regions: ThumbnailRegion[];
@@ -150,6 +202,32 @@ const DETAIL_PREF_KEY = 'n_levels_default_detail';
  *  blob is cheaper to read / write than nine keys, and the panel only
  *  ever reads / writes the whole object, never individual fields. */
 const POST_PROCESS_PREF_KEY = 'n_levels_default_post_process';
+/** Single localStorage key for the whole Title-bar section. Same shape
+ *  as POST_PROCESS_PREF_KEY — one JSON blob covers eighteen fields. */
+const TITLE_BAR_PREF_KEY = 'n_levels_default_title_bar';
+
+/** Default Title-bar state. Off by default; sensible defaults pre-filled
+ *  so flipping on shows a working bar immediately. */
+const DEFAULT_TITLE_BAR_STATE: PanelTitleBarState = {
+  enabled: false,
+  text: '',
+  subtitle: '',
+  position: 'bottom',
+  heightFraction: 0.2,
+  align: 'center',
+  subtitleAlign: 'match-title',
+  backgroundColor: '#000000',
+  backgroundOpacity: 1,
+  textColor: '#ffffff',
+  subtitleColor: '#ffffff',
+  fontId: DEFAULT_FONT_ID,
+  subtitleFontId: '',
+  shadowEnabled: false,
+  shadowOffsetPx: 2,
+  shadowBlurPx: 4,
+  shadowOpacity: 0.5,
+  shadowColor: '#000000',
+};
 
 /** Post-process filter chips. `null` value = "no filter" (renders as a
  *  selected chip when nothing else is picked). Order chosen so the
@@ -218,6 +296,114 @@ function buildPostProcessRequestPayload(s: PanelPostProcessState): {
   }
   if (!out.filter && !out.vignette && !out.grain) return undefined;
   return out;
+}
+
+/** Title-bar position chips. Human-readable labels (e.g. "Top overlay"
+ *  for the internal "overlay-top"). Same surface as the
+ *  TopicCardGridPanel sibling. */
+const TITLE_BAR_POSITION_OPTIONS: { value: PanelTitleBarPosition; label: string }[] = [
+  { value: 'top', label: 'Top' },
+  { value: 'bottom', label: 'Bottom' },
+  { value: 'overlay-top', label: 'Top overlay' },
+  { value: 'overlay-bottom', label: 'Bottom overlay' },
+];
+
+const TITLE_ALIGN_OPTIONS: { value: PanelTitleAlignment; label: string }[] = [
+  { value: 'left', label: 'Left' },
+  { value: 'center', label: 'Center' },
+  { value: 'right', label: 'Right' },
+];
+
+/** Coerce a raw localStorage JSON read into a `PanelTitleBarState`.
+ *  Identical logic to the same-named helper in TopicCardGridPanel —
+ *  kept local per the format-panel convention. */
+function coerceTitleBarState(raw: unknown): PanelTitleBarState {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_TITLE_BAR_STATE };
+  const r = raw as Record<string, unknown>;
+  const clamp = (n: unknown, lo: number, hi: number, fb: number): number => {
+    if (typeof n !== 'number' || !Number.isFinite(n)) return fb;
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  };
+  const hex = (v: unknown, fb: string): string =>
+    typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v : fb;
+  const positionValid = r.position === 'top' || r.position === 'bottom'
+    || r.position === 'overlay-top' || r.position === 'overlay-bottom';
+  const alignValid = (v: unknown): v is PanelTitleAlignment =>
+    v === 'left' || v === 'center' || v === 'right';
+  const subtitleAlignValid = r.subtitleAlign === 'match-title' || alignValid(r.subtitleAlign);
+  return {
+    enabled: r.enabled === true,
+    text: typeof r.text === 'string' ? r.text : DEFAULT_TITLE_BAR_STATE.text,
+    subtitle: typeof r.subtitle === 'string' ? r.subtitle : DEFAULT_TITLE_BAR_STATE.subtitle,
+    position: positionValid ? (r.position as PanelTitleBarPosition) : DEFAULT_TITLE_BAR_STATE.position,
+    heightFraction: clamp(r.heightFraction, 0.05, 0.5, DEFAULT_TITLE_BAR_STATE.heightFraction),
+    align: alignValid(r.align) ? r.align : DEFAULT_TITLE_BAR_STATE.align,
+    subtitleAlign: subtitleAlignValid
+      ? (r.subtitleAlign as PanelTitleAlignment | 'match-title')
+      : DEFAULT_TITLE_BAR_STATE.subtitleAlign,
+    backgroundColor: hex(r.backgroundColor, DEFAULT_TITLE_BAR_STATE.backgroundColor),
+    backgroundOpacity: clamp(r.backgroundOpacity, 0, 1, DEFAULT_TITLE_BAR_STATE.backgroundOpacity),
+    textColor: hex(r.textColor, DEFAULT_TITLE_BAR_STATE.textColor),
+    subtitleColor: hex(r.subtitleColor, DEFAULT_TITLE_BAR_STATE.subtitleColor),
+    fontId: typeof r.fontId === 'string' && findFontById(r.fontId) ? r.fontId : DEFAULT_TITLE_BAR_STATE.fontId,
+    subtitleFontId: typeof r.subtitleFontId === 'string' && (r.subtitleFontId === '' || findFontById(r.subtitleFontId))
+      ? r.subtitleFontId
+      : DEFAULT_TITLE_BAR_STATE.subtitleFontId,
+    shadowEnabled: r.shadowEnabled === true,
+    shadowOffsetPx: clamp(r.shadowOffsetPx, 0, 48, DEFAULT_TITLE_BAR_STATE.shadowOffsetPx),
+    shadowBlurPx: clamp(r.shadowBlurPx, 0, 96, DEFAULT_TITLE_BAR_STATE.shadowBlurPx),
+    shadowOpacity: clamp(r.shadowOpacity, 0, 1, DEFAULT_TITLE_BAR_STATE.shadowOpacity),
+    shadowColor: hex(r.shadowColor, DEFAULT_TITLE_BAR_STATE.shadowColor),
+  };
+}
+
+interface TitleBarRequestPayloadShape {
+  text: string;
+  subtitle?: string;
+  position: PanelTitleBarPosition;
+  heightFraction: number;
+  align: PanelTitleAlignment;
+  subtitleAlign?: PanelTitleAlignment | 'match-title';
+  backgroundColor: string;
+  backgroundOpacity: number;
+  textColor: string;
+  subtitleColor?: string;
+  fontId: string;
+  subtitleFontId?: string;
+  shadow?: { offsetPx: number; blurPx: number; opacity: number; color: string };
+}
+
+/** Build the wire-shape `titleBar` payload from the panel's state.
+ *  Returns `undefined` when the bar is disabled or has no text. */
+function buildTitleBarRequestPayload(s: PanelTitleBarState): TitleBarRequestPayloadShape | undefined {
+  const trimmedText = s.text.trim();
+  if (!s.enabled || !trimmedText) return undefined;
+  const trimmedSubtitle = s.subtitle.trim();
+  const hasSubtitle = trimmedSubtitle.length > 0;
+  return {
+    text: trimmedText,
+    subtitle: hasSubtitle ? trimmedSubtitle : undefined,
+    position: s.position,
+    heightFraction: s.heightFraction,
+    align: s.align,
+    subtitleAlign: hasSubtitle ? s.subtitleAlign : undefined,
+    backgroundColor: s.backgroundColor,
+    backgroundOpacity: s.backgroundOpacity,
+    textColor: s.textColor,
+    subtitleColor: hasSubtitle ? s.subtitleColor : undefined,
+    fontId: s.fontId,
+    subtitleFontId: hasSubtitle && s.subtitleFontId ? s.subtitleFontId : undefined,
+    shadow: s.shadowEnabled && s.shadowOpacity > 0
+      ? {
+          offsetPx: s.shadowOffsetPx,
+          blurPx: s.shadowBlurPx,
+          opacity: s.shadowOpacity,
+          color: s.shadowColor,
+        }
+      : undefined,
+  };
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -353,6 +539,34 @@ export function NLevelsPanel({
     setPostProcess((prev) => ({ ...prev, ...patch }));
   }
 
+  // Title-bar overlay state. When enabled, the route forces
+  // `showBottomTitle: false` on the LLM prompt so the AI image leaves
+  // edge-to-edge slices and the overlay paints on top. The UI shows a
+  // small note when both the LLM-baked toggle and the overlay are on
+  // so the user knows which one wins.
+  const [titleBar, setTitleBar] = useState<PanelTitleBarState>(() => {
+    if (typeof window === 'undefined') return { ...DEFAULT_TITLE_BAR_STATE };
+    try {
+      const raw = localStorage.getItem(TITLE_BAR_PREF_KEY);
+      if (!raw) return { ...DEFAULT_TITLE_BAR_STATE };
+      return coerceTitleBarState(JSON.parse(raw));
+    } catch {
+      /* fall through */
+    }
+    return { ...DEFAULT_TITLE_BAR_STATE };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(TITLE_BAR_PREF_KEY, JSON.stringify(titleBar));
+    } catch {
+      /* ignore */
+    }
+  }, [titleBar]);
+  function updateTitleBar(patch: Partial<PanelTitleBarState>) {
+    setTitleBar((prev) => ({ ...prev, ...patch }));
+  }
+  const selectedTitleFont: ThumbnailFont = findFontById(titleBar.fontId) ?? findFontById(DEFAULT_FONT_ID)!;
+
   // Flow state
   const [busyStep, setBusyStep] = useState<'idle' | 'list' | 'image'>('idle');
   const [levels, setLevels] = useState<FormatLevel[] | null>(null);
@@ -407,6 +621,9 @@ export function NLevelsPanel({
       // boot reads through.
       setPostProcess(coercePostProcessState(restoredDraftState.postProcess));
     }
+    if (restoredDraftState.titleBar) {
+      setTitleBar(coerceTitleBarState(restoredDraftState.titleBar));
+    }
     console.info('[n-levels panel draft] hydrated', {
       level_count: restoredDraftState.levels?.length ?? 0,
       has_refined_topic: !!restoredDraftState.refinedTopic,
@@ -434,11 +651,13 @@ export function NLevelsPanel({
       refinedTopic,
       notesForImageModel,
       postProcess,
+      titleBar,
     });
   }, [
     count, showBottomTitle, showLevelLabels, titleTopic, titleTagline,
     taglineEnabled, formatMode, prefilledLabels, imageModelId, levels,
-    refinedTopic, notesForImageModel, postProcess, onDraftStateChange,
+    refinedTopic, notesForImageModel, postProcess, titleBar,
+    onDraftStateChange,
   ]);
 
   // Region overlay preference
@@ -586,6 +805,7 @@ export function NLevelsPanel({
           brightness,
           detail: detailLevel,
           postProcess: buildPostProcessRequestPayload(postProcess),
+          titleBar: buildTitleBarRequestPayload(titleBar),
         }),
       });
       if (!res.ok) {
@@ -1119,6 +1339,450 @@ export function NLevelsPanel({
                 Reset
               </button>
             </div>
+          </div>
+
+          {/* Title bar overlay — Sharp-rendered text band drawn on top
+              of the AI image. When this overlay is enabled, the server
+              forces the LLM's `showBottomTitle` to false so the AI
+              leaves edge-to-edge slices and the overlay paints on top
+              instead of doubling up with the LLM-baked bar.
+
+              N Levels-specific UX: the existing "Bottom title bar"
+              toggle higher up the panel keeps the LLM-baked grunge
+              title look (a different aesthetic). The overlay below
+              draws a clean rectangular text band. When both are on,
+              the overlay wins and we surface a callout so the user
+              understands. */}
+          <div>
+            {/* @font-face declarations for every bundled font, injected
+                once here so the dropdown can render each option in its
+                own typeface even without a sibling Font section. */}
+            <style>{THUMBNAIL_FONTS.map((f) => `@font-face { font-family: '${f.family}'; src: url('${fontBrowserUrl(f)}') format('woff2'); font-display: swap; }`).join('\n')}</style>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Title bar overlay
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  console.info('[n-levels panel title-bar toggle]', {
+                    from: titleBar.enabled,
+                    to: !titleBar.enabled,
+                    llm_baked_title_on: showBottomTitle,
+                  });
+                  updateTitleBar({ enabled: !titleBar.enabled });
+                }}
+                className="px-2 py-0.5 rounded text-[10px]"
+                style={{
+                  background: titleBar.enabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                  color: titleBar.enabled ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-pressed={titleBar.enabled}
+              >
+                {titleBar.enabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            {titleBar.enabled && showBottomTitle && (
+              <p
+                className="text-[10px] mb-2 px-2 py-1 rounded"
+                style={{
+                  color: 'var(--accent-yellow)',
+                  background: 'rgba(255, 200, 0, 0.08)',
+                  border: '1px solid rgba(255, 200, 0, 0.2)',
+                }}
+              >
+                Overlay is on. The LLM&apos;s &ldquo;Bottom title bar&rdquo; toggle above is
+                ignored — the AI image will render edge-to-edge slices and this
+                overlay paints over the top.
+              </p>
+            )}
+            {titleBar.enabled && (
+              <div className="space-y-3">
+                {/* Text + subtitle inputs */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Text</p>
+                  <input
+                    type="text"
+                    className="input-field w-full text-xs"
+                    value={titleBar.text}
+                    onChange={(e) => updateTitleBar({ text: e.target.value })}
+                    placeholder="N LEVELS OF X"
+                    maxLength={200}
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Subtitle (optional)</p>
+                  <input
+                    type="text"
+                    className="input-field w-full text-xs"
+                    value={titleBar.subtitle}
+                    onChange={(e) => updateTitleBar({ subtitle: e.target.value })}
+                    placeholder="EXPLAINED"
+                    maxLength={200}
+                  />
+                </div>
+
+                {/* Position chips */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Position</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TITLE_BAR_POSITION_OPTIONS.map((opt) => {
+                      const active = titleBar.position === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => updateTitleBar({ position: opt.value })}
+                          className="px-2.5 py-1 rounded text-xs"
+                          style={{
+                            background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                            color: active ? '#fff' : 'var(--text-secondary)',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Height % */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Height</p>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {Math.round(titleBar.heightFraction * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={0.5}
+                    step={0.01}
+                    value={titleBar.heightFraction}
+                    onChange={(e) => {
+                      const v = Number.parseFloat(e.target.value);
+                      if (Number.isFinite(v)) updateTitleBar({ heightFraction: v });
+                    }}
+                    className="w-full"
+                    style={{ accentColor: 'var(--accent-pink)' }}
+                  />
+                </div>
+
+                {/* Alignment chips */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Alignment</p>
+                  <div className="flex gap-1.5">
+                    {TITLE_ALIGN_OPTIONS.map((opt) => {
+                      const active = titleBar.align === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => updateTitleBar({ align: opt.value })}
+                          className="px-2.5 py-1 rounded text-xs"
+                          style={{
+                            background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                            color: active ? '#fff' : 'var(--text-secondary)',
+                            border: '1px solid var(--border)',
+                          }}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Subtitle alignment — only when subtitle has content */}
+                {titleBar.subtitle.trim() && (
+                  <div>
+                    <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Subtitle alignment</p>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => updateTitleBar({ subtitleAlign: 'match-title' })}
+                        className="px-2.5 py-1 rounded text-xs"
+                        style={{
+                          background: titleBar.subtitleAlign === 'match-title' ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                          color: titleBar.subtitleAlign === 'match-title' ? '#fff' : 'var(--text-secondary)',
+                          border: '1px solid var(--border)',
+                        }}
+                      >
+                        Match title
+                      </button>
+                      {TITLE_ALIGN_OPTIONS.map((opt) => {
+                        const active = titleBar.subtitleAlign === opt.value;
+                        return (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => updateTitleBar({ subtitleAlign: opt.value })}
+                            className="px-2.5 py-1 rounded text-xs"
+                            style={{
+                              background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                              color: active ? '#fff' : 'var(--text-secondary)',
+                              border: '1px solid var(--border)',
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Colours */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={titleBar.backgroundColor}
+                      onChange={(e) => updateTitleBar({ backgroundColor: e.target.value })}
+                      className="rounded cursor-pointer"
+                      style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                      aria-label="Background colour"
+                    />
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      Background {titleBar.backgroundColor}
+                    </span>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Background opacity</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {Math.round(titleBar.backgroundOpacity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={titleBar.backgroundOpacity}
+                      onChange={(e) => {
+                        const v = Number.parseFloat(e.target.value);
+                        if (Number.isFinite(v)) updateTitleBar({ backgroundOpacity: v });
+                      }}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-pink)' }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={titleBar.textColor}
+                      onChange={(e) => updateTitleBar({ textColor: e.target.value })}
+                      className="rounded cursor-pointer"
+                      style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                      aria-label="Text colour"
+                    />
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      Text {titleBar.textColor}
+                    </span>
+                  </div>
+                  {titleBar.subtitle.trim() && (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={titleBar.subtitleColor}
+                        onChange={(e) => updateTitleBar({ subtitleColor: e.target.value })}
+                        className="rounded cursor-pointer"
+                        style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                        aria-label="Subtitle colour"
+                      />
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        Subtitle {titleBar.subtitleColor}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Font picker. Reuses the THUMBNAIL_FONTS registry +
+                    @font-face declarations injected above. */}
+                <div>
+                  <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Title font</p>
+                  <select
+                    className="input-field w-full text-sm"
+                    value={titleBar.fontId}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!findFontById(next)) return;
+                      updateTitleBar({ fontId: next });
+                    }}
+                    style={{ fontFamily: `'${selectedTitleFont.family}', system-ui, sans-serif` }}
+                  >
+                    {THUMBNAIL_FONT_CATEGORIES.map((cat) => (
+                      <optgroup key={cat} label={THUMBNAIL_FONT_CATEGORY_LABELS[cat]}>
+                        {THUMBNAIL_FONTS.filter((f) => f.category === cat).map((f) => (
+                          <option
+                            key={f.id}
+                            value={f.id}
+                            style={{ fontFamily: `'${f.family}', system-ui, sans-serif` }}
+                          >
+                            {f.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Subtitle font — only when subtitle has content */}
+                {titleBar.subtitle.trim() && (
+                  <div>
+                    <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>Subtitle font</p>
+                    <select
+                      className="input-field w-full text-sm"
+                      value={titleBar.subtitleFontId}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (next === '' || findFontById(next)) {
+                          updateTitleBar({ subtitleFontId: next });
+                        }
+                      }}
+                      style={{
+                        fontFamily: titleBar.subtitleFontId
+                          ? `'${(findFontById(titleBar.subtitleFontId) ?? findFontById(DEFAULT_FONT_ID)!).family}', system-ui, sans-serif`
+                          : 'system-ui, sans-serif',
+                      }}
+                    >
+                      <option value="">Match title font</option>
+                      {THUMBNAIL_FONT_CATEGORIES.map((cat) => (
+                        <optgroup key={cat} label={THUMBNAIL_FONT_CATEGORY_LABELS[cat]}>
+                          {THUMBNAIL_FONTS.filter((f) => f.category === cat).map((f) => (
+                            <option
+                              key={f.id}
+                              value={f.id}
+                              style={{ fontFamily: `'${f.family}', system-ui, sans-serif` }}
+                            >
+                              {f.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Shadow toggle + sliders */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Text shadow</p>
+                    <button
+                      type="button"
+                      onClick={() => updateTitleBar({ shadowEnabled: !titleBar.shadowEnabled })}
+                      className="px-2 py-0.5 rounded text-[10px]"
+                      style={{
+                        background: titleBar.shadowEnabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                        color: titleBar.shadowEnabled ? '#fff' : 'var(--text-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                      aria-pressed={titleBar.shadowEnabled}
+                    >
+                      {titleBar.shadowEnabled ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  {titleBar.shadowEnabled && (
+                    <div className="space-y-2">
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Offset</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {titleBar.shadowOffsetPx}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={20}
+                          step={1}
+                          value={titleBar.shadowOffsetPx}
+                          onChange={(e) => {
+                            const v = Number.parseInt(e.target.value, 10);
+                            if (Number.isFinite(v)) updateTitleBar({ shadowOffsetPx: v });
+                          }}
+                          className="w-full"
+                          style={{ accentColor: 'var(--accent-pink)' }}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Blur</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {titleBar.shadowBlurPx}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={48}
+                          step={1}
+                          value={titleBar.shadowBlurPx}
+                          onChange={(e) => {
+                            const v = Number.parseInt(e.target.value, 10);
+                            if (Number.isFinite(v)) updateTitleBar({ shadowBlurPx: v });
+                          }}
+                          className="w-full"
+                          style={{ accentColor: 'var(--accent-pink)' }}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Opacity</span>
+                          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                            {Math.round(titleBar.shadowOpacity * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={titleBar.shadowOpacity}
+                          onChange={(e) => {
+                            const v = Number.parseFloat(e.target.value);
+                            if (Number.isFinite(v)) updateTitleBar({ shadowOpacity: v });
+                          }}
+                          className="w-full"
+                          style={{ accentColor: 'var(--accent-pink)' }}
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={titleBar.shadowColor}
+                          onChange={(e) => updateTitleBar({ shadowColor: e.target.value })}
+                          className="rounded cursor-pointer"
+                          style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                          aria-label="Shadow colour"
+                        />
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                          Shadow {titleBar.shadowColor}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Drawn on top after the AI image. Re-renders without a new AI call.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTitleBar({ ...DEFAULT_TITLE_BAR_STATE })}
+                    className="text-[10px] underline"
+                    style={{ color: 'var(--text-muted)' }}
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Mode chips */}
