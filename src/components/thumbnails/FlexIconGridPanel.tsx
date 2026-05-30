@@ -4148,6 +4148,28 @@ export function FlexIconGridPanel({
                   )}
                 </div>
               )}
+              {/* Phase 4.42: vignette + split-tone shadows
+                  interaction hint. A strong vignette (>=50%
+                  intensity, <0.6 radius — tight darkening) on top
+                  of split-tone shadows can double-darken the
+                  corners. Surface the gotcha so users can dial
+                  intentionally rather than blame the render. */}
+              {config.tint &&
+                config.tint.shadows &&
+                config.vignette &&
+                config.vignette.intensity >= 0.5 &&
+                config.vignette.radius < 0.6 && (
+                  <p
+                    style={{
+                      margin: '4px 0 0',
+                      fontSize: 10,
+                      color: '#fbbf24',
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    Heads up: a strong vignette + split-tone shadows can double-darken the corners. Try lowering Split strength below 30% or raising the vignette Radius above 0.6.
+                  </p>
+                )}
             </div>
             {/* Phase 4.40: light-leak / corner flare overlay. A
                 soft radial blot anchored at one of 8 positions
@@ -4286,7 +4308,7 @@ export function FlexIconGridPanel({
                           }}
                           title={mode.hint}
                         >
-                          <TintBlendSwatch
+                          <RadialLeakSwatch
                             color={config.lightLeak!.color}
                             intensity={config.lightLeak!.intensity}
                             blendMode={mode.value}
@@ -4366,6 +4388,122 @@ export function FlexIconGridPanel({
                   )}
                 </div>
               )}
+            </div>
+            {/* Phase 4.42: letterbox bars — solid bars on any
+                combination of the four canvas edges. The 2.39:1
+                cinematic preset puts black bars top+bottom sized
+                to crop the visible area to a 2.39:1 aspect ratio
+                on the current canvas. Off by default; rendered
+                BELOW the outer frame so the frame wraps around. */}
+            <div>
+              <label style={labelStyle}>
+                Letterbox
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (cinematic bars)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.letterbox}
+                  onClick={() => {
+                    if (config.letterbox) {
+                      updateConfig({ letterbox: undefined });
+                    } else {
+                      // 2.39:1 default for the 16:9 canvas works
+                      // out to ~75px bars top+bottom on a 1280x720.
+                      // Compute dynamically so non-16:9 canvases
+                      // still get a reasonable seed.
+                      const visibleH = config.width / 2.39;
+                      const bar = Math.max(0, Math.round((config.height - visibleH) / 2));
+                      updateConfig({
+                        letterbox: {
+                          color: '#000000',
+                          top: bar,
+                          bottom: bar,
+                          left: 0,
+                          right: 0,
+                        },
+                      });
+                    }
+                  }}
+                  style={chipStyle(!!config.letterbox)}
+                  title={
+                    config.letterbox
+                      ? 'Click to turn letterbox bars off'
+                      : 'Click to add a 2.39:1 cinematic letterbox (top+bottom)'
+                  }
+                >
+                  {config.letterbox ? 'Letterbox on' : 'Letterbox off'}
+                </button>
+                {config.letterbox && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.letterbox.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          letterbox: { ...config.letterbox!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Letterbox bar colour"
+                      title="Bar colour (typically black)"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    {/* Per-side numeric controls. Slider+numeric
+                        for each so users can dial subtle (10–20px)
+                        decorative bars or full cinematic (>=80px)
+                        crops with precision. */}
+                    {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+                      <div
+                        key={side}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      >
+                        <span style={{ fontSize: 10, color: '#71717a', minWidth: 38, textTransform: 'capitalize' }}>
+                          {side}
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={240}
+                          step={1}
+                          value={config.letterbox![side]}
+                          onChange={(e) =>
+                            updateConfig({
+                              letterbox: { ...config.letterbox!, [side]: Number(e.target.value) },
+                            })
+                          }
+                          aria-label={`Letterbox ${side} bar thickness`}
+                          title={`${side} bar: ${config.letterbox![side]}px`}
+                          style={{ width: 70 }}
+                        />
+                        <BufferedNumericInput
+                          value={config.letterbox![side]}
+                          min={0}
+                          max={240}
+                          step={1}
+                          onCommit={(next) =>
+                            updateConfig({
+                              letterbox: { ...config.letterbox!, [side]: next },
+                            })
+                          }
+                          ariaLabel={`Letterbox ${side} bar thickness (numeric)`}
+                          title="Thickness 0–240 px; commits on Enter or blur"
+                          style={{ width: 52, padding: '4px 6px', fontSize: 12 }}
+                        />
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
             </div>
             {/* Phase 4.41: outer canvas frame — a single solid
                 stroke around the entire image. Rendered on top of
@@ -4482,6 +4620,51 @@ export function FlexIconGridPanel({
                       title="Distance from canvas edge 0–80 px; commits on Enter or blur"
                       style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
                     />
+                    {/* Phase 4.42: style chip-row. Solid is the
+                        default; double draws two parallel strokes
+                        within the same thickness budget (editorial
+                        / New Yorker look); dashed adds a balanced
+                        broken pattern. */}
+                    {(
+                      [
+                        { value: 'solid', label: 'Solid' },
+                        { value: 'double', label: 'Double' },
+                        { value: 'dashed', label: 'Dashed' },
+                      ] as const
+                    ).map((opt) => {
+                      const current = config.frame!.style ?? 'solid';
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          aria-pressed={current === opt.value}
+                          onClick={() =>
+                            updateConfig({
+                              frame: { ...config.frame!, style: opt.value },
+                            })
+                          }
+                          style={{
+                            ...chipStyle(current === opt.value),
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                          }}
+                          title={
+                            opt.value === 'solid'
+                              ? 'Single solid stroke (default)'
+                              : opt.value === 'double'
+                                ? 'Two parallel strokes within the thickness budget'
+                                : 'Dashed stroke; dash size scales with thickness'
+                          }
+                        >
+                          <FrameStyleSwatch
+                            style={opt.value}
+                            color={config.frame!.color}
+                          />
+                          {opt.label}
+                        </button>
+                      );
+                    })}
                   </>
                 )}
               </div>
@@ -6638,6 +6821,22 @@ function BufferedNumericInput({
           setDraft(formatValue(value));
           setInvalid(false);
           ref.current?.blur();
+        } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          // Phase 4.42: native arrow-key handling on number inputs
+          // ignores the `step` prop's resolution (Chromium uses 1
+          // for integer-typed values, 0.1 for non-integer) so a
+          // step={0.01} field jumps by 0.1. Override it: ↑ commits
+          // value + step, ↓ commits value - step, with Shift for
+          // 10× and Alt for 0.1× as common conventions.
+          e.preventDefault();
+          const multiplier = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
+          const delta = step * multiplier * (e.key === 'ArrowUp' ? 1 : -1);
+          const raw = Number(draft);
+          const base = Number.isFinite(raw) ? raw : value;
+          const next = Math.max(min, Math.min(max, base + delta));
+          setDraft(formatValue(next));
+          setInvalid(false);
+          if (next !== value) onCommit(next);
         }
       }}
       aria-label={ariaLabel}
@@ -6651,6 +6850,106 @@ function BufferedNumericInput({
         borderColor: invalid ? '#f87171' : (inputStyle as React.CSSProperties).borderColor,
       }}
     />
+  );
+}
+
+/**
+ * Phase 4.42: 16×16 SVG swatch showing the current light-leak
+ * colour as a radial gradient anchored top-right (matching the
+ * default leak position), composited with each blend-mode chip's
+ * mode over a luminance ramp. The radial-falloff representation
+ * makes the leak's hot-spot behaviour visible — the previous
+ * `TintBlendSwatch` rendered a uniform wash that made "Multiply"
+ * look like a flat dark tint even though the actual render is a
+ * small localised blot.
+ */
+function RadialLeakSwatch({
+  color,
+  intensity,
+  blendMode,
+}: {
+  color: string;
+  intensity: number;
+  blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light';
+}) {
+  const id = `fg-leak-swatch-${blendMode}`;
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={`${id}-ramp`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#202020" />
+          <stop offset="50%" stopColor="#808080" />
+          <stop offset="100%" stopColor="#e8e8e8" />
+        </linearGradient>
+        <radialGradient id={`${id}-leak`} cx="100%" cy="0%" r="120%">
+          <stop offset="0%" stopColor={color} stopOpacity={intensity} />
+          <stop offset="100%" stopColor={color} stopOpacity={0} />
+        </radialGradient>
+      </defs>
+      <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-ramp)`} />
+      <rect
+        x={0}
+        y={0}
+        width={16}
+        height={16}
+        fill={`url(#${id}-leak)`}
+        style={{ mixBlendMode: blendMode }}
+      />
+      <rect
+        x={0.5}
+        y={0.5}
+        width={15}
+        height={15}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity={0.2}
+      />
+    </svg>
+  );
+}
+
+/**
+ * Phase 4.42: 22×14 SVG swatch showing the frame style on a small
+ * rectangle. Solid/double/dashed each get a recognisable miniature
+ * so users can pick at a glance. Stroke colour mirrors the live
+ * frame colour so the swatch updates as the user changes the hue.
+ */
+function FrameStyleSwatch({
+  style,
+  color,
+}: {
+  style: 'solid' | 'double' | 'dashed';
+  color: string;
+}) {
+  const stroke = color;
+  if (style === 'double') {
+    return (
+      <svg width={22} height={14} viewBox="0 0 22 14" aria-hidden="true" focusable="false">
+        <rect x={1.5} y={1.5} width={19} height={11} fill="none" stroke={stroke} strokeWidth={1} />
+        <rect x={4} y={4} width={14} height={6} fill="none" stroke={stroke} strokeWidth={1} />
+      </svg>
+    );
+  }
+  if (style === 'dashed') {
+    return (
+      <svg width={22} height={14} viewBox="0 0 22 14" aria-hidden="true" focusable="false">
+        <rect
+          x={1.5}
+          y={1.5}
+          width={19}
+          height={11}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1.4}
+          strokeDasharray="3 2"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg width={22} height={14} viewBox="0 0 22 14" aria-hidden="true" focusable="false">
+      <rect x={1.5} y={1.5} width={19} height={11} fill="none" stroke={stroke} strokeWidth={1.4} />
+    </svg>
   );
 }
 

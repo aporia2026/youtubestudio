@@ -15,6 +15,7 @@ import {
   ASPECT_RATIO_PRESETS,
   computeCellGeometry,
   computeCellRect,
+  computeFrameRects,
   computeGridLayout,
   computeRegions,
   DEFAULT_CANVAS,
@@ -2083,6 +2084,112 @@ describe('Phase 4.41 — outer canvas frame', () => {
     const result = validateConfig(config);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/frame\.inset/);
+  });
+});
+
+describe('Phase 4.42 — frame.style enum + computeFrameRects', () => {
+  it('round-trips frame.style through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.frame = { color: '#222222', thickness: 8, inset: 4, style: 'double' };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.frame?.style).toBe('double');
+  });
+  it('drops frame.style when unknown', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      frame: { color: '#222222', thickness: 8, inset: 4, style: 'wavy' },
+    });
+    expect(reparsed.frame?.style).toBeUndefined();
+  });
+  it('rejects frame.style out of enum on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.frame = { color: '#222222', thickness: 8, inset: 4, style: 'wavy' as 'solid' };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/frame\.style/);
+  });
+  it('computeFrameRects returns 1 rect for solid', () => {
+    const rects = computeFrameRects(1280, 720, 0, 6, 'solid');
+    expect(rects).toHaveLength(1);
+    expect(rects[0].strokeWidth).toBe(6);
+    expect(rects[0].x).toBe(3);
+    expect(rects[0].y).toBe(3);
+    expect(rects[0].w).toBe(1274);
+    expect(rects[0].h).toBe(714);
+  });
+  it('computeFrameRects returns 1 rect for dashed (same geometry as solid)', () => {
+    const solid = computeFrameRects(1280, 720, 4, 8, 'solid');
+    const dashed = computeFrameRects(1280, 720, 4, 8, 'dashed');
+    expect(dashed).toEqual(solid);
+  });
+  it('computeFrameRects returns 2 rects for double, both inside the canvas', () => {
+    const rects = computeFrameRects(1280, 720, 0, 12, 'double');
+    expect(rects).toHaveLength(2);
+    // Outer rect is closer to canvas edge than inner rect.
+    expect(rects[0].x).toBeLessThan(rects[1].x);
+    expect(rects[0].w).toBeGreaterThan(rects[1].w);
+    // Both rects stay inside the canvas.
+    for (const r of rects) {
+      expect(r.x).toBeGreaterThanOrEqual(0);
+      expect(r.y).toBeGreaterThanOrEqual(0);
+      expect(r.x + r.w).toBeLessThanOrEqual(1280);
+      expect(r.y + r.h).toBeLessThanOrEqual(720);
+    }
+  });
+  it('computeFrameRects skips degenerate rects (inset + thickness >= half-canvas)', () => {
+    const rects = computeFrameRects(100, 100, 50, 40, 'solid');
+    expect(rects).toHaveLength(0);
+  });
+});
+
+describe('Phase 4.42 — letterbox bars', () => {
+  it('round-trips letterbox through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.letterbox = { color: '#000000', top: 60, bottom: 60, left: 0, right: 0 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.letterbox).toEqual({ color: '#000000', top: 60, bottom: 60, left: 0, right: 0 });
+  });
+  it('drops letterbox when all four sides are zero', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      letterbox: { color: '#000000', top: 0, bottom: 0, left: 0, right: 0 },
+    });
+    expect(reparsed.letterbox).toBeUndefined();
+  });
+  it('clamps letterbox sides to [0, 240] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      letterbox: { color: '#000000', top: 500, bottom: -10, left: 50, right: 0 },
+    });
+    expect(reparsed.letterbox?.top).toBe(240);
+    expect(reparsed.letterbox?.bottom).toBe(0);
+    expect(reparsed.letterbox?.left).toBe(50);
+  });
+  it('treats missing side keys as 0', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      letterbox: { color: '#000000', top: 60 },
+    });
+    expect(reparsed.letterbox?.bottom).toBe(0);
+    expect(reparsed.letterbox?.left).toBe(0);
+  });
+  it('rejects malformed letterbox.color on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.letterbox = { color: 'black', top: 60, bottom: 60, left: 0, right: 0 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/letterbox\.color/);
+  });
+  it('rejects letterbox side out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.letterbox = { color: '#000000', top: 300, bottom: 0, left: 0, right: 0 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/letterbox\.top/);
   });
 });
 

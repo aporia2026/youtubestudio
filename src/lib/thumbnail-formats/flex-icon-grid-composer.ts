@@ -45,6 +45,7 @@ import {
   applyLabelCase,
   computeCellGeometry,
   computeCellRect,
+  computeFrameRects,
   computeGridLayout,
   computeShadowFilterRegion,
   escapeSvgText,
@@ -366,10 +367,21 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (vignetteOverlay) overlays.push(vignetteOverlay);
     }
 
+    // 3.75) Phase 4.42: letterbox bars — solid coloured bars on
+    //       each canvas edge to fake a cinematic crop. Pushed AFTER
+    //       the vignette but BEFORE the frame so the frame stroke
+    //       wraps around the bars (the intended "framed letterbox"
+    //       editorial look).
+    if (config.letterbox) {
+      const letterboxOverlay = await buildLetterboxOverlay(config);
+      if (letterboxOverlay) overlays.push(letterboxOverlay);
+    }
+
     // 3.8) Phase 4.41: outer frame — pushed LAST so the stroke sits
     //      on top of every other finishing layer (including the
-    //      vignette). A single transparent-fill SVG with a
-    //      rectangular stroke at the configured inset / thickness.
+    //      vignette + letterbox bars). A single transparent-fill
+    //      SVG with a rectangular stroke at the configured inset /
+    //      thickness.
     if (config.frame) {
       const frameOverlay = await buildFrameOverlay(config);
       if (frameOverlay) overlays.push(frameOverlay);
@@ -1867,6 +1879,36 @@ async function buildVignetteOverlay(
   return { input: buf, top: 0, left: 0 };
 }
 
+// ─── Letterbox overlay (Phase 4.42) ─────────────────────────────────────────
+
+/**
+ * Phase 4.42: build a transparent-background SVG with up to four
+ * solid coloured bars on each canvas edge. Each side is independent
+ * — `top`/`bottom`/`left`/`right` set the bar thickness in pixels
+ * for that side. 0 means no bar on that side. Composited normally
+ * (no blend mode) so the bars sit ON TOP of the underlying canvas
+ * + vignette, hiding whatever pixels they cover.
+ */
+async function buildLetterboxOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const l = config.letterbox;
+  if (!l) return null;
+  const { width, height } = config;
+  const bars: string[] = [];
+  const fill = escapeSvgText(l.color);
+  if (l.top > 0) bars.push(`<rect x="0" y="0" width="${width}" height="${l.top}" fill="${fill}"/>`);
+  if (l.bottom > 0)
+    bars.push(`<rect x="0" y="${height - l.bottom}" width="${width}" height="${l.bottom}" fill="${fill}"/>`);
+  if (l.left > 0) bars.push(`<rect x="0" y="0" width="${l.left}" height="${height}" fill="${fill}"/>`);
+  if (l.right > 0)
+    bars.push(`<rect x="${width - l.right}" y="0" width="${l.right}" height="${height}" fill="${fill}"/>`);
+  if (bars.length === 0) return null;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${bars.join('')}</svg>`;
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0 };
+}
+
 // ─── Outer frame overlay (Phase 4.41) ───────────────────────────────────────
 
 /**
@@ -1883,24 +1925,28 @@ async function buildFrameOverlay(
   const f = config.frame;
   if (!f) return null;
   const { width, height } = config;
-  // Centre the stroke between outer-edge and inner-edge of the
-  // visible band.
-  const offset = f.inset + f.thickness / 2;
-  const rectX = offset;
-  const rectY = offset;
-  const rectW = Math.max(0, width - 2 * offset);
-  const rectH = Math.max(0, height - 2 * offset);
-  // Degenerate case: inset + thickness exceeds half the canvas.
-  // Skip rather than draw an inverted rect.
-  if (rectW <= 0 || rectH <= 0) return null;
-  const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
-    `<rect x="${rectX}" y="${rectY}" width="${rectW}" height="${rectH}" fill="none" stroke="${escapeSvgText(f.color)}" stroke-width="${f.thickness}"/>`,
-    `</svg>`,
-  ].join('');
+  const style = f.style ?? 'solid';
+  const rects = computeFrameRects(width, height, f.inset, f.thickness, style);
+  if (rects.length === 0) return null;
+  // Phase 4.42: dashed strokes use a dasharray sized to the
+  // stroke thickness — gives a balanced dash/gap pattern that
+  // scales correctly across thickness values without looking
+  // morse-coded at small sizes.
+  const dashAttr =
+    style === 'dashed'
+      ? ` stroke-dasharray="${(f.thickness * 2).toFixed(2)} ${(f.thickness * 1.5).toFixed(2)}"`
+      : '';
+  const rectEls = rects
+    .map(
+      (r) =>
+        `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="none" stroke="${escapeSvgText(f.color)}" stroke-width="${r.strokeWidth}"${dashAttr}/>`,
+    )
+    .join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${rectEls}</svg>`;
   const buf = await sharp(Buffer.from(svg)).png().toBuffer();
   return { input: buf, top: 0, left: 0 };
 }
+
 
 // ─── Light-leak overlay (Phase 4.40) ────────────────────────────────────────
 

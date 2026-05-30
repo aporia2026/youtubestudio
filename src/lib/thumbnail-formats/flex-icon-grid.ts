@@ -627,20 +627,41 @@ export interface FlexIconGridConfig {
     highlights?: string;
     splitToneStrength?: number;
   };
-  /** Phase 4.41: optional outer canvas frame — a single solid
-   *  stroke line around the entire image. Rendered LAST (after
-   *  vignette) so the frame sits on top of every other finishing
-   *  layer. Off by default.
+  /** Phase 4.42: optional letterbox bars — solid coloured bars
+   *  inset from each canvas edge to fake a cinematic crop. Common
+   *  in editorial YouTube thumbnails (2.39:1 black bars on a 16:9
+   *  canvas, or coloured "card" bars top/bottom). Each side is
+   *  independent (set 0 to skip that side). Rendered AFTER vignette
+   *  but BEFORE the outer frame so the frame stroke wraps around
+   *  the bars. Off by default.
+   *  - `color` — bar fill colour (typically black).
+   *  - `top` / `bottom` / `left` / `right` (0..240) — bar thickness
+   *    in pixels for each side. 0 means no bar on that side. */
+  letterbox?: {
+    color: string;
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+  };
+  /** Phase 4.41: optional outer canvas frame — a stroke line
+   *  around the entire image. Rendered LAST (after vignette) so
+   *  the frame sits on top of every other finishing layer. Off
+   *  by default.
    *  - `color` — the stroke colour.
    *  - `thickness` (1..40) — stroke width in pixels.
    *  - `inset` (0..80) — distance from the canvas edge to the
    *    OUTER edge of the stroke, in pixels. 0 = flush with edge.
    *    A non-zero inset lets the underlying canvas show through
-   *    on the outside of the frame (matted look). */
+   *    on the outside of the frame (matted look).
+   *  - `style` (Phase 4.42) — `'solid'` (default, single line),
+   *    `'double'` (two parallel lines with a small gap, New
+   *    Yorker / editorial look), or `'dashed'` (broken stroke). */
   frame?: {
     color: string;
     thickness: number;
     inset: number;
+    style?: 'solid' | 'double' | 'dashed';
   };
   /** Phase 4.40: optional light-leak / corner flare — a soft
    *  radial blot of colour positioned at one of eight anchor points
@@ -1505,6 +1526,21 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
       return { ok: false, reason: 'tint.splitToneStrength must be a number in [0, 1] or undefined' };
     }
   }
+  // Phase 4.42: letterbox shape check.
+  if (config.letterbox !== undefined) {
+    if (typeof config.letterbox !== 'object' || config.letterbox === null) {
+      return { ok: false, reason: 'letterbox must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.letterbox.color)) {
+      return { ok: false, reason: 'letterbox.color is not a valid hex color' };
+    }
+    for (const side of ['top', 'bottom', 'left', 'right'] as const) {
+      const v = config.letterbox[side];
+      if (!Number.isFinite(v) || v < 0 || v > 240) {
+        return { ok: false, reason: `letterbox.${side} must be a number in [0, 240]` };
+      }
+    }
+  }
   // Phase 4.41: frame shape check.
   if (config.frame !== undefined) {
     if (typeof config.frame !== 'object' || config.frame === null) {
@@ -1518,6 +1554,14 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     }
     if (!Number.isFinite(config.frame.inset) || config.frame.inset < 0 || config.frame.inset > 80) {
       return { ok: false, reason: 'frame.inset must be a number in [0, 80]' };
+    }
+    if (
+      config.frame.style !== undefined &&
+      config.frame.style !== 'solid' &&
+      config.frame.style !== 'double' &&
+      config.frame.style !== 'dashed'
+    ) {
+      return { ok: false, reason: 'frame.style must be solid | double | dashed or undefined' };
     }
   }
   // Phase 4.40: lightLeak shape check.
@@ -1698,6 +1742,58 @@ export function escapeSvgText(s: string): string {
 }
 
 /**
+ * Phase 4.42: compute the rectangle(s) needed for each frame style.
+ * Returns geometry in user-space (top-left origin) ready to drop
+ * into SVG `<rect>` elements. Pure / deterministic so it's shared
+ * between the composer and the live preview.
+ *
+ * - `solid` — one stroke at the half-thickness offset.
+ * - `double` — two parallel strokes. Total budget is `thickness`:
+ *    each stroke gets `(thickness - gap) / 2` width with a gap of
+ *    `max(1, thickness * 0.4)` between them. Outer stroke flush
+ *    with the inset edge; inner stroke sits gap pixels inward.
+ * - `dashed` — one stroke at the half-thickness offset (the
+ *    dash-array is applied by the caller).
+ */
+export function computeFrameRects(
+  canvasW: number,
+  canvasH: number,
+  inset: number,
+  thickness: number,
+  style: 'solid' | 'double' | 'dashed',
+): { x: number; y: number; w: number; h: number; strokeWidth: number }[] {
+  const out: { x: number; y: number; w: number; h: number; strokeWidth: number }[] = [];
+  if (style === 'double') {
+    const gap = Math.max(1, thickness * 0.4);
+    const lineThickness = Math.max(1, (thickness - gap) / 2);
+    // Outer ring — stroke centred at inset + lineThickness/2.
+    const outerOffset = inset + lineThickness / 2;
+    const outerW = canvasW - 2 * outerOffset;
+    const outerH = canvasH - 2 * outerOffset;
+    if (outerW > 0 && outerH > 0) {
+      out.push({ x: outerOffset, y: outerOffset, w: outerW, h: outerH, strokeWidth: lineThickness });
+    }
+    // Inner ring — centred at inset + lineThickness + gap + lineThickness/2.
+    const innerOffset = inset + lineThickness + gap + lineThickness / 2;
+    const innerW = canvasW - 2 * innerOffset;
+    const innerH = canvasH - 2 * innerOffset;
+    if (innerW > 0 && innerH > 0) {
+      out.push({ x: innerOffset, y: innerOffset, w: innerW, h: innerH, strokeWidth: lineThickness });
+    }
+    return out;
+  }
+  // solid / dashed both render as a single stroke; the dash-array
+  // is applied by the caller for the dashed variant.
+  const offset = inset + thickness / 2;
+  const w = canvasW - 2 * offset;
+  const h = canvasH - 2 * offset;
+  if (w > 0 && h > 0) {
+    out.push({ x: offset, y: offset, w, h, strokeWidth: thickness });
+  }
+  return out;
+}
+
+/**
  * Strip control characters and clamp length so user-edited strings
  * coming back from the editor (labels, title bar text) can't smuggle
  * NULs or RTL-override bytes into the rendered output.
@@ -1798,6 +1894,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     lightLeak: parseLightLeak(o.lightLeak),
     // Phase 4.41: outer canvas frame; tolerant pattern.
     frame: parseFrame(o.frame),
+    // Phase 4.42: letterbox bars; tolerant pattern.
+    letterbox: parseLetterbox(o.letterbox),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1886,6 +1984,32 @@ function parseVignette(
   };
 }
 
+/** Phase 4.42: tolerant letterbox parser. Drops when all four
+ *  sides are zero (so an "off" letterbox doesn't round-trip into
+ *  JSON state). Each side clamps to [0, 240]; non-finite values
+ *  fall back to 0 so a missing key just means "no bar on that
+ *  side" rather than discarding the whole field. */
+function parseLetterbox(
+  v: unknown,
+): { color: string; top: number; bottom: number; left: number; right: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const sideOr = (raw: unknown): number =>
+    typeof raw === 'number' && Number.isFinite(raw) ? Math.max(0, Math.min(240, raw)) : 0;
+  const top = sideOr(o.top);
+  const bottom = sideOr(o.bottom);
+  const left = sideOr(o.left);
+  const right = sideOr(o.right);
+  if (top === 0 && bottom === 0 && left === 0 && right === 0) return undefined;
+  return {
+    color: stringOr(o.color, '#000000'),
+    top,
+    bottom,
+    left,
+    right,
+  };
+}
+
 /** Phase 4.41: tolerant outer-frame parser. Drops the field when
  *  required values are missing, non-finite, or out of range.
  *  Zero thickness is treated as "no frame" so an explicit
@@ -1904,10 +2028,17 @@ function parseFrame(
       ? Math.max(0, Math.min(80, o.inset))
       : 0;
   if (thickness === undefined || thickness < 1) return undefined;
+  // Phase 4.42: style optional — defaults to 'solid' downstream so
+  // existing configs round-trip identically.
+  const style =
+    o.style === 'solid' || o.style === 'double' || o.style === 'dashed'
+      ? (o.style as 'solid' | 'double' | 'dashed')
+      : undefined;
   return {
     color: stringOr(o.color, '#ffffff'),
     thickness,
     inset,
+    ...(style !== undefined ? { style } : {}),
   };
 }
 

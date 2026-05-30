@@ -29,6 +29,7 @@ import {
   applyLabelCase,
   computeCellGeometry,
   computeCellRect,
+  computeFrameRects,
   computeGridLayout,
   getConsumedCellIndexes,
   getSpanConflicts,
@@ -887,28 +888,88 @@ export function FlexIconGridLivePreview({
           );
         })()}
 
-        {/* Phase 4.41: outer frame — rendered LAST so the stroke
-            sits on top of every other finishing layer (including
-            vignette). Mirrors the composer: stroke is centred on
-            the path, so we inset by inset + thickness/2 and use
-            stroke-width = thickness. */}
+        {/* Phase 4.42: letterbox bars — rendered AFTER vignette
+            but BEFORE the frame so the frame stroke wraps around
+            the bars. Each side renders independently; 0 means no
+            bar on that side. */}
+        {config.letterbox && (
+          <>
+            {config.letterbox.top > 0 && (
+              <rect
+                x={0}
+                y={0}
+                width={config.width}
+                height={config.letterbox.top}
+                fill={config.letterbox.color}
+                pointerEvents="none"
+              />
+            )}
+            {config.letterbox.bottom > 0 && (
+              <rect
+                x={0}
+                y={config.height - config.letterbox.bottom}
+                width={config.width}
+                height={config.letterbox.bottom}
+                fill={config.letterbox.color}
+                pointerEvents="none"
+              />
+            )}
+            {config.letterbox.left > 0 && (
+              <rect
+                x={0}
+                y={0}
+                width={config.letterbox.left}
+                height={config.height}
+                fill={config.letterbox.color}
+                pointerEvents="none"
+              />
+            )}
+            {config.letterbox.right > 0 && (
+              <rect
+                x={config.width - config.letterbox.right}
+                y={0}
+                width={config.letterbox.right}
+                height={config.height}
+                fill={config.letterbox.color}
+                pointerEvents="none"
+              />
+            )}
+          </>
+        )}
+
+        {/* Phase 4.41 → 4.42: outer frame — rendered LAST so the
+            stroke sits on top of every other finishing layer
+            (including vignette + letterbox). Uses the shared
+            `computeFrameRects` helper so solid / double / dashed
+            styles match the composer's geometry exactly. Dashed
+            strokes get a stroke-dasharray sized to the line
+            thickness for a balanced dash/gap pattern. */}
         {config.frame && (() => {
           const f = config.frame;
-          const offset = f.inset + f.thickness / 2;
-          const rectW = Math.max(0, config.width - 2 * offset);
-          const rectH = Math.max(0, config.height - 2 * offset);
-          if (rectW <= 0 || rectH <= 0) return null;
+          const style = f.style ?? 'solid';
+          const rects = computeFrameRects(config.width, config.height, f.inset, f.thickness, style);
+          if (rects.length === 0) return null;
+          const dasharray =
+            style === 'dashed'
+              ? `${(f.thickness * 2).toFixed(2)} ${(f.thickness * 1.5).toFixed(2)}`
+              : undefined;
           return (
-            <rect
-              x={offset}
-              y={offset}
-              width={rectW}
-              height={rectH}
-              fill="none"
-              stroke={f.color}
-              strokeWidth={f.thickness}
-              pointerEvents="none"
-            />
+            <>
+              {rects.map((r, i) => (
+                <rect
+                  key={`frame-${i}`}
+                  x={r.x}
+                  y={r.y}
+                  width={r.w}
+                  height={r.h}
+                  fill="none"
+                  stroke={f.color}
+                  strokeWidth={r.strokeWidth}
+                  strokeDasharray={dasharray}
+                  pointerEvents="none"
+                />
+              ))}
+            </>
           );
         })()}
       </svg>
