@@ -4,6 +4,7 @@ import {
   applyCellUploads,
   cellRect,
   circularMaskSvg,
+  detectAiCellRect,
   escapePangoText,
   fitCover,
   renderLabelPng,
@@ -38,6 +39,124 @@ async function pixelAt(png: Buffer, x: number, y: number): Promise<[number, numb
     info.channels >= 4 ? data[idx + 3] : 255,
   ];
 }
+
+/** Build a white canvas with a bordered rectangle at `borderRect`. Used to
+ *  simulate an AI render where the cell border is at a known position. */
+async function makePngWithBorder(
+  canvasW: number,
+  canvasH: number,
+  borderRect: { x: number; y: number; w: number; h: number },
+  strokeWidth = 3,
+): Promise<Buffer> {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}">
+    <rect x="0" y="0" width="${canvasW}" height="${canvasH}" fill="white"/>
+    <rect x="${borderRect.x}" y="${borderRect.y}" width="${borderRect.w}" height="${borderRect.h}" fill="none" stroke="black" stroke-width="${strokeWidth}"/>
+  </svg>`;
+  return await sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+/** Decode a PNG buffer to raw RGBA pixels for direct sampling in detection
+ *  tests. Wraps the sharp boilerplate so each test stays focused on
+ *  detection assertions rather than I/O setup. */
+async function decodeRaw(
+  png: Buffer,
+): Promise<{ data: Buffer; width: number; height: number; channels: number }> {
+  const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { data: data as Buffer, width: info.width, height: info.height, channels: info.channels };
+}
+
+// ─── detectAiCellRect ───────────────────────────────────────────────────────
+
+describe('detectAiCellRect', () => {
+  it('snaps to the actual border when the AI rendered wider than expected', async () => {
+    // Simulated AI cell at (20, 20) to (80, 80) — a 60x60 black-bordered
+    // box on a 100x100 white canvas. The expected rect from our cellRect
+    // math is narrower at (25, 25) to (75, 75). Detection should return
+    // the actual border position, not the expected one.
+    const png = await makePngWithBorder(100, 100, { x: 20, y: 20, w: 60, h: 60 });
+    const raw = await decodeRaw(png);
+    const detected = detectAiCellRect(
+      raw.data,
+      raw.width,
+      raw.height,
+      raw.channels,
+      { x: 25, y: 25, w: 50, h: 50 },
+    );
+    // ±2 px tolerance for stroke anti-aliasing on the border edge.
+    expect(detected.x).toBeGreaterThanOrEqual(18);
+    expect(detected.x).toBeLessThanOrEqual(22);
+    expect(detected.y).toBeGreaterThanOrEqual(18);
+    expect(detected.y).toBeLessThanOrEqual(22);
+    expect(detected.x + detected.w).toBeGreaterThanOrEqual(78);
+    expect(detected.x + detected.w).toBeLessThanOrEqual(82);
+    expect(detected.y + detected.h).toBeGreaterThanOrEqual(78);
+    expect(detected.y + detected.h).toBeLessThanOrEqual(82);
+  });
+
+  it('snaps to the actual border when the AI rendered NARROWER than expected', async () => {
+    // Inverse case: AI cell at (30, 30) to (70, 70), expected rect was
+    // wider at (25, 25) to (75, 75). Detection must walk INWARD from
+    // expected to find the AI's narrower border.
+    const png = await makePngWithBorder(100, 100, { x: 30, y: 30, w: 40, h: 40 });
+    const raw = await decodeRaw(png);
+    const detected = detectAiCellRect(
+      raw.data,
+      raw.width,
+      raw.height,
+      raw.channels,
+      { x: 25, y: 25, w: 50, h: 50 },
+    );
+    expect(detected.x).toBeGreaterThanOrEqual(28);
+    expect(detected.x).toBeLessThanOrEqual(32);
+    expect(detected.x + detected.w).toBeGreaterThanOrEqual(68);
+    expect(detected.x + detected.w).toBeLessThanOrEqual(72);
+  });
+
+  it('falls back to expected when no clear border exists', async () => {
+    // Solid white image with no border anywhere. Every edge scan finds
+    // no dark column / row above the coverage threshold, so the function
+    // returns the expected rect unchanged.
+    const png = await makeSolidPng(100, 100, { r: 255, g: 255, b: 255 });
+    const raw = await decodeRaw(png);
+    const expected = { x: 25, y: 25, w: 50, h: 50 };
+    const detected = detectAiCellRect(
+      raw.data,
+      raw.width,
+      raw.height,
+      raw.channels,
+      expected,
+    );
+    expect(detected).toEqual(expected);
+  });
+
+  it("does not snap onto a neighbouring cell's border (searchRange cap)", async () => {
+    // Two cells: one at (10..40), gutter (40..60), another at (60..90).
+    // Expected rect points to the LEFT cell. With a wide enough search
+    // range the scan could theoretically reach the right cell, but
+    // searchRange is capped so that can't happen.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="20" width="30" height="60" fill="none" stroke="black" stroke-width="3"/>
+      <rect x="60" y="20" width="30" height="60" fill="none" stroke="black" stroke-width="3"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    // Expected rect at the LEFT cell with a TIGHT search range — must
+    // stay on the left cell's borders.
+    const detected = detectAiCellRect(
+      raw.data,
+      raw.width,
+      raw.height,
+      raw.channels,
+      { x: 12, y: 22, w: 26, h: 56 },
+      8,
+    );
+    // Detected width should still belong to the LEFT cell (~30-ish),
+    // not the gap to the right cell.
+    expect(detected.x).toBeLessThan(20);
+    expect(detected.x + detected.w).toBeLessThan(50);
+  });
+});
 
 // ─── escapePangoText ────────────────────────────────────────────────────────
 

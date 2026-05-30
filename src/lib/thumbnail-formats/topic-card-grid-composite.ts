@@ -325,6 +325,194 @@ export async function buildSquareLabelBandOverlay(
   return { overlay, topOffset: illustrationH };
 }
 
+// ─── AI cell border detection ───────────────────────────────────────────────
+
+/**
+ * Pixel-scan threshold for "border pixel" detection. R+G+B sum below
+ * this counts as dark. 200 catches both pure black borders and anti-
+ * aliased dark grays without false-positiving mid-tone illustration
+ * content.
+ */
+const BORDER_DARK_THRESHOLD = 200;
+
+/**
+ * Fraction of the scan range a column/row must hit to count as a
+ * border. 0.5 means at least half the pixels in the cell's
+ * cross-axis range must be dark. Catches solid borders without
+ * snapping onto an isolated dark blotch in the illustration.
+ */
+const BORDER_COVERAGE_RATIO = 0.5;
+
+/**
+ * Maximum offset (in pixels) the detection will accept from the
+ * expected `cellRect` edge before falling back. Default is set per
+ * call from the caller — typically the inter-cell gutter so we can't
+ * snap onto a neighbouring cell's border.
+ */
+const DEFAULT_BORDER_SEARCH_RANGE = 20;
+
+/**
+ * Detect the AI's actual cell rectangle by scanning the rendered base
+ * image's pixels for the four border lines (top / bottom / left /
+ * right) around the expected `cellRect` position.
+ *
+ * Why this exists: GPT Image 2 consistently renders cells slightly
+ * WIDER than our `defaultGutter` formula predicts (it picks tighter
+ * gutters than the 1.1%-of-canvas-width we use). The result is that
+ * our composite label band's chrome border lands at our (narrower)
+ * `cellW` while the AI's illustration-panel border is at a different
+ * x position above it. The user sees the mismatch as a "label strip
+ * narrower than the panel" artefact.
+ *
+ * The fix is to snap our overlay to where the AI ACTUALLY drew the
+ * cell, not where we predicted. Pixel-scanning is cheap (a few
+ * hundred microseconds per cell), pure (no AI calls), and adapts to
+ * whatever GPT Image 2's current gutter-width habit is.
+ *
+ * Returns the detected `{x, y, w, h}`. If the scan can't find a
+ * border on any edge it falls back to that edge's expected value, so
+ * the function never returns a wildly-off rect. Edges where the AI
+ * rendered as TWO STACKED RECTANGLES (illustration panel + narrower
+ * label box) snap to the illustration panel's left/right because the
+ * inward scan hits the panel's border first.
+ */
+export function detectAiCellRect(
+  rawData: Uint8Array | Buffer,
+  canvasW: number,
+  canvasH: number,
+  channels: number,
+  expected: { x: number; y: number; w: number; h: number },
+  searchRange = DEFAULT_BORDER_SEARCH_RANGE,
+): { x: number; y: number; w: number; h: number } {
+  const expRight = expected.x + expected.w;
+  const expBottom = expected.y + expected.h;
+
+  const isDark = (x: number, y: number): boolean => {
+    if (x < 0 || x >= canvasW || y < 0 || y >= canvasH) return false;
+    const idx = (y * canvasW + x) * channels;
+    return rawData[idx] + rawData[idx + 1] + rawData[idx + 2] < BORDER_DARK_THRESHOLD;
+  };
+
+  // All four border searches use TRANSITION-BASED scanning: we look
+  // for the place where a light gutter meets a dark border, not just
+  // for any dark pixel. Two reasons:
+  //   1. The realistic AI render has a white gutter outside the cell
+  //      and a dark border around the cell. The transition uniquely
+  //      identifies the border location.
+  //   2. Test scenarios (and real AI renders with dark-themed
+  //      illustrations) can have dark pixels everywhere. A simple
+  //      "first dark column" scan would snap to the canvas edge of
+  //      such an image; transition scanning falls back to expected
+  //      because there's no light→dark transition to find.
+  //
+  // Helper: column darkness ratio over a given y-range.
+  const columnDarkRatio = (x: number, yStart: number, yEnd: number): number => {
+    const totalY = Math.max(1, yEnd - yStart);
+    let darkCount = 0;
+    for (let y = yStart; y < yEnd; y++) {
+      if (isDark(x, y)) darkCount++;
+    }
+    return darkCount / totalY;
+  };
+
+  const rowDarkRatio = (y: number, xStart: number, xEnd: number): number => {
+    const totalX = Math.max(1, xEnd - xStart);
+    let darkCount = 0;
+    for (let x = xStart; x < xEnd; x++) {
+      if (isDark(x, y)) darkCount++;
+    }
+    return darkCount / totalX;
+  };
+
+  // Left border: walk from gutter inward. Return the FIRST x where
+  // the column's dark-ratio crosses upward through the coverage
+  // threshold (was below, now at-or-above). `prev = null` skips the
+  // transition check on the very first iteration so we don't
+  // false-positive when the search window starts already inside a
+  // dark region.
+  const findLeftBorder = (): number => {
+    const yStart = Math.max(0, expected.y + 2);
+    const yEnd = Math.min(canvasH, expBottom - 2);
+    const scanStart = Math.max(0, expected.x - searchRange);
+    const scanEnd = Math.min(canvasW - 1, expected.x + searchRange);
+    let prev: number | null = null;
+    for (let x = scanStart; x <= scanEnd; x++) {
+      const dr = columnDarkRatio(x, yStart, yEnd);
+      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
+        return x;
+      }
+      prev = dr;
+    }
+    return expected.x;
+  };
+
+  const findRightBorder = (): number => {
+    const yStart = Math.max(0, expected.y + 2);
+    const yEnd = Math.min(canvasH, expBottom - 2);
+    const scanStart = Math.max(0, expRight - searchRange);
+    const scanEnd = Math.min(canvasW - 1, expRight + searchRange);
+    let prev: number | null = null;
+    for (let x = scanEnd; x >= scanStart; x--) {
+      const dr = columnDarkRatio(x, yStart, yEnd);
+      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
+        return x;
+      }
+      prev = dr;
+    }
+    return expRight;
+  };
+
+  const findTopBorder = (): number => {
+    const xStart = Math.max(0, expected.x + 2);
+    const xEnd = Math.min(canvasW, expRight - 2);
+    const scanStart = Math.max(0, expected.y - searchRange);
+    const scanEnd = Math.min(canvasH - 1, expected.y + searchRange);
+    let prev: number | null = null;
+    for (let y = scanStart; y <= scanEnd; y++) {
+      const dr = rowDarkRatio(y, xStart, xEnd);
+      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
+        return y;
+      }
+      prev = dr;
+    }
+    return expected.y;
+  };
+
+  const findBottomBorder = (): number => {
+    const xStart = Math.max(0, expected.x + 2);
+    const xEnd = Math.min(canvasW, expRight - 2);
+    const scanStart = Math.max(0, expBottom - searchRange);
+    const scanEnd = Math.min(canvasH - 1, expBottom + searchRange);
+    let prev: number | null = null;
+    for (let y = scanEnd; y >= scanStart; y--) {
+      const dr = rowDarkRatio(y, xStart, xEnd);
+      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
+        return y;
+      }
+      prev = dr;
+    }
+    return expBottom;
+  };
+
+  const left = findLeftBorder();
+  const right = findRightBorder();
+  const top = findTopBorder();
+  const bottom = findBottomBorder();
+
+  // Guard against degenerate results (e.g. right scan latches onto the
+  // illustration's leftmost dark pixel because the rendering is highly
+  // unusual). If the detected rect would have non-positive width or
+  // height we fall back to the expected rect.
+  if (right <= left || bottom <= top) return expected;
+
+  return {
+    x: left,
+    y: top,
+    w: right - left,
+    h: bottom - top,
+  };
+}
+
 // ─── Top-level ──────────────────────────────────────────────────────────────
 
 /**
@@ -424,6 +612,43 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     return whitePlaceholderBytes;
   };
 
+  // In pure-prompt square mode, the band overlay needs to snap to the
+  // AI's ACTUAL cell border position rather than our `cellRect`-math
+  // position. GPT Image 2 picks tighter gutters than our 1.1%-of-
+  // canvas-width formula, so its cell border lands at a different x
+  // than our overlay's border would, and the user sees the band as
+  // visibly narrower than the illustration panel above. We decode the
+  // base image's raw pixels once and pixel-scan around each expected
+  // cellRect for the true border lines. Detection is cheap (a few
+  // hundred microseconds per cell on a 4K image) and only runs in
+  // pure-prompt square mode — upload mode wipes the whole cell with
+  // chrome at our cellRect, so detection wouldn't help there.
+  const useBorderDetection = !someUploadsProvided && cardShape === 'square' && cards.length > 0;
+  let detectedRects: Map<number, { x: number; y: number; w: number; h: number }> | null = null;
+  if (useBorderDetection) {
+    const { data: rawPixels, info: rawInfo } = await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    // Search range is half the inter-cell gutter so the scan can't
+    // wander onto a neighbouring cell's border. Floor at 8 px so very
+    // small test canvases still get a usable window.
+    const searchRange = Math.max(8, Math.round(layout.gutter / 2));
+    detectedRects = new Map();
+    for (const card of cards) {
+      const expected = cellRect(layout, card.index);
+      const detected = detectAiCellRect(
+        rawPixels,
+        rawInfo.width,
+        rawInfo.height,
+        rawInfo.channels,
+        expected,
+        searchRange,
+      );
+      detectedRects.set(card.index, detected);
+    }
+  }
+
   // Iterate every card in reading order. Upload presence + the mixed-
   // vs-prompt distinction above picks between three overlay kinds:
   //   - Uploaded cell: full overlay with the user's image
@@ -471,32 +696,24 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     // risks blanking the disc if the layout-derived band misses by a
     // few pixels (the reference sample size for circle mode is small).
     if (cardShape === 'square') {
-      // Three-sided wipe around the band: catches AI cell-width drift
-      // and label overflow. The AI doesn't always honour our cellRect
-      // formula's gutter ratio (~1.1%) — it picks tighter gutters and
-      // renders cells slightly WIDER than we predict, so its outer
-      // border lines and its narrower "label tag" sub-frame can both
-      // appear in the slack around our band overlay. The wipe covers:
-      //   - left slack: from rect.x - gutterPad to rect.x
-      //   - right slack: from rect.x + rect.w to rect.x + rect.w + gutterPad
-      //   - bottom slack: from rect.y + rect.h to rect.y + rect.h + gutterPad
-      //     (only for non-last-row cells — last row has the outer margin
-      //     beneath instead of a row gutter)
-      // Combined the wipe forms an L-shape (or U-shape for non-last
-      // rows) of white pixels framing the band's left/right/bottom.
-      // The top edge is intentionally NOT wiped — that's the
-      // illustration/label hairline and the AI's illustration above
-      // it must be preserved.
-      // Vertical extent of the side wipes matches the band height
-      // (labelH = 20% of cellH) so we don't erase any of the AI's
-      // illustration in the top 80%.
+      // Anchor everything (band overlay, side wipes, row gutter wipe)
+      // to the AI's detected cell rectangle instead of our cellRect-
+      // math rect, so the composite's border matches the illustration
+      // panel's border above it. See `detectAiCellRect` for why.
+      // Falls back to `rect` if detection wasn't run or failed for
+      // this card.
+      const aiRect = detectedRects?.get(card.index) ?? rect;
+      // L-shaped slack wipe around the band. Anchored at the DETECTED
+      // edges so the wipe lands in genuine AI gutter slack rather
+      // than inside the illustration. With detection in place this is
+      // mostly a no-op on a well-aligned base, but stays as belt-and-
+      // braces against detection drift on edge cases.
       const illustrationFracForWipe = 0.8; // mirrors SQUARE_ILLUSTRATION_FRAC
-      const labelH = rect.h - Math.round(rect.h * illustrationFracForWipe);
+      const labelH = aiRect.h - Math.round(aiRect.h * illustrationFracForWipe);
       if (gutterPad > 0 && labelH > 0) {
-        const bandTop = rect.y + rect.h - labelH;
-        // Left slack
-        const leftWipeLeft = Math.max(0, rect.x - gutterPad);
-        const leftWipeW = Math.max(0, rect.x - leftWipeLeft);
+        const bandTop = aiRect.y + aiRect.h - labelH;
+        const leftWipeLeft = Math.max(0, aiRect.x - gutterPad);
+        const leftWipeW = Math.max(0, aiRect.x - leftWipeLeft);
         if (leftWipeW > 0) {
           const leftWipePng = await sharp({
             create: { width: leftWipeW, height: labelH, channels: 4, background: WHITE },
@@ -505,21 +722,17 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
             .toBuffer();
           wipeOverlays.push({ input: leftWipePng, top: bandTop, left: leftWipeLeft });
         }
-        // Right slack
-        const rightWipeRight = Math.min(layout.width, rect.x + rect.w + gutterPad);
-        const rightWipeW = Math.max(0, rightWipeRight - (rect.x + rect.w));
+        const rightWipeRight = Math.min(layout.width, aiRect.x + aiRect.w + gutterPad);
+        const rightWipeW = Math.max(0, rightWipeRight - (aiRect.x + aiRect.w));
         if (rightWipeW > 0) {
           const rightWipePng = await sharp({
             create: { width: rightWipeW, height: labelH, channels: 4, background: WHITE },
           })
             .png()
             .toBuffer();
-          wipeOverlays.push({ input: rightWipePng, top: bandTop, left: rect.x + rect.w });
+          wipeOverlays.push({ input: rightWipePng, top: bandTop, left: aiRect.x + aiRect.w });
         }
-        // Bottom slack (row gutter beneath this cell) — extends to the
-        // cell's full width PLUS the side slack so the L-shape closes
-        // cleanly at the corners.
-        const bottomWipeTop = rect.y + rect.h;
+        const bottomWipeTop = aiRect.y + aiRect.h;
         const bottomWipeBottom = Math.min(layout.height, bottomWipeTop + gutterPad);
         const bottomWipeH = Math.max(0, bottomWipeBottom - bottomWipeTop);
         if (bottomWipeH > 0) {
@@ -534,8 +747,8 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
           wipeOverlays.push({ input: bottomWipePng, top: bottomWipeTop, left: bottomWipeLeft });
         }
       }
-      const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, rect.w, rect.h);
-      overlays.push({ input: overlay, top: rect.y + topOffset, left: rect.x });
+      const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, aiRect.w, aiRect.h);
+      overlays.push({ input: overlay, top: aiRect.y + topOffset, left: aiRect.x });
     }
   }
 
