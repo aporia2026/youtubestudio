@@ -412,6 +412,34 @@ describe('renderLabelPng', () => {
     expect(meta.width).toBe(1);
     expect(meta.height).toBe(1);
   });
+
+  it('honours an explicit fontPt override regardless of targetH (r2.5)', async () => {
+    // r2.5: callers pass an explicit fontPt so every cell renders the
+    // label at the same point size regardless of its own band height.
+    // The same targetH with two different fontPt overrides must
+    // produce noticeably different rendered heights.
+    const small = await renderLabelPng('Sample Label', 400, 60, 16);
+    const large = await renderLabelPng('Sample Label', 400, 60, 48);
+    const smallMeta = await sharp(small).metadata();
+    const largeMeta = await sharp(large).metadata();
+    expect(smallMeta.height).toBeDefined();
+    expect(largeMeta.height).toBeDefined();
+    // 48pt is 3× the 16pt size — the rendered PNG height should scale
+    // with it. Allow generous tolerance because Pango / libvips choose
+    // their own line-height padding around the glyph metrics.
+    expect(largeMeta.height!).toBeGreaterThan(smallMeta.height! * 2);
+  });
+
+  it('falls back to targetH-based fontPt when override is omitted', async () => {
+    // Backwards-compatibility: callers that don't supply an override
+    // get the historical per-cell auto-fit so old tests keep passing.
+    // Same targetH twice → same rendered height twice.
+    const a = await renderLabelPng('Sample Label', 400, 60);
+    const b = await renderLabelPng('Sample Label', 400, 60);
+    const aMeta = await sharp(a).metadata();
+    const bMeta = await sharp(b).metadata();
+    expect(aMeta.height).toBe(bMeta.height);
+  });
 });
 
 // ─── applyCellUploads ───────────────────────────────────────────────────────
@@ -713,6 +741,114 @@ describe('applyCellUploads', () => {
     const sampleX = r1.x + Math.floor(r1.w * 0.15);
     const [br, bg, bb] = await pixelAt(out, sampleX, dividerY + 6);
     expect(br + bg + bb, 'rows below AI divider should be white (band overpaint)').toBeGreaterThan(600);
+  });
+
+  it('labelSizeMultiplier scales the rendered label height (r2.5)', async () => {
+    // r2.5: applyCellUploads computes one canonical fontPt and scales
+    // it by labelSizeMultiplier, applied uniformly to every cell. A
+    // multiplier of 1.5 produces a label noticeably taller than 0.5.
+    //
+    // Measurement: count the number of rows in the band that contain
+    // any dark pixel (the rendered label text). A bigger font fills
+    // more rows. Test cards: single-card grid with a short label so
+    // wrapping doesn't muddle the measurement.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square');
+    const measureLabelRows = async (multiplier: number): Promise<number> => {
+      const out = await applyCellUploads({
+        baseImage: base,
+        layout,
+        cards: [cards[0]], // single short label
+        cardShape: 'square',
+        uploads: [],
+        labelSizeMultiplier: multiplier,
+      });
+      const raw = await decodeRaw(out);
+      const r1 = cellRect(layout, 1);
+      // Sample the band area only (bottom ~20% of the cell).
+      const yStart = r1.y + Math.round(r1.h * 0.8);
+      const yEnd = r1.y + r1.h;
+      let labelRowCount = 0;
+      for (let y = yStart; y < yEnd; y++) {
+        let hasDark = false;
+        for (let x = r1.x + Math.round(r1.w * 0.3); x < r1.x + Math.round(r1.w * 0.7); x++) {
+          const idx = (y * raw.width + x) * raw.channels;
+          if (raw.data[idx] + raw.data[idx + 1] + raw.data[idx + 2] < 200) {
+            hasDark = true;
+            break;
+          }
+        }
+        if (hasDark) labelRowCount++;
+      }
+      return labelRowCount;
+    };
+    const small = await measureLabelRows(0.5);
+    const large = await measureLabelRows(1.5);
+    // 1.5× should be visibly taller than 0.5× — at least 1.5× the
+    // pixel-row count, with slack for the resize-inside guard kicking
+    // in at very large multipliers on small test canvases.
+    expect(large).toBeGreaterThan(small);
+    expect(large / Math.max(1, small)).toBeGreaterThanOrEqual(1.3);
+  });
+
+  it('produces uniform label sizes across cells regardless of detected band height (r2.5)', async () => {
+    // r2.5: the canonical fontPt is computed from the layout's
+    // canonical cell height, never from per-cell detected band
+    // height. Two cells with different visual band heights (because
+    // their dividers landed at different y positions) must still
+    // render the label at the same pixel size.
+    //
+    // Setup: a base with two cells where cell 1 has a divider at
+    // ~70% and cell 2 has a divider at ~85% of cell H. Both must end
+    // up rendering "A" / "B" at the same font size.
+    const r1 = cellRect(makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square'), 1);
+    const r2 = cellRect(makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square'), 2);
+    const d1 = r1.y + Math.round(r1.h * 0.7);
+    const d2 = r2.y + Math.round(r2.h * 0.85);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CANVAS_W}" height="${CANVAS_H}">
+      <rect x="0" y="0" width="${CANVAS_W}" height="${CANVAS_H}" fill="white"/>
+      <rect x="${r1.x}" y="${r1.y}" width="${r1.w}" height="${Math.round(r1.h * 0.7)}" fill="red"/>
+      <line x1="${r1.x}" y1="${d1}" x2="${r1.x + r1.w}" y2="${d1}" stroke="black" stroke-width="2"/>
+      <rect x="${r2.x}" y="${r2.y}" width="${r2.w}" height="${Math.round(r2.h * 0.85)}" fill="blue"/>
+      <line x1="${r2.x}" y1="${d2}" x2="${r2.x + r2.w}" y2="${d2}" stroke="black" stroke-width="2"/>
+    </svg>`;
+    const base = await sharp(Buffer.from(svg)).png().toBuffer();
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards: [cards[0], cards[1]],
+      cardShape: 'square',
+      uploads: [],
+      labelSizeMultiplier: 1,
+    });
+    const raw = await decodeRaw(out);
+    const countLabelRows = (rect: { x: number; y: number; w: number; h: number }): number => {
+      const yStart = rect.y + Math.round(rect.h * 0.55);
+      const yEnd = rect.y + rect.h;
+      let rows = 0;
+      for (let y = yStart; y < yEnd; y++) {
+        let hasDark = false;
+        // Centre band of the cell only — avoid sampling on the cell
+        // borders which would add a fixed dark-row count to both.
+        for (let x = rect.x + Math.round(rect.w * 0.3); x < rect.x + Math.round(rect.w * 0.7); x++) {
+          const idx = (y * raw.width + x) * raw.channels;
+          if (raw.data[idx] + raw.data[idx + 1] + raw.data[idx + 2] < 200) {
+            hasDark = true;
+            break;
+          }
+        }
+        if (hasDark) rows++;
+      }
+      return rows;
+    };
+    const cell1Rows = countLabelRows(r1);
+    const cell2Rows = countLabelRows(r2);
+    // Both cells should have rendered the label at the same fontPt,
+    // so the pixel-row count of the rendered label is within a small
+    // margin (allow ±3 rows for glyph metrics differences between
+    // "A" and "B").
+    expect(Math.abs(cell1Rows - cell2Rows)).toBeLessThanOrEqual(3);
   });
 
   it('paints each upload independently when multiple cells are uploaded', async () => {

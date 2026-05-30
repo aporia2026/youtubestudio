@@ -93,6 +93,9 @@ export interface TopicCardGridDraftState {
    *  Persisted so a refresh mid-edit doesn't blow away the user's typed
    *  style sentence. */
   styleFreeForm?: string;
+  /** Label-size multiplier (the slider value). Drafts saved before the
+   *  slider shipped restore as 1.0. */
+  labelSize?: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -124,6 +127,19 @@ const BRIGHTNESS_PREF_KEY = 'topic_card_grid_default_brightness';
 const DETAIL_PREF_KEY = 'topic_card_grid_default_detail';
 const STYLE_PREF_KEY = 'topic_card_grid_default_style';
 const STYLE_FREE_FORM_PREF_KEY = 'topic_card_grid_default_style_free_form';
+const LABEL_SIZE_PREF_KEY = 'topic_card_grid_default_label_size';
+
+/** Label-size multiplier bounds. Mirrored from
+ *  `LABEL_SIZE_MIN` / `LABEL_SIZE_MAX` in
+ *  `src/lib/thumbnail-formats/topic-card-grid.ts` so the slider UI
+ *  doesn't need a server-only import. Server clamps to the same range. */
+const LABEL_SIZE_MIN = 0.5;
+const LABEL_SIZE_MAX = 1.5;
+const DEFAULT_LABEL_SIZE = 1.0;
+/** Slider step. Coarse enough to make small adjustments meaningful,
+ *  fine enough that the user can hit any reasonable value without
+ *  fighting the control. */
+const LABEL_SIZE_STEP = 0.05;
 
 /** Visual style register, mirrored from `ThumbnailStyle` in
  *  `src/lib/thumbnail-formats/topic-card-grid.ts`. Kept as a duplicate
@@ -337,6 +353,25 @@ export function TopicCardGridPanel({
     try { localStorage.setItem(STYLE_FREE_FORM_PREF_KEY, styleFreeForm); } catch { /* ignore */ }
   }, [styleFreeForm]);
 
+  // Label-size multiplier. Default 1.0 matches the r2.4.1 per-cell
+  // output on cleanly-detected cells, so users who don't touch the
+  // slider see the same sizes they had before. Persisted to
+  // localStorage so a repeat user lands back on their preferred scale.
+  const [labelSize, setLabelSize] = useState<number>(() => {
+    if (typeof window === 'undefined') return DEFAULT_LABEL_SIZE;
+    try {
+      const raw = localStorage.getItem(LABEL_SIZE_PREF_KEY);
+      if (raw === null) return DEFAULT_LABEL_SIZE;
+      const v = Number.parseFloat(raw);
+      if (!Number.isFinite(v)) return DEFAULT_LABEL_SIZE;
+      return Math.min(LABEL_SIZE_MAX, Math.max(LABEL_SIZE_MIN, v));
+    } catch { /* fall through */ }
+    return DEFAULT_LABEL_SIZE;
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LABEL_SIZE_PREF_KEY, String(labelSize)); } catch { /* ignore */ }
+  }, [labelSize]);
+
   // Per-cell uploads. Keyed by 1-based card index so the same number that
   // appears in the LLM's TopicCard.index is the lookup key. Values are
   // R2 download URLs returned by the presign upload route.
@@ -409,6 +444,9 @@ export function TopicCardGridPanel({
     if (typeof restoredDraftState.styleFreeForm === 'string') {
       setStyleFreeForm(restoredDraftState.styleFreeForm);
     }
+    if (typeof restoredDraftState.labelSize === 'number' && Number.isFinite(restoredDraftState.labelSize)) {
+      setLabelSize(Math.min(LABEL_SIZE_MAX, Math.max(LABEL_SIZE_MIN, restoredDraftState.labelSize)));
+    }
     console.info('[topic-card-grid panel draft] hydrated', {
       card_count: restoredDraftState.cards?.length ?? 0,
       grid_mode: restoredDraftState.gridMode,
@@ -439,11 +477,12 @@ export function TopicCardGridPanel({
       uploads,
       style,
       styleFreeForm,
+      labelSize,
     });
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
-    cardShape, uploads, style, styleFreeForm,
+    cardShape, uploads, style, styleFreeForm, labelSize,
     onDraftStateChange,
   ]);
 
@@ -698,6 +737,7 @@ export function TopicCardGridPanel({
           detail: detailLevel,
           style,
           styleFreeForm: style === 'free-form' ? styleFreeForm.trim() : undefined,
+          labelSize,
         }),
       });
       if (!res.ok) {
@@ -1100,6 +1140,80 @@ export function TopicCardGridPanel({
                 </p>
               </div>
             )}
+          </div>
+
+          {/* Label size — slider + live preview. The preview band uses
+              the same fontHeight / bandHeight ratio (0.55) as the
+              server-side composite so the proportions match what the
+              rendered output will look like. Patrick Hand loaded as a
+              web font from /public/fonts so the typography in the
+              preview is identical to the rendered output. */}
+          <div>
+            <style>{`
+              @font-face {
+                font-family: 'PatrickHandPreview';
+                src: url('/fonts/PatrickHand-Regular.woff2') format('woff2'),
+                     url('/fonts/PatrickHand-Regular.ttf') format('truetype');
+                font-display: swap;
+              }
+            `}</style>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Label size
+              </label>
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                {Math.round(labelSize * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={LABEL_SIZE_MIN}
+              max={LABEL_SIZE_MAX}
+              step={LABEL_SIZE_STEP}
+              value={labelSize}
+              onChange={(e) => {
+                const next = Number.parseFloat(e.target.value);
+                if (!Number.isFinite(next)) return;
+                console.info('[topic-card-grid panel label-size change]', { from: labelSize, to: next });
+                setLabelSize(next);
+              }}
+              className="w-full"
+              style={{ accentColor: 'var(--accent-pink)' }}
+            />
+            <div
+              style={{
+                background: 'white',
+                border: '2px solid black',
+                width: '100%',
+                height: 56,
+                marginTop: 8,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontFamily: '"PatrickHandPreview", system-ui, sans-serif',
+                fontSize: `${Math.max(8, Math.round(56 * 0.55 * labelSize))}px`,
+                lineHeight: 1,
+                color: 'black',
+                userSelect: 'none',
+                overflow: 'hidden',
+              }}
+              aria-label={`Label preview at ${Math.round(labelSize * 100)}%`}
+            >
+              Sample Label
+            </div>
+            <div className="flex justify-between mt-1">
+              <button
+                type="button"
+                onClick={() => setLabelSize(DEFAULT_LABEL_SIZE)}
+                className="text-[10px] underline"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Reset to 100%
+              </button>
+              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Same size for every cell.
+              </span>
+            </div>
           </div>
 
           {/* Mode chips */}

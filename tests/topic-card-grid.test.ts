@@ -6,8 +6,11 @@ import {
   computeRegionsFor,
   countWords,
   DEFAULT_CANVAS,
+  DEFAULT_LABEL_SIZE,
   DEFAULT_STYLE,
   ICON_CONCEPT_BANLIST,
+  LABEL_SIZE_MAX,
+  LABEL_SIZE_MIN,
   makeDefaultLayout,
   MAX_ICON_CONCEPT_CHARS,
   MAX_LABEL_CHARS,
@@ -358,6 +361,21 @@ describe('topicCardGridImagePrompt — style block', () => {
     expect(styleIdx).toBeGreaterThan(-1);
     expect(layoutIdx).toBeGreaterThan(-1);
     expect(styleIdx).toBeLessThan(layoutIdx);
+  });
+});
+
+// ─── Label-size bounds (r2.5) ───────────────────────────────────────────────
+
+describe('label-size constants', () => {
+  it('exports a sensible default and a generous min/max range', () => {
+    expect(DEFAULT_LABEL_SIZE).toBe(1);
+    expect(LABEL_SIZE_MIN).toBe(0.5);
+    expect(LABEL_SIZE_MAX).toBe(1.5);
+  });
+
+  it('default is strictly within bounds (sanity)', () => {
+    expect(DEFAULT_LABEL_SIZE).toBeGreaterThanOrEqual(LABEL_SIZE_MIN);
+    expect(DEFAULT_LABEL_SIZE).toBeLessThanOrEqual(LABEL_SIZE_MAX);
   });
 });
 

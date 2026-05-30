@@ -764,6 +764,16 @@ export const DEFAULT_DETAIL: ThumbnailDetail = 'clean';
 export const DEFAULT_STYLE: ThumbnailStyle = 'cartoon';
 export const STYLE_FREE_FORM_MAX_CHARS = 300;
 
+/** Label-size multiplier bounds. The slider in the panel and the API
+ *  route both clamp to this range. 1.0 is the canonical size derived
+ *  from the layout's cell height (matches r2.4.1's per-cell output on
+ *  cells where detection landed cleanly). 0.5 / 1.5 are deliberately
+ *  generous so users can dial the look across a wide range without
+ *  bumping into a wall. */
+export const LABEL_SIZE_MIN = 0.5;
+export const LABEL_SIZE_MAX = 1.5;
+export const DEFAULT_LABEL_SIZE = 1.0;
+
 export interface ImagePromptInput {
   cards: TopicCard[];
   palette: GlobalPalette;

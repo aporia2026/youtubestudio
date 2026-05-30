@@ -13,7 +13,10 @@ import {
   makeDefaultLayout,
   computeRegionsFor,
   DEFAULT_CANVAS,
+  DEFAULT_LABEL_SIZE,
   DEFAULT_STYLE,
+  LABEL_SIZE_MAX,
+  LABEL_SIZE_MIN,
   STYLE_FREE_FORM_MAX_CHARS,
   type CardShape,
   type TopicCard,
@@ -168,6 +171,10 @@ interface ReqBody {
    *  STYLE_FREE_FORM_MAX_CHARS before being interpolated into the
    *  prompt. */
   styleFreeForm?: string;
+  /** Label-size multiplier. Clamped to [LABEL_SIZE_MIN, LABEL_SIZE_MAX]
+   *  server-side. Default 1.0 = the canonical size from the layout's
+   *  cell height. */
+  labelSize?: number;
 }
 
 /** Set of known style presets, used to validate `body.style` against
@@ -350,6 +357,15 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
+    // Clamp the label-size multiplier to the supported range. NaN
+    // (from a stale client sending null / a string) and out-of-range
+    // values silently fall back to the default rather than failing the
+    // request — same forgiving shape as the brightness / detail
+    // validations above.
+    const labelSizeRaw = typeof body.labelSize === 'number' && Number.isFinite(body.labelSize)
+      ? body.labelSize
+      : DEFAULT_LABEL_SIZE;
+    const labelSize = Math.min(LABEL_SIZE_MAX, Math.max(LABEL_SIZE_MIN, labelSizeRaw));
     const prompt = topicCardGridImagePrompt({
       cards,
       palette,
@@ -378,6 +394,7 @@ export async function POST(req: NextRequest) {
       uploads_count: uploadRequests.length,
       style,
       style_free_form_chars: style === 'free-form' ? styleFreeFormRaw.length : 0,
+      label_size: labelSize,
     });
 
     // Each provider branch produces `aiBytes` (the raw AI output) plus a
@@ -588,6 +605,7 @@ export async function POST(req: NextRequest) {
       cards,
       cardShape,
       uploads: cellUploads,
+      labelSizeMultiplier: labelSize,
     });
     const compositorMs = Date.now() - compositeStart;
     const uploadsApplied = cellUploads.length;

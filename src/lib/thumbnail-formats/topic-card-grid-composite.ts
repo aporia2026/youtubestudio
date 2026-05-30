@@ -95,6 +95,16 @@ export interface ApplyCellUploadsInput {
   cards: TopicCard[];
   cardShape: CardShape;
   uploads: CellUpload[];
+  /** Scales the rendered label font size up or down. Defaults to 1.0
+   *  (the canonical size derived from the layout's cell height). The
+   *  composite computes one fontPt for the whole grid from the
+   *  layout's canonical band height — never from the per-cell detected
+   *  band height — so every cell renders its label at the same size
+   *  regardless of divider-detection drift. The multiplier scales that
+   *  shared fontPt; the caller is responsible for clamping to the
+   *  valid range (see LABEL_SIZE_MIN / LABEL_SIZE_MAX in
+   *  topic-card-grid.ts). */
+  labelSizeMultiplier?: number;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -169,6 +179,7 @@ export async function renderLabelPng(
   text: string,
   targetW: number,
   targetH: number,
+  fontPtOverride?: number,
 ): Promise<Buffer> {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -191,6 +202,14 @@ export async function renderLabelPng(
   // broken: short labels like "UVB-76" used to render ~2× bigger than
   // "Belmez Faces" because of a libvips auto-scale bug.
   //
+  // r2.5: callers that need uniform font sizing across the entire grid
+  // pass `fontPtOverride` (computed once from the layout's canonical
+  // band height, then scaled by the user's labelSize multiplier) so
+  // every cell renders its label at the same size regardless of the
+  // detected per-cell band height. When omitted, the 0.55·targetH
+  // fallback preserves the original per-cell auto-fit for older
+  // callers and tests that don't supply the override.
+  //
   // CRITICAL: we deliberately do NOT pass `height` to sharp's text
   // input. Despite the docs claiming auto-scaling only happens "if
   // neither dpi nor a font is provided", libvips empirically scales the
@@ -200,7 +219,9 @@ export async function renderLabelPng(
   // "The Antikythera Mechanism" (2 wrapped lines) rendered at ~18pt to
   // fit the SAME 52px box. Width-only keeps wrap behaviour without the
   // unwanted vertical auto-fit.
-  const fontPt = Math.max(12, Math.round(targetH * 0.55));
+  const fontPt = fontPtOverride !== undefined
+    ? Math.max(8, Math.round(fontPtOverride))
+    : Math.max(12, Math.round(targetH * 0.55));
   const safeW = Math.max(16, Math.round(targetW));
   return await sharp({
     text: {
@@ -287,6 +308,7 @@ export async function buildSquareLabelBandOverlay(
   label: string,
   cellW: number,
   labelH: number,
+  fontPt?: number,
 ): Promise<Buffer> {
   const borderPx = squareBorderPx(cellW);
   const halfBorder = borderPx / 2;
@@ -301,7 +323,7 @@ export async function buildSquareLabelBandOverlay(
     <line x1="0" y1="0" x2="${cellW}" y2="0" stroke="${BLACK}" stroke-width="${Math.max(1, Math.round(borderPx / 3))}"/>
   </svg>`;
   const labelPad = Math.max(2, Math.round(cellW * 0.04));
-  const labelPngRaw = await renderLabelPng(label, cellW - 2 * labelPad, Math.max(8, labelH - 2));
+  const labelPngRaw = await renderLabelPng(label, cellW - 2 * labelPad, Math.max(8, labelH - 2), fontPt);
   // renderLabelPng floors its text-box height at 16 px (pango requirement),
   // so for very small cells the produced PNG can exceed the band height
   // and sharp's composite call errors with "must have same dimensions or
@@ -720,11 +742,34 @@ export function detectAiLabelTop(
  */
 export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Buffer> {
   const { baseImage, layout, cards, cardShape, uploads } = input;
+  const labelSizeMultiplier = input.labelSizeMultiplier ?? 1;
 
   const cardByIndex = new Map<number, TopicCard>();
   for (const c of cards) cardByIndex.set(c.index, c);
   const uploadByIndex = new Map<number, Buffer>();
   for (const up of uploads) uploadByIndex.set(up.cardIndex, up.bytes);
+
+  // Compute one canonical fontPt for the whole grid. Derived from the
+  // LAYOUT's canonical band height (20% of the canonical cell height),
+  // not from any cell's detected band height — so every cell renders
+  // its label at the same point size regardless of where the per-cell
+  // divider scanner landed. The 0.55 fraction matches the historical
+  // per-cell heuristic in `renderLabelPng`'s no-override branch, so a
+  // 1.0 multiplier produces visually the same size as r2.4.1 on cells
+  // whose detection landed at the canonical 80% mark.
+  const canonicalCellH =
+    (layout.height - 2 * layout.outerMargin - (layout.rows - 1) * layout.gutter) /
+    layout.rows;
+  const canonicalBandH = Math.round(canonicalCellH * 0.2);
+  const baseFontPt = Math.max(12, Math.round(canonicalBandH * 0.55));
+  const fontPt = Math.max(8, Math.round(baseFontPt * labelSizeMultiplier));
+  console.info('[topic-card-grid composite font-size]', {
+    canonical_cell_h: canonicalCellH,
+    canonical_band_h: canonicalBandH,
+    base_font_pt: baseFontPt,
+    multiplier: labelSizeMultiplier,
+    font_pt_applied: fontPt,
+  });
 
   const overlays: sharp.OverlayOptions[] = [];
 
@@ -869,8 +914,8 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       }
       const overlay =
         cardShape === 'circle'
-          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h)
-          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h);
+          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt)
+          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt);
       overlays.push({ input: overlay, top: rect.y, left: rect.x });
       continue;
     }
@@ -986,7 +1031,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
         }
       }
       if (bandH > 0) {
-        const overlay = await buildSquareLabelBandOverlay(card.label, aiRect.w, bandH);
+        const overlay = await buildSquareLabelBandOverlay(card.label, aiRect.w, bandH, fontPt);
         overlays.push({ input: overlay, top: bandTop, left: aiRect.x });
       }
       // r2.4: paint a thin black top border at the top edge of every
@@ -1042,6 +1087,7 @@ async function buildSquareCellOverlay(
   label: string,
   cellW: number,
   cellH: number,
+  fontPt?: number,
 ): Promise<Buffer> {
   const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
   const labelH = cellH - illustrationH;
@@ -1062,7 +1108,7 @@ async function buildSquareCellOverlay(
   const labelPad = Math.max(2, Math.round(cellW * 0.04));
   const maxLabelW = Math.max(1, cellW - 2 * labelPad);
   const maxLabelH = Math.max(1, labelH - 2);
-  const labelPngRaw = await renderLabelPng(label, maxLabelW, maxLabelH);
+  const labelPngRaw = await renderLabelPng(label, maxLabelW, maxLabelH, fontPt);
   // Sharp's text input treats `width` as a wrap-hint, not a hard cap, so
   // unbreakable labels like "UVB-76" render wider than maxLabelW (and
   // long multi-word labels can wrap to 2 lines that exceed maxLabelH).
@@ -1121,6 +1167,7 @@ async function buildCircleCellOverlay(
   label: string,
   cellW: number,
   cellH: number,
+  fontPt?: number,
 ): Promise<Buffer> {
   // Geometry is computed in canvas-local coords; we pass cellX/cellY = 0
   // so the returned positions are within the overlay's own frame.
@@ -1141,7 +1188,7 @@ async function buildCircleCellOverlay(
   const labelPad = Math.max(2, Math.round(cellW * 0.025));
   const labelW = Math.max(16, Math.round(geom.labelW) - 2 * labelPad);
   const labelH = Math.max(8, Math.round(geom.labelH) - 2);
-  const labelPng = await renderLabelPng(label, labelW, labelH);
+  const labelPng = await renderLabelPng(label, labelW, labelH, fontPt);
   const labelMeta = await sharp(labelPng).metadata();
   const labelTextW = labelMeta.width ?? 1;
   const labelTextH = labelMeta.height ?? 1;
