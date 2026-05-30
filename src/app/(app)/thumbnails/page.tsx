@@ -278,11 +278,27 @@ function ThumbnailsPage() {
   // the banner. Drives the dirty indicator.
   const [lastSavedThumbRunKey, setLastSavedThumbRunKey] = useState<string | null>(null);
 
-  // Thumbnail format selector. 'free-form' = the original 5-concept flow.
-  // 'topic-card-grid' = the new format that produces a single composite
-  // thumbnail via Step 1 (LLM card list) + Step 2 (GPT Image 2). See
+  // Thumbnail format selector. 'free-form' = the original 5-concept flow
+  // (deprecated 2026-05-30; grandfathered for existing drafts only — new
+  // sessions default to Topic Card Grid per _plans/2026-05-30-thumbnails-
+  // feature-port.md). 'topic-card-grid' = the new default format that
+  // produces a single composite thumbnail via Step 1 (LLM card list) +
+  // Step 2 (GPT Image 2). See
   // _plans/2026-05-19-thumbnail-format-topic-card-grid.md.
-  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid'>('free-form');
+  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid'>('topic-card-grid');
+  // Track how often Free-form drafts get opened post-deprecation. The
+  // log fires once per format change to free-form (any path: history
+  // restore, draft restore, user picking it from the grandfather option,
+  // etc.). 30 days of this data tells us how many users we'd inconvenience
+  // by deleting the inline Free-form UI entirely vs how many can simply
+  // be redirected to Topic Card Grid.
+  useEffect(() => {
+    if (format !== 'free-form') return;
+    console.info('[thumbnails free-form-deprecated]', {
+      opened_at: new Date().toISOString(),
+      via: 'format_state',
+    });
+  }, [format]);
   const [formatResult, setFormatResult] = useState<FormatGenerationResult | null>(null);
   // Flex Icon Grid is deterministic — separate state slot so its result
   // and draft snapshot don't collide with the AI-generation formats.
@@ -1247,11 +1263,45 @@ function ThumbnailsPage() {
                   }
                 }}
               >
-                <option value="free-form">Free-form (5 concepts)</option>
+                {/* Free-form is grandfathered: the option only renders when
+                    an existing Free-form draft / result is already loaded
+                    so the user can keep editing it. New sessions don't see
+                    Free-form in the dropdown. See _plans/2026-05-30-
+                    thumbnails-feature-port.md Phase 6. */}
+                {format === 'free-form' && (
+                  <option value="free-form">Free-form (5 concepts, retired)</option>
+                )}
                 <option value="topic-card-grid">Topic Card Grid</option>
                 <option value="n-levels">N Levels Explained</option>
                 <option value="flex-icon-grid">Flex Icon Grid (deterministic)</option>
               </select>
+              {format === 'free-form' && (
+                <div
+                  className="text-[11px] mt-2 px-3 py-2 rounded"
+                  style={{
+                    color: 'var(--accent-yellow)',
+                    background: 'rgba(255, 200, 0, 0.08)',
+                    border: '1px solid rgba(255, 200, 0, 0.25)',
+                  }}
+                >
+                  <strong>Free-form is being retired.</strong> Your existing draft
+                  still opens and renders, but new thumbnails won&apos;t use this
+                  format. For unstructured concept layouts, try{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormat('topic-card-grid');
+                      setImageGenEnabled(true);
+                      setShowImageSection(true);
+                    }}
+                    className="underline"
+                    style={{ color: 'var(--accent-yellow)' }}
+                  >
+                    Topic Card Grid
+                  </button>{' '}
+                  (1×5 row = 5 concepts).
+                </div>
+              )}
               {format === 'topic-card-grid' && (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                   Produces a single composite thumbnail as an N×M grid of titled cards. Requires a reference image — upload one in the Image Generation section below.
