@@ -1689,6 +1689,61 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.36 — image filter modes', () => {
+  it('round-trips upload filter through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].content = {
+      type: 'upload', url: 'https://example.com/x.jpg', filter: 'grayscale',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('upload');
+    if (content.type === 'upload') {
+      expect(content.filter).toBe('grayscale');
+    }
+  });
+  it('round-trips ai-sticker filter through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].content = {
+      type: 'ai-sticker', prompt: 'x', url: 'https://example.com/s.png', filter: 'sepia',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('ai-sticker');
+    if (content.type === 'ai-sticker') {
+      expect(content.filter).toBe('sepia');
+    }
+  });
+  it('drops unsupported filter values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A',
+        content: { type: 'upload', url: 'https://example.com/x.jpg', filter: 'blur' },
+      }],
+    });
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('upload');
+    if (content.type === 'upload') {
+      expect(content.filter).toBeUndefined();
+    }
+  });
+  it('rounds "none" filter to undefined for tidier storage', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A',
+        content: { type: 'upload', url: 'https://example.com/x.jpg', filter: 'none' },
+      }],
+    });
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('upload');
+    if (content.type === 'upload') {
+      expect(content.filter).toBeUndefined();
+    }
+  });
+});
+
 describe('Phase 4.35 — per-cell content offset', () => {
   it('round-trips contentOffset through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

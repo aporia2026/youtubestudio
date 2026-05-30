@@ -92,12 +92,39 @@ export const SUPPORTED_CELL_SHAPES: readonly CellShape[] = [
  * before — the default is `'cover'`. */
 export type ImageFitMode = 'cover' | 'contain' | 'fill';
 
+/** Phase 4.36: image filter mode for upload + ai-sticker cells.
+ *  Renders via Sharp post-resize on the server and CSS `filter` in
+ *  the live preview. All modes use approximately matching parameters
+ *  (e.g. Sharp's `.greyscale()` ≈ CSS `grayscale(1)`).
+ *  - `'none'` (default): no filter
+ *  - `'grayscale'`: full desaturation
+ *  - `'sepia'`: warm-tinted desaturation
+ *  - `'high-contrast'`: contrast boost
+ *  - `'low-contrast'`: contrast reduction (washed-out look)
+ *  - `'invert'`: colour inversion */
+export type ImageFilterMode =
+  | 'none'
+  | 'grayscale'
+  | 'sepia'
+  | 'high-contrast'
+  | 'low-contrast'
+  | 'invert';
+
+export const SUPPORTED_IMAGE_FILTERS: readonly ImageFilterMode[] = [
+  'none',
+  'grayscale',
+  'sepia',
+  'high-contrast',
+  'low-contrast',
+  'invert',
+] as const;
+
 export type CellContent =
   | { type: 'icon-library'; name: string }
   | { type: 'emoji'; char: string }
-  | { type: 'upload'; url: string; fit?: ImageFitMode }
+  | { type: 'upload'; url: string; fit?: ImageFitMode; filter?: ImageFilterMode }
   | { type: 'text-only' }
-  | { type: 'ai-sticker'; prompt: string; url?: string; style?: string; fit?: ImageFitMode };
+  | { type: 'ai-sticker'; prompt: string; url?: string; style?: string; fit?: ImageFitMode; filter?: ImageFilterMode };
 
 /** Phase 2 enumeration. `ai-sticker` arrives in Phase 2D — carries a
  *  user-supplied prompt and (once generated) the URL of the cropped
@@ -1898,11 +1925,20 @@ function parseCellContent(raw: unknown): CellContent {
     o.fit === 'cover' || o.fit === 'contain' || o.fit === 'fill'
       ? o.fit
       : undefined;
+  // Phase 4.36: image filter mode. 'none' rounds to undefined since
+  // it's the same as no filter; round-trips stay tidy.
+  const rawFilter = typeof o.filter === 'string' ? o.filter : undefined;
+  const filter: ImageFilterMode | undefined =
+    rawFilter && rawFilter !== 'none' &&
+    (SUPPORTED_IMAGE_FILTERS as readonly string[]).includes(rawFilter)
+      ? (rawFilter as ImageFilterMode)
+      : undefined;
   if (type === 'upload') {
     return {
       type: 'upload',
       url: String(o.url ?? ''),
       ...(fit ? { fit } : {}),
+      ...(filter ? { filter } : {}),
     };
   }
   if (type === 'ai-sticker') {
@@ -1915,6 +1951,7 @@ function parseCellContent(raw: unknown): CellContent {
       ...(url ? { url } : {}),
       ...(style ? { style } : {}),
       ...(fit ? { fit } : {}),
+      ...(filter ? { filter } : {}),
     };
   }
   return { type: 'text-only' };

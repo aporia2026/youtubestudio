@@ -447,37 +447,35 @@ export function buildBaseSvg(
     const flipX = cell.flipX === true;
     const flipY = cell.flipY === true;
     const needsTransform = rotation !== 0 || flipX || flipY;
-    if (needsTransform) {
-      const cx = geom.shapeX + geom.shapeW / 2;
-      const cy = geom.shapeY + geom.shapeH / 2;
-      // SVG transform list applies right-to-left. To get
-      // "rotate then scale around the shape centre" we translate to
-      // origin, scale, rotate, translate back. Coalesce to a single
-      // matrix-equivalent transform string so the emitted SVG stays
-      // compact.
-      const sx = flipX ? -1 : 1;
-      const sy = flipY ? -1 : 1;
-      parts.push(
-        `<g transform="translate(${cx} ${cy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-cx} ${-cy})">`,
-      );
-    }
+    const sx = flipX ? -1 : 1;
+    const sy = flipY ? -1 : 1;
+    const cx = geom.shapeX + geom.shapeW / 2;
+    const cy = geom.shapeY + geom.shapeH / 2;
+    const rotateFlipPart = needsTransform
+      ? `translate(${cx} ${cy}) ${rotation !== 0 ? `rotate(${rotation}) ` : ''}${flipX || flipY ? `scale(${sx} ${sy}) ` : ''}translate(${-cx} ${-cy})`
+      : '';
+    // Shape sits inside the rotate/flip transform (cell rotates as
+    // a unit) but NOT inside the offset transform (offset only
+    // shifts the content within the shape).
+    if (needsTransform) parts.push(`<g transform="${rotateFlipPart}">`);
     parts.push(renderCellShape(geom, shape, referenceColour, config.cornerRadius, ring, shadowFilterId));
-    // Inline Lucide icon — done in the base SVG so we get crisp
-    // vector at any output resolution. Other content types render
-    // as text/image overlays after rasterisation (separate pass).
-    // Phase 4.35: wrap the icon in a translate() group when the
-    // cell has a content offset. Shape stays in place; only the
-    // glyph shifts within it.
+    if (needsTransform) parts.push(`</g>`);
+    // Phase 4.35 → 4.36: inline icon-library content gets BOTH the
+    // rotation (inside) AND the offset (outside) so its position
+    // is shape-aligned-rotated plus a screen-relative shift.
     if (cell.content.type === 'icon-library') {
-      const ox = cell.contentOffset ? Math.round(cell.contentOffset.x * geom.shapeW) : 0;
-      const oy = cell.contentOffset ? Math.round(cell.contentOffset.y * geom.shapeH) : 0;
-      const needsOffset = ox !== 0 || oy !== 0;
-      if (needsOffset) parts.push(`<g transform="translate(${ox} ${oy})">`);
+      const iconDx = cell.contentOffset ? Math.round(cell.contentOffset.x * geom.shapeW) : 0;
+      const iconDy = cell.contentOffset ? Math.round(cell.contentOffset.y * geom.shapeH) : 0;
+      const contentTransformParts: string[] = [];
+      if (iconDx !== 0 || iconDy !== 0) {
+        contentTransformParts.push(`translate(${iconDx} ${iconDy})`);
+      }
+      if (needsTransform) contentTransformParts.push(rotateFlipPart);
+      if (contentTransformParts.length > 0) {
+        parts.push(`<g transform="${contentTransformParts.join(' ')}">`);
+      }
       parts.push(renderIconLibrary(cell.content, geom, referenceColour, ring));
-      if (needsOffset) parts.push(`</g>`);
-    }
-    if (needsTransform) {
-      parts.push(`</g>`);
+      if (contentTransformParts.length > 0) parts.push(`</g>`);
     }
   }
   parts.push(`</svg>`);
@@ -872,10 +870,14 @@ async function buildCellOverlays(
   const rotation = cell.rotation ?? 0;
   const shapeCx = geom.shapeX + geom.shapeW / 2;
   const shapeCy = geom.shapeY + geom.shapeH / 2;
-  // Phase 4.35: per-cell content offset shifts overlays (and the
-  // base-SVG icon) by a fraction of the shape's dimensions. The
-  // shape itself + label band stay put so multi-cell grids remain
-  // visually aligned.
+  // Phase 4.35 → 4.36: per-cell content offset shifts overlays
+  // (and the base-SVG icon) by a fraction of the shape's
+  // dimensions. The offset is applied in SCREEN-relative axes —
+  // when the cell also has rotation/flip, the offset is computed
+  // BEFORE the rotation (composite top/left are absolute canvas
+  // coords, so adding the screen-relative offset to them gives the
+  // intended placement). For the SVG icon, the offset translate
+  // wraps the rotation group so screen-relative axes hold.
   const offsetDx = cell.contentOffset ? Math.round(cell.contentOffset.x * geom.shapeW) : 0;
   const offsetDy = cell.contentOffset ? Math.round(cell.contentOffset.y * geom.shapeH) : 0;
   const shiftOverlay = (o: sharp.OverlayOptions): sharp.OverlayOptions =>
@@ -892,24 +894,27 @@ async function buildCellOverlays(
   const flipX = cell.flipX === true;
   const flipY = cell.flipY === true;
 
-  // Content overlays
+  // Content overlays. Phase 4.36 — shiftOverlay runs AFTER
+  // maybeTransformOverlay so the offset adds to the post-rotation
+  // top/left in screen-relative axes. The rotation still pivots on
+  // the shape centre; the offset is a pure screen-coord shift on top.
   if (cell.content.type === 'upload') {
-    const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit);
-    if (uploadOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(uploadOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
+    const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit, cell.content.filter);
+    if (uploadOverlay) overlays.push(shiftOverlay(await maybeTransformOverlay(uploadOverlay, rotation, flipX, flipY, shapeCx, shapeCy)));
   } else if (cell.content.type === 'ai-sticker' && cell.content.url) {
     // Generated stickers paint exactly like uploads — the URL points
     // at the sliced quadrant the generate-stickers route uploaded to
     // R2. When the sticker has not yet been generated (`url` empty)
     // the cell falls through to its shape fill (handled by the base
     // SVG) — visible as an empty disc the user can click to generate.
-    const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit);
-    if (stickerOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(stickerOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
+    const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit, cell.content.filter);
+    if (stickerOverlay) overlays.push(shiftOverlay(await maybeTransformOverlay(stickerOverlay, rotation, flipX, flipY, shapeCx, shapeCy)));
   } else if (cell.content.type === 'emoji') {
     const emojiOverlay = await buildEmojiOverlay(cell.content.char, geom);
-    if (emojiOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(emojiOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
+    if (emojiOverlay) overlays.push(shiftOverlay(await maybeTransformOverlay(emojiOverlay, rotation, flipX, flipY, shapeCx, shapeCy)));
   } else if (cell.content.type === 'text-only') {
     const textOverlay = await buildTextOnlyOverlay(cell.label, geom, labelStyle, background, fontResolver, defaultFallbackFont(config));
-    if (textOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(textOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
+    if (textOverlay) overlays.push(shiftOverlay(await maybeTransformOverlay(textOverlay, rotation, flipX, flipY, shapeCx, shapeCy)));
   }
   // `icon-library` already painted into the base SVG — no overlay
   // needed.
@@ -943,6 +948,14 @@ async function buildUploadOverlay(
   fetchUpload: UploadFetcher,
   cellIndex: number,
   fit: 'cover' | 'contain' | 'fill' = 'cover',
+  filter:
+    | 'none'
+    | 'grayscale'
+    | 'sepia'
+    | 'high-contrast'
+    | 'low-contrast'
+    | 'invert'
+    | undefined = undefined,
 ): Promise<sharp.OverlayOptions | null> {
   const fetchStart = Date.now();
   let bytes: Buffer;
@@ -970,14 +983,33 @@ async function buildUploadOverlay(
   // shape mask sees the padded edges as alpha-zero, which renders
   // as the shape's underlying fill (off-white disc by default).
   const sharpFit = fit === 'contain' ? 'contain' : fit === 'fill' ? 'fill' : 'cover';
-  let imageBuffer = await sharp(bytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
-    .resize(w, h, {
-      fit: sharpFit,
-      position: 'centre',
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .png()
-    .toBuffer();
+  let imagePipeline = sharp(bytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP }).resize(w, h, {
+    fit: sharpFit,
+    position: 'centre',
+    background: { r: 0, g: 0, b: 0, alpha: 0 },
+  });
+  // Phase 4.36: image filter chain — applied AFTER resize so the
+  // expensive ops run on the smaller buffer. Filters map to Sharp's
+  // native ops where possible; the contrast filters use `.linear`
+  // for predictable contrast adjustment without re-encoding twice.
+  if (filter === 'grayscale') {
+    imagePipeline = imagePipeline.greyscale();
+  } else if (filter === 'sepia') {
+    // Standard sepia tone matrix on greyscale + brown tint.
+    imagePipeline = imagePipeline
+      .greyscale()
+      .tint({ r: 112, g: 66, b: 20 });
+  } else if (filter === 'high-contrast') {
+    // .linear(a, b) applies a*x + b per channel. a=1.4 b=-50
+    // gives a noticeable contrast boost without crushing midtones.
+    imagePipeline = imagePipeline.linear(1.4, -50);
+  } else if (filter === 'low-contrast') {
+    // Squash midtones toward 50% grey.
+    imagePipeline = imagePipeline.linear(0.65, 45);
+  } else if (filter === 'invert') {
+    imagePipeline = imagePipeline.negate({ alpha: false });
+  }
+  let imageBuffer = await imagePipeline.png().toBuffer();
   // Mask to the shape so corner pixels (circle / rounded square)
   // don't leak over the ring. Mask is generated as a tiny SVG and
   // applied via `blend: 'dest-in'` (same technique as

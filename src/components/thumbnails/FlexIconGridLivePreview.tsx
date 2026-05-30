@@ -829,12 +829,19 @@ function CellGroup({
         const shapeCy = geom.shapeY + geom.shapeH / 2;
         const sx = flipX ? -1 : 1;
         const sy = flipY ? -1 : 1;
-        // Phase 4.35: per-cell content offset shifts the content
-        // group (icon / upload / emoji / sticker / text-only) by a
-        // fraction of the shape's dimensions. The shape rect and
-        // label band stay put.
-        const offsetDx = cell.contentOffset ? cell.contentOffset.x * geom.shapeW : 0;
-        const offsetDy = cell.contentOffset ? cell.contentOffset.y * geom.shapeH : 0;
+        // Phase 4.35 → 4.36: per-cell content offset shifts the
+        // content group by a fraction of the shape's dimensions.
+        // Phase 4.36 — rounded to integer pixels so the on-screen
+        // preview matches the composer's rendered PNG exactly
+        // (Sharp requires integer top/left coordinates for
+        // composite overlays).
+        // Phase 4.36 — offset is applied OUTSIDE the rotation
+        // transform so X positive always means "right on screen"
+        // regardless of cell rotation. The previous nesting made
+        // the offset axes rotate with the cell, which broke the
+        // user's mental model when nudging a rotated icon.
+        const offsetDx = cell.contentOffset ? Math.round(cell.contentOffset.x * geom.shapeW) : 0;
+        const offsetDy = cell.contentOffset ? Math.round(cell.contentOffset.y * geom.shapeH) : 0;
         const needsTransform = rotation !== 0 || flipX || flipY;
         const needsOffset = offsetDx !== 0 || offsetDy !== 0;
         const contentEl = (
@@ -846,10 +853,10 @@ function CellGroup({
               <EmojiContent char={cell.content.char} geom={geom} />
             )}
             {cell.content.type === 'upload' && (
-              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} />
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} filter={cell.content.filter} />
             )}
             {cell.content.type === 'ai-sticker' && cell.content.url && (
-              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} />
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} filter={cell.content.filter} />
             )}
             {cell.content.type === 'text-only' && (
               <TextOnlyContent
@@ -866,29 +873,42 @@ function CellGroup({
         // rotation/flip transform STILL wraps everything (shape +
         // shifted content) so the rotation pivot is the shape
         // centre regardless of offset.
-        const inner = (
-          <>
-            <CellShapeEl
-              geom={geom}
-              shape={shape}
-              ring={ring}
-              shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
-              cornerRadius={cornerRadius}
-            />
-            {needsOffset ? (
-              <g transform={`translate(${offsetDx} ${offsetDy})`}>{contentEl}</g>
-            ) : (
-              contentEl
-            )}
-          </>
+        // Both shape and content get the rotation/flip transform
+        // (cells rotate as a unit). Only the CONTENT gets an
+        // additional translate(offset) APPLIED OUTSIDE the rotation
+        // so its axes are screen-relative — a Phase-4.36 fix for the
+        // Phase-4.35 caveat that nudging a rotated cell's content
+        // would rotate the offset axes with it.
+        const rotateFlipPart = needsTransform
+          ? `translate(${shapeCx} ${shapeCy}) ${rotation !== 0 ? `rotate(${rotation}) ` : ''}${flipX || flipY ? `scale(${sx} ${sy}) ` : ''}translate(${-shapeCx} ${-shapeCy})`
+          : '';
+        const shapeEl = (
+          <CellShapeEl
+            geom={geom}
+            shape={shape}
+            ring={ring}
+            shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
+            cornerRadius={cornerRadius}
+          />
         );
-        if (!needsTransform) return inner;
+        const wrappedShape = needsTransform ? (
+          <g transform={rotateFlipPart}>{shapeEl}</g>
+        ) : (
+          shapeEl
+        );
+        const contentTransformParts: string[] = [];
+        if (needsOffset) contentTransformParts.push(`translate(${offsetDx} ${offsetDy})`);
+        if (needsTransform) contentTransformParts.push(rotateFlipPart);
+        const wrappedContent = contentTransformParts.length === 0 ? (
+          contentEl
+        ) : (
+          <g transform={contentTransformParts.join(' ')}>{contentEl}</g>
+        );
         return (
-          <g
-            transform={`translate(${shapeCx} ${shapeCy}) rotate(${rotation}) scale(${sx} ${sy}) translate(${-shapeCx} ${-shapeCy})`}
-          >
-            {inner}
-          </g>
+          <>
+            {wrappedShape}
+            {wrappedContent}
+          </>
         );
       })()}
 
@@ -1293,12 +1313,20 @@ function UploadContent({
   shape,
   cornerRadius,
   fit,
+  filter,
 }: {
   url: string;
   geom: ReturnType<typeof computeCellGeometry>;
   shape: CellShape;
   cornerRadius: number;
   fit?: 'cover' | 'contain' | 'fill';
+  filter?:
+    | 'none'
+    | 'grayscale'
+    | 'sepia'
+    | 'high-contrast'
+    | 'low-contrast'
+    | 'invert';
 }) {
   // Mask uploaded images to the cell shape via SVG <clipPath>. Each
   // cell gets a unique clip id so multiple uploads in one preview
@@ -1362,6 +1390,20 @@ function UploadContent({
           fit === 'contain' ? 'xMidYMid meet' : fit === 'fill' ? 'none' : 'xMidYMid slice'
         }
         clipPath={`url(#${clipId})`}
+        // Phase 4.36: CSS filter approximates Sharp's server-side
+        // chain. SVG <image> supports CSS `filter` natively, so
+        // this just sets the `style` attribute with the appropriate
+        // CSS function. Sepia uses a 100% sepia + brightness boost
+        // to match Sharp's tint-on-greyscale approach.
+        style={(() => {
+          if (!filter || filter === 'none') return undefined;
+          if (filter === 'grayscale') return { filter: 'grayscale(1)' };
+          if (filter === 'sepia') return { filter: 'sepia(1) brightness(0.9)' };
+          if (filter === 'high-contrast') return { filter: 'contrast(1.4)' };
+          if (filter === 'low-contrast') return { filter: 'contrast(0.65)' };
+          if (filter === 'invert') return { filter: 'invert(1)' };
+          return undefined;
+        })()}
       />
     </>
   );

@@ -1906,25 +1906,49 @@ export function FlexIconGridPanel({
                   shown once a URL is set so the picker doesn't
                   surface before the user picks a file. */}
               {selectedCell.content.url && (
-                <ImageFitPicker
-                  fit={
-                    selectedCell.content.type === 'upload'
-                      ? selectedCell.content.fit ?? 'cover'
-                      : 'cover'
-                  }
-                  onChange={(next) =>
-                    updateCell(selectedCell.index, {
-                      content: {
-                        type: 'upload',
-                        url:
-                          selectedCell.content.type === 'upload'
-                            ? selectedCell.content.url
-                            : '',
-                        ...(next === 'cover' ? {} : { fit: next }),
-                      },
-                    })
-                  }
-                />
+                <>
+                  <ImageFitPicker
+                    fit={
+                      selectedCell.content.type === 'upload'
+                        ? selectedCell.content.fit ?? 'cover'
+                        : 'cover'
+                    }
+                    onChange={(next) => {
+                      if (selectedCell.content.type !== 'upload') return;
+                      updateCell(selectedCell.index, {
+                        content: {
+                          type: 'upload',
+                          url: selectedCell.content.url,
+                          ...(next === 'cover' ? {} : { fit: next }),
+                          ...(selectedCell.content.filter
+                            ? { filter: selectedCell.content.filter }
+                            : {}),
+                        },
+                      });
+                    }}
+                  />
+                  {/* Phase 4.36: image filter picker. */}
+                  <ImageFilterPicker
+                    filter={
+                      selectedCell.content.type === 'upload'
+                        ? selectedCell.content.filter ?? 'none'
+                        : 'none'
+                    }
+                    onChange={(next) => {
+                      if (selectedCell.content.type !== 'upload') return;
+                      updateCell(selectedCell.index, {
+                        content: {
+                          type: 'upload',
+                          url: selectedCell.content.url,
+                          ...(selectedCell.content.fit
+                            ? { fit: selectedCell.content.fit }
+                            : {}),
+                          ...(next === 'none' ? {} : { filter: next }),
+                        },
+                      });
+                    }}
+                  />
+                </>
               )}
             </>
           )}
@@ -2008,25 +2032,53 @@ export function FlexIconGridPanel({
                   Same control as upload cells — only shown once the
                   sticker has been generated (URL set). */}
               {selectedCell.content.url && (
-                <ImageFitPicker
-                  fit={
-                    selectedCell.content.type === 'ai-sticker'
-                      ? selectedCell.content.fit ?? 'cover'
-                      : 'cover'
-                  }
-                  onChange={(next) => {
-                    if (selectedCell.content.type !== 'ai-sticker') return;
-                    updateCell(selectedCell.index, {
-                      content: {
-                        type: 'ai-sticker',
-                        prompt: selectedCell.content.prompt,
-                        ...(selectedCell.content.url ? { url: selectedCell.content.url } : {}),
-                        ...(selectedCell.content.style ? { style: selectedCell.content.style } : {}),
-                        ...(next === 'cover' ? {} : { fit: next }),
-                      },
-                    });
-                  }}
-                />
+                <>
+                  <ImageFitPicker
+                    fit={
+                      selectedCell.content.type === 'ai-sticker'
+                        ? selectedCell.content.fit ?? 'cover'
+                        : 'cover'
+                    }
+                    onChange={(next) => {
+                      if (selectedCell.content.type !== 'ai-sticker') return;
+                      updateCell(selectedCell.index, {
+                        content: {
+                          type: 'ai-sticker',
+                          prompt: selectedCell.content.prompt,
+                          ...(selectedCell.content.url ? { url: selectedCell.content.url } : {}),
+                          ...(selectedCell.content.style ? { style: selectedCell.content.style } : {}),
+                          ...(next === 'cover' ? {} : { fit: next }),
+                          ...(selectedCell.content.filter
+                            ? { filter: selectedCell.content.filter }
+                            : {}),
+                        },
+                      });
+                    }}
+                  />
+                  {/* Phase 4.36: image filter picker for stickers. */}
+                  <ImageFilterPicker
+                    filter={
+                      selectedCell.content.type === 'ai-sticker'
+                        ? selectedCell.content.filter ?? 'none'
+                        : 'none'
+                    }
+                    onChange={(next) => {
+                      if (selectedCell.content.type !== 'ai-sticker') return;
+                      updateCell(selectedCell.index, {
+                        content: {
+                          type: 'ai-sticker',
+                          prompt: selectedCell.content.prompt,
+                          ...(selectedCell.content.url ? { url: selectedCell.content.url } : {}),
+                          ...(selectedCell.content.style ? { style: selectedCell.content.style } : {}),
+                          ...(selectedCell.content.fit
+                            ? { fit: selectedCell.content.fit }
+                            : {}),
+                          ...(next === 'none' ? {} : { filter: next }),
+                        },
+                      });
+                    }}
+                  />
+                </>
               )}
             </div>
           )}
@@ -2921,6 +2973,11 @@ export function FlexIconGridPanel({
               and the label band stay put so multi-cell grids stay
               visually aligned. Useful for fine-tuning emoji
               placement, nudging an uploaded photo, etc. */}
+          {/* Phase 4.36: tooltip + aria-label note the Shift-snap
+              fine-step modifier. Native `step={0.01}` keeps the
+              default 1 % drag granularity; while Shift is held the
+              onChange handler snaps to 0.001 steps (0.1 %) for
+              fine-tuning sub-percent placements. */}
           <div style={{ marginTop: 12 }}>
             <label style={labelStyle}>Content offset</label>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2932,18 +2989,22 @@ export function FlexIconGridPanel({
                 step={0.01}
                 value={selectedCell.contentOffset?.x ?? 0}
                 onChange={(e) => {
-                  const x = Number(e.target.value);
+                  const raw = Number(e.target.value);
+                  const native = e.nativeEvent as { shiftKey?: boolean };
+                  // Snap to 0.001 steps while Shift is held for
+                  // fine sub-percent placement.
+                  const x = native.shiftKey === true ? Math.round(raw * 1000) / 1000 : raw;
                   const y = selectedCell.contentOffset?.y ?? 0;
                   updateCell(selectedCell.index, {
                     contentOffset: x === 0 && y === 0 ? undefined : { x, y },
                   });
                 }}
-                aria-label="Content horizontal offset"
-                title={`X: ${Math.round((selectedCell.contentOffset?.x ?? 0) * 100)}%`}
+                aria-label="Content horizontal offset (hold Shift for 0.1% precision)"
+                title={`X: ${((selectedCell.contentOffset?.x ?? 0) * 100).toFixed(1)}% (hold Shift for 0.1% precision)`}
                 style={{ width: 110 }}
               />
-              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
-                {Math.round((selectedCell.contentOffset?.x ?? 0) * 100)}%
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}>
+                {((selectedCell.contentOffset?.x ?? 0) * 100).toFixed(1)}%
               </span>
               <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 12 }}>Y</span>
               <input
@@ -2953,24 +3014,29 @@ export function FlexIconGridPanel({
                 step={0.01}
                 value={selectedCell.contentOffset?.y ?? 0}
                 onChange={(e) => {
-                  const y = Number(e.target.value);
+                  const raw = Number(e.target.value);
+                  const native = e.nativeEvent as { shiftKey?: boolean };
+                  const y = native.shiftKey === true ? Math.round(raw * 1000) / 1000 : raw;
                   const x = selectedCell.contentOffset?.x ?? 0;
                   updateCell(selectedCell.index, {
                     contentOffset: x === 0 && y === 0 ? undefined : { x, y },
                   });
                 }}
-                aria-label="Content vertical offset"
-                title={`Y: ${Math.round((selectedCell.contentOffset?.y ?? 0) * 100)}%`}
+                aria-label="Content vertical offset (hold Shift for 0.1% precision)"
+                title={`Y: ${((selectedCell.contentOffset?.y ?? 0) * 100).toFixed(1)}% (hold Shift for 0.1% precision)`}
                 style={{ width: 110 }}
               />
-              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
-                {Math.round((selectedCell.contentOffset?.y ?? 0) * 100)}%
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 36, textAlign: 'right' }}>
+                {((selectedCell.contentOffset?.y ?? 0) * 100).toFixed(1)}%
               </span>
               {selectedCell.contentOffset && (
                 <button
                   type="button"
                   onClick={() => updateCell(selectedCell.index, { contentOffset: undefined })}
-                  style={chipStyle(false)}
+                  // Phase 4.36: ghost-button styling — an explicit
+                  // action, not a toggle, so the inactive-chip
+                  // visual was misleading.
+                  style={{ ...ghostButtonStyle, paddingTop: 4, paddingBottom: 4 }}
                   title="Reset content offset to centre"
                   aria-label="Reset content offset"
                 >
@@ -5572,6 +5638,65 @@ function ImageFitPicker({
               }
             >
               <FitGlyph variant={opt.value} />
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phase 4.36: chip-row picker for `upload`/`ai-sticker` cell
+ * content filter mode. `none` is the no-filter option; the others
+ * map to Sharp-side server filters AND CSS preview filters.
+ */
+function ImageFilterPicker({
+  filter,
+  onChange,
+}: {
+  filter: 'none' | 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert';
+  onChange: (
+    next: 'none' | 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert',
+  ) => void;
+}) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <label style={labelStyle}>Image filter</label>
+      <div style={chipRowStyle}>
+        {(
+          [
+            { value: 'none', label: 'None' },
+            { value: 'grayscale', label: 'Grayscale' },
+            { value: 'sepia', label: 'Sepia' },
+            { value: 'high-contrast', label: 'High contrast' },
+            { value: 'low-contrast', label: 'Low contrast' },
+            { value: 'invert', label: 'Invert' },
+          ] as const
+        ).map((opt) => {
+          const active = filter === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(opt.value)}
+              style={chipStyle(active)}
+              title={
+                opt.value === 'none'
+                  ? 'No filter — render the image as-is'
+                  : opt.value === 'grayscale'
+                    ? 'Full desaturation'
+                    : opt.value === 'sepia'
+                      ? 'Warm-tinted desaturation'
+                      : opt.value === 'high-contrast'
+                        ? 'Boost contrast (≈1.4×)'
+                        : opt.value === 'low-contrast'
+                          ? 'Reduce contrast (washed-out look)'
+                          : 'Colour inversion'
+              }
+            >
               {opt.label}
             </button>
           );
