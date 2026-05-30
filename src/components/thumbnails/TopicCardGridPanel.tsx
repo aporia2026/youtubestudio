@@ -506,6 +506,59 @@ interface TitleBarRequestPayloadShape {
   shadow?: { offsetPx: number; blurPx: number; opacity: number; color: string };
 }
 
+/** Clipboard envelope shape for "thumbnail style" payloads. Wraps
+ *  postProcess + titleBar in a versioned object so future schema
+ *  changes can be detected and migrated. Designed to be cross-format:
+ *  Topic Card Grid and N Levels share the exact same postProcess +
+ *  titleBar shapes, so a style copied from one pastes cleanly into the
+ *  other. */
+export interface ThumbnailStyleClipboardEnvelope {
+  type: 'thumbnail-style';
+  version: 1;
+  postProcess: PanelPostProcessState;
+  titleBar: PanelTitleBarState;
+}
+
+/** Build a clipboard envelope from the current panel style. Both
+ *  postProcess and titleBar are always included (even when disabled)
+ *  so paste preserves the exact panel state the user copied — including
+ *  off-but-pre-filled values. */
+export function buildStyleClipboardEnvelope(
+  postProcess: PanelPostProcessState,
+  titleBar: PanelTitleBarState,
+): ThumbnailStyleClipboardEnvelope {
+  return {
+    type: 'thumbnail-style',
+    version: 1,
+    postProcess,
+    titleBar,
+  };
+}
+
+/** Parse a clipboard payload back into panel state. Returns null when
+ *  the payload is not a recognised thumbnail-style envelope. Forgiving
+ *  on internal shapes — postProcess and titleBar pass through their
+ *  own coerce helpers so partial / corrupt sub-payloads degrade to
+ *  defaults rather than failing the paste. */
+export function parseStyleClipboardEnvelope(
+  raw: string,
+): { postProcess: PanelPostProcessState; titleBar: PanelTitleBarState } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const r = parsed as Record<string, unknown>;
+  if (r.type !== 'thumbnail-style') return null;
+  if (r.version !== 1) return null;
+  return {
+    postProcess: coercePostProcessState(r.postProcess),
+    titleBar: coerceTitleBarState(r.titleBar),
+  };
+}
+
 /** Build the wire-shape `titleBar` payload from the panel's state.
  *  Returns `undefined` when the bar is disabled or has no text — the
  *  server then short-circuits the overlay entirely. Subtitle-related
@@ -1729,9 +1782,88 @@ export function TopicCardGridPanel({
               (toggle + color/intensity/radius), Grain (toggle + intensity/
               size + monochrome). All effects default to off. */}
           <div>
-            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-              Post-process
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Post-process
+              </label>
+              {/* Copy / Paste style — clipboard envelope covering BOTH
+                  post-process and title-bar state. Lives at the top of
+                  the Post-process section because Post-process is the
+                  first visual-style section; cross-format (Topic Card
+                  Grid <-> N Levels) compatible because both panels share
+                  the exact same envelope shape. */}
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const envelope = buildStyleClipboardEnvelope(postProcess, titleBar);
+                      await navigator.clipboard.writeText(JSON.stringify(envelope));
+                      toast.success('Style copied to clipboard');
+                      console.info('[topic-card-grid panel style copy]', {
+                        post_process_filter: postProcess.filter,
+                        post_process_vignette: postProcess.vignetteEnabled,
+                        post_process_grain: postProcess.grainEnabled,
+                        title_bar_enabled: titleBar.enabled,
+                      });
+                    } catch (err) {
+                      toast.error('Could not copy style — clipboard access denied.');
+                      console.warn('[topic-card-grid panel style copy] error', {
+                        detail: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  title="Copy post-process + title-bar settings to clipboard"
+                >
+                  Copy style
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      const parsed = parseStyleClipboardEnvelope(text);
+                      if (!parsed) {
+                        toast.error('Clipboard does not contain a thumbnail style.');
+                        console.info('[topic-card-grid panel style paste] rejected', {
+                          length: text.length,
+                        });
+                        return;
+                      }
+                      setPostProcess(parsed.postProcess);
+                      setTitleBar(parsed.titleBar);
+                      toast.success('Style pasted');
+                      console.info('[topic-card-grid panel style paste]', {
+                        post_process_filter: parsed.postProcess.filter,
+                        post_process_vignette: parsed.postProcess.vignetteEnabled,
+                        post_process_grain: parsed.postProcess.grainEnabled,
+                        title_bar_enabled: parsed.titleBar.enabled,
+                      });
+                    } catch (err) {
+                      toast.error('Could not paste style — clipboard access denied.');
+                      console.warn('[topic-card-grid panel style paste] error', {
+                        detail: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  title="Apply a thumbnail style from the clipboard"
+                >
+                  Paste style
+                </button>
+              </div>
+            </div>
 
             {/* Filter chip row */}
             <div className="mb-3">
