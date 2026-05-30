@@ -32,12 +32,14 @@ import {
   applyCellUploads,
   SHARP_INPUT_PIXEL_CAP,
   type CellUpload,
+  type UploadFit,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
 import {
   applySharedOverlays,
   parsePostProcessConfig,
   parseTitleBarRequestPayload,
   type FontRef,
+  type ImageFilter,
   type PostProcessConfig,
   type TitleBarConfig,
 } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
@@ -168,11 +170,23 @@ interface ReqBody {
   outputHeight?: number;
   cardShape?: 'square' | 'circle';
   /** Per-cell uploads. Each entry pairs a 1-based `cardIndex` with the R2
-   *  download URL of the user's uploaded image. The server fetches the
-   *  bytes (with SSRF + size guards), then hands them to the composite
-   *  module which paints them over the AI-rendered cell. See
-   *  `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md`. */
-  uploads?: Array<{ cardIndex: number; imageUrl: string }>;
+   *  download URL of the user's uploaded image plus optional `fit` and
+   *  `filter` overrides. The server fetches the bytes (with SSRF + size
+   *  guards), then hands them to the composite module which paints them
+   *  over the AI-rendered cell. See
+   *  `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md` and
+   *  `_plans/2026-05-30-thumbnails-feature-port.md` Phase 5 for the
+   *  fit / filter additions. */
+  uploads?: Array<{
+    cardIndex: number;
+    imageUrl: string;
+    /** `'cover'` (default), `'contain'`, or `'fill'`. Unknown values
+     *  silently fall back to `'cover'`. */
+    fit?: string;
+    /** One of the five known image filters or undefined (no filter).
+     *  Unknown values silently fall back to undefined. */
+    filter?: string;
+  }>;
   /** Brightness register. Defaults to `'bright'` post-Phase-1.7. */
   brightness?: 'bright' | 'mixed' | 'moody';
   /** Detail register. Defaults to `'clean'` post-Phase-1.7. */
@@ -326,7 +340,18 @@ export async function POST(req: NextRequest) {
     // themselves are fetched below, after the AI image lands — we don't
     // want to pay the egress on a request that will fail validation later.
     const totalCards = gridRows * gridCols;
-    const uploadRequests: Array<{ cardIndex: number; safeUrl: URL }> = [];
+    /** Allowlist for the per-upload `fit` field. Mirrors the `UploadFit`
+     *  union in `topic-card-grid-composite.ts`. Unknown values silently
+     *  fall back to `'cover'` — same forgiving shape as brightness /
+     *  detail validation elsewhere in this route. */
+    const KNOWN_UPLOAD_FITS = new Set<UploadFit>(['cover', 'contain', 'fill']);
+    /** Allowlist for the per-upload `filter` field. Mirrors the
+     *  `ImageFilter` union in `shared-overlay-pipeline.ts`. Unknown
+     *  values silently fall back to no filter. */
+    const KNOWN_UPLOAD_FILTERS = new Set<ImageFilter>([
+      'grayscale', 'sepia', 'high-contrast', 'low-contrast', 'invert',
+    ]);
+    const uploadRequests: Array<{ cardIndex: number; safeUrl: URL; fit: UploadFit; filter?: ImageFilter }> = [];
     if (Array.isArray(body.uploads)) {
       const seen = new Set<number>();
       for (const entry of body.uploads) {
@@ -346,8 +371,20 @@ export async function POST(req: NextRequest) {
             { status: 400 },
           );
         }
+        // Per-upload fit + filter. Unknown / missing values degrade to
+        // the documented defaults (cover, no filter) rather than failing
+        // the request — same shape as the rest of this route's
+        // validation.
+        const rawFit = (entry as { fit?: unknown }).fit;
+        const fit: UploadFit = typeof rawFit === 'string' && KNOWN_UPLOAD_FITS.has(rawFit as UploadFit)
+          ? (rawFit as UploadFit)
+          : 'cover';
+        const rawFilter = (entry as { filter?: unknown }).filter;
+        const filter: ImageFilter | undefined = typeof rawFilter === 'string' && KNOWN_UPLOAD_FILTERS.has(rawFilter as ImageFilter)
+          ? (rawFilter as ImageFilter)
+          : undefined;
         seen.add(cardIndex);
-        uploadRequests.push({ cardIndex, safeUrl });
+        uploadRequests.push({ cardIndex, safeUrl, fit, filter });
       }
     }
     const uploadedCellIndexes = uploadRequests.map((u) => u.cardIndex).sort((a, b) => a - b);
@@ -631,7 +668,12 @@ export async function POST(req: NextRequest) {
             `Upload for card ${req.cardIndex} exceeds the 8 MB cap. Pick a smaller image.`,
           );
         }
-        cellUploads.push({ cardIndex: req.cardIndex, bytes: Buffer.from(upArrayBuf) });
+        cellUploads.push({
+          cardIndex: req.cardIndex,
+          bytes: Buffer.from(upArrayBuf),
+          fit: req.fit,
+          filter: req.filter,
+        });
       }
     }
     const compositeStart = Date.now();

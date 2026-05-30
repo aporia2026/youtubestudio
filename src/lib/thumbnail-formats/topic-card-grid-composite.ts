@@ -40,6 +40,7 @@ import {
   type ThumbnailFont,
 } from './topic-card-grid-fonts';
 import { fontFilePath } from './topic-card-grid-fonts-server';
+import { applyFilter, type ImageFilter } from './shared-overlay-pipeline';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -82,15 +83,30 @@ function squareBorderPx(cellW: number): number {
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
+/** Sharp resize strategy for a per-cell upload. `cover` (default) centre-
+ *  crops to fill the cell; `contain` letterboxes the original aspect on a
+ *  white background; `fill` stretches to the exact cell rectangle. Wire-
+ *  shape mirrors the `fit` field on the route body's uploads array. */
+export type UploadFit = 'cover' | 'contain' | 'fill';
+
 /**
  * One cell-upload payload. The route resolves the URL into bytes (with the
  * existing SSRF guard), then hands the bytes here so this module stays
  * free of network code. `cardIndex` is 1-based and matches `TopicCard.index`.
+ *
+ * `fit` and `filter` are per-upload overrides — when absent the default
+ * is cover-fit with no filter, matching the historical behaviour. Both
+ * fields are validated server-side before they reach this module; the
+ * composite trusts the values verbatim.
  */
 export interface CellUpload {
   cardIndex: number;
   /** Raw image bytes — PNG/JPEG/WebP. Sharp will auto-detect the format. */
   bytes: Buffer;
+  /** Per-upload fit strategy. Defaults to `'cover'`. */
+  fit?: UploadFit;
+  /** Per-upload image filter. Defaults to undefined (no filter). */
+  filter?: ImageFilter;
 }
 
 export interface ApplyCellUploadsInput {
@@ -159,20 +175,61 @@ export function circularMaskSvg(diameter: number): Buffer {
 }
 
 /**
- * Crop + resize uploaded bytes to exactly fit the target rectangle using
- * the "cover" strategy (preserves aspect, centre-crops the overflow). This
- * is what users intuitively expect when they drop an image into a slot —
- * the image fills the slot, the off-axis edges are trimmed.
+ * Resize uploaded bytes to exactly fit the target rectangle with the
+ * caller-specified fit strategy, then optionally recolour through a
+ * single image filter.
+ *
+ * Fit strategies:
+ *  - `cover` (default): preserves aspect, centre-crops the overflow.
+ *    What users intuitively expect when they drop an image into a slot —
+ *    the image fills the slot edge-to-edge, the off-axis edges are
+ *    trimmed.
+ *  - `contain`: preserves aspect, letterboxes inside the slot on a
+ *    WHITE background. Matches the rest of the format's chrome (the
+ *    label band background + cell gutter wipe are also white) so the
+ *    letterbox reads as part of the card rather than a foreign band.
+ *  - `fill`: stretches to the exact rectangle. Distorts the aspect but
+ *    guarantees no crop and no letterbox.
+ *
+ * Filter is applied as a second Sharp pipeline (decode + encode round
+ * trip via `applyFilter`). The marginal cost of one extra round trip on
+ * a ~1200x1200 cell is negligible compared to the AI render's 30-300s,
+ * and going through the shared helper keeps the filter implementation
+ * DRY with the canvas-wide post-process filter.
+ */
+export async function fitImage(
+  bytes: Buffer,
+  targetW: number,
+  targetH: number,
+  fit: UploadFit,
+  filter?: ImageFilter,
+): Promise<Buffer> {
+  const fitted = await sharp(bytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
+    .resize(targetW, targetH, {
+      fit,
+      position: 'centre',
+      // `contain` needs a background colour for the letterbox; white
+      // matches the rest of the format's chrome. Other strategies don't
+      // produce empty pixels so the background is ignored.
+      background: fit === 'contain' ? WHITE : undefined,
+    })
+    .png()
+    .toBuffer();
+  if (!filter) return fitted;
+  return applyFilter(fitted, filter);
+}
+
+/**
+ * Cover-fit + no filter wrapper. Kept as a named export for backwards
+ * compatibility with callers that pre-date the per-upload fit / filter
+ * fields (a few tests still call it directly with positional args).
  */
 export async function fitCover(
   bytes: Buffer,
   targetW: number,
   targetH: number,
 ): Promise<Buffer> {
-  return await sharp(bytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
-    .resize(targetW, targetH, { fit: 'cover', position: 'centre' })
-    .png()
-    .toBuffer();
+  return await fitImage(bytes, targetW, targetH, 'cover');
 }
 
 /**
@@ -781,8 +838,8 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
 
   const cardByIndex = new Map<number, TopicCard>();
   for (const c of cards) cardByIndex.set(c.index, c);
-  const uploadByIndex = new Map<number, Buffer>();
-  for (const up of uploads) uploadByIndex.set(up.cardIndex, up.bytes);
+  const uploadByIndex = new Map<number, CellUpload>();
+  for (const up of uploads) uploadByIndex.set(up.cardIndex, up);
 
   // Compute one canonical fontPt for the whole grid. Derived from the
   // LAYOUT's canonical band height (20% of the canonical cell height),
@@ -925,11 +982,24 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   //     into the gutter doesn't survive next to our composite label
   for (const card of cards) {
     const rect = cellRect(layout, card.index);
-    const uploadedBytes = uploadByIndex.get(card.index);
+    const uploaded = uploadByIndex.get(card.index);
+    const uploadedBytes = uploaded?.bytes;
     const useFullCellOverlay = uploadedBytes !== undefined || someUploadsProvided;
 
     if (useFullCellOverlay) {
       const imageBytes = uploadedBytes ?? (await getWhitePlaceholder());
+      // Per-upload fit + filter. Defaults to 'cover' with no filter so
+      // failed-upload placeholders (white squares) render the same as
+      // pre-Phase-5 — no surprise behaviour for the existing flow.
+      const uploadFit: UploadFit = uploaded?.fit ?? 'cover';
+      const uploadFilter: ImageFilter | undefined = uploaded?.filter;
+      if (uploaded?.fit || uploaded?.filter) {
+        console.info('[topic-card-grid upload-fit]', {
+          card_index: card.index,
+          fit: uploadFit,
+          filter: uploadFilter ?? null,
+        });
+      }
       // Stage the white wipe (cellRect + gutterPad on each side, clamped
       // to canvas) BEFORE the cell overlay so sharp paints them in this
       // order: base → wipes → cells → labels.
@@ -949,8 +1019,8 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       }
       const overlay =
         cardShape === 'circle'
-          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font)
-          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font);
+          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font, uploadFit, uploadFilter)
+          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font, uploadFit, uploadFilter);
       overlays.push({ input: overlay, top: rect.y, left: rect.x });
       continue;
     }
@@ -1124,20 +1194,24 @@ async function buildSquareCellOverlay(
   cellH: number,
   fontPt?: number,
   font?: { family: string; filePath: string },
+  fit: UploadFit = 'cover',
+  filter?: ImageFilter,
 ): Promise<Buffer> {
   const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
   const labelH = cellH - illustrationH;
   const borderPx = squareBorderPx(cellW);
 
-  // 1) Cover-fit the uploaded image to the illustration area INSET by the
+  // 1) Fit the uploaded image to the illustration area INSET by the
   //    border thickness on the left, right, and top so the image sits
   //    INSIDE the black border instead of running edge-to-edge with the
   //    border painted on top. The bottom edge of the image meets the
   //    hairline divider at y=illustrationH (no inset there — the hairline
   //    sits on the seam between image and label band).
+  //    `fit` and `filter` are per-upload overrides; defaults match the
+  //    pre-Phase-5 behaviour (cover + no filter).
   const insetW = Math.max(1, cellW - 2 * borderPx);
   const insetH = Math.max(1, illustrationH - borderPx);
-  const illustrationPng = await fitCover(imageBytes, insetW, insetH);
+  const illustrationPng = await fitImage(imageBytes, insetW, insetH, fit, filter);
 
   // 2) Render the label text PNG. We give it the label band width with
   //    a small horizontal padding so descenders don't kiss the border.
@@ -1205,14 +1279,18 @@ async function buildCircleCellOverlay(
   cellH: number,
   fontPt?: number,
   font?: { family: string; filePath: string },
+  fit: UploadFit = 'cover',
+  filter?: ImageFilter,
 ): Promise<Buffer> {
   // Geometry is computed in canvas-local coords; we pass cellX/cellY = 0
   // so the returned positions are within the overlay's own frame.
   const geom = circleCellGeometry(0, 0, cellW, cellH);
   const discD = Math.round(geom.discD);
 
-  // 1) Cover-fit the uploaded image to a discD × discD square.
-  const square = await fitCover(imageBytes, discD, discD);
+  // 1) Fit the uploaded image to a discD × discD square. `fit` and
+  //    `filter` are per-upload overrides; defaults match the pre-Phase-5
+  //    behaviour (cover + no filter).
+  const square = await fitImage(imageBytes, discD, discD, fit, filter);
 
   // 2) Apply the circular alpha mask (dest-in keeps only the pixels under
   //    the white circle, dropping the corners to transparent).

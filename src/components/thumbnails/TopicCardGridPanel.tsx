@@ -95,6 +95,14 @@ export interface TopicCardGridDraftState {
   /** 1-based cell index → R2 download URL of an uploaded image. Restored
    *  so a refresh mid-review keeps the user's attachments. */
   uploads?: Record<number, string>;
+  /** 1-based cell index → per-upload fit strategy. Drafts saved before
+   *  the fit picker shipped restore with this field undefined, which
+   *  the panel treats as `'cover'` (the historical default). */
+  uploadFit?: Record<number, PanelUploadFit>;
+  /** 1-based cell index → per-upload image filter. Drafts saved before
+   *  the filter picker shipped restore with this field undefined, which
+   *  the panel treats as "no filter" (the historical default). */
+  uploadFilter?: Record<number, PanelImageFilter>;
   /** Visual style preset the user picked. Drafts saved before the Style
    *  selector shipped restore as `'cartoon'`. */
   style?: ThumbnailStyle;
@@ -127,6 +135,11 @@ export type PanelImageFilter =
   | 'high-contrast'
   | 'low-contrast'
   | 'invert';
+
+/** Per-upload fit strategy. Mirrored from `UploadFit` in
+ *  `src/lib/thumbnail-formats/topic-card-grid-composite.ts` for the
+ *  same client-boundary reasons as `PanelImageFilter`. */
+export type PanelUploadFit = 'cover' | 'contain' | 'fill';
 
 /** Panel-side shape for the Post-process section's state. Granular
  *  fields (not a nested vignette / grain object) because each control
@@ -342,6 +355,15 @@ const POST_PROCESS_FILTER_OPTIONS: { value: PanelImageFilter | null; label: stri
   { value: 'high-contrast', label: 'High contrast' },
   { value: 'low-contrast', label: 'Low contrast' },
   { value: 'invert', label: 'Invert' },
+];
+
+/** Per-upload fit chips. Three options, same naming as Sharp's resize
+ *  `fit` field — users who've seen image-software fit modes recognise
+ *  the terms directly. */
+const UPLOAD_FIT_OPTIONS: { value: PanelUploadFit; label: string }[] = [
+  { value: 'cover', label: 'Cover' },
+  { value: 'contain', label: 'Contain' },
+  { value: 'fill', label: 'Fill' },
 ];
 
 /** Coerce a raw localStorage JSON read back into a `PanelPostProcessState`.
@@ -779,6 +801,34 @@ export function TopicCardGridPanel({
   // appears in the LLM's TopicCard.index is the lookup key. Values are
   // R2 download URLs returned by the presign upload route.
   const [uploads, setUploads] = useState<Record<number, string>>({});
+  // Per-upload fit + filter overrides. Kept as parallel maps rather than
+  // nesting under `uploads` so old drafts (uploads-as-URL-map) restore
+  // cleanly without a shape migration — undefined entries fall back to
+  // the documented defaults (cover, no filter). Same Record<number, ...>
+  // keying so all three maps line up by cardIndex.
+  const [uploadFit, setUploadFit] = useState<Record<number, PanelUploadFit>>({});
+  const [uploadFilter, setUploadFilter] = useState<Record<number, PanelImageFilter>>({});
+  function updateUploadFit(cardIndex: number, fit: PanelUploadFit) {
+    console.info('[topic-card-grid panel upload-fit change]', {
+      card_index: cardIndex,
+      from: uploadFit[cardIndex] ?? 'cover',
+      to: fit,
+    });
+    setUploadFit((prev) => ({ ...prev, [cardIndex]: fit }));
+  }
+  function updateUploadFilter(cardIndex: number, filter: PanelImageFilter | null) {
+    console.info('[topic-card-grid panel upload-filter change]', {
+      card_index: cardIndex,
+      from: uploadFilter[cardIndex] ?? null,
+      to: filter,
+    });
+    setUploadFilter((prev) => {
+      const next = { ...prev };
+      if (filter) next[cardIndex] = filter;
+      else delete next[cardIndex];
+      return next;
+    });
+  }
   // Card indexes currently mid-upload, used to render the spinner state
   // in the per-row upload UI. Separate from `uploads` so an in-flight
   // upload doesn't leave a stale URL in place if it fails.
@@ -838,6 +888,8 @@ export function TopicCardGridPanel({
     setImageModelId(restoredDraftState.imageModelId);
     setCardShape(restoredDraftState.cardShape ?? 'square');
     setUploads(restoredDraftState.uploads ?? {});
+    setUploadFit(restoredDraftState.uploadFit ?? {});
+    setUploadFilter(restoredDraftState.uploadFilter ?? {});
     setCards(restoredDraftState.cards);
     setPalette(restoredDraftState.palette);
     setNotesForImageModel(restoredDraftState.notesForImageModel);
@@ -890,6 +942,8 @@ export function TopicCardGridPanel({
       notesForImageModel,
       cardShape,
       uploads,
+      uploadFit,
+      uploadFilter,
       style,
       styleFreeForm,
       labelSize,
@@ -900,7 +954,7 @@ export function TopicCardGridPanel({
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
-    cardShape, uploads, style, styleFreeForm, labelSize, fontId,
+    cardShape, uploads, uploadFit, uploadFilter, style, styleFreeForm, labelSize, fontId,
     postProcess, titleBar,
     onDraftStateChange,
   ]);
@@ -1126,7 +1180,15 @@ export function TopicCardGridPanel({
     // before shrinking the grid get dropped here so the server never
     // sees out-of-range indexes.
     const liveUploadsPayload = Object.entries(uploads)
-      .map(([k, v]) => ({ cardIndex: Number(k), imageUrl: v }))
+      .map(([k, v]) => {
+        const idx = Number(k);
+        return {
+          cardIndex: idx,
+          imageUrl: v,
+          fit: uploadFit[idx],
+          filter: uploadFilter[idx],
+        };
+      })
       .filter((u) => Number.isInteger(u.cardIndex) && u.cardIndex >= 1 && u.cardIndex <= totalCards && !!u.imageUrl)
       .sort((a, b) => a.cardIndex - b.cardIndex);
     console.info('[thumbnails format-grid image] requesting', {
@@ -2446,6 +2508,8 @@ export function TopicCardGridPanel({
             allowDelete={gridMode === 'custom'}
             allowAdd={gridMode === 'custom'}
             uploads={uploads}
+            uploadFit={uploadFit}
+            uploadFilter={uploadFilter}
             uploadingCells={uploadingCells}
             onUpdate={updateCard}
             onMove={moveCard}
@@ -2453,6 +2517,8 @@ export function TopicCardGridPanel({
             onAdd={addCard}
             onUpload={uploadCellImage}
             onClearUpload={clearCellUpload}
+            onUploadFitChange={updateUploadFit}
+            onUploadFilterChange={updateUploadFilter}
             onRender={() => runStep2()}
             onRegenerate={() => { setCards(null); runStep1(); }}
           />
@@ -2487,6 +2553,12 @@ interface CardTableProps {
    *  attached image. A missing entry means the card will be rendered
    *  from its icon_concept prompt as normal. */
   uploads: Record<number, string>;
+  /** Per-upload fit overrides. Missing entries fall back to `'cover'`
+   *  in the composite — same shape as the wire format. */
+  uploadFit: Record<number, PanelUploadFit>;
+  /** Per-upload filter overrides. Missing entries fall back to "no
+   *  filter" in the composite. */
+  uploadFilter: Record<number, PanelImageFilter>;
   /** Set of 1-based card indexes currently mid-upload. Drives the
    *  spinner state on the per-row upload button. */
   uploadingCells: Set<number>;
@@ -2499,6 +2571,10 @@ interface CardTableProps {
   onUpload: (cardIndex: number, file: File) => void;
   /** Clear the attached upload for the given card index (1-based). */
   onClearUpload: (cardIndex: number) => void;
+  /** Set the fit strategy for an uploaded cell. */
+  onUploadFitChange: (cardIndex: number, fit: PanelUploadFit) => void;
+  /** Set or clear (with `null`) the filter for an uploaded cell. */
+  onUploadFilterChange: (cardIndex: number, filter: PanelImageFilter | null) => void;
   onRender: () => void;
   onRegenerate: () => void;
 }
@@ -2506,7 +2582,7 @@ interface CardTableProps {
 function CardTableState(props: CardTableProps) {
   const {
     cards, totalCards, gridMismatch, canRender, busy, allowDelete, allowAdd,
-    uploads, uploadingCells,
+    uploads, uploadFit, uploadFilter, uploadingCells,
   } = props;
   return (
     <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(124,58,237,0.2)' }}>
@@ -2614,26 +2690,84 @@ function CardTableState(props: CardTableProps) {
               const uploadedUrl = uploads[card.index];
               const isUploading = uploadingCells.has(card.index);
               const conceptDisabled = !!uploadedUrl;
+              const currentFit = uploadFit[card.index] ?? 'cover';
+              const currentFilter = uploadFilter[card.index] ?? null;
               return (
                 <div className="flex items-start gap-2">
-                  <textarea
-                    className="input-field flex-1 text-xs"
-                    placeholder={conceptDisabled
-                      ? 'Using uploaded image — icon concept ignored'
-                      : 'Icon concept — one bold central symbol, no text, no scene'}
-                    value={conceptDisabled ? '' : card.icon_concept}
-                    onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
-                    maxLength={200}
-                    disabled={conceptDisabled}
-                    rows={3}
-                    // Fixed 3-row preview (covers most icon concepts) with
-                    // an inner scrollbar for longer text, and a vertical
-                    // resize grip so the user can drag taller when they
-                    // need to read all 200 chars at once. Avoids the
-                    // `field-sizing: content` trap where narrow columns
-                    // would balloon the row to 10+ lines.
-                    style={ICON_CONCEPT_TEXTAREA_STYLE(conceptDisabled)}
-                  />
+                  {conceptDisabled ? (
+                    // Upload mode: replace the disabled textarea with
+                    // compact fit + filter pickers in the same horizontal
+                    // slot. Keeps the row height roughly the same as the
+                    // 3-row textarea while exposing the new per-cell
+                    // controls without an extra disclosure click.
+                    <div
+                      className="flex-1 rounded px-2 py-1.5 space-y-1.5"
+                      style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                    >
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)', minWidth: 28 }}>Fit</span>
+                        <div className="flex gap-1">
+                          {UPLOAD_FIT_OPTIONS.map((opt) => {
+                            const active = currentFit === opt.value;
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                onClick={() => props.onUploadFitChange(card.index, opt.value)}
+                                className="px-1.5 py-0.5 rounded text-[10px]"
+                                style={{
+                                  background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                                  color: active ? '#fff' : 'var(--text-secondary)',
+                                  border: '1px solid var(--border)',
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px]" style={{ color: 'var(--text-muted)', minWidth: 28 }}>Filter</span>
+                        <div className="flex gap-1 flex-wrap">
+                          {POST_PROCESS_FILTER_OPTIONS.map((opt) => {
+                            const active = currentFilter === opt.value;
+                            return (
+                              <button
+                                key={opt.value ?? 'none'}
+                                type="button"
+                                onClick={() => props.onUploadFilterChange(card.index, opt.value)}
+                                className="px-1.5 py-0.5 rounded text-[10px]"
+                                style={{
+                                  background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                                  color: active ? '#fff' : 'var(--text-secondary)',
+                                  border: '1px solid var(--border)',
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <textarea
+                      className="input-field flex-1 text-xs"
+                      placeholder="Icon concept — one bold central symbol, no text, no scene"
+                      value={card.icon_concept}
+                      onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
+                      maxLength={200}
+                      rows={3}
+                      // Fixed 3-row preview (covers most icon concepts) with
+                      // an inner scrollbar for longer text, and a vertical
+                      // resize grip so the user can drag taller when they
+                      // need to read all 200 chars at once. Avoids the
+                      // `field-sizing: content` trap where narrow columns
+                      // would balloon the row to 10+ lines.
+                      style={ICON_CONCEPT_TEXTAREA_STYLE(false)}
+                    />
+                  )}
                   <CellUploadControl
                     cardIndex={card.index}
                     uploadedUrl={uploadedUrl}
