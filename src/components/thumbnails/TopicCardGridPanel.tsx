@@ -15,7 +15,7 @@
  * grid size, format mode, the card list editor, the result + regions.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -591,6 +591,17 @@ export function parseStyleClipboardEnvelope(
   };
 }
 
+/** Panel-side shape of a saved-preset list-item from the server. The
+ *  server returns more fields (workspace_id, created_at, created_by);
+ *  the panel only needs id + name + preset + updated_at to render the
+ *  list. */
+export interface SavedPresetSummary {
+  id: string;
+  name: string;
+  preset: unknown;
+  updated_at: string;
+}
+
 /** Build the wire-shape `titleBar` payload from the panel's state.
  *  Returns `undefined` when the bar is disabled or has no text — the
  *  server then short-circuits the overlay entirely. Subtitle-related
@@ -855,6 +866,42 @@ export function TopicCardGridPanel({
   function updatePostProcess(patch: Partial<PanelPostProcessState>) {
     setPostProcess((prev) => ({ ...prev, ...patch }));
   }
+
+  // Saved presets — workspace-scoped persisted style envelopes (Phase 4d).
+  // Fetched on mount, refreshed after save / delete. Empty list and
+  // loading flag drive the picker's three states: loading, empty,
+  // populated. Save is gated by a flag so a double-click doesn't fire
+  // two POSTs.
+  const [savedPresets, setSavedPresets] = useState<SavedPresetSummary[]>([]);
+  const [loadingPresets, setLoadingPresets] = useState(true);
+  const [savingPreset, setSavingPreset] = useState(false);
+  const refreshPresets = useCallback(async () => {
+    try {
+      const res = await fetch('/api/thumbnails/format/topic-card-grid/saved-presets');
+      if (!res.ok) {
+        // Auth or server error — keep the picker in "empty" state
+        // gracefully. Surface only in the console so a logged-out
+        // session doesn't spam toasts on every panel mount.
+        console.warn('[topic-card-grid panel saved-presets fetch] not_ok', {
+          status: res.status,
+        });
+        setSavedPresets([]);
+        return;
+      }
+      const data = await res.json() as { presets?: SavedPresetSummary[] };
+      setSavedPresets(Array.isArray(data.presets) ? data.presets : []);
+    } catch (err) {
+      console.warn('[topic-card-grid panel saved-presets fetch] error', {
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      setSavedPresets([]);
+    } finally {
+      setLoadingPresets(false);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshPresets();
+  }, [refreshPresets]);
 
   // Title-bar overlay state. Same one-JSON-blob persistence shape as
   // Post-process; same `update<X>({ patch })` helper for granular
@@ -2688,6 +2735,170 @@ export function TopicCardGridPanel({
               Export copies the whole draft (cards, palette, uploads, style, all settings) as JSON.
               Import hydrates the panel from a previously-exported draft.
             </p>
+          </div>
+
+          {/* Saved style presets — workspace-scoped named versions of
+              the Post-process + Title-bar settings. Load applies the
+              preset's style to the current panel; Save snapshots the
+              current style under a new name; Delete removes a preset
+              from the workspace library. Different from Copy / Paste
+              style (transient, current-session clipboard) in being
+              persistent + shared across sessions and devices. */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Saved presets
+              </label>
+              <button
+                type="button"
+                disabled={savingPreset}
+                onClick={async () => {
+                  const name = typeof window !== 'undefined'
+                    ? window.prompt('Save current style as preset — pick a name (max 60 chars):')
+                    : null;
+                  if (!name || !name.trim()) return;
+                  setSavingPreset(true);
+                  try {
+                    const res = await fetch('/api/thumbnails/format/topic-card-grid/saved-presets', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        name: name.trim(),
+                        preset: { postProcess, titleBar },
+                      }),
+                    });
+                    if (res.status === 409) {
+                      toast.error('A preset with that name already exists.');
+                      return;
+                    }
+                    if (!res.ok) {
+                      const data = await res.json().catch(() => ({})) as { error?: string };
+                      toast.error(data.error || `Save failed (${res.status})`);
+                      return;
+                    }
+                    toast.success(`Preset "${name.trim()}" saved`);
+                    console.info('[topic-card-grid panel saved-preset save]', {
+                      name: name.trim(),
+                      post_process_filter: postProcess.filter,
+                      title_bar_enabled: titleBar.enabled,
+                    });
+                    await refreshPresets();
+                  } catch (err) {
+                    toast.error('Save failed.');
+                    console.warn('[topic-card-grid panel saved-preset save] error', {
+                      detail: err instanceof Error ? err.message : String(err),
+                    });
+                  } finally {
+                    setSavingPreset(false);
+                  }
+                }}
+                className="text-[10px] px-1.5 py-0.5 rounded"
+                style={{
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  opacity: savingPreset ? 0.5 : 1,
+                }}
+              >
+                {savingPreset ? 'Saving…' : 'Save current'}
+              </button>
+            </div>
+            {loadingPresets ? (
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Loading presets…
+              </p>
+            ) : savedPresets.length === 0 ? (
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                No saved presets yet. &ldquo;Save current&rdquo; stores the active
+                Post-process + Title-bar settings under a name you pick.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {savedPresets.map((p) => (
+                  <li
+                    key={p.id}
+                    className="flex items-center justify-between gap-2 px-2 py-1 rounded"
+                    style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                  >
+                    <span className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }} title={p.name}>
+                      {p.name}
+                    </span>
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Apply the preset's style to the current
+                          // panel. Both shape fields pass through their
+                          // coerce helpers so a malformed payload from
+                          // a stale schema degrades to defaults rather
+                          // than throwing.
+                          const raw = p.preset as { postProcess?: unknown; titleBar?: unknown } | null;
+                          if (!raw || typeof raw !== 'object') {
+                            toast.error('Preset payload is malformed.');
+                            return;
+                          }
+                          setPostProcess(coercePostProcessState(raw.postProcess));
+                          setTitleBar(coerceTitleBarState(raw.titleBar));
+                          toast.success(`Loaded "${p.name}"`);
+                          console.info('[topic-card-grid panel saved-preset load]', {
+                            id: p.id,
+                            name: p.name,
+                          });
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{
+                          background: 'var(--bg-secondary)',
+                          color: 'var(--text-secondary)',
+                          border: '1px solid var(--border)',
+                        }}
+                        title={`Apply "${p.name}" to the current panel`}
+                      >
+                        Load
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (typeof window !== 'undefined' &&
+                              !window.confirm(`Delete preset "${p.name}"? This can't be undone.`)) {
+                            return;
+                          }
+                          try {
+                            const res = await fetch(
+                              `/api/thumbnails/format/topic-card-grid/saved-presets/${encodeURIComponent(p.id)}`,
+                              { method: 'DELETE' },
+                            );
+                            if (!res.ok) {
+                              toast.error('Delete failed.');
+                              return;
+                            }
+                            toast.success(`Deleted "${p.name}"`);
+                            console.info('[topic-card-grid panel saved-preset delete]', {
+                              id: p.id,
+                              name: p.name,
+                            });
+                            await refreshPresets();
+                          } catch (err) {
+                            toast.error('Delete failed.');
+                            console.warn('[topic-card-grid panel saved-preset delete] error', {
+                              detail: err instanceof Error ? err.message : String(err),
+                            });
+                          }
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{
+                          background: 'var(--bg-secondary)',
+                          color: '#ef4444',
+                          border: '1px solid rgba(239,68,68,0.3)',
+                        }}
+                        title={`Delete "${p.name}"`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* Mode chips */}

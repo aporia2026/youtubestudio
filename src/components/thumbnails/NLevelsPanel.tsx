@@ -12,7 +12,7 @@
  * shared pipeline contract (this file follows it).
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import {
@@ -449,6 +449,16 @@ export function parseStyleClipboardEnvelope(
   };
 }
 
+/** Panel-side shape of a saved-preset list-item from the server.
+ *  Identical to the same-named interface in TopicCardGridPanel — kept
+ *  local per the format-panel convention. */
+export interface SavedPresetSummary {
+  id: string;
+  name: string;
+  preset: unknown;
+  updated_at: string;
+}
+
 /** Build the wire-shape `titleBar` payload from the panel's state.
  *  Returns `undefined` when the bar is disabled or has no text. */
 function buildTitleBarRequestPayload(s: PanelTitleBarState): TitleBarRequestPayloadShape | undefined {
@@ -612,6 +622,34 @@ export function NLevelsPanel({
   function updatePostProcess(patch: Partial<PanelPostProcessState>) {
     setPostProcess((prev) => ({ ...prev, ...patch }));
   }
+
+  // Saved presets — workspace-scoped persisted style envelopes (Phase 4d).
+  // Identical pattern to TopicCardGridPanel's savedPresets state.
+  const [savedPresets, setSavedPresets] = useState<SavedPresetSummary[]>([]);
+  const [loadingPresets, setLoadingPresets] = useState(true);
+  const [savingPreset, setSavingPreset] = useState(false);
+  const refreshPresets = useCallback(async () => {
+    try {
+      const res = await fetch('/api/thumbnails/format/n-levels/saved-presets');
+      if (!res.ok) {
+        console.warn('[n-levels panel saved-presets fetch] not_ok', { status: res.status });
+        setSavedPresets([]);
+        return;
+      }
+      const data = await res.json() as { presets?: SavedPresetSummary[] };
+      setSavedPresets(Array.isArray(data.presets) ? data.presets : []);
+    } catch (err) {
+      console.warn('[n-levels panel saved-presets fetch] error', {
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      setSavedPresets([]);
+    } finally {
+      setLoadingPresets(false);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshPresets();
+  }, [refreshPresets]);
 
   // Title-bar overlay state. When enabled, the route forces
   // `showBottomTitle: false` on the LLM prompt so the AI image leaves
@@ -2054,6 +2092,164 @@ export function NLevelsPanel({
               Export copies the whole draft (levels, title, style, all settings) as JSON.
               Import hydrates the panel from a previously-exported draft.
             </p>
+          </div>
+
+          {/* Saved style presets — workspace-scoped named versions of
+              the Post-process + Title-bar settings. Same UI as the
+              TopicCardGridPanel sibling so the user gets the same
+              picker shape across formats. Backed by the separate
+              n_levels_saved_presets table (migration 0106) so each
+              format has its own preset library. */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Saved presets
+              </label>
+              <button
+                type="button"
+                disabled={savingPreset}
+                onClick={async () => {
+                  const name = typeof window !== 'undefined'
+                    ? window.prompt('Save current style as preset — pick a name (max 60 chars):')
+                    : null;
+                  if (!name || !name.trim()) return;
+                  setSavingPreset(true);
+                  try {
+                    const res = await fetch('/api/thumbnails/format/n-levels/saved-presets', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        name: name.trim(),
+                        preset: { postProcess, titleBar },
+                      }),
+                    });
+                    if (res.status === 409) {
+                      toast.error('A preset with that name already exists.');
+                      return;
+                    }
+                    if (!res.ok) {
+                      const data = await res.json().catch(() => ({})) as { error?: string };
+                      toast.error(data.error || `Save failed (${res.status})`);
+                      return;
+                    }
+                    toast.success(`Preset "${name.trim()}" saved`);
+                    console.info('[n-levels panel saved-preset save]', {
+                      name: name.trim(),
+                      post_process_filter: postProcess.filter,
+                      title_bar_enabled: titleBar.enabled,
+                    });
+                    await refreshPresets();
+                  } catch (err) {
+                    toast.error('Save failed.');
+                    console.warn('[n-levels panel saved-preset save] error', {
+                      detail: err instanceof Error ? err.message : String(err),
+                    });
+                  } finally {
+                    setSavingPreset(false);
+                  }
+                }}
+                className="text-[10px] px-1.5 py-0.5 rounded"
+                style={{
+                  background: 'var(--bg-secondary)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  opacity: savingPreset ? 0.5 : 1,
+                }}
+              >
+                {savingPreset ? 'Saving…' : 'Save current'}
+              </button>
+            </div>
+            {loadingPresets ? (
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Loading presets…
+              </p>
+            ) : savedPresets.length === 0 ? (
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                No saved presets yet. &ldquo;Save current&rdquo; stores the active
+                Post-process + Title-bar settings under a name you pick.
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {savedPresets.map((p) => (
+                  <li
+                    key={p.id}
+                    className="flex items-center justify-between gap-2 px-2 py-1 rounded"
+                    style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                  >
+                    <span className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }} title={p.name}>
+                      {p.name}
+                    </span>
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const raw = p.preset as { postProcess?: unknown; titleBar?: unknown } | null;
+                          if (!raw || typeof raw !== 'object') {
+                            toast.error('Preset payload is malformed.');
+                            return;
+                          }
+                          setPostProcess(coercePostProcessState(raw.postProcess));
+                          setTitleBar(coerceTitleBarState(raw.titleBar));
+                          toast.success(`Loaded "${p.name}"`);
+                          console.info('[n-levels panel saved-preset load]', {
+                            id: p.id,
+                            name: p.name,
+                          });
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{
+                          background: 'var(--bg-secondary)',
+                          color: 'var(--text-secondary)',
+                          border: '1px solid var(--border)',
+                        }}
+                        title={`Apply "${p.name}" to the current panel`}
+                      >
+                        Load
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (typeof window !== 'undefined' &&
+                              !window.confirm(`Delete preset "${p.name}"? This can't be undone.`)) {
+                            return;
+                          }
+                          try {
+                            const res = await fetch(
+                              `/api/thumbnails/format/n-levels/saved-presets/${encodeURIComponent(p.id)}`,
+                              { method: 'DELETE' },
+                            );
+                            if (!res.ok) {
+                              toast.error('Delete failed.');
+                              return;
+                            }
+                            toast.success(`Deleted "${p.name}"`);
+                            console.info('[n-levels panel saved-preset delete]', {
+                              id: p.id,
+                              name: p.name,
+                            });
+                            await refreshPresets();
+                          } catch (err) {
+                            toast.error('Delete failed.');
+                            console.warn('[n-levels panel saved-preset delete] error', {
+                              detail: err instanceof Error ? err.message : String(err),
+                            });
+                          }
+                        }}
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{
+                          background: 'var(--bg-secondary)',
+                          color: '#ef4444',
+                          border: '1px solid rgba(239,68,68,0.3)',
+                        }}
+                        title={`Delete "${p.name}"`}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {/* Mode chips */}
