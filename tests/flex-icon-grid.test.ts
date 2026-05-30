@@ -1689,6 +1689,42 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.35 — per-cell content offset', () => {
+  it('round-trips contentOffset through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].contentOffset = { x: 0.15, y: -0.25 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].contentOffset).toEqual({ x: 0.15, y: -0.25 });
+  });
+  it('clamps contentOffset to [-0.5, 0.5] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        contentOffset: { x: 2.5, y: -10 },
+      }],
+    });
+    expect(reparsed.cells[0].contentOffset).toEqual({ x: 0.5, y: -0.5 });
+  });
+  it('drops contentOffset entirely when both axes are zero', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A', content: { type: 'text-only' },
+        contentOffset: { x: 0, y: 0 },
+      }],
+    });
+    expect(reparsed.cells[0].contentOffset).toBeUndefined();
+  });
+  it('rejects contentOffset out of range on validate', () => {
+    const config = makeDefaultConfig(1, 1);
+    (config.cells[0] as unknown as { contentOffset: { x: number; y: number } }).contentOffset = { x: 1.0, y: 0 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/contentOffset\.x/);
+  });
+});
+
 describe('Phase 4.34 — image fit modes', () => {
   it('round-trips upload fit through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

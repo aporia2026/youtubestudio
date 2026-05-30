@@ -829,16 +829,16 @@ function CellGroup({
         const shapeCy = geom.shapeY + geom.shapeH / 2;
         const sx = flipX ? -1 : 1;
         const sy = flipY ? -1 : 1;
+        // Phase 4.35: per-cell content offset shifts the content
+        // group (icon / upload / emoji / sticker / text-only) by a
+        // fraction of the shape's dimensions. The shape rect and
+        // label band stay put.
+        const offsetDx = cell.contentOffset ? cell.contentOffset.x * geom.shapeW : 0;
+        const offsetDy = cell.contentOffset ? cell.contentOffset.y * geom.shapeH : 0;
         const needsTransform = rotation !== 0 || flipX || flipY;
-        const inner = (
+        const needsOffset = offsetDx !== 0 || offsetDy !== 0;
+        const contentEl = (
           <>
-            <CellShapeEl
-              geom={geom}
-              shape={shape}
-              ring={ring}
-              shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
-              cornerRadius={cornerRadius}
-            />
             {cell.content.type === 'icon-library' && (
               <IconLibraryContent slug={cell.content.name} geom={geom} ring={ring} />
             )}
@@ -858,6 +858,27 @@ function CellGroup({
                 labelStyle={labelStyle}
                 colour={labelColour}
               />
+            )}
+          </>
+        );
+        // Phase 4.35: wrap content in a translate group so only the
+        // content shifts; the shape rect stays in place. The
+        // rotation/flip transform STILL wraps everything (shape +
+        // shifted content) so the rotation pivot is the shape
+        // centre regardless of offset.
+        const inner = (
+          <>
+            <CellShapeEl
+              geom={geom}
+              shape={shape}
+              ring={ring}
+              shadowFilterId={shadow ? `fg-preview-shadow-${cell.index}` : null}
+              cornerRadius={cornerRadius}
+            />
+            {needsOffset ? (
+              <g transform={`translate(${offsetDx} ${offsetDy})`}>{contentEl}</g>
+            ) : (
+              contentEl
             )}
           </>
         );

@@ -465,8 +465,16 @@ export function buildBaseSvg(
     // Inline Lucide icon — done in the base SVG so we get crisp
     // vector at any output resolution. Other content types render
     // as text/image overlays after rasterisation (separate pass).
+    // Phase 4.35: wrap the icon in a translate() group when the
+    // cell has a content offset. Shape stays in place; only the
+    // glyph shifts within it.
     if (cell.content.type === 'icon-library') {
+      const ox = cell.contentOffset ? Math.round(cell.contentOffset.x * geom.shapeW) : 0;
+      const oy = cell.contentOffset ? Math.round(cell.contentOffset.y * geom.shapeH) : 0;
+      const needsOffset = ox !== 0 || oy !== 0;
+      if (needsOffset) parts.push(`<g transform="translate(${ox} ${oy})">`);
       parts.push(renderIconLibrary(cell.content, geom, referenceColour, ring));
+      if (needsOffset) parts.push(`</g>`);
     }
     if (needsTransform) {
       parts.push(`</g>`);
@@ -864,6 +872,16 @@ async function buildCellOverlays(
   const rotation = cell.rotation ?? 0;
   const shapeCx = geom.shapeX + geom.shapeW / 2;
   const shapeCy = geom.shapeY + geom.shapeH / 2;
+  // Phase 4.35: per-cell content offset shifts overlays (and the
+  // base-SVG icon) by a fraction of the shape's dimensions. The
+  // shape itself + label band stay put so multi-cell grids remain
+  // visually aligned.
+  const offsetDx = cell.contentOffset ? Math.round(cell.contentOffset.x * geom.shapeW) : 0;
+  const offsetDy = cell.contentOffset ? Math.round(cell.contentOffset.y * geom.shapeH) : 0;
+  const shiftOverlay = (o: sharp.OverlayOptions): sharp.OverlayOptions =>
+    offsetDx === 0 && offsetDy === 0
+      ? o
+      : { ...o, top: (o.top ?? 0) + offsetDy, left: (o.left ?? 0) + offsetDx };
 
   const overlays: sharp.OverlayOptions[] = [];
 
@@ -877,7 +895,7 @@ async function buildCellOverlays(
   // Content overlays
   if (cell.content.type === 'upload') {
     const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit);
-    if (uploadOverlay) overlays.push(await maybeTransformOverlay(uploadOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
+    if (uploadOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(uploadOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'ai-sticker' && cell.content.url) {
     // Generated stickers paint exactly like uploads — the URL points
     // at the sliced quadrant the generate-stickers route uploaded to
@@ -885,13 +903,13 @@ async function buildCellOverlays(
     // the cell falls through to its shape fill (handled by the base
     // SVG) — visible as an empty disc the user can click to generate.
     const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit);
-    if (stickerOverlay) overlays.push(await maybeTransformOverlay(stickerOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
+    if (stickerOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(stickerOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'emoji') {
     const emojiOverlay = await buildEmojiOverlay(cell.content.char, geom);
-    if (emojiOverlay) overlays.push(await maybeTransformOverlay(emojiOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
+    if (emojiOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(emojiOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'text-only') {
     const textOverlay = await buildTextOnlyOverlay(cell.label, geom, labelStyle, background, fontResolver, defaultFallbackFont(config));
-    if (textOverlay) overlays.push(await maybeTransformOverlay(textOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
+    if (textOverlay) overlays.push(await maybeTransformOverlay(shiftOverlay(textOverlay), rotation, flipX, flipY, shapeCx, shapeCy));
   }
   // `icon-library` already painted into the base SVG — no overlay
   // needed.

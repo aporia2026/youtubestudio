@@ -464,6 +464,14 @@ export interface FlexIconCell {
    *  solid colour respecting the adjacency rule. */
   background?: CellBackgroundSpec;
   ring?: RingStyle;
+  /** Phase 4.35: optional offset for the cell's content (icon /
+   *  emoji / upload / sticker) within its shape. Values are
+   *  fractions of the shape's width / height (e.g. 0.1 = 10% to
+   *  the right or down). Range −0.5..0.5; outside that the content
+   *  would leave the shape entirely. Defaults to no offset when
+   *  omitted. Label band is unaffected so multi-cell grids stay
+   *  visually aligned. */
+  contentOffset?: { x: number; y: number };
   /** Phase 4.30: optional outer stroke drawn around the cell's
    *  bounding rectangle (NOT the inner shape — that's `ring`).
    *  Gives the "framed card" look common to ranked-list thumbnails
@@ -1222,6 +1230,18 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // Phase 4.12: badge shape check.
     const badgeResult = validateBadge(c.badge, idx);
     if (!badgeResult.ok) return badgeResult;
+    // Phase 4.35: content offset bounds check.
+    if (c.contentOffset !== undefined) {
+      if (typeof c.contentOffset !== 'object' || c.contentOffset === null) {
+        return { ok: false, reason: `cell ${idx} contentOffset must be an object`, offending_cell_index: idx };
+      }
+      if (!Number.isFinite(c.contentOffset.x) || c.contentOffset.x < -0.5 || c.contentOffset.x > 0.5) {
+        return { ok: false, reason: `cell ${idx} contentOffset.x must be a finite number in [-0.5, 0.5]`, offending_cell_index: idx };
+      }
+      if (!Number.isFinite(c.contentOffset.y) || c.contentOffset.y < -0.5 || c.contentOffset.y > 0.5) {
+        return { ok: false, reason: `cell ${idx} contentOffset.y must be a finite number in [-0.5, 0.5]`, offending_cell_index: idx };
+      }
+    }
     // Phase 4.30: cell outer stroke shape check.
     if (c.cellStroke !== undefined && c.cellStroke !== null) {
       if (typeof c.cellStroke !== 'object') {
@@ -1578,6 +1598,18 @@ function parseRing(v: unknown, fallback: RingStyle): RingStyle {
   };
 }
 
+/** Phase 4.35: tolerant content-offset parser. Drops the field
+ *  when missing / non-object; clamps each axis to [-0.5, 0.5] so a
+ *  doctored config can't push content off the shape entirely. */
+function parseContentOffset(v: unknown): { x: number; y: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const x = typeof o.x === 'number' && Number.isFinite(o.x) ? Math.max(-0.5, Math.min(0.5, o.x)) : 0;
+  const y = typeof o.y === 'number' && Number.isFinite(o.y) ? Math.max(-0.5, Math.min(0.5, o.y)) : 0;
+  if (x === 0 && y === 0) return undefined;
+  return { x, y };
+}
+
 /** Phase 4.12: tolerant badge parser. `null` round-trips as "explicit
  *  off" so a future config-level default could opt out per cell.
  *  Missing / non-object → undefined. Empty text → undefined so an
@@ -1801,6 +1833,7 @@ function parseCell(raw: unknown, expectedIndex: number): FlexIconCell {
     background: o.background ? parseCellBackground(o.background) : undefined,
     ring: o.ring === null ? null : o.ring ? parseRing(o.ring, DEFAULT_RING) : undefined,
     cellStroke: 'cellStroke' in o ? parseCellStroke(o.cellStroke) : undefined,
+    contentOffset: parseContentOffset(o.contentOffset),
     rotation: typeof o.rotation === 'number' && Number.isFinite(o.rotation)
       ? Math.max(-180, Math.min(180, Math.round(o.rotation)))
       : undefined,

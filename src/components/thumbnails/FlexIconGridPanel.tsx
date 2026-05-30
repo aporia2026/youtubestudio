@@ -699,6 +699,7 @@ export function FlexIconGridPanel({
       flipX: undefined,
       flipY: undefined,
       cellStroke: undefined,
+      contentOffset: undefined,
       labelStyle: undefined,
       cellSpan: undefined,
     });
@@ -1830,9 +1831,29 @@ export function FlexIconGridPanel({
                       : t === 'emoji'
                         ? { type: 'emoji', char: '⚡' }
                         : t === 'upload'
-                          ? { type: 'upload', url: selectedCell.content.type === 'upload' ? selectedCell.content.url : '' }
+                          ? {
+                              type: 'upload',
+                              url: selectedCell.content.type === 'upload' ? selectedCell.content.url : '',
+                              // Phase 4.35: carry fit across the
+                              // upload ↔ ai-sticker boundary so a
+                              // user toggling between modes doesn't
+                              // lose their fit preference.
+                              ...(selectedCell.content.type === 'upload' && selectedCell.content.fit
+                                ? { fit: selectedCell.content.fit }
+                                : selectedCell.content.type === 'ai-sticker' && selectedCell.content.fit
+                                  ? { fit: selectedCell.content.fit }
+                                  : {}),
+                            }
                           : t === 'ai-sticker'
-                            ? { type: 'ai-sticker', prompt: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.prompt : '' }
+                            ? {
+                                type: 'ai-sticker',
+                                prompt: selectedCell.content.type === 'ai-sticker' ? selectedCell.content.prompt : '',
+                                ...(selectedCell.content.type === 'ai-sticker' && selectedCell.content.fit
+                                  ? { fit: selectedCell.content.fit }
+                                  : selectedCell.content.type === 'upload' && selectedCell.content.fit
+                                    ? { fit: selectedCell.content.fit }
+                                    : {}),
+                              }
                             : { type: 'text-only' };
                   updateCell(selectedCell.index, { content: initial });
                 }}
@@ -1874,6 +1895,10 @@ export function FlexIconGridPanel({
                 uploading={uploadingCells.has(selectedCell.index)}
                 onFile={(file) => uploadCellImage(selectedCell.index, file)}
                 onClear={() =>
+                  // Phase 4.35: clearing the URL also wipes the fit
+                  // field — a stale fit on an empty cell would
+                  // re-apply silently to the next uploaded image
+                  // without the user expecting it.
                   updateCell(selectedCell.index, { content: { type: 'upload', url: '' } })
                 }
               />
@@ -1978,6 +2003,30 @@ export function FlexIconGridPanel({
                 <p style={{ fontSize: 11, color: '#a1a1aa', marginTop: 10 }}>
                   No sticker generated yet. Use “Generate stickers” below to batch-generate.
                 </p>
+              )}
+              {/* Phase 4.35: image fit picker for ai-sticker cells.
+                  Same control as upload cells — only shown once the
+                  sticker has been generated (URL set). */}
+              {selectedCell.content.url && (
+                <ImageFitPicker
+                  fit={
+                    selectedCell.content.type === 'ai-sticker'
+                      ? selectedCell.content.fit ?? 'cover'
+                      : 'cover'
+                  }
+                  onChange={(next) => {
+                    if (selectedCell.content.type !== 'ai-sticker') return;
+                    updateCell(selectedCell.index, {
+                      content: {
+                        type: 'ai-sticker',
+                        prompt: selectedCell.content.prompt,
+                        ...(selectedCell.content.url ? { url: selectedCell.content.url } : {}),
+                        ...(selectedCell.content.style ? { style: selectedCell.content.style } : {}),
+                        ...(next === 'cover' ? {} : { fit: next }),
+                      },
+                    });
+                  }}
+                />
               )}
             </div>
           )}
@@ -2863,6 +2912,71 @@ export function FlexIconGridPanel({
               >
                 ⇅ Flip Y
               </button>
+            </div>
+          </div>
+
+          {/* Phase 4.35: per-cell content offset. Two sliders shift
+              the cell's content (icon / image / emoji / text) by a
+              fraction of the shape's dimensions. The shape itself
+              and the label band stay put so multi-cell grids stay
+              visually aligned. Useful for fine-tuning emoji
+              placement, nudging an uploaded photo, etc. */}
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Content offset</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 12 }}>X</span>
+              <input
+                type="range"
+                min={-0.5}
+                max={0.5}
+                step={0.01}
+                value={selectedCell.contentOffset?.x ?? 0}
+                onChange={(e) => {
+                  const x = Number(e.target.value);
+                  const y = selectedCell.contentOffset?.y ?? 0;
+                  updateCell(selectedCell.index, {
+                    contentOffset: x === 0 && y === 0 ? undefined : { x, y },
+                  });
+                }}
+                aria-label="Content horizontal offset"
+                title={`X: ${Math.round((selectedCell.contentOffset?.x ?? 0) * 100)}%`}
+                style={{ width: 110 }}
+              />
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
+                {Math.round((selectedCell.contentOffset?.x ?? 0) * 100)}%
+              </span>
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 12 }}>Y</span>
+              <input
+                type="range"
+                min={-0.5}
+                max={0.5}
+                step={0.01}
+                value={selectedCell.contentOffset?.y ?? 0}
+                onChange={(e) => {
+                  const y = Number(e.target.value);
+                  const x = selectedCell.contentOffset?.x ?? 0;
+                  updateCell(selectedCell.index, {
+                    contentOffset: x === 0 && y === 0 ? undefined : { x, y },
+                  });
+                }}
+                aria-label="Content vertical offset"
+                title={`Y: ${Math.round((selectedCell.contentOffset?.y ?? 0) * 100)}%`}
+                style={{ width: 110 }}
+              />
+              <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 32, textAlign: 'right' }}>
+                {Math.round((selectedCell.contentOffset?.y ?? 0) * 100)}%
+              </span>
+              {selectedCell.contentOffset && (
+                <button
+                  type="button"
+                  onClick={() => updateCell(selectedCell.index, { contentOffset: undefined })}
+                  style={chipStyle(false)}
+                  title="Reset content offset to centre"
+                  aria-label="Reset content offset"
+                >
+                  Reset
+                </button>
+              )}
             </div>
           </div>
 
@@ -5467,39 +5581,55 @@ function ImageFitPicker({
   );
 }
 
-/** Tiny SVG glyph showing the fit mode visually. The shape (cell)
- *  is a 22 × 16 rounded rectangle; the inner box represents the
- *  image. */
+/** Phase 4.34 → 4.35: Tiny SVG glyph showing the fit mode visually.
+ *  Phase 4.35 — `overflow: visible` on the SVG lets the COVER
+ *  variant draw the image OUTSIDE the chip's nominal 22×16 viewBox
+ *  so the user actually sees the overflow concept instead of it
+ *  being clipped invisibly. The cell rect stays at the same
+ *  position across all three variants for visual consistency. */
 function FitGlyph({ variant }: { variant: 'cover' | 'contain' | 'fill' }) {
   // Outer shape (cell bounds) is the same for all three.
-  const outer = (
+  const cellRect = (
     <rect
-      x={0.5}
-      y={0.5}
-      width={21}
-      height={15}
+      x={3.5}
+      y={2.5}
+      width={15}
+      height={11}
       rx={2}
       ry={2}
       fill="transparent"
       stroke="currentColor"
-      strokeOpacity={0.35}
+      strokeOpacity={0.65}
     />
   );
   return (
-    <svg width={22} height={16} viewBox="0 0 22 16" aria-hidden="true" focusable="false">
-      {outer}
+    <svg
+      width={22}
+      height={16}
+      viewBox="0 0 22 16"
+      aria-hidden="true"
+      focusable="false"
+      style={{ overflow: 'visible' }}
+    >
       {variant === 'cover' && (
-        // Image overflows the shape (crop on left/right).
-        <rect x={-3} y={2} width={28} height={12} fill="currentColor" fillOpacity={0.55} />
+        <>
+          {/* Image extends past the cell on left + right edges; the
+              part outside the cell rect is the cropped region.
+              Reduced opacity to read as "cropped/hidden". */}
+          <rect x={-2} y={4} width={26} height={8} fill="currentColor" fillOpacity={0.3} />
+          {/* Visible portion (inside the cell). */}
+          <rect x={3.5} y={4} width={15} height={8} fill="currentColor" fillOpacity={0.7} />
+        </>
       )}
       {variant === 'contain' && (
-        // Image inside the shape with horizontal padding.
-        <rect x={5} y={2} width={12} height={12} fill="currentColor" fillOpacity={0.55} />
+        // Image inside the cell with horizontal padding.
+        <rect x={6.5} y={3.5} width={9} height={9} fill="currentColor" fillOpacity={0.7} />
       )}
       {variant === 'fill' && (
-        // Image fills exactly to the bounds.
-        <rect x={2} y={2} width={18} height={12} fill="currentColor" fillOpacity={0.55} />
+        // Image fills the cell exactly.
+        <rect x={3.5} y={2.5} width={15} height={11} fill="currentColor" fillOpacity={0.7} />
       )}
+      {cellRect}
     </svg>
   );
 }
