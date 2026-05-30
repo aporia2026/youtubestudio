@@ -34,6 +34,12 @@ import {
   type GridLayout,
   type TopicCard,
 } from './topic-card-grid';
+import {
+  DEFAULT_FONT_ID,
+  findFontById,
+  type ThumbnailFont,
+} from './topic-card-grid-fonts';
+import { fontFilePath } from './topic-card-grid-fonts-server';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -105,6 +111,11 @@ export interface ApplyCellUploadsInput {
    *  valid range (see LABEL_SIZE_MIN / LABEL_SIZE_MAX in
    *  topic-card-grid.ts). */
   labelSizeMultiplier?: number;
+  /** Canonical id of the bundled label font (see
+   *  `topic-card-grid-fonts.ts`'s `THUMBNAIL_FONTS`). Unknown ids fall
+   *  back to the default silently — no throw, no broken render. Omit
+   *  to use Patrick Hand (matches the bundled reference). */
+  fontId?: string;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -180,6 +191,7 @@ export async function renderLabelPng(
   targetW: number,
   targetH: number,
   fontPtOverride?: number,
+  fontOverride?: { family: string; filePath: string },
 ): Promise<Buffer> {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -223,6 +235,11 @@ export async function renderLabelPng(
     ? Math.max(8, Math.round(fontPtOverride))
     : Math.max(12, Math.round(targetH * 0.55));
   const safeW = Math.max(16, Math.round(targetW));
+  // Resolve typography. When the caller doesn't pass an override we
+  // fall back to the Patrick Hand constants — preserves r2.5 behaviour
+  // and keeps tests that don't supply a font passing.
+  const family = fontOverride?.family ?? LABEL_FONT_FAMILY;
+  const filePath = fontOverride?.filePath ?? LABEL_FONT_PATH;
   return await sharp({
     text: {
       // Escape the few chars that Pango markup treats as control (&, <, >).
@@ -230,8 +247,8 @@ export async function renderLabelPng(
       // pass them through their entity equivalents. Without this, a label
       // like "AT&T" would silently error out on the Pango parser.
       text: escapePangoText(trimmed),
-      fontfile: LABEL_FONT_PATH,
-      font: `${LABEL_FONT_FAMILY} ${fontPt}`,
+      fontfile: filePath,
+      font: `${family} ${fontPt}`,
       rgba: true,
       width: safeW,
       align: 'centre',
@@ -309,6 +326,7 @@ export async function buildSquareLabelBandOverlay(
   cellW: number,
   labelH: number,
   fontPt?: number,
+  font?: { family: string; filePath: string },
 ): Promise<Buffer> {
   const borderPx = squareBorderPx(cellW);
   const halfBorder = borderPx / 2;
@@ -323,7 +341,7 @@ export async function buildSquareLabelBandOverlay(
     <line x1="0" y1="0" x2="${cellW}" y2="0" stroke="${BLACK}" stroke-width="${Math.max(1, Math.round(borderPx / 3))}"/>
   </svg>`;
   const labelPad = Math.max(2, Math.round(cellW * 0.04));
-  const labelPngRaw = await renderLabelPng(label, cellW - 2 * labelPad, Math.max(8, labelH - 2), fontPt);
+  const labelPngRaw = await renderLabelPng(label, cellW - 2 * labelPad, Math.max(8, labelH - 2), fontPt, font);
   // renderLabelPng floors its text-box height at 16 px (pango requirement),
   // so for very small cells the produced PNG can exceed the band height
   // and sharp's composite call errors with "must have same dimensions or
@@ -744,6 +762,23 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   const { baseImage, layout, cards, cardShape, uploads } = input;
   const labelSizeMultiplier = input.labelSizeMultiplier ?? 1;
 
+  // Resolve the label font once per call. Unknown ids fall back to the
+  // default silently — the route already validates against the
+  // allowlist, this layer is belt-and-braces. `font` is undefined when
+  // the caller omits `fontId`, which keeps the per-call overhead at
+  // zero for legacy tests that don't supply one.
+  const fontIdRequested = input.fontId ?? DEFAULT_FONT_ID;
+  const resolvedFont: ThumbnailFont | null = findFontById(fontIdRequested) ?? findFontById(DEFAULT_FONT_ID);
+  const font = resolvedFont
+    ? { family: resolvedFont.family, filePath: fontFilePath(resolvedFont) }
+    : undefined;
+  console.info('[topic-card-grid composite font]', {
+    font_id_requested: fontIdRequested,
+    font_id_used: resolvedFont?.id ?? null,
+    family: resolvedFont?.family ?? null,
+    file_path: font?.filePath ?? null,
+  });
+
   const cardByIndex = new Map<number, TopicCard>();
   for (const c of cards) cardByIndex.set(c.index, c);
   const uploadByIndex = new Map<number, Buffer>();
@@ -914,8 +949,8 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       }
       const overlay =
         cardShape === 'circle'
-          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt)
-          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt);
+          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font)
+          : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font);
       overlays.push({ input: overlay, top: rect.y, left: rect.x });
       continue;
     }
@@ -1031,7 +1066,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
         }
       }
       if (bandH > 0) {
-        const overlay = await buildSquareLabelBandOverlay(card.label, aiRect.w, bandH, fontPt);
+        const overlay = await buildSquareLabelBandOverlay(card.label, aiRect.w, bandH, fontPt, font);
         overlays.push({ input: overlay, top: bandTop, left: aiRect.x });
       }
       // r2.4: paint a thin black top border at the top edge of every
@@ -1088,6 +1123,7 @@ async function buildSquareCellOverlay(
   cellW: number,
   cellH: number,
   fontPt?: number,
+  font?: { family: string; filePath: string },
 ): Promise<Buffer> {
   const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
   const labelH = cellH - illustrationH;
@@ -1108,7 +1144,7 @@ async function buildSquareCellOverlay(
   const labelPad = Math.max(2, Math.round(cellW * 0.04));
   const maxLabelW = Math.max(1, cellW - 2 * labelPad);
   const maxLabelH = Math.max(1, labelH - 2);
-  const labelPngRaw = await renderLabelPng(label, maxLabelW, maxLabelH, fontPt);
+  const labelPngRaw = await renderLabelPng(label, maxLabelW, maxLabelH, fontPt, font);
   // Sharp's text input treats `width` as a wrap-hint, not a hard cap, so
   // unbreakable labels like "UVB-76" render wider than maxLabelW (and
   // long multi-word labels can wrap to 2 lines that exceed maxLabelH).
@@ -1168,6 +1204,7 @@ async function buildCircleCellOverlay(
   cellW: number,
   cellH: number,
   fontPt?: number,
+  font?: { family: string; filePath: string },
 ): Promise<Buffer> {
   // Geometry is computed in canvas-local coords; we pass cellX/cellY = 0
   // so the returned positions are within the overlay's own frame.
@@ -1188,7 +1225,7 @@ async function buildCircleCellOverlay(
   const labelPad = Math.max(2, Math.round(cellW * 0.025));
   const labelW = Math.max(16, Math.round(geom.labelW) - 2 * labelPad);
   const labelH = Math.max(8, Math.round(geom.labelH) - 2);
-  const labelPng = await renderLabelPng(label, labelW, labelH, fontPt);
+  const labelPng = await renderLabelPng(label, labelW, labelH, fontPt, font);
   const labelMeta = await sharp(labelPng).metadata();
   const labelTextW = labelMeta.width ?? 1;
   const labelTextH = labelMeta.height ?? 1;

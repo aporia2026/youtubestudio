@@ -24,6 +24,10 @@ import {
   type ThumbnailStyle,
 } from '@/lib/thumbnail-formats/topic-card-grid';
 import {
+  DEFAULT_FONT_ID,
+  findFontById,
+} from '@/lib/thumbnail-formats/topic-card-grid-fonts';
+import {
   applyCellUploads,
   SHARP_INPUT_PIXEL_CAP,
   type CellUpload,
@@ -175,6 +179,10 @@ interface ReqBody {
    *  server-side. Default 1.0 = the canonical size from the layout's
    *  cell height. */
   labelSize?: number;
+  /** Canonical id of one of the bundled label fonts (see
+   *  `topic-card-grid-fonts.ts`). Unknown values silently fall back to
+   *  the default — same shape as brightness / detail. */
+  fontId?: string;
 }
 
 /** Set of known style presets, used to validate `body.style` against
@@ -366,6 +374,11 @@ export async function POST(req: NextRequest) {
       ? body.labelSize
       : DEFAULT_LABEL_SIZE;
     const labelSize = Math.min(LABEL_SIZE_MAX, Math.max(LABEL_SIZE_MIN, labelSizeRaw));
+    // Font allowlist: unknown ids silently fall back to the default.
+    // Same shape as the labelSize clamp — invalid input shouldn't fail
+    // the request; it just degrades gracefully to Patrick Hand.
+    const fontIdRequested = typeof body.fontId === 'string' ? body.fontId : DEFAULT_FONT_ID;
+    const fontId = findFontById(fontIdRequested) ? fontIdRequested : DEFAULT_FONT_ID;
     const prompt = topicCardGridImagePrompt({
       cards,
       palette,
@@ -395,6 +408,8 @@ export async function POST(req: NextRequest) {
       style,
       style_free_form_chars: style === 'free-form' ? styleFreeFormRaw.length : 0,
       label_size: labelSize,
+      font_id_requested: fontIdRequested,
+      font_id_used: fontId,
     });
 
     // Each provider branch produces `aiBytes` (the raw AI output) plus a
@@ -606,6 +621,7 @@ export async function POST(req: NextRequest) {
       cardShape,
       uploads: cellUploads,
       labelSizeMultiplier: labelSize,
+      fontId,
     });
     const compositorMs = Date.now() - compositeStart;
     const uploadsApplied = cellUploads.length;

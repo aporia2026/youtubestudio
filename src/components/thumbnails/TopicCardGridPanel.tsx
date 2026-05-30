@@ -19,6 +19,15 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
+import {
+  DEFAULT_FONT_ID,
+  findFontById,
+  fontBrowserUrl,
+  THUMBNAIL_FONTS,
+  THUMBNAIL_FONT_CATEGORIES,
+  THUMBNAIL_FONT_CATEGORY_LABELS,
+  type ThumbnailFont,
+} from '@/lib/thumbnail-formats/topic-card-grid-fonts';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
 
@@ -96,6 +105,9 @@ export interface TopicCardGridDraftState {
   /** Label-size multiplier (the slider value). Drafts saved before the
    *  slider shipped restore as 1.0. */
   labelSize?: number;
+  /** Selected font id (see THUMBNAIL_FONTS). Drafts saved before the
+   *  font picker shipped restore as Patrick Hand. */
+  fontId?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -128,6 +140,7 @@ const DETAIL_PREF_KEY = 'topic_card_grid_default_detail';
 const STYLE_PREF_KEY = 'topic_card_grid_default_style';
 const STYLE_FREE_FORM_PREF_KEY = 'topic_card_grid_default_style_free_form';
 const LABEL_SIZE_PREF_KEY = 'topic_card_grid_default_label_size';
+const FONT_ID_PREF_KEY = 'topic_card_grid_default_font_id';
 
 /** Label-size multiplier bounds. Mirrored from
  *  `LABEL_SIZE_MIN` / `LABEL_SIZE_MAX` in
@@ -372,6 +385,23 @@ export function TopicCardGridPanel({
     try { localStorage.setItem(LABEL_SIZE_PREF_KEY, String(labelSize)); } catch { /* ignore */ }
   }, [labelSize]);
 
+  // Font picker. Default is Patrick Hand (matches the bundled
+  // reference's typography), so users who never touch the picker keep
+  // their existing look. Persisted to localStorage so a repeat user
+  // lands back on their preferred font.
+  const [fontId, setFontId] = useState<string>(() => {
+    if (typeof window === 'undefined') return DEFAULT_FONT_ID;
+    try {
+      const v = localStorage.getItem(FONT_ID_PREF_KEY);
+      if (v && findFontById(v)) return v;
+    } catch { /* fall through */ }
+    return DEFAULT_FONT_ID;
+  });
+  useEffect(() => {
+    try { localStorage.setItem(FONT_ID_PREF_KEY, fontId); } catch { /* ignore */ }
+  }, [fontId]);
+  const selectedFont: ThumbnailFont = findFontById(fontId) ?? findFontById(DEFAULT_FONT_ID)!;
+
   // Per-cell uploads. Keyed by 1-based card index so the same number that
   // appears in the LLM's TopicCard.index is the lookup key. Values are
   // R2 download URLs returned by the presign upload route.
@@ -447,6 +477,9 @@ export function TopicCardGridPanel({
     if (typeof restoredDraftState.labelSize === 'number' && Number.isFinite(restoredDraftState.labelSize)) {
       setLabelSize(Math.min(LABEL_SIZE_MAX, Math.max(LABEL_SIZE_MIN, restoredDraftState.labelSize)));
     }
+    if (typeof restoredDraftState.fontId === 'string' && findFontById(restoredDraftState.fontId)) {
+      setFontId(restoredDraftState.fontId);
+    }
     console.info('[topic-card-grid panel draft] hydrated', {
       card_count: restoredDraftState.cards?.length ?? 0,
       grid_mode: restoredDraftState.gridMode,
@@ -478,11 +511,12 @@ export function TopicCardGridPanel({
       style,
       styleFreeForm,
       labelSize,
+      fontId,
     });
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
-    cardShape, uploads, style, styleFreeForm, labelSize,
+    cardShape, uploads, style, styleFreeForm, labelSize, fontId,
     onDraftStateChange,
   ]);
 
@@ -738,6 +772,7 @@ export function TopicCardGridPanel({
           style,
           styleFreeForm: style === 'free-form' ? styleFreeForm.trim() : undefined,
           labelSize,
+          fontId,
         }),
       });
       if (!res.ok) {
@@ -1142,22 +1177,44 @@ export function TopicCardGridPanel({
             )}
           </div>
 
-          {/* Label size — slider + live preview. The preview band uses
-              the same fontHeight / bandHeight ratio (0.55) as the
-              server-side composite so the proportions match what the
-              rendered output will look like. Patrick Hand loaded as a
-              web font from /public/fonts so the typography in the
-              preview is identical to the rendered output. */}
+          {/* Font + label size — one section with the font picker on
+              top, the size slider in the middle, and the live preview
+              band at the bottom showing both together. @font-face for
+              every bundled font is injected once so the dropdown can
+              render each option's name in its own typeface AND the
+              preview band can swap fonts without a flash. */}
           <div>
-            <style>{`
-              @font-face {
-                font-family: 'PatrickHandPreview';
-                src: url('/fonts/PatrickHand-Regular.woff2') format('woff2'),
-                     url('/fonts/PatrickHand-Regular.ttf') format('truetype');
-                font-display: swap;
-              }
-            `}</style>
-            <div className="flex items-center justify-between mb-1.5">
+            <style>{THUMBNAIL_FONTS.map((f) => `@font-face { font-family: '${f.family}'; src: url('${fontBrowserUrl(f)}') format('woff2'); font-display: swap; }`).join('\n')}</style>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Font
+            </label>
+            <select
+              className="input-field w-full text-sm"
+              value={fontId}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (!findFontById(next)) return;
+                console.info('[topic-card-grid panel font change]', { from: fontId, to: next });
+                setFontId(next);
+              }}
+              style={{ fontFamily: `'${selectedFont.family}', system-ui, sans-serif` }}
+            >
+              {THUMBNAIL_FONT_CATEGORIES.map((cat) => (
+                <optgroup key={cat} label={THUMBNAIL_FONT_CATEGORY_LABELS[cat]}>
+                  {THUMBNAIL_FONTS.filter((f) => f.category === cat).map((f) => (
+                    <option
+                      key={f.id}
+                      value={f.id}
+                      style={{ fontFamily: `'${f.family}', system-ui, sans-serif` }}
+                    >
+                      {f.name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+
+            <div className="flex items-center justify-between mt-3 mb-1.5">
               <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
                 Label size
               </label>
@@ -1190,28 +1247,28 @@ export function TopicCardGridPanel({
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontFamily: '"PatrickHandPreview", system-ui, sans-serif',
+                fontFamily: `'${selectedFont.family}', system-ui, sans-serif`,
                 fontSize: `${Math.max(8, Math.round(56 * 0.55 * labelSize))}px`,
                 lineHeight: 1,
                 color: 'black',
                 userSelect: 'none',
                 overflow: 'hidden',
               }}
-              aria-label={`Label preview at ${Math.round(labelSize * 100)}%`}
+              aria-label={`Label preview in ${selectedFont.name} at ${Math.round(labelSize * 100)}%`}
             >
               Sample Label
             </div>
             <div className="flex justify-between mt-1">
               <button
                 type="button"
-                onClick={() => setLabelSize(DEFAULT_LABEL_SIZE)}
+                onClick={() => { setLabelSize(DEFAULT_LABEL_SIZE); setFontId(DEFAULT_FONT_ID); }}
                 className="text-[10px] underline"
                 style={{ color: 'var(--text-muted)' }}
               >
-                Reset to 100%
+                Reset to defaults
               </button>
               <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                Same size for every cell.
+                Same font &amp; size across all cells.
               </span>
             </div>
           </div>

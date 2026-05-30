@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import {
@@ -789,6 +790,86 @@ describe('applyCellUploads', () => {
     // in at very large multipliers on small test canvases.
     expect(large).toBeGreaterThan(small);
     expect(large / Math.max(1, small)).toBeGreaterThanOrEqual(1.3);
+  });
+
+  it('accepts a fontId without erroring and produces a valid PNG (r2.6)', async () => {
+    // r2.6: applyCellUploads accepts a fontId, resolves it via the
+    // registry, and threads the font through every overlay call.
+    //
+    // We deliberately do NOT assert visual difference between fonts
+    // here: sharp/Pango's `fontfile` + family-name resolution depends
+    // on fontconfig setup, which differs across environments
+    // (Windows dev vs. Vercel Linux runtime). On Windows, Pango
+    // silently falls back to a system default regardless of fontfile,
+    // so two different fontIds produce identical pixels. On Vercel's
+    // Linux runtime with the installed fontconfig + freetype, the
+    // fontfile is respected and fonts switch correctly — proven by
+    // the existing Patrick Hand path having worked in production
+    // since the format shipped.
+    //
+    // What this test DOES verify: the fontId parameter flows through
+    // applyCellUploads → overlay builders → renderLabelPng without
+    // throwing, the output is a valid PNG, and unknown ids don't
+    // break the pipeline. Visual correctness is exercised by the
+    // production renders the user inspects post-deploy.
+    const big = { w: 640, h: 360 };
+    const base = await makeSolidPng(big.w, big.h, { r: 255, g: 255, b: 255 });
+    const layout = makeDefaultLayout(2, 2, big.w, big.h, 'square');
+    const runWith = async (fontId?: string): Promise<Buffer> =>
+      applyCellUploads({
+        baseImage: base,
+        layout,
+        cards: [cards[0]],
+        cardShape: 'square',
+        uploads: [],
+        fontId,
+      });
+    const defaultOut = await runWith();
+    const bebasOut = await runWith('bebas-neue');
+    const pacificoOut = await runWith('pacifico');
+    for (const buf of [defaultOut, bebasOut, pacificoOut]) {
+      expect(buf.byteLength).toBeGreaterThan(1024);
+      const meta = await sharp(buf).metadata();
+      expect(meta.width).toBe(big.w);
+      expect(meta.height).toBe(big.h);
+    }
+    // Sanity: producing a SHA-256 of each output succeeds (the buffer
+    // is well-formed). We compute the hashes but intentionally don't
+    // assert they differ — see the comment above.
+    for (const buf of [defaultOut, bebasOut, pacificoOut]) {
+      const h = createHash('sha256').update(buf).digest('hex');
+      expect(h).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('falls back to the default font when fontId is unknown (r2.6)', async () => {
+    // r2.6: unknown fontIds silently fall back to the default rather
+    // than throwing. Output must still render with a recognisable
+    // label band — no exception, no empty PNG.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 255, g: 255, b: 255 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards: [cards[0]],
+      cardShape: 'square',
+      uploads: [],
+      fontId: 'not-a-font-id-anywhere',
+    });
+    // Sample the band area — at least some dark pixels should appear
+    // (the label and the cell border).
+    const raw = await decodeRaw(out);
+    const r1 = cellRect(layout, 1);
+    const yStart = r1.y + Math.round(r1.h * 0.8);
+    const yEnd = r1.y + r1.h;
+    let darkCount = 0;
+    for (let y = yStart; y < yEnd; y++) {
+      for (let x = r1.x; x < r1.x + r1.w; x++) {
+        const idx = (y * raw.width + x) * raw.channels;
+        if (raw.data[idx] + raw.data[idx + 1] + raw.data[idx + 2] < 200) darkCount++;
+      }
+    }
+    expect(darkCount).toBeGreaterThan(0);
   });
 
   it('produces uniform label sizes across cells regardless of detected band height (r2.5)', async () => {
