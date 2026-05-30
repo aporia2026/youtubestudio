@@ -349,6 +349,15 @@ export interface TitleBarSpec {
    *  edge. Helps editorial-style thumbnails where the title is
    *  meant to anchor visually. */
   textAlign?: 'left' | 'center' | 'right';
+  /** Phase 4.31: optional drop shadow applied to the title text
+   *  glyphs themselves (separate from the bar-rect drop shadow).
+   *  Useful when the bar is transparent (no rect to cast a shadow
+   *  from) or when the text needs to pop against a busy gradient.
+   *  Reuses the per-cell `ShadowStyle` shape so the parser +
+   *  validator paths stay the same. Renders via an SVG `<filter>`
+   *  applied to the text element in the preview and via a Sharp
+   *  composite pass on the rasterised text buffer in the composer. */
+  textShadow?: ShadowStyle;
   /** Phase 4.30: optional independent horizontal alignment for the
    *  subtitle. Falls back to `textAlign` when undefined so a single-
    *  alignment thumbnail stays consistent. A user wanting a
@@ -1230,6 +1239,9 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // actionable reason rather than crashing the SVG filter.
     const titleShadowResult = validateShadow(config.titleBar.shadow, 'titleBar.shadow');
     if (!titleShadowResult.ok) return titleShadowResult;
+    // Phase 4.31: text-only shadow validation.
+    const textShadowResult = validateShadow(config.titleBar.textShadow, 'titleBar.textShadow');
+    if (!textShadowResult.ok) return textShadowResult;
     // Phase 4.28: gradient backgrounds — both stops must be valid
     // hex; angle is a finite number (any value works as a rotation).
     if (config.titleBar.backgroundGradient) {
@@ -1247,6 +1259,26 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
   }
   const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
   if (!defaultShadowResult.ok) return defaultShadowResult;
+  // Phase 4.31: defaultCellStroke gets the same hex + non-negative
+  // thickness check as the per-cell version so a config-level
+  // garbage value is caught before reaching the renderer.
+  if (config.defaultCellStroke !== undefined && config.defaultCellStroke !== null) {
+    if (typeof config.defaultCellStroke !== 'object') {
+      return { ok: false, reason: 'defaultCellStroke must be an object, null, or undefined' };
+    }
+    if (
+      typeof config.defaultCellStroke.color !== 'string' ||
+      !HEX_COLOR_RE.test(config.defaultCellStroke.color)
+    ) {
+      return { ok: false, reason: 'defaultCellStroke.color is not a valid hex color' };
+    }
+    if (
+      !Number.isFinite(config.defaultCellStroke.thickness) ||
+      config.defaultCellStroke.thickness < 0
+    ) {
+      return { ok: false, reason: 'defaultCellStroke.thickness must be a non-negative number' };
+    }
+  }
   return { ok: true };
 }
 
@@ -1674,6 +1706,8 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     // Phase 4.27: title bar shadow follows the same parser as the
     // per-cell shadow so format symmetry stays clean.
     shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
+    // Phase 4.31: text-only drop shadow uses the same shape.
+    textShadow: 'textShadow' in o ? parseShadow(o.textShadow) : undefined,
     // Phase 4.28: optional gradient. Parsed tolerantly — drops the
     // field entirely when the object is missing required keys
     // (`from`, `to`) so a doctored config can't sneak a malformed

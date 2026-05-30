@@ -1176,6 +1176,81 @@ async function buildLabelOverlay(
   return { input: buf, top, left };
 }
 
+/**
+ * Phase 4.31: wrap a tinted text buffer with an optional drop shadow.
+ * The shadow is built by cloning the source, recolouring it with the
+ * shadow colour, scaling its alpha by `shadow.opacity`, blurring it,
+ * and then compositing the original text on top with the requested
+ * `offsetY`. Output buffer is sized to fit BOTH the shadow halo + the
+ * main text so the returned size is correct for downstream centring.
+ *
+ * No-op when `shadow` is null/undefined — the original buffer is
+ * returned with no allocation.
+ */
+async function wrapTextWithShadow(
+  textBuf: Buffer,
+  shadow: NonNullable<ShadowStyle> | null | undefined,
+): Promise<Buffer> {
+  if (!shadow) return textBuf;
+  const meta = await sharp(textBuf).metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  if (w === 0 || h === 0) return textBuf;
+
+  // Pad the canvas so blur + offset don't get clipped.
+  const padX = Math.ceil(2 * shadow.blur);
+  const padY = Math.ceil(2 * shadow.blur + Math.abs(shadow.offsetY));
+  const outW = w + 2 * padX;
+  const outH = h + 2 * padY;
+
+  // Build the shadow layer: recolour + alpha-scale + blur.
+  let shadowBuf = await tintPngTo(textBuf, shadow.color);
+  // Scale the alpha by the requested opacity. `composite` with a
+  // semi-transparent rect using `dest-in` reduces the alpha
+  // multiplicatively across the buffer.
+  shadowBuf = await sharp(shadowBuf)
+    .composite([
+      {
+        input: Buffer.from(
+          `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="${w}" height="${h}" fill="white" fill-opacity="${shadow.opacity}"/></svg>`,
+        ),
+        blend: 'dest-in',
+      },
+    ])
+    .png()
+    .toBuffer();
+  if (shadow.blur > 0) {
+    shadowBuf = await sharp(shadowBuf).blur(shadow.blur).png().toBuffer();
+  }
+
+  // Composite shadow (offset) + main text (no offset) onto a
+  // transparent canvas sized to fit both.
+  const composed = await sharp({
+    create: {
+      width: outW,
+      height: outH,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .composite([
+      {
+        input: shadowBuf,
+        top: padY + shadow.offsetY,
+        left: padX,
+      },
+      {
+        input: textBuf,
+        top: padY,
+        left: padX,
+      },
+    ])
+    .png()
+    .toBuffer();
+
+  return composed;
+}
+
 // ─── Title bar overlay ──────────────────────────────────────────────────────
 
 async function buildTitleBarOverlay(
@@ -1236,6 +1311,11 @@ async function buildTitleBarOverlay(
     .png()
     .toBuffer();
   mainBuf = await tintPngTo(mainBuf, titleBar.color);
+  // Phase 4.31: apply the optional title-text drop shadow BEFORE the
+  // safe-area clamp so the clamp considers the shadow halo too.
+  if (titleBar.textShadow) {
+    mainBuf = await wrapTextWithShadow(mainBuf, titleBar.textShadow);
+  }
   let mainMeta = await sharp(mainBuf).metadata();
   let mainBw = mainMeta.width ?? safeW;
   let mainBh = mainMeta.height ?? mainSizePx;
@@ -1315,6 +1395,11 @@ async function buildTitleBarOverlay(
     .toBuffer();
   const subColor = titleBar.subtitleColor ?? titleBar.color;
   subBuf = await tintPngTo(subBuf, subColor);
+  // Phase 4.31: subtitle inherits the same drop shadow as the main
+  // title so the stack reads as one styled unit.
+  if (titleBar.textShadow) {
+    subBuf = await wrapTextWithShadow(subBuf, titleBar.textShadow);
+  }
   let subMeta = await sharp(subBuf).metadata();
   let subBw = subMeta.width ?? safeW;
   let subBh = subMeta.height ?? subSizePx;

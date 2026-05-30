@@ -3172,6 +3172,71 @@ export function FlexIconGridPanel({
                 )}
               </div>
             </div>
+            {/* Phase 4.31: canvas-level default cell stroke. Same
+                toggle pattern as Cell shadow — when on, every cell
+                gets a frame outline unless its own `cellStroke` is
+                explicitly null. Per-cell overrides live in the
+                cell editor. Off by default — the reference channels
+                don't use frames. */}
+            <div>
+              <label style={labelStyle}>Cell outer stroke</label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.defaultCellStroke}
+                  onClick={() =>
+                    updateConfig({
+                      defaultCellStroke: config.defaultCellStroke
+                        ? null
+                        : { color: '#0a0a0a', thickness: 4 },
+                    })
+                  }
+                  style={chipStyle(!!config.defaultCellStroke)}
+                >
+                  {config.defaultCellStroke ? 'Frame on' : 'Frame off'}
+                </button>
+                {config.defaultCellStroke && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.defaultCellStroke.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultCellStroke: {
+                            ...config.defaultCellStroke!,
+                            color: e.target.value,
+                          },
+                        })
+                      }
+                      aria-label="Default cell stroke colour"
+                      title="Frame colour"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={16}
+                      step={1}
+                      value={config.defaultCellStroke.thickness}
+                      onChange={(e) =>
+                        updateConfig({
+                          defaultCellStroke: {
+                            ...config.defaultCellStroke!,
+                            thickness: Number(e.target.value),
+                          },
+                        })
+                      }
+                      aria-label="Default cell stroke thickness"
+                      title={`Thickness: ${config.defaultCellStroke.thickness}px`}
+                      style={{ width: 120 }}
+                    />
+                    <span style={{ fontSize: 11, color: '#a1a1aa', minWidth: 28, textAlign: 'right' }}>
+                      {config.defaultCellStroke.thickness}px
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
             <div>
               <label style={labelStyle}>Title bar</label>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -3709,6 +3774,9 @@ export function FlexIconGridPanel({
                           focusable="false"
                           style={{ flex: '0 0 auto' }}
                         >
+                          <title>
+                            {`Gradient direction: ${config.titleBar.backgroundGradient.angle}° (0° → / 90° ↓ — SVG rotate convention; needle points along the from→to axis)`}
+                          </title>
                           <circle
                             cx={10}
                             cy={10}
@@ -3726,6 +3794,106 @@ export function FlexIconGridPanel({
                             strokeWidth={1.5}
                           />
                         </svg>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              {/* Phase 4.31: drop shadow on the title TEXT (separate
+                  from the bar's rect shadow). Pairs especially well
+                  with the transparent bar mode where there's no
+                  backing rect to cast a shadow from. Uses the same
+                  ShadowStyle as cell/bar shadows. */}
+              {config.titleBar && (
+                <div style={{ marginTop: 10 }}>
+                  <label style={{ ...labelStyle, marginTop: 0 }}>Title text shadow</label>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      aria-pressed={!!config.titleBar.textShadow}
+                      onClick={() =>
+                        updateConfig({
+                          titleBar: {
+                            ...config.titleBar!,
+                            textShadow: config.titleBar!.textShadow ? null : DEFAULT_SHADOW,
+                          },
+                        })
+                      }
+                      style={chipStyle(!!config.titleBar.textShadow)}
+                    >
+                      {config.titleBar.textShadow ? 'Text shadow on' : 'Text shadow off'}
+                    </button>
+                    {config.titleBar.textShadow && (
+                      <>
+                        <input
+                          type="range"
+                          min={0}
+                          max={24}
+                          step={1}
+                          value={config.titleBar.textShadow.offsetY}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                textShadow: { ...config.titleBar!.textShadow!, offsetY: Number(e.target.value) },
+                              },
+                            })
+                          }
+                          aria-label="Title text shadow offset"
+                          title={`Offset: ${config.titleBar.textShadow.offsetY}px`}
+                          style={{ width: 100 }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={32}
+                          step={1}
+                          value={config.titleBar.textShadow.blur}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                textShadow: { ...config.titleBar!.textShadow!, blur: Number(e.target.value) },
+                              },
+                            })
+                          }
+                          aria-label="Title text shadow blur"
+                          title={`Blur: ${config.titleBar.textShadow.blur}px`}
+                          style={{ width: 100 }}
+                        />
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={config.titleBar.textShadow.opacity}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                textShadow: { ...config.titleBar!.textShadow!, opacity: Number(e.target.value) },
+                              },
+                            })
+                          }
+                          aria-label="Title text shadow opacity"
+                          title={`Opacity: ${Math.round(config.titleBar.textShadow.opacity * 100)}%`}
+                          style={{ width: 80 }}
+                        />
+                        <input
+                          type="color"
+                          value={config.titleBar.textShadow.color}
+                          onChange={(e) =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                textShadow: { ...config.titleBar!.textShadow!, color: e.target.value },
+                              },
+                            })
+                          }
+                          aria-label="Title text shadow colour"
+                          title="Text shadow colour"
+                          style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                        />
                       </>
                     )}
                   </div>

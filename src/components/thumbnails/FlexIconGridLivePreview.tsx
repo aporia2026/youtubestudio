@@ -367,9 +367,27 @@ export function FlexIconGridLivePreview({
           const textX = main.x;
           const anchor = main.anchor;
           if (!hasSubtitle) {
+            // Phase 4.31: text shadow filter (when set) wraps the
+            // single-line <text> just like the two-line case below.
+            const ts = tb.textShadow;
+            const tsId = ts ? 'fg-preview-title-text-shadow' : null;
             return (
               <>
-                <defs>{clipRect}</defs>
+                <defs>
+                  {clipRect}
+                  {ts && (
+                    <filter id={tsId!} x="-25%" y="-25%" width="150%" height="150%">
+                      <feGaussianBlur in="SourceAlpha" stdDeviation={ts.blur} />
+                      <feOffset dx={0} dy={ts.offsetY} result="off" />
+                      <feFlood floodColor={ts.color} floodOpacity={ts.opacity} />
+                      <feComposite in2="off" operator="in" />
+                      <feMerge>
+                        <feMergeNode />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                  )}
+                </defs>
                 <text
                   x={textX}
                   y={barCenterY}
@@ -380,6 +398,7 @@ export function FlexIconGridLivePreview({
                   textAnchor={anchor}
                   dominantBaseline="middle"
                   clipPath={clipPathRef}
+                  filter={tsId ? `url(#${tsId})` : undefined}
                 >
                   {sanitizeUserText(tb.text, 80)}
                 </text>
@@ -410,72 +429,65 @@ export function FlexIconGridLivePreview({
           // into two <text> blocks if the alignments differ; share
           // a single <text> with two <tspan>s when they match (the
           // common case — keeps the dy-based line-height honest).
-          const sameAlign = main.anchor === sub.anchor && main.x === sub.x;
-          if (sameAlign) {
-            return (
-              <>
-                <defs>{clipRect}</defs>
-                <text
-                  x={textX}
-                  y={barCenterY}
-                  fontFamily={fontFamily}
-                  fill={tb.color}
-                  textAnchor={anchor}
-                  dominantBaseline="middle"
-                  clipPath={clipPathRef}
-                >
-                  <tspan x={textX} fontSize={mainSize} fontWeight={900}>
-                    {sanitizeUserText(tb.text, 80)}
-                  </tspan>
-                  <tspan
-                    x={textX}
-                    dy={subDy}
-                    fontFamily={subFontFamily}
-                    fontSize={subSize}
-                    fontWeight={700}
-                    fill={tb.subtitleColor ?? tb.color}
-                  >
-                    {subtitleText}
-                  </tspan>
-                </text>
-              </>
-            );
-          }
-          // Split path: the subtitle is rendered as a separate
-          // <text> at its own anchor; the main stays as before but
-          // without the subtitle <tspan>. We approximate the
-          // baseline-offset distance the dy-based stack used so the
-          // visual stacking stays roughly the same as the unified
-          // case.
-          const subOffsetY = mainSize / 2 + Math.round(tb.height * 0.05) + subSize / 2;
+          // Phase 4.30 → 4.31: unified <text> + per-tspan textAnchor +
+          // per-tspan x. SVG `<tspan>` accepts both attributes; they
+          // override the parent's defaults. We always render one
+          // <text> with two <tspan>s — the dy-based stacking stays
+          // honest (real glyph-metric line-height), and per-tspan
+          // anchors honour independent subtitle alignment without
+          // the Phase-4.30 split-text approximation.
+          // Phase 4.31: optional drop shadow on the title TEXT
+          // (separate from the bar's rect shadow). Mirrors the
+          // composer's wrap step via an SVG filter referenced from
+          // the <text>'s `filter` attribute.
+          const textShadow = tb.textShadow;
+          const textShadowId = textShadow ? 'fg-preview-title-text-shadow' : null;
           return (
             <>
-              <defs>{clipRect}</defs>
+              <defs>
+                {clipRect}
+                {textShadow && (
+                  <filter id={textShadowId!} x="-25%" y="-25%" width="150%" height="150%">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation={textShadow.blur} />
+                    <feOffset dx={0} dy={textShadow.offsetY} result="off" />
+                    <feFlood floodColor={textShadow.color} floodOpacity={textShadow.opacity} />
+                    <feComposite in2="off" operator="in" />
+                    <feMerge>
+                      <feMergeNode />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                )}
+              </defs>
               <text
                 x={textX}
-                y={barCenterY - subSize / 2}
+                y={barCenterY}
                 fontFamily={fontFamily}
-                fontSize={mainSize}
-                fontWeight={900}
                 fill={tb.color}
                 textAnchor={anchor}
                 dominantBaseline="middle"
                 clipPath={clipPathRef}
+                filter={textShadowId ? `url(#${textShadowId})` : undefined}
               >
-                {sanitizeUserText(tb.text, 80)}
-              </text>
-              <text
-                x={sub.x}
-                y={barCenterY + subOffsetY - mainSize / 2}
-                fontFamily={subFontFamily}
-                fontSize={subSize}
-                fontWeight={700}
-                fill={tb.subtitleColor ?? tb.color}
-                textAnchor={sub.anchor}
-                dominantBaseline="middle"
-                clipPath={clipPathRef}
-              >
-                {subtitleText}
+                <tspan
+                  x={main.x}
+                  textAnchor={main.anchor}
+                  fontSize={mainSize}
+                  fontWeight={900}
+                >
+                  {sanitizeUserText(tb.text, 80)}
+                </tspan>
+                <tspan
+                  x={sub.x}
+                  textAnchor={sub.anchor}
+                  dy={subDy}
+                  fontFamily={subFontFamily}
+                  fontSize={subSize}
+                  fontWeight={700}
+                  fill={tb.subtitleColor ?? tb.color}
+                >
+                  {subtitleText}
+                </tspan>
               </text>
             </>
           );

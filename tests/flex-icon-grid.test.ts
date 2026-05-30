@@ -1688,6 +1688,46 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.31 — title text shadow + defaultCellStroke validation', () => {
+  it('round-trips titleBar.textShadow through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000', color: '#fff', font: 'anton',
+      textShadow: { offsetY: 4, blur: 6, color: '#000000', opacity: 0.5 },
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.textShadow).toEqual({
+      offsetY: 4, blur: 6, color: '#000000', opacity: 0.5,
+    });
+  });
+  it('rejects titleBar.textShadow with bad opacity', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      textShadow: { offsetY: 4, blur: 6, color: '#000000', opacity: 3 },
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/titleBar.textShadow/);
+  });
+  it('validates defaultCellStroke at config level', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultCellStroke = { color: 'red', thickness: 4 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/defaultCellStroke\.color/);
+  });
+  it('rejects negative defaultCellStroke thickness', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.defaultCellStroke = { color: '#000000', thickness: -1 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/defaultCellStroke\.thickness/);
+  });
+});
+
 describe('Phase 4.30 — cell outer stroke + subtitle alignment', () => {
   it('round-trips cellStroke through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);
