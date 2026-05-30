@@ -379,6 +379,17 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (leakOverlay) overlays.push(leakOverlay);
     }
 
+    // 3.68) Phase 4.46: inner glow — radial brightening at canvas
+    //       centre. Complement of vignette. Pushed AFTER lightLeak
+    //       (corner artefacts read on top of the centre lift) and
+    //       BEFORE vignette (the corner darken still bounds the
+    //       glow's falloff). Default screen blend lifts the
+    //       central area additively.
+    if (config.innerGlow) {
+      const glowOverlay = await buildInnerGlowOverlay(config);
+      if (glowOverlay) overlays.push(glowOverlay);
+    }
+
     // 3.7) Phase 4.37: vignette overlay — sits on top of cells +
     //      title bar (and grain + tint + leak), darkening the
     //      canvas corners uniformly. A single full-canvas
@@ -1850,6 +1861,42 @@ async function buildBadgeOverlay(
   return { input: composed, top: Math.round(top), left: Math.round(left) };
 }
 
+// ─── Inner glow overlay (Phase 4.46) ────────────────────────────────────────
+
+/**
+ * Phase 4.46: build a full-canvas radial-gradient PNG anchored at
+ * the canvas centre, brightening the middle. Mirror-image of the
+ * vignette: same userSpace radial-gradient geometry, but the colour
+ * sits at the CENTRE (opacity = intensity) and fades to transparent
+ * at the radius. Default blend mode is `screen` (additive lift).
+ *
+ * Radius is expressed as a fraction of the canvas's SHORT half-axis
+ * so the falloff stays circular regardless of aspect — same posture
+ * as the vignette fix from Phase 4.38.
+ */
+async function buildInnerGlowOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const g = config.innerGlow;
+  if (!g) return null;
+  const { width, height } = config;
+  const cx = width / 2;
+  const cy = height / 2;
+  const halfMin = Math.min(width, height) / 2;
+  const r = g.radius * halfMin;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<defs><radialGradient id="ig" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,
+    `<stop offset="0%" stop-color="${escapeSvgText(g.color)}" stop-opacity="${g.intensity}"/>`,
+    `<stop offset="100%" stop-color="${escapeSvgText(g.color)}" stop-opacity="0"/>`,
+    `</radialGradient></defs>`,
+    `<rect width="${width}" height="${height}" fill="url(#ig)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0, blend: g.blendMode ?? 'screen' };
+}
+
 // ─── Vignette overlay (Phase 4.37) ──────────────────────────────────────────
 
 /**
@@ -2122,9 +2169,15 @@ async function buildHalftoneOverlay(
   const tile = h.spacing;
   const cx = tile / 2;
   const cy = tile / 2;
+  // Phase 4.46: pattern rotation via `patternTransform`. Pivots
+  // around (0, 0) which is the canvas origin — that's fine because
+  // a rotated tiling pattern is translation-invariant; the visual
+  // result is identical regardless of the pivot point.
+  const angle = h.angle ?? 0;
+  const transformAttr = angle !== 0 ? ` patternTransform="rotate(${angle.toFixed(2)})"` : '';
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
-    `<defs><pattern id="ht" patternUnits="userSpaceOnUse" width="${tile}" height="${tile}">`,
+    `<defs><pattern id="ht" patternUnits="userSpaceOnUse" width="${tile}" height="${tile}"${transformAttr}>`,
     `<circle cx="${cx}" cy="${cy}" r="${h.dotSize}" fill="${escapeSvgText(h.color)}" fill-opacity="${h.opacity}"/>`,
     `</pattern></defs>`,
     `<rect width="${width}" height="${height}" fill="url(#ht)"/>`,

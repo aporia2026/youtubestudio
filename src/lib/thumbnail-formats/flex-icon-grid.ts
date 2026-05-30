@@ -583,6 +583,29 @@ export interface FlexIconGridConfig {
    *  own `cellStroke` field is `undefined`. Cells with an explicit
    *  `null` opt out. Defaults to `null` (no outer stroke). */
   defaultCellStroke?: { color: string; thickness: number } | null;
+  /** Phase 4.46: optional inner glow overlay — a soft radial
+   *  brightening at the canvas centre. Complement of `vignette`:
+   *  vignette darkens edges, inner glow lifts the centre. Pair them
+   *  for a "spotlight from inside" look that makes central content
+   *  feel selected without aggressive contrast.
+   *
+   *  Rendered AFTER all other finishing layers EXCEPT vignette /
+   *  letterbox / frame so the glow sits ON the canvas but the
+   *  edge-affecting layers still bound the image. Off by default.
+   *  - `color` — glow hue (typically white, sometimes warm yellow).
+   *  - `intensity` (0..1) — peak opacity at centre.
+   *  - `radius` (0.3..1.5) — falloff distance as a fraction of the
+   *    canvas's short half-axis. Lower = tight bright spot, higher
+   *    = diffuse wash.
+   *  - `blendMode` — `screen` (default — additive lift; common
+   *    glow look), `overlay` (boosts contrast and tints), or
+   *    `soft-light` (subtle wash). */
+  innerGlow?: {
+    color: string;
+    intensity: number;
+    radius: number;
+    blendMode?: 'screen' | 'overlay' | 'soft-light';
+  };
   /** Phase 4.37: optional vignette overlay — a radial gradient
    *  darkening the canvas edges. Rendered AFTER all cells + title
    *  bar so the effect lands on top of everything. Off by default.
@@ -723,13 +746,19 @@ export interface FlexIconGridConfig {
    *  - `spacing` (2..40) — distance between dot centres in pixels.
    *  - `blendMode` — `multiply` (default — dots darken underlying
    *    image), `screen`, `overlay`, `soft-light`, or `normal`
-   *    (paints flat on top). */
+   *    (paints flat on top).
+   *  - `angle` (Phase 4.46, optional 0..90 degrees) — rotates the
+   *    dot grid via `patternTransform`. Real CMYK halftone screens
+   *    typically use 45° for the dominant channel and 15° / 75° for
+   *    other channels; a non-zero angle gives a more "printed"
+   *    look than the axis-aligned default. Off (0) by default. */
   halftone?: {
     color: string;
     opacity: number;
     dotSize: number;
     spacing: number;
     blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'normal';
+    angle?: number;
   };
   /** Phase 4.44: optional dust / scratches overlay — sparse,
    *  irregular bright (or dark) specks scattered across the canvas,
@@ -1535,6 +1564,29 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
   }
   const defaultShadowResult = validateShadow(config.defaultShadow, 'defaultShadow');
   if (!defaultShadowResult.ok) return defaultShadowResult;
+  // Phase 4.46: innerGlow shape check.
+  if (config.innerGlow !== undefined) {
+    if (typeof config.innerGlow !== 'object' || config.innerGlow === null) {
+      return { ok: false, reason: 'innerGlow must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.innerGlow.color)) {
+      return { ok: false, reason: 'innerGlow.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.innerGlow.intensity) || config.innerGlow.intensity < 0 || config.innerGlow.intensity > 1) {
+      return { ok: false, reason: 'innerGlow.intensity must be a number in [0, 1]' };
+    }
+    if (!Number.isFinite(config.innerGlow.radius) || config.innerGlow.radius < 0.3 || config.innerGlow.radius > 1.5) {
+      return { ok: false, reason: 'innerGlow.radius must be a number in [0.3, 1.5]' };
+    }
+    if (
+      config.innerGlow.blendMode !== undefined &&
+      config.innerGlow.blendMode !== 'screen' &&
+      config.innerGlow.blendMode !== 'overlay' &&
+      config.innerGlow.blendMode !== 'soft-light'
+    ) {
+      return { ok: false, reason: 'innerGlow.blendMode must be screen | overlay | soft-light or undefined' };
+    }
+  }
   // Phase 4.37: vignette shape check.
   if (config.vignette !== undefined) {
     if (typeof config.vignette !== 'object' || config.vignette === null) {
@@ -1683,6 +1735,14 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
       config.halftone.blendMode !== 'normal'
     ) {
       return { ok: false, reason: 'halftone.blendMode must be multiply | screen | overlay | soft-light | normal' };
+    }
+    if (
+      config.halftone.angle !== undefined &&
+      (!Number.isFinite(config.halftone.angle) ||
+        config.halftone.angle < 0 ||
+        config.halftone.angle > 90)
+    ) {
+      return { ok: false, reason: 'halftone.angle must be a number in [0, 90] or undefined' };
     }
   }
   // Phase 4.44: dust shape check.
@@ -1920,13 +1980,22 @@ export const FINISHING_PRESETS: readonly FinishingPreset[] = [
  */
 export type FinishingPatch = Pick<
   FlexIconGridConfig,
-  'vignette' | 'grain' | 'dust' | 'halftone' | 'tint' | 'lightLeak' | 'letterbox' | 'frame'
+  | 'vignette'
+  | 'innerGlow'
+  | 'grain'
+  | 'dust'
+  | 'halftone'
+  | 'tint'
+  | 'lightLeak'
+  | 'letterbox'
+  | 'frame'
 >;
 
 export function parseFinishingPatch(raw: unknown): FinishingPatch {
   const o = (raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {});
   return {
     vignette: parseVignette(o.vignette),
+    innerGlow: parseInnerGlow(o.innerGlow),
     grain: parseGrain(o.grain),
     dust: parseDust(o.dust),
     halftone: parseHalftone(o.halftone),
@@ -1951,10 +2020,12 @@ export function applyFinishingPreset(
 ): FinishingPatch {
   // Phase 4.45: `dust` and `halftone` joined the finishing patch
   // shape — every preset now explicitly clears them so applying
-  // a preset never leaks from a prior state.
+  // a preset never leaks from a prior state. Phase 4.46: same for
+  // `innerGlow`.
   if (preset === 'none') {
     return {
       vignette: undefined,
+      innerGlow: undefined,
       grain: undefined,
       dust: undefined,
       halftone: undefined,
@@ -1967,6 +2038,7 @@ export function applyFinishingPreset(
   if (preset === 'vintage-film') {
     return {
       vignette: { color: '#000000', intensity: 0.4, radius: 0.7 },
+      innerGlow: undefined,
       grain: { intensity: 0.18, scale: 1.4, monochrome: true },
       // Subtle white dust at 35 % density for the "worn print"
       // half of the vintage look.
@@ -1981,6 +2053,10 @@ export function applyFinishingPreset(
   if (preset === 'cinematic-239') {
     return {
       vignette: { color: '#000000', intensity: 0.55, radius: 0.55 },
+      // Phase 4.46: subtle warm-white centre lift pairs naturally
+      // with the strong vignette — gives the "spotlight on the
+      // hero" feel that cinematic stills go for.
+      innerGlow: { color: '#fff4dc', intensity: 0.15, radius: 0.9, blendMode: 'soft-light' },
       grain: undefined,
       dust: undefined,
       halftone: undefined,
@@ -1993,6 +2069,7 @@ export function applyFinishingPreset(
   // editorial-clean
   return {
     vignette: undefined,
+    innerGlow: undefined,
     grain: undefined,
     dust: undefined,
     halftone: undefined,
@@ -2185,6 +2262,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     // Phase 4.37: vignette overlay parsed tolerantly — drops the
     // field when required keys are missing or out-of-range.
     vignette: parseVignette(o.vignette),
+    // Phase 4.46: inner glow; same tolerant pattern as vignette.
+    innerGlow: parseInnerGlow(o.innerGlow),
     // Phase 4.38: grain overlay; same tolerant posture as vignette.
     grain: parseGrain(o.grain),
     // Phase 4.44: dust / scratches overlay; same tolerant posture.
@@ -2259,6 +2338,44 @@ function parseRing(v: unknown, fallback: RingStyle): RingStyle {
     color: stringOr(o.color, fallback?.color ?? '#0a0a0a'),
     thickness: numberOr(o.thickness, fallback?.thickness ?? 6),
     style: o.style === 'dashed' ? 'dashed' : 'solid',
+  };
+}
+
+/** Phase 4.46: tolerant inner-glow parser. Same shape & posture
+ *  as vignette but the default colour is white (typical lift).
+ *  Zero intensity drops so an "off" glow doesn't round-trip into
+ *  JSON state. */
+function parseInnerGlow(
+  v: unknown,
+):
+  | {
+      color: string;
+      intensity: number;
+      radius: number;
+      blendMode?: 'screen' | 'overlay' | 'soft-light';
+    }
+  | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const intensity =
+    typeof o.intensity === 'number' && Number.isFinite(o.intensity)
+      ? Math.max(0, Math.min(1, o.intensity))
+      : undefined;
+  const radius =
+    typeof o.radius === 'number' && Number.isFinite(o.radius)
+      ? Math.max(0.3, Math.min(1.5, o.radius))
+      : undefined;
+  if (intensity === undefined || radius === undefined) return undefined;
+  if (intensity === 0) return undefined;
+  const blendMode =
+    o.blendMode === 'screen' || o.blendMode === 'overlay' || o.blendMode === 'soft-light'
+      ? (o.blendMode as 'screen' | 'overlay' | 'soft-light')
+      : undefined;
+  return {
+    color: stringOr(o.color, '#ffffff'),
+    intensity,
+    radius,
+    ...(blendMode !== undefined ? { blendMode } : {}),
   };
 }
 
@@ -2507,12 +2624,19 @@ function parseHalftone(
     o.blendMode === 'normal'
       ? (o.blendMode as 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'normal')
       : 'multiply';
+  // Phase 4.46: angle optional [0..90]. Drops when out of range so
+  // the composer's default (0 = axis-aligned) kicks in.
+  const angle =
+    typeof o.angle === 'number' && Number.isFinite(o.angle) && o.angle >= 0 && o.angle <= 90
+      ? o.angle
+      : undefined;
   return {
     color: stringOr(o.color, '#000000'),
     opacity,
     dotSize,
     spacing,
     blendMode,
+    ...(angle !== undefined ? { angle } : {}),
   };
 }
 

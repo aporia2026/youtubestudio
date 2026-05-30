@@ -2475,6 +2475,127 @@ describe('Phase 4.45 — halftone overlay + parseFinishingPatch', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/halftone\.dotSize/);
   });
+  it('round-trips halftone.angle when in [0, 90]', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.halftone = {
+      color: '#000000',
+      opacity: 0.5,
+      dotSize: 1.2,
+      spacing: 4,
+      blendMode: 'multiply',
+      angle: 45,
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.halftone?.angle).toBe(45);
+  });
+  it('drops halftone.angle when out of range', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      halftone: {
+        color: '#000000',
+        opacity: 0.5,
+        dotSize: 1.2,
+        spacing: 4,
+        blendMode: 'multiply',
+        angle: 120,
+      },
+    });
+    expect(reparsed.halftone?.angle).toBeUndefined();
+  });
+  it('rejects halftone.angle out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.halftone = {
+      color: '#000000',
+      opacity: 0.5,
+      dotSize: 1.2,
+      spacing: 4,
+      blendMode: 'multiply',
+      angle: 200,
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/halftone\.angle/);
+  });
+});
+
+describe('Phase 4.46 — inner glow overlay', () => {
+  it('round-trips innerGlow through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.innerGlow = {
+      color: '#fff4dc',
+      intensity: 0.3,
+      radius: 0.9,
+      blendMode: 'screen',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.innerGlow).toEqual({
+      color: '#fff4dc',
+      intensity: 0.3,
+      radius: 0.9,
+      blendMode: 'screen',
+    });
+  });
+  it('clamps innerGlow intensity + radius on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      innerGlow: { color: '#ffffff', intensity: 2, radius: 0.1 },
+    });
+    expect(reparsed.innerGlow?.intensity).toBe(1);
+    expect(reparsed.innerGlow?.radius).toBe(0.3);
+  });
+  it('drops innerGlow with zero intensity', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      innerGlow: { color: '#ffffff', intensity: 0, radius: 0.9 },
+    });
+    expect(reparsed.innerGlow).toBeUndefined();
+  });
+  it('drops innerGlow.blendMode when unknown', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      innerGlow: { color: '#ffffff', intensity: 0.3, radius: 0.9, blendMode: 'multiply' },
+    });
+    expect(reparsed.innerGlow?.blendMode).toBeUndefined();
+  });
+  it('rejects malformed innerGlow.color on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.innerGlow = { color: 'white', intensity: 0.3, radius: 0.9 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/innerGlow\.color/);
+  });
+  it('rejects innerGlow.blendMode out of enum on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.innerGlow = {
+      color: '#ffffff',
+      intensity: 0.3,
+      radius: 0.9,
+      blendMode: 'multiply' as 'screen',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/innerGlow\.blendMode/);
+  });
+  it('applyFinishingPreset(cinematic-239) now seeds an inner glow', () => {
+    const patch = applyFinishingPreset('cinematic-239', 1280, 720);
+    expect(patch.innerGlow).toBeDefined();
+    expect(patch.innerGlow?.blendMode).toBe('soft-light');
+  });
+  it('parseFinishingPatch covers innerGlow', () => {
+    const patch = parseFinishingPatch({
+      innerGlow: { color: '#fff4dc', intensity: 0.3, radius: 0.9, blendMode: 'screen' },
+    });
+    expect(patch.innerGlow).toEqual({
+      color: '#fff4dc',
+      intensity: 0.3,
+      radius: 0.9,
+      blendMode: 'screen',
+    });
+  });
 });
 
 describe('Phase 4.45 — parseFinishingPatch', () => {

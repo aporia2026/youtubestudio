@@ -44,6 +44,7 @@ import {
   type CellShape,
   type FlexIconCell,
   type FlexIconGridConfig,
+  type FinishingPatch,
   type LabelFont,
   type PaletteSpec,
   type SpanConflictReason,
@@ -3733,15 +3734,23 @@ export function FlexIconGridPanel({
                   onClick={() => {
                     const name = window.prompt('Save current finishing as preset — enter a name:');
                     if (!name || !name.trim()) return;
-                    saveUserFinishingPreset(name.trim(), {
+                    // Phase 4.46: revalidate the captured fields
+                    // through parseFinishingPatch before persisting
+                    // so localStorage never holds anything that
+                    // wouldn't round-trip cleanly. Same guard as
+                    // the apply-time validation, just earlier in
+                    // the lifecycle.
+                    const validated = parseFinishingPatch({
                       vignette: config.vignette,
                       grain: config.grain,
                       dust: config.dust,
+                      halftone: config.halftone,
                       tint: config.tint,
                       lightLeak: config.lightLeak,
                       letterbox: config.letterbox,
                       frame: config.frame,
                     });
+                    saveUserFinishingPreset(name.trim(), validated);
                   }}
                   style={chipStyle(false)}
                   title="Save the current vignette + grain + tint + leak + letterbox + frame as a named preset (stored locally)"
@@ -3850,6 +3859,146 @@ export function FlexIconGridPanel({
                       title={`Radius: ${Math.round(config.vignette.radius * 100)}% (lower = tighter centre)`}
                       style={{ width: 100 }}
                     />
+                  </>
+                )}
+              </div>
+            </div>
+            {/* Phase 4.46: inner glow — complement of vignette.
+                Vignette darkens corners; inner glow brightens
+                centre. Pair them for a "spotlight from inside"
+                look. Off by default; default seed = warm white at
+                25% intensity, radius 0.9 (wide diffuse wash),
+                screen blend (additive lift). */}
+            <div>
+              <label style={labelStyle}>
+                Inner glow
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (centre brightening — pair with vignette)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.innerGlow}
+                  onClick={() =>
+                    updateConfig({
+                      innerGlow: config.innerGlow
+                        ? undefined
+                        : {
+                            color: '#fff4dc',
+                            intensity: 0.25,
+                            radius: 0.9,
+                            blendMode: 'screen',
+                          },
+                    })
+                  }
+                  style={chipStyle(!!config.innerGlow)}
+                  title={
+                    config.innerGlow
+                      ? 'Click to turn inner glow off'
+                      : 'Click to add a warm-white centre lift (pairs well with vignette)'
+                  }
+                >
+                  {config.innerGlow ? 'Glow on' : 'Glow off'}
+                </button>
+                {config.innerGlow && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.innerGlow.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          innerGlow: { ...config.innerGlow!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Inner glow colour"
+                      title="Glow hue (typical: warm white or warm yellow)"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    <input
+                      type="range"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.innerGlow.intensity}
+                      onChange={(e) =>
+                        updateConfig({
+                          innerGlow: { ...config.innerGlow!, intensity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Inner glow intensity"
+                      title={`Strength: ${Math.round(config.innerGlow.intensity * 100)}%`}
+                      style={{ width: 80 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.innerGlow.intensity}
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      onCommit={(next) =>
+                        updateConfig({
+                          innerGlow: { ...config.innerGlow!, intensity: next },
+                        })
+                      }
+                      ariaLabel="Inner glow intensity (numeric)"
+                      title="Type any value 0.01–1.00; commits on Enter or blur"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Radius</span>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={1.5}
+                      step={0.05}
+                      value={config.innerGlow.radius}
+                      onChange={(e) =>
+                        updateConfig({
+                          innerGlow: { ...config.innerGlow!, radius: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Inner glow radius"
+                      title={`Radius: ${config.innerGlow.radius.toFixed(2)} × half-axis (lower = tight bright spot)`}
+                      style={{ width: 80 }}
+                    />
+                    {/* Blend-mode chips, same 3-option set as the
+                        innerGlow type allows. Screen (default) is
+                        the additive lift everyone calls "glow";
+                        soft-light is gentler; overlay punches
+                        contrast around the centre. */}
+                    {(
+                      [
+                        { value: 'screen', label: 'Screen', hint: 'Additive lift — classic glow (default)' },
+                        { value: 'soft-light', label: 'Soft', hint: 'Gentle wash' },
+                        { value: 'overlay', label: 'Overlay', hint: 'Boosts contrast around the centre' },
+                      ] as const
+                    ).map((mode) => {
+                      const current = config.innerGlow!.blendMode ?? 'screen';
+                      return (
+                        <button
+                          key={mode.value}
+                          type="button"
+                          aria-pressed={current === mode.value}
+                          onClick={() =>
+                            updateConfig({
+                              innerGlow: { ...config.innerGlow!, blendMode: mode.value },
+                            })
+                          }
+                          style={chipStyle(current === mode.value)}
+                          title={mode.hint}
+                        >
+                          {mode.label}
+                        </button>
+                      );
+                    })}
                   </>
                 )}
               </div>
@@ -4278,6 +4427,40 @@ export function FlexIconGridPanel({
                       title={`Dot spacing: ${config.halftone.spacing} px between centres`}
                       style={{ width: 80 }}
                     />
+                    {/* Phase 4.46: angle slider rotates the dot
+                        grid via patternTransform. Real CMYK screens
+                        use 45° for the dominant channel — that's
+                        often the look people want when they say
+                        "halftone". 0 (default) keeps the grid
+                        axis-aligned. */}
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 36 }}>Angle</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={90}
+                      step={1}
+                      value={config.halftone.angle ?? 0}
+                      onChange={(e) =>
+                        updateConfig({
+                          halftone: { ...config.halftone!, angle: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Halftone angle"
+                      title={`Dot-grid rotation: ${config.halftone.angle ?? 0}° (45° = classic screen angle)`}
+                      style={{ width: 70 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.halftone.angle ?? 0}
+                      min={0}
+                      max={90}
+                      step={1}
+                      onCommit={(next) =>
+                        updateConfig({ halftone: { ...config.halftone!, angle: next } })
+                      }
+                      ariaLabel="Halftone angle (numeric)"
+                      title="Rotation 0–90°; 45 = classic screen angle"
+                      style={{ width: 52, padding: '4px 6px', fontSize: 12 }}
+                    />
                     {/* Blend mode picker — multiply (default) darkens
                         underlying image with hue; screen lightens;
                         normal paints flat on top with no mixing. */}
@@ -4299,7 +4482,12 @@ export function FlexIconGridPanel({
                             halftone: { ...config.halftone!, blendMode: mode.value },
                           })
                         }
-                        style={chipStyle(config.halftone!.blendMode === mode.value)}
+                        style={{
+                          ...chipStyle(config.halftone!.blendMode === mode.value),
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
                         title={
                           mode.value === 'multiply'
                             ? 'Darken underlying image with dot colour (default printed-comic look)'
@@ -4312,6 +4500,14 @@ export function FlexIconGridPanel({
                                   : 'Paint dots flat on top (no mixing)'
                         }
                       >
+                        {/* Phase 4.46: each chip previews how the
+                            current dot colour blends with a
+                            luminance ramp at the chip's mode. */}
+                        <HalftoneBlendSwatch
+                          color={config.halftone!.color}
+                          opacity={config.halftone!.opacity}
+                          blendMode={mode.value}
+                        />
                         {mode.label}
                       </button>
                     ))}
@@ -7437,6 +7633,68 @@ function BufferedNumericInput({
 }
 
 /**
+ * Phase 4.46: 16×16 SVG swatch showing the current halftone dot
+ * colour painted as a miniature dot grid over a luminance ramp,
+ * composited at each chip's blend mode. Unlike `TintBlendSwatch`
+ * (which paints a flat colour over the ramp) this swatch uses a
+ * tiny `<pattern>` of dots so the chip preview matches the actual
+ * halftone behaviour — `multiply` darkens dark areas more, `screen`
+ * lifts light areas more, `normal` paints solid dots on top.
+ */
+function HalftoneBlendSwatch({
+  color,
+  opacity,
+  blendMode,
+}: {
+  color: string;
+  opacity: number;
+  blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'normal';
+}) {
+  const id = `fg-halftone-swatch-${blendMode}`;
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={`${id}-ramp`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#202020" />
+          <stop offset="50%" stopColor="#808080" />
+          <stop offset="100%" stopColor="#e8e8e8" />
+        </linearGradient>
+        {/* Tiny dot pattern — 3 px tile so the swatch has 5+
+            rows/cols of dots visible at 16 px. Dot radius scales
+            with intensity so a high-opacity halftone reads as
+            chunkier dots, low-opacity as finer dots. */}
+        <pattern
+          id={`${id}-dots`}
+          patternUnits="userSpaceOnUse"
+          width={3}
+          height={3}
+        >
+          <circle cx={1.5} cy={1.5} r={0.7} fill={color} fillOpacity={opacity} />
+        </pattern>
+      </defs>
+      <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-ramp)`} />
+      <rect
+        x={0}
+        y={0}
+        width={16}
+        height={16}
+        fill={`url(#${id}-dots)`}
+        style={{ mixBlendMode: blendMode }}
+      />
+      <rect
+        x={0.5}
+        y={0.5}
+        width={15}
+        height={15}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity={0.2}
+      />
+    </svg>
+  );
+}
+
+/**
  * Phase 4.42: 16×16 SVG swatch showing the current light-leak
  * colour as a radial gradient anchored top-right (matching the
  * default leak position), composited with each blend-mode chip's
@@ -7518,8 +7776,12 @@ function NoiseGlyph({ variant }: { variant: 'grain' | 'dust' }) {
     return (
       <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" focusable="false">
         <rect x={0.5} y={0.5} width={13} height={13} rx={2} fill="none" stroke="currentColor" strokeOpacity={0.2} />
+        {/* Phase 4.46: lower per-dot opacity (was 0.8) so the
+            cluster reads as fine noise even when the chip is in
+            its highlighted/active state. At 0.55 the dots blur
+            into a textured field rather than a checkerboard. */}
         {dots.map((d, i) => (
-          <circle key={i} cx={d.x} cy={d.y} r={d.r} fill="currentColor" fillOpacity={0.8} />
+          <circle key={i} cx={d.x} cy={d.y} r={d.r} fill="currentColor" fillOpacity={0.55} />
         ))}
       </svg>
     );
@@ -7649,18 +7911,11 @@ function FrameStyleSwatch({
  */
 const USER_FINISHING_PRESETS_KEY = 'flex-icon-grid:effects-presets:v1';
 
-interface UserFinishingPresetPatch {
-  vignette: FlexIconGridConfig['vignette'];
-  grain: FlexIconGridConfig['grain'];
-  // Phase 4.45: dust joined the finishing suite. Older saved
-  // presets without this key parse as undefined via
-  // parseFinishingPatch (which treats missing fields as "off").
-  dust: FlexIconGridConfig['dust'];
-  tint: FlexIconGridConfig['tint'];
-  lightLeak: FlexIconGridConfig['lightLeak'];
-  letterbox: FlexIconGridConfig['letterbox'];
-  frame: FlexIconGridConfig['frame'];
-}
+// Phase 4.46: alias the canonical `FinishingPatch` type from the
+// pure module so the saved-preset shape and the validated apply
+// patch stay in lockstep automatically as new finishing fields
+// land (dust, halftone, innerGlow, …).
+type UserFinishingPresetPatch = FinishingPatch;
 
 interface UserFinishingPreset {
   id: string;

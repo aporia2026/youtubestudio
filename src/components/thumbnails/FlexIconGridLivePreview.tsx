@@ -849,6 +849,7 @@ export function FlexIconGridLivePreview({
                   patternUnits="userSpaceOnUse"
                   width={tile}
                   height={tile}
+                  patternTransform={(h.angle ?? 0) !== 0 ? `rotate(${(h.angle ?? 0).toFixed(2)})` : undefined}
                 >
                   <circle
                     cx={cx}
@@ -964,6 +965,45 @@ export function FlexIconGridLivePreview({
                 style={{ mixBlendMode: l.blendMode ?? 'screen' }}
                 pointerEvents="none"
               />
+            </>
+          );
+        })()}
+
+        {/* Phase 4.46: inner glow — radial brightening at canvas
+            centre. Same userSpace radial geometry as vignette but
+            stops are reversed (centre = colour at intensity, edge
+            = transparent). Rendered AFTER the light leak and
+            BEFORE the vignette to mirror the composer's order. */}
+        {config.innerGlow && (() => {
+          const g = config.innerGlow;
+          const cx = config.width / 2;
+          const cy = config.height / 2;
+          const halfMin = Math.min(config.width, config.height) / 2;
+          const r = g.radius * halfMin;
+          return (
+            <>
+              <defs>
+                <radialGradient
+                  id="fg-preview-innerglow"
+                  gradientUnits="userSpaceOnUse"
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                >
+                  <stop offset="0%" stopColor={g.color} stopOpacity={g.intensity} />
+                  <stop offset="100%" stopColor={g.color} stopOpacity={0} />
+                </radialGradient>
+              </defs>
+              <g style={{ mixBlendMode: g.blendMode ?? 'screen' }}>
+                <rect
+                  x={0}
+                  y={0}
+                  width={config.width}
+                  height={config.height}
+                  fill="url(#fg-preview-innerglow)"
+                  pointerEvents="none"
+                />
+              </g>
             </>
           );
         })()}
