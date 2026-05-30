@@ -274,10 +274,16 @@ export function FlexIconGridLivePreview({
                       id="fg-preview-title-bar-shadow"
                       shadow={{
                         ...tb.shadow,
+                        // Phase 4.33 → 4.34: only displacing
+                        // positions auto-flip the direction. Overlay
+                        // bars float over cells; either direction is
+                        // meaningful, so we respect the raw sign.
                         offsetY:
-                          tb.position === 'bottom' || tb.position === 'overlay-bottom'
-                            ? -Math.abs(tb.shadow.offsetY)
-                            : Math.abs(tb.shadow.offsetY),
+                          tb.position === 'overlay-top' || tb.position === 'overlay-bottom'
+                            ? tb.shadow.offsetY
+                            : tb.position === 'bottom'
+                              ? -Math.abs(tb.shadow.offsetY)
+                              : Math.abs(tb.shadow.offsetY),
                       }}
                       shapeSize={tb.height}
                     />
@@ -619,12 +625,13 @@ export function FlexIconGridLivePreview({
               />
             ) : null,
           )}
-          {cellViews.map(({ cell, labelStyle }) =>
+          {cellViews.map(({ cell, geom, labelStyle }) =>
             labelStyle.textShadow ? (
               <LabelShadowFilterDef
                 key={`label-shadow-${cell.index}`}
                 cellIndex={cell.index}
                 labelStyle={labelStyle}
+                labelH={geom.labelH}
               />
             ) : null,
           )}
@@ -839,10 +846,10 @@ function CellGroup({
               <EmojiContent char={cell.content.char} geom={geom} />
             )}
             {cell.content.type === 'upload' && (
-              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} />
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} />
             )}
             {cell.content.type === 'ai-sticker' && cell.content.url && (
-              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} />
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} />
             )}
             {cell.content.type === 'text-only' && (
               <TextOnlyContent
@@ -1264,11 +1271,13 @@ function UploadContent({
   geom,
   shape,
   cornerRadius,
+  fit,
 }: {
   url: string;
   geom: ReturnType<typeof computeCellGeometry>;
   shape: CellShape;
   cornerRadius: number;
+  fit?: 'cover' | 'contain' | 'fill';
 }) {
   // Mask uploaded images to the cell shape via SVG <clipPath>. Each
   // cell gets a unique clip id so multiple uploads in one preview
@@ -1324,7 +1333,13 @@ function UploadContent({
         y={geom.shapeY}
         width={w}
         height={h}
-        preserveAspectRatio="xMidYMid slice"
+        // Phase 4.34: SVG preserveAspectRatio maps:
+        //   - 'cover' → 'xMidYMid slice' (crop to fill)
+        //   - 'contain' → 'xMidYMid meet' (whole image visible)
+        //   - 'fill' → 'none' (stretch)
+        preserveAspectRatio={
+          fit === 'contain' ? 'xMidYMid meet' : fit === 'fill' ? 'none' : 'xMidYMid slice'
+        }
         clipPath={`url(#${clipId})`}
       />
     </>
@@ -1405,23 +1420,30 @@ function LabelText({
 }
 
 /**
- * Phase 4.33: helper that emits a single `<filter>` entry for a
- * cell's resolved label shadow. Used inside the top-level shared
- * `<defs>` block so multiple shadowed labels collapse into one
- * defs block instead of polluting the SVG tree.
+ * Phase 4.33 → 4.34: helper that emits a single `<filter>` entry
+ * for a cell's resolved label shadow. Used inside the top-level
+ * shared `<defs>` block so multiple shadowed labels collapse into
+ * one defs block instead of polluting the SVG tree.
+ *
+ * Phase 4.34 — accepts the cell's actual computed `labelH` so the
+ * filter region is correctly sized per cell. Replaces the Phase
+ * 4.33 hardcoded `bandH = 60` estimate that under-sized regions
+ * on dense grids and over-sized them on hero cells.
  */
 function LabelShadowFilterDef({
   cellIndex,
   labelStyle,
+  labelH,
 }: {
   cellIndex: number;
   labelStyle: LabelStyle;
+  labelH: number;
 }) {
   const ts = labelStyle.textShadow;
   if (!ts) return null;
-  // Estimate the rendered size for the filter region. Matches the
-  // sizing math in LabelText; the actual size is recomputed there.
-  const bandH = labelStyle.position === 'overlay' ? 60 : 60;
+  // Mirrors the sizing math in LabelText so the region matches the
+  // actually-rendered text size for this cell.
+  const bandH = labelStyle.position === 'overlay' ? labelH * 0.7 : labelH;
   const sizePx = Math.max(12, Math.round(bandH * (labelStyle.maxLines === 2 ? 0.42 : 0.62)));
   const region = computeShadowFilterRegion(ts, sizePx);
   return (

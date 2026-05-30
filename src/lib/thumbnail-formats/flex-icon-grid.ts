@@ -81,12 +81,23 @@ export const SUPPORTED_CELL_SHAPES: readonly CellShape[] = [
  * render the right per-type form. Each variant carries ONLY the fields it
  * needs — narrow on purpose so the wire format stays small in history.
  */
+/** Phase 4.34: image fit mode for upload + ai-sticker cells.
+ *  - `'cover'` (default): crops to fill the shape, may lose edges.
+ *  - `'contain'`: whole image visible inside the shape, may show
+ *    transparent padding at top/bottom or left/right.
+ *  - `'fill'`: stretches the image to fill the shape exactly,
+ *    distorts aspect ratio. Useful for textures that should tile
+ *    seamlessly without crop.
+ * Pre-4.34 thumbnails (no `fit` field) render exactly the same as
+ * before — the default is `'cover'`. */
+export type ImageFitMode = 'cover' | 'contain' | 'fill';
+
 export type CellContent =
   | { type: 'icon-library'; name: string }
   | { type: 'emoji'; char: string }
-  | { type: 'upload'; url: string }
+  | { type: 'upload'; url: string; fit?: ImageFitMode }
   | { type: 'text-only' }
-  | { type: 'ai-sticker'; prompt: string; url?: string; style?: string };
+  | { type: 'ai-sticker'; prompt: string; url?: string; style?: string; fit?: ImageFitMode };
 
 /** Phase 2 enumeration. `ai-sticker` arrives in Phase 2D — carries a
  *  user-supplied prompt and (once generated) the URL of the cropped
@@ -1848,7 +1859,19 @@ function parseCellContent(raw: unknown): CellContent {
   const type = String(o.type);
   if (type === 'icon-library') return { type: 'icon-library', name: String(o.name ?? '') };
   if (type === 'emoji') return { type: 'emoji', char: String(o.char ?? '') };
-  if (type === 'upload') return { type: 'upload', url: String(o.url ?? '') };
+  // Phase 4.34: image fit mode for upload + ai-sticker. Only kept
+  // when the raw value is one of the three supported tokens.
+  const fit: ImageFitMode | undefined =
+    o.fit === 'cover' || o.fit === 'contain' || o.fit === 'fill'
+      ? o.fit
+      : undefined;
+  if (type === 'upload') {
+    return {
+      type: 'upload',
+      url: String(o.url ?? ''),
+      ...(fit ? { fit } : {}),
+    };
+  }
   if (type === 'ai-sticker') {
     const prompt = String(o.prompt ?? '');
     const url = o.url ? String(o.url) : undefined;
@@ -1858,6 +1881,7 @@ function parseCellContent(raw: unknown): CellContent {
       prompt,
       ...(url ? { url } : {}),
       ...(style ? { style } : {}),
+      ...(fit ? { fit } : {}),
     };
   }
   return { type: 'text-only' };

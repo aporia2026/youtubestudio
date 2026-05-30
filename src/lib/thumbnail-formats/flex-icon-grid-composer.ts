@@ -539,15 +539,21 @@ function renderTitleBarBackground(config: FlexIconGridConfig): string {
   // on its own pass and doesn't get a bar-level shadow either.
   if (titleBar.shadow && !isTransparent) {
     const filterId = 'fg-title-bar-shadow';
-    // Phase 4.33: bottom-style positions (regular + overlay) flip
-    // the shadow direction so it casts away from the canvas edge.
-    const isBottomPos =
-      titleBar.position === 'bottom' || titleBar.position === 'overlay-bottom';
+    // Phase 4.33 → 4.34: only the displacing positions auto-flip
+    // their shadow direction to cast away from the canvas edge.
+    // Overlay positions sit OVER the cells, so either direction
+    // can be meaningful (shadow can cast onto the cells below or
+    // above); we respect the user's raw `offsetY` sign in that case.
+    const isDisplacingBottom = titleBar.position === 'bottom';
+    const isOverlay =
+      titleBar.position === 'overlay-top' || titleBar.position === 'overlay-bottom';
     const directedShadow: NonNullable<ShadowStyle> = {
       ...titleBar.shadow,
-      offsetY: isBottomPos
-        ? -Math.abs(titleBar.shadow.offsetY)
-        : Math.abs(titleBar.shadow.offsetY),
+      offsetY: isOverlay
+        ? titleBar.shadow.offsetY
+        : isDisplacingBottom
+          ? -Math.abs(titleBar.shadow.offsetY)
+          : Math.abs(titleBar.shadow.offsetY),
     };
     const filterDef = emitShadowFilterDef(directedShadow, -1, titleBar.height);
     // Override the auto-generated cellIndex-based id since this is
@@ -870,7 +876,7 @@ async function buildCellOverlays(
 
   // Content overlays
   if (cell.content.type === 'upload') {
-    const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index);
+    const uploadOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit);
     if (uploadOverlay) overlays.push(await maybeTransformOverlay(uploadOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'ai-sticker' && cell.content.url) {
     // Generated stickers paint exactly like uploads — the URL points
@@ -878,7 +884,7 @@ async function buildCellOverlays(
     // R2. When the sticker has not yet been generated (`url` empty)
     // the cell falls through to its shape fill (handled by the base
     // SVG) — visible as an empty disc the user can click to generate.
-    const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index);
+    const stickerOverlay = await buildUploadOverlay(cell.content.url, geom, shape, ring, config.cornerRadius, fetchUpload, cell.index, cell.content.fit);
     if (stickerOverlay) overlays.push(await maybeTransformOverlay(stickerOverlay, rotation, flipX, flipY, shapeCx, shapeCy));
   } else if (cell.content.type === 'emoji') {
     const emojiOverlay = await buildEmojiOverlay(cell.content.char, geom);
@@ -918,6 +924,7 @@ async function buildUploadOverlay(
   cornerRadius: number,
   fetchUpload: UploadFetcher,
   cellIndex: number,
+  fit: 'cover' | 'contain' | 'fill' = 'cover',
 ): Promise<sharp.OverlayOptions | null> {
   const fetchStart = Date.now();
   let bytes: Buffer;
@@ -936,9 +943,21 @@ async function buildUploadOverlay(
   const w = Math.round(geom.shapeW);
   const h = Math.round(geom.shapeH);
   if (w <= 0 || h <= 0) return null;
-  // Cover-fit the bytes into the shape's bounding box.
+  // Phase 4.34: fit mode picks Sharp's resize strategy.
+  //   - 'cover' (default): crops to fill the shape box.
+  //   - 'contain': scales to fit inside with transparent padding.
+  //   - 'fill': stretches to fill exactly, distorts aspect ratio.
+  // Sharp's matching tokens use 'cover' / 'contain' / 'fill' so the
+  // mapping is 1:1. 'contain' uses a transparent background so the
+  // shape mask sees the padded edges as alpha-zero, which renders
+  // as the shape's underlying fill (off-white disc by default).
+  const sharpFit = fit === 'contain' ? 'contain' : fit === 'fill' ? 'fill' : 'cover';
   let imageBuffer = await sharp(bytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
-    .resize(w, h, { fit: 'cover', position: 'centre' })
+    .resize(w, h, {
+      fit: sharpFit,
+      position: 'centre',
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
     .png()
     .toBuffer();
   // Mask to the shape so corner pixels (circle / rounded square)
@@ -1201,7 +1220,11 @@ const ALPHA_MASK_CACHE = new Map<string, Buffer>();
 const ALPHA_MASK_CACHE_MAX = 64;
 
 async function getAlphaMaskBuffer(w: number, h: number, opacity: number): Promise<Buffer> {
-  const key = `${w}x${h}@${opacity}`;
+  // Phase 4.34: round opacity to 3 decimals in the key so near-equal
+  // floats (e.g. 0.3000001 vs 0.3) don't get separate cache entries.
+  // Sharp's alpha precision is ~256 levels (`alpha * 255`) so 3
+  // decimals captures every visually distinct value.
+  const key = `${w}x${h}@${opacity.toFixed(3)}`;
   const hit = ALPHA_MASK_CACHE.get(key);
   if (hit) {
     // Refresh insertion order so eviction is LRU.

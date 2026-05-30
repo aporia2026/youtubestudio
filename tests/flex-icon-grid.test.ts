@@ -1689,6 +1689,55 @@ function seededRng(seq: number[]): () => number {
   };
 }
 
+describe('Phase 4.34 — image fit modes', () => {
+  it('round-trips upload fit through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].content = { type: 'upload', url: 'https://example.com/x.jpg', fit: 'contain' };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('upload');
+    if (content.type === 'upload') {
+      expect(content.fit).toBe('contain');
+    }
+  });
+  it('round-trips ai-sticker fit through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].content = {
+      type: 'ai-sticker', prompt: 'x', url: 'https://example.com/s.png', fit: 'fill',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('ai-sticker');
+    if (content.type === 'ai-sticker') {
+      expect(content.fit).toBe('fill');
+    }
+  });
+  it('drops unsupported fit values', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{
+        index: 1, label: 'A',
+        content: { type: 'upload', url: 'https://example.com/x.jpg', fit: 'auto' },
+      }],
+    });
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('upload');
+    if (content.type === 'upload') {
+      expect(content.fit).toBeUndefined();
+    }
+  });
+  it('omits fit field entirely when absent (default = cover)', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].content = { type: 'upload', url: 'https://example.com/x.jpg' };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    const content = reparsed.cells[0].content;
+    expect(content.type).toBe('upload');
+    if (content.type === 'upload') {
+      expect(content.fit).toBeUndefined();
+    }
+  });
+});
+
 describe('Phase 4.33 — title bar overlay position', () => {
   it('round-trips overlay-top through parseConfig', () => {
     const original = makeDefaultConfig(2, 2);

@@ -1868,14 +1868,40 @@ export function FlexIconGridPanel({
             </div>
           )}
           {selectedCell.content.type === 'upload' && (
-            <UploadField
-              currentUrl={selectedCell.content.url}
-              uploading={uploadingCells.has(selectedCell.index)}
-              onFile={(file) => uploadCellImage(selectedCell.index, file)}
-              onClear={() =>
-                updateCell(selectedCell.index, { content: { type: 'upload', url: '' } })
-              }
-            />
+            <>
+              <UploadField
+                currentUrl={selectedCell.content.url}
+                uploading={uploadingCells.has(selectedCell.index)}
+                onFile={(file) => uploadCellImage(selectedCell.index, file)}
+                onClear={() =>
+                  updateCell(selectedCell.index, { content: { type: 'upload', url: '' } })
+                }
+              />
+              {/* Phase 4.34: image fit mode for upload cells. Only
+                  shown once a URL is set so the picker doesn't
+                  surface before the user picks a file. */}
+              {selectedCell.content.url && (
+                <ImageFitPicker
+                  fit={
+                    selectedCell.content.type === 'upload'
+                      ? selectedCell.content.fit ?? 'cover'
+                      : 'cover'
+                  }
+                  onChange={(next) =>
+                    updateCell(selectedCell.index, {
+                      content: {
+                        type: 'upload',
+                        url:
+                          selectedCell.content.type === 'upload'
+                            ? selectedCell.content.url
+                            : '',
+                        ...(next === 'cover' ? {} : { fit: next }),
+                      },
+                    })
+                  }
+                />
+              )}
+            </>
           )}
           {selectedCell.content.type === 'ai-sticker' && (
             <div>
@@ -3545,13 +3571,14 @@ export function FlexIconGridPanel({
                               titleBar: { ...config.titleBar!, position: opt.value },
                             })
                           }
-                          style={chipStyle(active)}
+                          style={{ ...chipStyle(active), display: 'inline-flex', alignItems: 'center', gap: 6 }}
                           title={
                             opt.value.startsWith('overlay')
                               ? 'Sit over the cells edge-to-edge (grid stays full canvas size)'
                               : 'Displace the cell grid'
                           }
                         >
+                          <PositionGlyph variant={opt.value} />
                           {opt.label}
                         </button>
                       );
@@ -5386,6 +5413,141 @@ function normalizeHex(input: string): string {
     return v;
   }
   return `bad:${v}`;
+}
+
+// ─── Image fit picker (Phase 4.34) ──────────────────────────────────────────
+
+/**
+ * Three-chip picker for `upload`/`ai-sticker` cell content fit
+ * mode. `cover` crops to fill; `contain` shows the whole image
+ * with transparent padding; `fill` stretches to the shape exactly.
+ * Tiny SVG glyphs depict each mode at a glance.
+ */
+function ImageFitPicker({
+  fit,
+  onChange,
+}: {
+  fit: 'cover' | 'contain' | 'fill';
+  onChange: (next: 'cover' | 'contain' | 'fill') => void;
+}) {
+  return (
+    <div style={{ marginTop: 10 }}>
+      <label style={labelStyle}>Image fit</label>
+      <div style={chipRowStyle}>
+        {(
+          [
+            { value: 'cover', label: 'Cover' },
+            { value: 'contain', label: 'Contain' },
+            { value: 'fill', label: 'Fill' },
+          ] as const
+        ).map((opt) => {
+          const active = fit === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(opt.value)}
+              style={{ ...chipStyle(active), display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              title={
+                opt.value === 'cover'
+                  ? 'Crop to fill the shape — may lose edges'
+                  : opt.value === 'contain'
+                    ? 'Whole image visible — may show padding'
+                    : 'Stretch to fill — distorts aspect ratio'
+              }
+            >
+              <FitGlyph variant={opt.value} />
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Tiny SVG glyph showing the fit mode visually. The shape (cell)
+ *  is a 22 × 16 rounded rectangle; the inner box represents the
+ *  image. */
+function FitGlyph({ variant }: { variant: 'cover' | 'contain' | 'fill' }) {
+  // Outer shape (cell bounds) is the same for all three.
+  const outer = (
+    <rect
+      x={0.5}
+      y={0.5}
+      width={21}
+      height={15}
+      rx={2}
+      ry={2}
+      fill="transparent"
+      stroke="currentColor"
+      strokeOpacity={0.35}
+    />
+  );
+  return (
+    <svg width={22} height={16} viewBox="0 0 22 16" aria-hidden="true" focusable="false">
+      {outer}
+      {variant === 'cover' && (
+        // Image overflows the shape (crop on left/right).
+        <rect x={-3} y={2} width={28} height={12} fill="currentColor" fillOpacity={0.55} />
+      )}
+      {variant === 'contain' && (
+        // Image inside the shape with horizontal padding.
+        <rect x={5} y={2} width={12} height={12} fill="currentColor" fillOpacity={0.55} />
+      )}
+      {variant === 'fill' && (
+        // Image fills exactly to the bounds.
+        <rect x={2} y={2} width={18} height={12} fill="currentColor" fillOpacity={0.55} />
+      )}
+    </svg>
+  );
+}
+
+// ─── Title bar position glyph (Phase 4.34) ──────────────────────────────────
+
+/**
+ * Tiny SVG showing where the title bar sits relative to the cell
+ * grid for each `TitleBarSpec['position']` variant. The cells are
+ * a 2×2 grid of squares; the bar is a stripe at the top or bottom.
+ * Overlay variants paint the bar OVER the cells (with reduced
+ * opacity); displacing variants paint the cells smaller so the bar
+ * sits adjacent. Uses `currentColor` so the glyph inherits the
+ * chip's text colour and works under any theme.
+ */
+function PositionGlyph({
+  variant,
+}: {
+  variant: 'top' | 'bottom' | 'overlay-top' | 'overlay-bottom';
+}) {
+  const isOverlay = variant.startsWith('overlay');
+  const isTop = variant === 'top' || variant === 'overlay-top';
+  // Layout: glyph is 22×16. Bar height = 4; cell area = remaining
+  // space (12 px tall when displacing) OR full 16 px when overlay.
+  const barH = 4;
+  const cellAreaY = isOverlay ? 0 : isTop ? barH : 0;
+  const cellAreaH = isOverlay ? 16 : 16 - barH;
+  const barY = isTop ? 0 : 16 - barH;
+  return (
+    <svg width={22} height={16} viewBox="0 0 22 16" aria-hidden="true" focusable="false">
+      {/* Cell grid: 2 × 2 squares */}
+      <g fill="currentColor" fillOpacity={0.45}>
+        <rect x={1} y={cellAreaY + 1} width={9} height={cellAreaH / 2 - 1} />
+        <rect x={12} y={cellAreaY + 1} width={9} height={cellAreaH / 2 - 1} />
+        <rect x={1} y={cellAreaY + cellAreaH / 2} width={9} height={cellAreaH / 2 - 1} />
+        <rect x={12} y={cellAreaY + cellAreaH / 2} width={9} height={cellAreaH / 2 - 1} />
+      </g>
+      {/* Bar */}
+      <rect
+        x={0}
+        y={barY}
+        width={22}
+        height={barH}
+        fill="currentColor"
+        fillOpacity={isOverlay ? 0.7 : 1}
+      />
+    </svg>
+  );
 }
 
 // ─── Label position preview (Phase 4.19) ────────────────────────────────────
