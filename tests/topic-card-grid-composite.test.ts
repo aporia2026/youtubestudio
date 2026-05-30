@@ -5,6 +5,7 @@ import {
   cellRect,
   circularMaskSvg,
   detectAiCellRect,
+  detectAiDividerLine,
   detectAiLabelTop,
   escapePangoText,
   fitCover,
@@ -156,6 +157,67 @@ describe('detectAiCellRect', () => {
     // not the gap to the right cell.
     expect(detected.x).toBeLessThan(20);
     expect(detected.x + detected.w).toBeLessThan(50);
+  });
+});
+
+// ─── detectAiDividerLine (r2.4) ─────────────────────────────────────────────
+
+describe('detectAiDividerLine', () => {
+  it('finds the top edge of a horizontal black divider inside the cell', async () => {
+    // Cell rect 10..90, with a black divider line at y=70 (1 px thick).
+    // Scanner walks down from 40% of cellH (y >= 38) and should return
+    // 70 — the divider's top edge — so the band overlay can land its
+    // own hairline on the same y instead of below it.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="10" width="80" height="60" fill="red"/>
+      <line x1="10" y1="70" x2="90" y2="70" stroke="black" stroke-width="2"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 10, y: 10, w: 80, h: 80 };
+    const dividerY = detectAiDividerLine(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(dividerY).not.toBeNull();
+    // The 2-px stroke is centred on y=70 so its top edge is at y=69
+    // and its bottom edge at y=71. The scanner returns whichever row
+    // first crosses the coverage threshold — anywhere in [69, 71] is
+    // correct.
+    expect(dividerY!).toBeGreaterThanOrEqual(68);
+    expect(dividerY!).toBeLessThanOrEqual(72);
+  });
+
+  it('returns null when the cell has no horizontal dark line in the bottom area', async () => {
+    // Solid red cell. No divider anywhere — scanner must report null
+    // so the caller can fall back to the white-row heuristic.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="10" width="80" height="80" fill="red"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 10, y: 10, w: 80, h: 80 };
+    const dividerY = detectAiDividerLine(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(dividerY).toBeNull();
+  });
+
+  it('finds the divider even when the illustration above also contains dark pixels', async () => {
+    // Illustration with scattered dark pixels (mimics anti-aliased
+    // details in a real illustration) followed by a divider at y=72.
+    // The scattered pixels are sparse enough that no row hits the
+    // coverage threshold until the divider.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="10" width="80" height="60" fill="#eeeeee"/>
+      <circle cx="50" cy="40" r="4" fill="black"/>
+      <line x1="10" y1="72" x2="90" y2="72" stroke="black" stroke-width="2"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 10, y: 10, w: 80, h: 80 };
+    const dividerY = detectAiDividerLine(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(dividerY).not.toBeNull();
+    expect(dividerY!).toBeGreaterThanOrEqual(70);
+    expect(dividerY!).toBeLessThanOrEqual(74);
   });
 });
 
@@ -530,6 +592,81 @@ describe('applyCellUploads', () => {
     expect(gr).toBe(0);
     expect(gg).toBe(0);
     expect(gb).toBe(0);
+  });
+
+  it('paints a top border on every cell in pure-prompt mode (r2.4)', async () => {
+    // r2.4: the AI sometimes omits the top border on row 2+ cells when
+    // it shares borders with the row above. The composite now paints a
+    // thin black line at aiRect.y on every cell so every cell ends up
+    // with a visible top border regardless of what the AI drew.
+    //
+    // Setup: white base (no AI borders anywhere) so the "before" top
+    // edge of each cell is white. Run pure-prompt composite; expect
+    // the top edge of each cell to be dark afterwards.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 255, g: 255, b: 255 });
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'square',
+      uploads: [],
+    });
+    // For each cell, sample at the centre of the top edge — should be
+    // dark (the painted top border).
+    for (const card of cards) {
+      const rect = cellRect(layout, card.index);
+      const [tr, tg, tb] = await pixelAt(out, rect.x + Math.floor(rect.w / 2), rect.y);
+      const sum = tr + tg + tb;
+      expect(sum, `card ${card.index} top edge should be dark (painted border)`).toBeLessThan(200);
+    }
+    // Sanity: a pixel well inside the illustration area (not on the
+    // top border) should still be white — the top border paint is
+    // only at the very top, it doesn't bleed downward.
+    const r1 = cellRect(layout, 1);
+    const [ir, ig, ib] = await pixelAt(out, r1.x + Math.floor(r1.w / 2), r1.y + Math.floor(r1.h * 0.4));
+    expect(ir + ig + ib).toBeGreaterThan(700);
+  });
+
+  it('lands the band at the AI divider line, eliminating the doubled-hairline gap (r2.4)', async () => {
+    // r2.4: when the AI drew its own divider between illustration and
+    // label, the old r2.3 white-row heuristic placed the band BELOW the
+    // divider, so the divider stayed visible above our hairline. The
+    // new divider-line scanner places the band's top edge AT the
+    // divider's top so our overlay's white fill covers the AI's
+    // divider entirely. The band's hairline lands at the divider's y.
+    //
+    // Setup: build a base where each cell has a visible illustration
+    // (red) ABOVE the divider and an AI-drawn black hairline. After
+    // the composite runs, the row just BELOW the hairline must be
+    // white (the band's overpaint), proving the band absorbed the
+    // divider and what's left is our clean overpaint.
+    const cellW = (CANVAS_W - 2 * 8 - 8) / 2;
+    const cellH = (CANVAS_H - 2 * 8 - 8) / 2;
+    const r1 = { x: 8, y: 8, w: cellW, h: cellH };
+    const dividerY = r1.y + Math.floor(r1.h * 0.78);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CANVAS_W}" height="${CANVAS_H}">
+      <rect x="0" y="0" width="${CANVAS_W}" height="${CANVAS_H}" fill="white"/>
+      <rect x="${r1.x}" y="${r1.y}" width="${r1.w}" height="${r1.h * 0.78}" fill="red"/>
+      <line x1="${r1.x}" y1="${dividerY}" x2="${r1.x + r1.w}" y2="${dividerY}" stroke="black" stroke-width="2"/>
+    </svg>`;
+    const base = await sharp(Buffer.from(svg)).png().toBuffer();
+    const layout = makeDefaultLayout(2, 2, CANVAS_W, CANVAS_H, 'square');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards: [cards[0]],
+      cardShape: 'square',
+      uploads: [],
+    });
+    // Sample a few rows below the AI divider, well to the LEFT of the
+    // cell centre so we don't land inside the centred label glyph
+    // (the "A" label renders dark and would otherwise fail this
+    // assertion for the wrong reason). The band's white fill must
+    // dominate here.
+    const sampleX = r1.x + Math.floor(r1.w * 0.15);
+    const [br, bg, bb] = await pixelAt(out, sampleX, dividerY + 6);
+    expect(br + bg + bb, 'rows below AI divider should be white (band overpaint)').toBeGreaterThan(600);
   });
 
   it('paints each upload independently when multiple cells are uploaded', async () => {

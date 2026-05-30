@@ -13,9 +13,12 @@ import {
   makeDefaultLayout,
   computeRegionsFor,
   DEFAULT_CANVAS,
+  DEFAULT_STYLE,
+  STYLE_FREE_FORM_MAX_CHARS,
   type CardShape,
   type TopicCard,
   type GlobalPalette,
+  type ThumbnailStyle,
 } from '@/lib/thumbnail-formats/topic-card-grid';
 import {
   applyCellUploads,
@@ -158,7 +161,26 @@ interface ReqBody {
   brightness?: 'bright' | 'mixed' | 'moody';
   /** Detail register. Defaults to `'clean'` post-Phase-1.7. */
   detail?: 'clean' | 'detailed';
+  /** Style preset. Defaults to `'cartoon'`. `'free-form'` requires
+   *  `styleFreeForm` to be set; other presets ignore it. */
+  style?: ThumbnailStyle;
+  /** Free-form style description. Server-side sanitised + clipped at
+   *  STYLE_FREE_FORM_MAX_CHARS before being interpolated into the
+   *  prompt. */
+  styleFreeForm?: string;
 }
+
+/** Set of known style presets, used to validate `body.style` against
+ *  the allowlist. Unknown values fall back to the default. Mirrors the
+ *  `ThumbnailStyle` union in `topic-card-grid.ts`. */
+const KNOWN_STYLES: ReadonlySet<ThumbnailStyle> = new Set<ThumbnailStyle>([
+  'cartoon',
+  'photoreal',
+  'flat-2d',
+  'sketch',
+  'cinematic',
+  'free-form',
+]);
 
 /** Hard cap on uploaded image bytes per cell. Matches the presign route's
  *  `MAX_FILE_SIZE` so a presigned upload that slipped past the browser
@@ -311,6 +333,23 @@ export async function POST(req: NextRequest) {
     const brightness =
       body.brightness === 'mixed' || body.brightness === 'moody' ? body.brightness : 'bright';
     const detail = body.detail === 'detailed' ? 'detailed' : 'clean';
+    // Validate `style` against the allowlist; unknown / missing falls
+    // back to DEFAULT_STYLE. The free-form text gets clipped + control-
+    // stripped inside `topicCardGridImagePrompt` (via sanitizeForPrompt),
+    // but we apply the char cap here too so an absurd payload is
+    // rejected before it reaches prompt construction.
+    const style: ThumbnailStyle = KNOWN_STYLES.has(body.style as ThumbnailStyle)
+      ? (body.style as ThumbnailStyle)
+      : DEFAULT_STYLE;
+    const styleFreeFormRaw = typeof body.styleFreeForm === 'string' ? body.styleFreeForm : '';
+    if (styleFreeFormRaw.length > STYLE_FREE_FORM_MAX_CHARS * 4) {
+      // 4× the cap is a hard ceiling for the raw payload — sanitizeForPrompt
+      // clips to the real cap, but reject obvious abuse early.
+      return NextResponse.json(
+        { error: `styleFreeForm too long (${styleFreeFormRaw.length} chars; max ${STYLE_FREE_FORM_MAX_CHARS}).` },
+        { status: 400 },
+      );
+    }
     const prompt = topicCardGridImagePrompt({
       cards,
       palette,
@@ -321,6 +360,8 @@ export async function POST(req: NextRequest) {
       uploadedCellIndexes: uploadedCellIndexes.length > 0 ? uploadedCellIndexes : undefined,
       brightness,
       detail,
+      style,
+      styleFreeForm: style === 'free-form' ? styleFreeFormRaw : undefined,
     });
 
     logger.info('[thumb-format-grid image] start', {
@@ -335,6 +376,8 @@ export async function POST(req: NextRequest) {
       ref_host: safeRefUrl.hostname,
       card_shape: cardShape,
       uploads_count: uploadRequests.length,
+      style,
+      style_free_form_chars: style === 'free-form' ? styleFreeFormRaw.length : 0,
     });
 
     // Each provider branch produces `aiBytes` (the raw AI output) plus a

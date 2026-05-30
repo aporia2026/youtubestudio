@@ -535,26 +535,86 @@ const WHITE_PIXEL_THRESHOLD = 700;
 const WHITE_ROW_COVERAGE = 0.7;
 
 /**
+ * Row coverage ratio required to call a row "mostly dark" — i.e. a
+ * candidate illustration→label divider line. 0.5 catches a solid
+ * horizontal black line plus its anti-aliasing without false-
+ * positiving on a row that happens to clip a dark corner of the
+ * illustration. Matches the same ratio `detectAiCellRect` uses for
+ * border rows.
+ */
+const DARK_ROW_COVERAGE = 0.5;
+
+/**
+ * Find the top of the AI's drawn illustration→label divider line
+ * inside a detected cell rect.
+ *
+ * Why this exists: GPT Image 2 draws a horizontal black divider
+ * between the illustration and the label band. Our composite paints
+ * its own hairline + label band on top. If we anchor our overlay
+ * BELOW the AI's divider (which was the r2.3 behaviour — find the
+ * first mostly-white row), the AI's divider stays visible above our
+ * hairline and the user sees TWO parallel horizontal lines with a
+ * sliver of white between them — the "doubled hairline" artefact.
+ *
+ * The fix is to start the overlay AT the top edge of the AI's
+ * divider line, so our overlay's white fill covers the divider and
+ * our own hairline replaces it at the exact same y. Result: a
+ * single clean hairline at the seam, no gap.
+ *
+ * Scanner: walks DOWN through the cell from 40% of cellH looking
+ * for the FIRST row whose dark-pixel ratio exceeds
+ * `DARK_ROW_COVERAGE`. That's the top edge of the AI's divider
+ * line. We stop scanning at 95% of cellH so a stray dark row near
+ * the cell's bottom border can't get picked.
+ *
+ * Returns the y coordinate of the divider's top edge in canvas
+ * coords, or `null` when no candidate row is found (caller should
+ * fall back to the "first mostly-white row" heuristic, then to the
+ * 80% default).
+ */
+export function detectAiDividerLine(
+  rawData: Uint8Array | Buffer,
+  canvasW: number,
+  canvasH: number,
+  channels: number,
+  detected: { x: number; y: number; w: number; h: number },
+): number | null {
+  const xStart = Math.max(0, detected.x + 2);
+  const xEnd = Math.min(canvasW, detected.x + detected.w - 2);
+  const totalX = Math.max(1, xEnd - xStart);
+  const scanStart = Math.max(0, detected.y + Math.floor(detected.h * 0.4));
+  const scanEnd = Math.min(canvasH - 1, detected.y + Math.floor(detected.h * 0.95));
+  for (let y = scanStart; y <= scanEnd; y++) {
+    let darkCount = 0;
+    for (let x = xStart; x < xEnd; x++) {
+      const idx = (y * canvasW + x) * channels;
+      if (rawData[idx] + rawData[idx + 1] + rawData[idx + 2] < BORDER_DARK_THRESHOLD) {
+        darkCount++;
+      }
+    }
+    if (darkCount / totalX >= DARK_ROW_COVERAGE) return y;
+  }
+  return null;
+}
+
+/**
  * Find the top of the AI's label area inside a detected cell rect.
  *
- * GPT Image 2 frequently renders each card as TWO stacked rectangles
- * — an illustration panel on top, a narrower label box beneath, with
- * a white gap between them — instead of one unified cell with an
- * internal label strip. The pure 80%-from-the-top heuristic for the
- * band overlay then either lands in the gap (leaving the AI's label
- * box's top half visible above our overlay) or partially over the
- * illustration. Neither looks aligned.
+ * Used as the fallback when `detectAiDividerLine` returns `null` —
+ * the AI didn't draw a clear divider, but the cell may still have a
+ * usable white-strip-on-the-bottom layout. Walks DOWN from 40% of
+ * cellH looking for the FIRST mostly-white row, which is either the
+ * gap between a two-rectangle illustration / label render or the
+ * top of a unified cell's white label strip.
  *
- * This scanner walks DOWN through the cell starting at 40% of cell
- * height looking for the FIRST mostly-white row. That row is either
- * the gap between illustration and label box (two-rectangle render)
- * or the top of the AI's label strip (unified render). Either way
- * it's the right place for our band overlay to start.
+ * Pre-r2.4 this was the primary detector; r2.4 demoted it because
+ * it lands BELOW the AI's divider, leaving the divider visible above
+ * our overlay (the "doubled hairline" artefact). It still beats
+ * "80% of cellH" as a last-ditch fallback, so we keep it.
  *
- * Returns the y coordinate of the first mostly-white row in cell
- * coords, or `null` if no such row is found before reaching the
- * bottom 5% of the cell (caller should fall back to the 80% default
- * in that case).
+ * Returns the y coordinate of the first mostly-white row in canvas
+ * coords, or `null` if no such row is found (caller should fall back
+ * to the 80% default).
  */
 export function detectAiLabelTop(
   rawData: Uint8Array | Buffer,
@@ -783,18 +843,24 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       // panel's border above it. Falls back to `rect` if detection
       // wasn't run or failed for this card.
       const aiRect = detectedRects?.get(card.index) ?? rect;
-      // Find the AI's actual label-area top. When the AI rendered
-      // the card as two stacked rectangles (illustration panel + a
-      // narrower label box with a gap between), this is the y where
-      // the gap or label box begins. When the AI rendered a unified
-      // cell, this is the y where the AI's white label strip begins.
-      // Either way it's the right top edge for our band overlay.
-      // Falls back to the 80%-of-cellH default if the scanner can't
-      // find a mostly-white row.
+      // Find the band top in this order of preference:
+      //   1. The AI's drawn illustration→label divider line (r2.4).
+      //      Starting at the divider's TOP edge lets our overlay's
+      //      white fill cover the AI's divider, and our hairline
+      //      replaces it at the same y — single visible line, no
+      //      doubled-hairline gap.
+      //   2. The first mostly-white row inside the cell. Lands BELOW
+      //      the divider when one exists, so it's the second pick;
+      //      still useful when the AI rendered a two-rectangle layout
+      //      with a clean white gap.
+      //   3. 80% of cellH (the canonical layout fraction). Last-ditch
+      //      fallback when detection finds neither a divider nor a
+      //      white row.
       const fallbackBandTop = aiRect.y + Math.round(aiRect.h * SQUARE_ILLUSTRATION_FRAC);
-      const detectedLabelTop = (() => {
+      let bandTopSource: 'divider' | 'white-row-fallback' | 'percentage-fallback' = 'percentage-fallback';
+      const detectedDivider = (() => {
         if (!useBorderDetection || !aiPixels) return null;
-        return detectAiLabelTop(
+        return detectAiDividerLine(
           aiPixels.data,
           aiPixels.width,
           aiPixels.height,
@@ -802,13 +868,37 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
           aiRect,
         );
       })();
+      const detectedLabelTop = detectedDivider === null && useBorderDetection && aiPixels
+        ? detectAiLabelTop(
+            aiPixels.data,
+            aiPixels.width,
+            aiPixels.height,
+            aiPixels.channels,
+            aiRect,
+          )
+        : null;
       // Clamp the detected top so the band doesn't end up taller than
       // 40% of cellH (sanity floor — we don't want to swallow the
-      // illustration if the scanner snaps to a stray white row).
+      // illustration if the scanner snaps to a stray dark or white row).
       const minBandTop = aiRect.y + Math.round(aiRect.h * 0.6);
-      const bandTop = detectedLabelTop !== null
-        ? Math.max(minBandTop, detectedLabelTop)
-        : fallbackBandTop;
+      let bandTop: number;
+      if (detectedDivider !== null) {
+        bandTop = Math.max(minBandTop, detectedDivider);
+        bandTopSource = 'divider';
+      } else if (detectedLabelTop !== null) {
+        bandTop = Math.max(minBandTop, detectedLabelTop);
+        bandTopSource = 'white-row-fallback';
+      } else {
+        bandTop = fallbackBandTop;
+        bandTopSource = 'percentage-fallback';
+      }
+      console.info('[topic-card-grid composite divider-scan]', {
+        card_index: card.index,
+        detected_divider_y: detectedDivider,
+        detected_white_row_y: detectedLabelTop,
+        band_top_used: bandTop,
+        source: bandTopSource,
+      });
       const bandH = aiRect.y + aiRect.h - bandTop;
       // L-shaped slack wipe around the band. Anchored at the DETECTED
       // edges so the wipe lands in genuine AI gutter slack rather
@@ -855,6 +945,28 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
         const overlay = await buildSquareLabelBandOverlay(card.label, aiRect.w, bandH);
         overlays.push({ input: overlay, top: bandTop, left: aiRect.x });
       }
+      // r2.4: paint a thin black top border at the top edge of every
+      // cell. The AI sometimes omits the top border on row 2+ when it
+      // renders the grid with cells sharing borders (top row's bottom
+      // = bottom row's top, drawn once). The shared line gets wiped
+      // by the top row's bottom gutter wipe — or never drawn for the
+      // bottom row at all — leaving row 2 visibly "open" at the top.
+      // Re-painting unconditionally at aiRect.y guarantees every cell
+      // has a top border: cells that already had one get the same y
+      // re-stroked (no visible change); cells that didn't get the
+      // missing line. Width = squareBorderPx, so the stroke matches
+      // the rest of our composite borders.
+      const topBorderH = squareBorderPx(aiRect.w);
+      const topBorderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${aiRect.w}" height="${topBorderH}"><rect x="0" y="0" width="${aiRect.w}" height="${topBorderH}" fill="${BLACK}"/></svg>`;
+      const topBorderPng = await sharp(Buffer.from(topBorderSvg)).png().toBuffer();
+      overlays.push({ input: topBorderPng, top: aiRect.y, left: aiRect.x });
+      console.info('[topic-card-grid composite top-border]', {
+        card_index: card.index,
+        ai_rect_y: aiRect.y,
+        ai_rect_x: aiRect.x,
+        width: aiRect.w,
+        thickness: topBorderH,
+      });
     }
   }
 

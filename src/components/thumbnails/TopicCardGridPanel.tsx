@@ -86,6 +86,13 @@ export interface TopicCardGridDraftState {
   /** 1-based cell index → R2 download URL of an uploaded image. Restored
    *  so a refresh mid-review keeps the user's attachments. */
   uploads?: Record<number, string>;
+  /** Visual style preset the user picked. Drafts saved before the Style
+   *  selector shipped restore as `'cartoon'`. */
+  style?: ThumbnailStyle;
+  /** Free-form style description, only used when `style === 'free-form'`.
+   *  Persisted so a refresh mid-edit doesn't blow away the user's typed
+   *  style sentence. */
+  styleFreeForm?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -115,6 +122,34 @@ const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
 const CARD_SHAPE_PREF_KEY = 'topic_card_grid_default_card_shape';
 const BRIGHTNESS_PREF_KEY = 'topic_card_grid_default_brightness';
 const DETAIL_PREF_KEY = 'topic_card_grid_default_detail';
+const STYLE_PREF_KEY = 'topic_card_grid_default_style';
+const STYLE_FREE_FORM_PREF_KEY = 'topic_card_grid_default_style_free_form';
+
+/** Visual style register, mirrored from `ThumbnailStyle` in
+ *  `src/lib/thumbnail-formats/topic-card-grid.ts`. Kept as a duplicate
+ *  local type so this client component doesn't import server-only
+ *  module surface. */
+export type ThumbnailStyle =
+  | 'cartoon'
+  | 'photoreal'
+  | 'flat-2d'
+  | 'sketch'
+  | 'cinematic'
+  | 'free-form';
+
+const STYLE_OPTIONS: { value: ThumbnailStyle; label: string; hint: string }[] = [
+  { value: 'cartoon', label: 'Cartoon', hint: 'Bold flat illustration, sticker-like shapes. The current default look.' },
+  { value: 'photoreal', label: 'Photoreal', hint: 'Real photos, real software screens, real product photos, real logos.' },
+  { value: 'flat-2d', label: 'Flat 2D', hint: 'Clean vector flat illustration. Restrained palette, no gradients.' },
+  { value: 'sketch', label: 'Sketch', hint: 'Hand-drawn ink line art on textured paper.' },
+  { value: 'cinematic', label: 'Cinematic', hint: 'Moody, atmospheric, film-still feel. Darker palettes OK.' },
+  { value: 'free-form', label: 'Free-form', hint: 'Describe the style yourself in plain English.' },
+];
+
+/** Hard cap on the free-form style description characters. Mirrors
+ *  `STYLE_FREE_FORM_MAX_CHARS` on the server so the browser surfaces
+ *  the limit before the round-trip. */
+const STYLE_FREE_FORM_MAX_CHARS = 300;
 
 /**
  * Style block for the icon_concept textarea on each review-card row.
@@ -276,6 +311,32 @@ export function TopicCardGridPanel({
     try { localStorage.setItem(DETAIL_PREF_KEY, detailLevel); } catch { /* ignore */ }
   }, [detailLevel]);
 
+  // Style preset. Defaults to Cartoon so existing flows produce the
+  // same visual on first generation. Persisted to localStorage so a
+  // repeat user lands back in their preferred preset. Free-form text
+  // is persisted separately — only consulted when style === 'free-form'.
+  const [style, setStyle] = useState<ThumbnailStyle>(() => {
+    if (typeof window === 'undefined') return 'cartoon';
+    try {
+      const v = localStorage.getItem(STYLE_PREF_KEY) as ThumbnailStyle | null;
+      if (v && STYLE_OPTIONS.some((o) => o.value === v)) return v;
+    } catch { /* fall through */ }
+    return 'cartoon';
+  });
+  const [styleFreeForm, setStyleFreeForm] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      return localStorage.getItem(STYLE_FREE_FORM_PREF_KEY) ?? '';
+    } catch { /* fall through */ }
+    return '';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STYLE_PREF_KEY, style); } catch { /* ignore */ }
+  }, [style]);
+  useEffect(() => {
+    try { localStorage.setItem(STYLE_FREE_FORM_PREF_KEY, styleFreeForm); } catch { /* ignore */ }
+  }, [styleFreeForm]);
+
   // Per-cell uploads. Keyed by 1-based card index so the same number that
   // appears in the LLM's TopicCard.index is the lookup key. Values are
   // R2 download URLs returned by the presign upload route.
@@ -342,12 +403,19 @@ export function TopicCardGridPanel({
     setCards(restoredDraftState.cards);
     setPalette(restoredDraftState.palette);
     setNotesForImageModel(restoredDraftState.notesForImageModel);
+    if (restoredDraftState.style && STYLE_OPTIONS.some((o) => o.value === restoredDraftState.style)) {
+      setStyle(restoredDraftState.style);
+    }
+    if (typeof restoredDraftState.styleFreeForm === 'string') {
+      setStyleFreeForm(restoredDraftState.styleFreeForm);
+    }
     console.info('[topic-card-grid panel draft] hydrated', {
       card_count: restoredDraftState.cards?.length ?? 0,
       grid_mode: restoredDraftState.gridMode,
       format_mode: restoredDraftState.formatMode,
       card_shape: restoredDraftState.cardShape ?? 'square',
       uploads_count: Object.keys(restoredDraftState.uploads ?? {}).length,
+      style: restoredDraftState.style ?? 'cartoon',
     });
   }, [restoredDraftState]);
 
@@ -369,11 +437,13 @@ export function TopicCardGridPanel({
       notesForImageModel,
       cardShape,
       uploads,
+      style,
+      styleFreeForm,
     });
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
-    cardShape, uploads,
+    cardShape, uploads, style, styleFreeForm,
     onDraftStateChange,
   ]);
 
@@ -626,6 +696,8 @@ export function TopicCardGridPanel({
           uploads: liveUploadsPayload.length > 0 ? liveUploadsPayload : undefined,
           brightness,
           detail: detailLevel,
+          style,
+          styleFreeForm: style === 'free-form' ? styleFreeForm.trim() : undefined,
         }),
       });
       if (!res.ok) {
@@ -964,6 +1036,70 @@ export function TopicCardGridPanel({
             <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
               Clean (default) favours one iconic subject per card. Detailed allows photoreal / multi-element compositions.
             </p>
+          </div>
+
+          {/* Style preset. Cartoon stays the default so existing flows
+              don't change on first generation. Photoreal sits second so
+              the most common "I want something other than cartoon" pick
+              is one click away. Free-form is last and reveals a text
+              input for users who want to describe the style themselves. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Style
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {STYLE_OPTIONS.map((opt) => {
+                const active = style === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => {
+                      console.info('[topic-card-grid panel style change]', {
+                        from: style,
+                        to: opt.value,
+                        free_form_chars: opt.value === 'free-form' ? styleFreeForm.length : 0,
+                      });
+                      setStyle(opt.value);
+                    }}
+                    className="px-2.5 py-1 rounded text-xs"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              {STYLE_OPTIONS.find((o) => o.value === style)?.hint}
+            </p>
+            {style === 'free-form' && (
+              <div className="mt-2">
+                <textarea
+                  className="input-field w-full text-xs"
+                  rows={3}
+                  maxLength={STYLE_FREE_FORM_MAX_CHARS}
+                  value={styleFreeForm}
+                  onChange={(e) => setStyleFreeForm(e.target.value)}
+                  placeholder={'e.g. "1990s polaroid photographs, slight overexposure, scanned with dust and creases"'}
+                />
+                <p
+                  className="text-[10px] mt-0.5"
+                  style={{
+                    color: styleFreeForm.trim()
+                      ? 'var(--text-muted)'
+                      : 'var(--accent-yellow)',
+                  }}
+                >
+                  {styleFreeForm.length} / {STYLE_FREE_FORM_MAX_CHARS} chars
+                  {!styleFreeForm.trim() && ' — empty description falls back to Cartoon.'}
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Mode chips */}

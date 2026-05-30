@@ -741,8 +741,28 @@ export type ThumbnailBrightness = 'bright' | 'mixed' | 'moody';
  *  compositions for users who want the older look. */
 export type ThumbnailDetail = 'clean' | 'detailed';
 
+/** Visual style register for the rendered cards. Each preset emits a
+ *  different `STYLE` block at the head of the image prompt that
+ *  overrides Detail=Clean's "chunky iconic" wording, so the model
+ *  doesn't default cartoon when the subject would render better in
+ *  another register. `free-form` lets the user type a style sentence
+ *  that gets sanitised and dropped into the same slot. */
+export type ThumbnailStyle =
+  | 'cartoon'
+  | 'photoreal'
+  | 'flat-2d'
+  | 'sketch'
+  | 'cinematic'
+  | 'free-form';
+
 export const DEFAULT_BRIGHTNESS: ThumbnailBrightness = 'bright';
 export const DEFAULT_DETAIL: ThumbnailDetail = 'clean';
+/** Default style — Cartoon matches the bundled curated reference image
+ *  and the previous "always cartoon" implicit output, so existing flows
+ *  produce the same visual on first generation. Users opt into a
+ *  different style explicitly via the panel. */
+export const DEFAULT_STYLE: ThumbnailStyle = 'cartoon';
+export const STYLE_FREE_FORM_MAX_CHARS = 300;
 
 export interface ImagePromptInput {
   cards: TopicCard[];
@@ -767,6 +787,14 @@ export interface ImagePromptInput {
    *  Pass `'detailed'` to allow photoreal / multi-element compositions
    *  per card. */
   detail?: ThumbnailDetail;
+  /** Style preset. Defaults to `'cartoon'` so existing flows produce
+   *  the same visual on first generation. `'free-form'` requires
+   *  `styleFreeForm` to be set; other presets ignore it. */
+  style?: ThumbnailStyle;
+  /** Free-form style description. Only consulted when `style ===
+   *  'free-form'`. Sanitised + clipped at the boundary, then dropped
+   *  into the STYLE block as `STYLE — CUSTOM: <user text>`. */
+  styleFreeForm?: string;
 }
 
 /**
@@ -789,9 +817,12 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
     uploadedCellIndexes,
     brightness = DEFAULT_BRIGHTNESS,
     detail = DEFAULT_DETAIL,
+    style = DEFAULT_STYLE,
+    styleFreeForm,
   } = input;
   const total = gridRows * gridCols;
   const safeNotes = notesForImageModel ? sanitizeForPrompt(notesForImageModel, 300) : '';
+  const styleBlock = styleDirective(style, styleFreeForm);
 
   const uploadedIdxSet = new Set<number>();
   if (uploadedCellIndexes) {
@@ -857,6 +888,8 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
   The label strip is part of the SAME bordered rectangle as the illustration, sitting flush against it, sharing its left and right edges.`;
 
   return `Create a YouTube thumbnail in the "Topic Card Grid" format, 16:9.
+
+${styleBlock}
 
 ${layoutBlock}
 
@@ -940,6 +973,58 @@ function brightnessDirective(value: ThumbnailBrightness): string {
 - Cell backgrounds should read as saturated, lively colours — saturated reds, electric blues, lemon yellows, neon greens, hot pinks, bright purples — not muted desaturated tones. The reference channels' grids look like a sticker collection, not a horror movie poster.
 - Even for inherently dark subjects (malware screens, ransomware text, criminals), pick the most colourful framing the subject permits — a red WannaCry screen on a vivid background instead of a near-black close-up of code.
 - The bar is "bright enough that the thumbnail still reads as a colourful object at YouTube mobile thumbnail size". If a cell would otherwise be predominantly black, brighten its background or its surrounding accents until that bar is met.`;
+}
+
+/** Style directive prepended to the image prompt. Lands at the head of
+ *  the body (above the layout block) so the model reads the visual
+ *  register before any of the layout / per-card rules — a head-of-prompt
+ *  STYLE block reliably overrides Detail=Clean's "chunky iconic"
+ *  wording in image-model practice. Unknown values fall back to the
+ *  Cartoon default rather than emitting an empty block. */
+function styleDirective(value: ThumbnailStyle, freeForm: string | undefined): string {
+  switch (value) {
+    case 'photoreal':
+      return `STYLE — PHOTOREAL:
+- Render each card as a real-world photograph or authentic visual identity. NO illustrated stand-ins, NO cartoon shapes, NO flat 2D iconography.
+- Where a subject has a canonical visual (a famous software screen, a brand logo, a product photo, a news photo, a person's face), use that exact visual — rendered as a real photograph or a high-fidelity reproduction of the original screen.
+- Lighting, depth-of-field, and texture as a real camera would capture them. Photographic grain and natural shadows are fine. Avoid hyper-saturated cartoon palettes.
+- For ABSTRACT CATEGORIES that have no canonical visual: pick one bold iconic SUBJECT (a single envelope-on-hook for phishing, a single padlock for password protection) and render IT photoreal — a real-looking envelope, a real-looking padlock. Not a cartoon version of an icon.`;
+    case 'flat-2d':
+      return `STYLE — FLAT 2D ILLUSTRATION:
+- Clean vector-style flat shapes. Restrained palette (≤ 5 colors per card).
+- NO gradients, NO drop shadows, NO 3D shading, NO photoreal textures. Outlines only when geometric / intentional.
+- Modern editorial flat illustration register — think Stripe / Linear / Vercel marketing illustration, not children's cartoon stickers.
+- Even for brand logos: render the logo flat, in its canonical brand colors, on a clean solid backdrop. No 3D rendering.`;
+    case 'sketch':
+      return `STYLE — SKETCH / HAND-DRAWN:
+- Black ink line art on textured off-white paper. Sparse fills, hand-drawn hatching for shading.
+- Hand-drawn humanist feel like a designer's sketchbook. Visible pencil / pen strokes are good.
+- Avoid solid color blocks and saturated palettes — let the line work and the paper texture carry the image.
+- For brand logos and real subjects: redraw them as sketches, not photoreal. The sketch register is the dominant visual.`;
+    case 'cinematic':
+      return `STYLE — CINEMATIC:
+- Moody, atmospheric, film-still feel. Dramatic key lighting. Shallow depth-of-field. Color grading toward teal-and-orange or muted neutrals.
+- Treat each card like a still from a thriller about the subject — strong contrast, deliberate negative space, dramatic camera angles.
+- Real photographs and real visual identities are encouraged, but graded for atmosphere rather than left bright.
+- Darker palettes are explicitly OK in this style even if the surrounding Brightness toggle reads "Bright" — the cinematic register takes precedence.`;
+    case 'free-form': {
+      const safe = sanitizeForPrompt(freeForm ?? '', STYLE_FREE_FORM_MAX_CHARS);
+      if (!safe) {
+        // Empty free-form description = behave as Cartoon so the model
+        // gets a usable directive instead of a blank STYLE block.
+        return styleDirective('cartoon', undefined);
+      }
+      return `STYLE — CUSTOM:
+- ${safe}
+- Apply this style register to EVERY card uniformly. Do not switch styles between cards. If the description conflicts with the per-card subject (e.g. "photoreal" applied to an abstract category), pick the closest visual interpretation of the subject in the requested style.`;
+    }
+    case 'cartoon':
+    default:
+      return `STYLE — CARTOON / STICKER:
+- Bold flat illustration with thick outlines, saturated palette, sticker-like shapes. Hand-drawn humanist feel.
+- Cartoon characters, exaggerated cartoon proportions, chunky shapes that read at thumbnail size.
+- Avoid photoreal textures, real photographic depth-of-field, or 3D rendering. The look is a sticker sheet, not a movie poster.`;
+  }
 }
 
 /** Detail directive appended to the image prompt. */
