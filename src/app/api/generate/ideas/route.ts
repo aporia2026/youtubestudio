@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateText, getModelById } from '@/lib/ai';
 import { ideaGenerationPrompt } from '@/lib/prompts';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { parseLlmJson } from '@/lib/parse-llm-json';
+import { parseLlmJson, salvageTruncatedJsonArray } from '@/lib/parse-llm-json';
 import { makeSpendContext } from '@/lib/ai-spend';
 import { logger } from '@/lib/logger';
 import { apiRoute } from '@/lib/route-helpers';
@@ -88,11 +88,30 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
         redditContext,
         existingTitles: liveExcl,
       });
+      // The schema in ideaGenerationPrompt is large (~16 fields per idea
+      // including a 7-field performance_breakdown sub-object). At 13 ideas
+      // (count+3) realistic emit is 600-1000 tokens each, so the old 6000
+      // no-attribution cap was truncating mid-array — every model produced
+      // incomplete JSON. GPT-5 family on chat.completions also counts
+      // reasoning tokens toward this budget, which made the old cap
+      // effectively smaller. Match the attribution path at 12000.
+      const maxTokens = 12000;
+      logger.info('[ideas generate] llm call', {
+        modelId,
+        attempt,
+        maxTokens,
+        targetCount,
+        askedFromModel: targetCount - collected.length + 3,
+        collectedSoFar: collected.length,
+        hasAttribution,
+        focus,
+        videoType,
+      });
       const raw = await generateText({
         modelId,
         prompt: user,
         systemPrompt: system,
-        maxTokens: hasAttribution ? 12000 : 6000,
+        maxTokens,
         // Bump temperature on the retry to escape the same neighbourhood.
         temperature: attempt === 1 ? 0.9 : 1.05,
         spend: await makeSpendContext('idea_generation', { metadata: { attempt, focus } }),
@@ -100,9 +119,38 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       let parsed: { ideas?: unknown[] };
       try {
         parsed = parseLlmJson(raw) as { ideas?: unknown[] };
-      } catch {
-        if (attempt === 1) continue; // try again
-        return NextResponse.json({ error: 'Failed to parse ideas response — try again' }, { status: 500 });
+      } catch (parseErr) {
+        // Truncation salvage: if the model hit its output cap mid-JSON,
+        // we still have a prefix of complete idea objects inside the
+        // `"ideas": [...]` array. Pull them out so a partial response
+        // beats a hard failure. The maxTokens bump above should make
+        // this rare, but chatty models on huge schemas still trip it.
+        const salvaged = salvageTruncatedJsonArray(raw);
+        if (salvaged && salvaged.length > 0) {
+          logger.warn('[ideas generate] salvaged truncated JSON', {
+            modelId,
+            attempt,
+            maxTokens,
+            requestedCount: targetCount,
+            salvagedCount: salvaged.length,
+            rawLength: raw.length,
+            parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+          });
+          parsed = { ideas: salvaged };
+        } else {
+          logger.error('[ideas generate] failed to parse model JSON', {
+            modelId,
+            attempt,
+            maxTokens,
+            requestedCount: targetCount,
+            rawLength: raw.length,
+            rawTail: raw.slice(-200),
+            parseError: parseErr instanceof Error ? parseErr.message : String(parseErr),
+            hasAttribution,
+          });
+          if (attempt === 1) continue; // try again
+          return NextResponse.json({ error: 'Failed to parse ideas response — try again' }, { status: 500 });
+        }
       }
       const fresh = (parsed.ideas ?? []) as Record<string, unknown>[];
       for (const idea of fresh) {
@@ -116,6 +164,14 @@ export const POST = apiRoute.authed(async (_session, req: NextRequest) => {
       }
     }
 
+    logger.info('[ideas generate] returning', {
+      modelId,
+      requestedCount: targetCount,
+      returnedCount: collected.length,
+      attempts: attempt,
+      shortfall: targetCount - collected.length,
+      hasAttribution,
+    });
     return NextResponse.json({ ideas: collected, requested: targetCount, returned: collected.length, attempts: attempt });
   } catch (err: unknown) {
     logger.error('Ideas generation error', { detail: err instanceof Error ? err.message : String(err) });
