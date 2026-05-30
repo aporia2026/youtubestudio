@@ -32,6 +32,11 @@ import {
   SHARP_INPUT_PIXEL_CAP,
   type CellUpload,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
+import {
+  applySharedOverlays,
+  parsePostProcessConfig,
+  type PostProcessConfig,
+} from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import sharp from 'sharp';
 import { assertSafePublicUrl } from '@/lib/url-safety';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -183,6 +188,13 @@ interface ReqBody {
    *  `topic-card-grid-fonts.ts`). Unknown values silently fall back to
    *  the default — same shape as brightness / detail. */
   fontId?: string;
+  /** Optional post-process pass: filter, vignette, grain. Runs in a
+   *  single Sharp composite call AFTER the cell-upload composite, so
+   *  these knobs can be tweaked without paying for an AI re-render.
+   *  Parsed + clamped server-side via `parsePostProcessConfig` —
+   *  malformed payloads silently degrade to no-op rather than failing
+   *  the request. */
+  postProcess?: unknown;
 }
 
 /** Set of known style presets, used to validate `body.style` against
@@ -614,7 +626,7 @@ export async function POST(req: NextRequest) {
       }
     }
     const compositeStart = Date.now();
-    const finalBytes = await applyCellUploads({
+    let finalBytes = await applyCellUploads({
       baseImage: aiBytes,
       layout,
       cards,
@@ -633,6 +645,34 @@ export async function POST(req: NextRequest) {
       card_shape: cardShape,
       output_bytes: finalBytes.byteLength,
     });
+
+    // Post-process pass — filter / vignette / grain. Parsed from the
+    // request body via the shared validator: malformed payloads silently
+    // degrade to null (no-op) rather than failing the request, so a
+    // stale client can't bog down the pipeline by sending garbage. When
+    // the parser returns null we skip the call entirely to avoid the
+    // unnecessary decode + encode round-trip on the (potentially 4K)
+    // composite output.
+    const postProcess: PostProcessConfig | null = parsePostProcessConfig(body.postProcess);
+    if (postProcess) {
+      const postStart = Date.now();
+      finalBytes = await applySharedOverlays({
+        baseImage: finalBytes,
+        canvas: { width: canvasW, height: canvasH },
+        postProcess,
+      });
+      logger.info('[topic-card-grid post-process]', {
+        filter: postProcess.filter ?? null,
+        vignette_intensity: postProcess.vignette?.intensity ?? null,
+        vignette_radius: postProcess.vignette?.radius ?? null,
+        vignette_color: postProcess.vignette?.color ?? null,
+        grain_intensity: postProcess.grain?.intensity ?? null,
+        grain_size: postProcess.grain?.size ?? null,
+        grain_monochrome: postProcess.grain?.monochrome ?? null,
+        duration_ms: Date.now() - postStart,
+        output_bytes: finalBytes.byteLength,
+      });
+    }
 
     // Single R2 upload — prefix records the AI provider and whether the
     // composite step ran so a future audit can tell the AI's raw output

@@ -13,6 +13,11 @@ import {
   DEFAULT_CANVAS,
   type NLevel,
 } from '@/lib/thumbnail-formats/n-levels';
+import { applyNLevelsOverlays } from '@/lib/thumbnail-formats/n-levels-composite';
+import {
+  parsePostProcessConfig,
+  type PostProcessConfig,
+} from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import { assertSafePublicUrl } from '@/lib/url-safety';
 import type { ThumbnailRegion } from '@/remotion/types';
 
@@ -62,6 +67,13 @@ interface ReqBody {
   brightness?: 'bright' | 'mixed' | 'moody';
   /** Detail register. Defaults to `'clean'` post-Phase-1.7. */
   detail?: 'clean' | 'detailed';
+  /** Optional post-process pass: filter, vignette, grain. Runs in a
+   *  single Sharp composite call AFTER the AI image is fetched, before
+   *  the R2 upload, so these knobs can be tweaked without paying for an
+   *  AI re-render. Parsed + clamped server-side via
+   *  `parsePostProcessConfig` — malformed payloads silently degrade to
+   *  no-op rather than failing the request. */
+  postProcess?: unknown;
 }
 
 function requireKieKey(): string {
@@ -210,7 +222,13 @@ export async function POST(req: NextRequest) {
       ref_host: safeRefUrl.hostname,
     });
 
-    let imageUrl: string;
+    // Each provider branch produces `aiBytes` (raw AI output) + a
+    // `providerSlug` used to namespace the R2 key. A single R2 upload at
+    // the end runs after the post-process composite (if any) so the
+    // overlay pass and the upload happen in one place. Mirrors the
+    // post-Phase-2 structure of the topic-card-grid sibling.
+    let aiBytes: Buffer;
+    let providerSlug: 'kie' | 'openai';
     let taskId: string | undefined;
 
     if (config.provider === 'kie') {
@@ -229,26 +247,20 @@ export async function POST(req: NextRequest) {
       // System-wide auto-upscale runs after poll. See src/lib/upscale.ts.
       const kieImageUrl = await pollKieResultThenUpscale(taskId, apiKey);
 
-      // Persist the result bytes to R2. Kie's hosted resultUrls expire
-      // after hours/days AND live on a host the download-proxy
-      // allowlist does not cover, so storing the raw Kie URL leads to
-      // dead Download buttons + thumbnails that vanish from history.
-      // Mirror the OpenAI branch: fetch the bytes, upload to R2, return
-      // the R2 download URL as the canonical imageUrl.
+      // Kie's hosted resultUrls expire after hours/days AND live on a
+      // host the download-proxy allowlist does not cover, so we always
+      // fetch the bytes here. Final R2 upload happens below, after the
+      // optional post-process pass.
       const kieRes = await fetch(kieImageUrl);
       if (!kieRes.ok) {
         throw new Error(`Failed to fetch Kie result image (HTTP ${kieRes.status}).`);
       }
       const kieArrayBuf = await kieRes.arrayBuffer();
-      const kieBytes = Buffer.from(kieArrayBuf);
-      const kieR2Key = `thumbnails/format-n-levels-kie/${randomUUID()}.png`;
-      await uploadToBucket(getImagesBucket(), kieR2Key, kieBytes, 'image/png');
-      imageUrl = await getImagesDownloadUrl(kieR2Key);
-
-      logger.info('[thumb-format-n-levels image] kie persisted to r2', {
+      aiBytes = Buffer.from(kieArrayBuf);
+      providerSlug = 'kie';
+      logger.info('[thumb-format-n-levels image] kie bytes fetched', {
         kie_host: (() => { try { return new URL(kieImageUrl).hostname; } catch { return 'unknown'; } })(),
-        bytes: kieBytes.byteLength,
-        r2_key: kieR2Key,
+        bytes: aiBytes.byteLength,
       });
     } else {
       // OpenAI direct path — sync /v1/images/edits or /v1/images/generations.
@@ -284,17 +296,61 @@ export async function POST(req: NextRequest) {
           : undefined,
       });
 
-      const bytes = Buffer.from(result.base64, 'base64');
-      const r2Key = `thumbnails/format-n-levels-openai/${randomUUID()}.png`;
-      await uploadToBucket(getImagesBucket(), r2Key, bytes, 'image/png');
-      imageUrl = await getImagesDownloadUrl(r2Key);
-
+      aiBytes = Buffer.from(result.base64, 'base64');
+      providerSlug = 'openai';
       logger.info('[thumb-format-n-levels image] openai direct done', {
-        bytes: bytes.byteLength,
-        r2_key: r2Key,
+        bytes: aiBytes.byteLength,
         revised_prompt_chars: result.revisedPrompt?.length ?? 0,
       });
     }
+
+    // Optional post-process pass — filter / vignette / grain on top of
+    // the AI image. Skipped entirely when the parser returns null so
+    // requests without overlays pay zero post-render cost. When applied,
+    // the entire pipeline runs in one Sharp composite call inside
+    // `applyNLevelsOverlays` -> `applySharedOverlays`.
+    const postProcess: PostProcessConfig | null = parsePostProcessConfig(body.postProcess);
+    let finalBytes = aiBytes;
+    if (postProcess) {
+      const postStart = Date.now();
+      finalBytes = await applyNLevelsOverlays({
+        baseImage: aiBytes,
+        layout,
+        postProcess,
+      });
+      logger.info('[n-levels post-process]', {
+        filter: postProcess.filter ?? null,
+        vignette_intensity: postProcess.vignette?.intensity ?? null,
+        vignette_radius: postProcess.vignette?.radius ?? null,
+        vignette_color: postProcess.vignette?.color ?? null,
+        grain_intensity: postProcess.grain?.intensity ?? null,
+        grain_size: postProcess.grain?.size ?? null,
+        grain_monochrome: postProcess.grain?.monochrome ?? null,
+        duration_ms: Date.now() - postStart,
+        ai_bytes: aiBytes.byteLength,
+        output_bytes: finalBytes.byteLength,
+      });
+    }
+
+    // Single R2 upload of the final bytes. The prefix records the AI
+    // provider AND whether post-process ran so an audit can tell at a
+    // glance which artifacts have overlays applied. R2 key shape mirrors
+    // the topic-card-grid sibling's `format-grid-{kie,openai,composite}`
+    // convention.
+    const r2Prefix = postProcess
+      ? 'thumbnails/format-n-levels-post'
+      : providerSlug === 'kie'
+        ? 'thumbnails/format-n-levels-kie'
+        : 'thumbnails/format-n-levels-openai';
+    const r2Key = `${r2Prefix}/${randomUUID()}.png`;
+    await uploadToBucket(getImagesBucket(), r2Key, finalBytes, 'image/png');
+    const imageUrl = await getImagesDownloadUrl(r2Key);
+    logger.info('[thumb-format-n-levels image] persisted to r2', {
+      r2_key: r2Key,
+      final_bytes: finalBytes.byteLength,
+      post_process_applied: !!postProcess,
+      provider_slug: providerSlug,
+    });
 
     logger.info('[thumb-format-n-levels image] done', {
       duration_ms: Date.now() - startedAt,
