@@ -740,6 +740,81 @@ export function FlexIconGridLivePreview({
           </>
         )}
 
+        {/* Phase 4.44: dust / scratches overlay — composited AFTER
+            grain and BEFORE tint to mirror the composer. Uses the
+            same feTurbulence → threshold → flood-recolour →
+            alpha-scale pipeline. Blend mode auto-picks `screen` for
+            light specks (additive lift) and `multiply` for dark
+            specks (subtractive shadow). */}
+        {config.dust && (() => {
+          const d = config.dust;
+          const seed = d.seed ?? 41;
+          const baseFreq = 0.55;
+          const threshold = 0.95 - d.density * 0.45;
+          const intercept = -threshold;
+          const slope = 1 / Math.max(0.05, 1 - threshold);
+          // Mirror the composer's luminance check for blend mode.
+          const m = /^#?([0-9a-fA-F]{6})$/.exec(d.color);
+          let light = true;
+          if (m) {
+            const r = parseInt(m[1].slice(0, 2), 16);
+            const g = parseInt(m[1].slice(2, 4), 16);
+            const b = parseInt(m[1].slice(4, 6), 16);
+            light = 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
+          }
+          const blendMode: 'screen' | 'multiply' = light ? 'screen' : 'multiply';
+          return (
+            <>
+              <defs>
+                <filter
+                  id="fg-preview-dust"
+                  x={0}
+                  y={0}
+                  width="100%"
+                  height="100%"
+                  filterUnits="userSpaceOnUse"
+                  primitiveUnits="userSpaceOnUse"
+                >
+                  <feTurbulence
+                    type="fractalNoise"
+                    baseFrequency={baseFreq.toFixed(4)}
+                    numOctaves={2}
+                    seed={seed}
+                    stitchTiles="stitch"
+                    result="noise"
+                  />
+                  <feComponentTransfer in="noise" result="peaks">
+                    <feFuncR type="linear" slope={slope.toFixed(3)} intercept={intercept.toFixed(3)} />
+                    <feFuncG type="linear" slope={slope.toFixed(3)} intercept={intercept.toFixed(3)} />
+                    <feFuncB type="linear" slope={slope.toFixed(3)} intercept={intercept.toFixed(3)} />
+                    <feFuncA type="linear" slope={slope.toFixed(3)} intercept={intercept.toFixed(3)} />
+                  </feComponentTransfer>
+                  <feFlood floodColor={d.color} floodOpacity={1} result="speck-colour" />
+                  <feComposite in="speck-colour" in2="peaks" operator="in" result="specks" />
+                  <feColorMatrix
+                    in="specks"
+                    type="matrix"
+                    values={`1 0 0 0 0
+                             0 1 0 0 0
+                             0 0 1 0 0
+                             0 0 0 ${d.intensity.toFixed(3)} 0`}
+                  />
+                </filter>
+              </defs>
+              <rect
+                x={0}
+                y={0}
+                width={config.width}
+                height={config.height}
+                fill="transparent"
+                filter="url(#fg-preview-dust)"
+                style={{ mixBlendMode: blendMode }}
+                pointerEvents="none"
+              />
+            </>
+          );
+        })()}
+
         {/* Phase 4.39 → 4.40: tint overlay — composited AFTER grain
             and BEFORE vignette to mirror the composer's overlay
             order. Uses CSS `mix-blend-mode` matching the configured

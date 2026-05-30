@@ -337,6 +337,17 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (grainOverlay) overlays.push(grainOverlay);
     }
 
+    // 3.55) Phase 4.44: dust / scratches overlay — sparse irregular
+    //       specks. Pushed AFTER grain (so the dust sits above the
+    //       uniform noise visually) but BEFORE tint (so the colour
+    //       grade still washes over the specks). Uses `screen` blend
+    //       for bright dust and `multiply` for dark dust automatically
+    //       based on the speck colour's luminance.
+    if (config.dust) {
+      const dustOverlay = await buildDustOverlay(config);
+      if (dustOverlay) overlays.push(dustOverlay);
+    }
+
     // 3.6) Phase 4.39 → 4.40: tint overlay — composited AFTER grain
     //      so the tint hue washes over the noise, BEFORE the
     //      vignette so the corner darkening reads through the tint.
@@ -2074,6 +2085,89 @@ async function buildTintOverlays(
     });
   }
   return overlays;
+}
+
+// ─── Dust / scratches overlay (Phase 4.44) ──────────────────────────────────
+
+/**
+ * Phase 4.44: build a sparse-speck noise PNG mimicking film stock
+ * decay. Distinct from grain (uniform low-amplitude noise):
+ *
+ *   - `density` controls how many specks (via the feComponentTransfer
+ *     threshold — higher density = lower threshold = more specks).
+ *   - `intensity` controls speck opacity.
+ *   - `color` is the speck colour (white = bright dust, black =
+ *     scratch-like dark specks).
+ *
+ * The pipeline: feTurbulence (sparse fractalNoise, low frequency)
+ * → feComponentTransfer (threshold the noise to isolate the brightest
+ * 5–30 %) → feFlood + feComposite-in to recolour the isolated
+ * specks → feComponentTransfer alpha-scale for intensity.
+ *
+ * Blend mode is auto-picked from the speck luminance: light specks
+ * use `screen` (additive lift), dark specks use `multiply`
+ * (subtractive). Either way the underlying image's tone is
+ * preserved instead of being flatly painted over.
+ */
+function isLightHex(hex: string): boolean {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return true;
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
+}
+
+async function buildDustOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const d = config.dust;
+  if (!d) return null;
+  const { width, height } = config;
+  const seed = d.seed ?? 41;
+  // Low base frequency → coarse turbulence with broad bright/dark
+  // regions. Threshold isolates the bright peaks as specks.
+  const baseFreq = 0.55;
+  // Density → threshold mapping. density=0.1 → threshold 0.92
+  // (very few peaks survive); density=1 → threshold 0.5 (a lot of
+  // peaks survive, dense distress). Linear in density.
+  const threshold = 0.95 - d.density * 0.45;
+  const intercept = -threshold;
+  const slope = 1 / Math.max(0.05, 1 - threshold);
+  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq.toFixed(4)}" numOctaves="2" seed="${seed}" stitchTiles="stitch" result="noise"/>`;
+  // Threshold + boost — feFuncR/G/B linear with negative intercept
+  // clips dim values to 0 and amplifies the bright ones to 1.
+  const thresholded =
+    `<feComponentTransfer in="noise" result="peaks">` +
+    `<feFuncR type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `<feFuncG type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `<feFuncB type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `<feFuncA type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `</feComponentTransfer>`;
+  // Recolour the peaks via a flood + composite-in.
+  const flood = `<feFlood flood-color="${escapeSvgText(d.color)}" flood-opacity="1" result="speck-colour"/>`;
+  const composite = `<feComposite in="speck-colour" in2="peaks" operator="in" result="specks"/>`;
+  // Intensity scales the alpha of the final specks.
+  const alpha = `<feColorMatrix in="specks" type="matrix" values="
+    1 0 0 0 0
+    0 1 0 0 0
+    0 0 1 0 0
+    0 0 0 ${d.intensity.toFixed(3)} 0"/>`;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<defs><filter id="dust" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">`,
+    turbulence,
+    thresholded,
+    flood,
+    composite,
+    alpha,
+    `</filter></defs>`,
+    `<rect width="${width}" height="${height}" fill="transparent" filter="url(#dust)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  const blend: 'screen' | 'multiply' = isLightHex(d.color) ? 'screen' : 'multiply';
+  return { input: buf, top: 0, left: 0, blend };
 }
 
 // ─── Grain overlay (Phase 4.38) ─────────────────────────────────────────────

@@ -2295,6 +2295,107 @@ describe('Phase 4.43 — finishing presets', () => {
       expect(result.ok, `preset ${preset.id} merged invalid: ${!result.ok ? result.reason : ''}`).toBe(true);
     }
   });
+  it('applyFinishingPreset(none) round-trips through JSON to a fully-cleared finishing state', () => {
+    // Phase 4.44 regression: a user with every finishing field
+    // populated should be able to apply "Reset" then save/load
+    // (which round-trips through JSON.stringify -> parseConfig) and
+    // see all six fields gone. Catches any consumer that ignores
+    // explicit `undefined` keys in the patch.
+    const base = makeDefaultConfig(2, 2);
+    const loaded: FlexIconGridConfig = {
+      ...base,
+      vignette: { color: '#000000', intensity: 0.5, radius: 0.6 },
+      grain: { intensity: 0.2, scale: 1, monochrome: true },
+      tint: { color: '#ffb27a', intensity: 0.3, blendMode: 'soft-light' },
+      lightLeak: { color: '#ffd28a', intensity: 0.5, radius: 0.7, position: 'top-right' },
+      letterbox: { color: '#000000', top: 60, bottom: 60, left: 0, right: 0 },
+      frame: { color: '#ffffff', thickness: 6, inset: 0 },
+    };
+    // Sanity — start with everything on.
+    expect(loaded.vignette).toBeDefined();
+    expect(loaded.frame).toBeDefined();
+    // Apply Reset.
+    const reset = { ...loaded, ...applyFinishingPreset('none', base.width, base.height) };
+    expect(reset.vignette).toBeUndefined();
+    expect(reset.grain).toBeUndefined();
+    expect(reset.tint).toBeUndefined();
+    expect(reset.lightLeak).toBeUndefined();
+    expect(reset.letterbox).toBeUndefined();
+    expect(reset.frame).toBeUndefined();
+    // Round-trip through JSON to verify the cleared state survives
+    // export/import — `JSON.stringify` drops `undefined` keys, so
+    // the parser sees no key at all, which should re-parse as
+    // `undefined`.
+    const roundTripped = parseConfig(JSON.parse(JSON.stringify(reset)));
+    expect(roundTripped.vignette).toBeUndefined();
+    expect(roundTripped.grain).toBeUndefined();
+    expect(roundTripped.tint).toBeUndefined();
+    expect(roundTripped.lightLeak).toBeUndefined();
+    expect(roundTripped.letterbox).toBeUndefined();
+    expect(roundTripped.frame).toBeUndefined();
+  });
+});
+
+describe('Phase 4.44 — dust / scratches overlay', () => {
+  it('round-trips dust through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.dust = { color: '#ffffff', intensity: 0.6, density: 0.25 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.dust).toEqual({ color: '#ffffff', intensity: 0.6, density: 0.25 });
+  });
+  it('clamps dust intensity + density to [0, 1] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      dust: { color: '#ffffff', intensity: 5, density: 2 },
+    });
+    expect(reparsed.dust?.intensity).toBe(1);
+    expect(reparsed.dust?.density).toBe(1);
+  });
+  it('drops dust when intensity is zero', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      dust: { color: '#ffffff', intensity: 0, density: 0.5 },
+    });
+    expect(reparsed.dust).toBeUndefined();
+  });
+  it('drops dust when density is zero', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      dust: { color: '#ffffff', intensity: 0.5, density: 0 },
+    });
+    expect(reparsed.dust).toBeUndefined();
+  });
+  it('keeps dust.seed when in range and drops when out of range', () => {
+    const inRange = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      dust: { color: '#ffffff', intensity: 0.5, density: 0.5, seed: 1234 },
+    });
+    expect(inRange.dust?.seed).toBe(1234);
+    const outOfRange = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      dust: { color: '#ffffff', intensity: 0.5, density: 0.5, seed: 50000 },
+    });
+    expect(outOfRange.dust?.seed).toBeUndefined();
+  });
+  it('rejects malformed dust.color on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.dust = { color: 'white', intensity: 0.5, density: 0.5 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/dust\.color/);
+  });
+  it('rejects dust.density out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.dust = { color: '#ffffff', intensity: 0.5, density: 2 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/dust\.density/);
+  });
 });
 
 describe('Phase 4.36 — image filter modes', () => {

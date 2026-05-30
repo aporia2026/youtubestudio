@@ -463,6 +463,15 @@ export function FlexIconGridPanel({
   // Local UI state — not persisted. Bounded to the discrete chip
   // set to keep the math simple and avoid pathological values.
   const [previewZoom, setPreviewZoom] = useState<number>(100);
+  // Phase 4.44: user-saved finishing presets. Stored in localStorage
+  // under a single versioned key so the format can evolve without
+  // colliding with prior schemas. Hydration is one-shot from window
+  // on mount; subsequent saves/deletes write through immediately.
+  const {
+    presets: userFinishingPresets,
+    save: saveUserFinishingPreset,
+    deletePreset: deleteUserFinishingPreset,
+  } = useUserFinishingPresets();
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -3659,6 +3668,85 @@ export function FlexIconGridPanel({
                     {preset.label}
                   </button>
                 ))}
+                {/* Phase 4.44: user-saved finishing presets. Each
+                    chip applies the stored bundle of 6 finishing
+                    fields; the small × inside the chip deletes it.
+                    "Save current as…" prompts for a name and
+                    persists the current six finishing fields to
+                    localStorage. */}
+                {userFinishingPresets.map((p) => (
+                  <span
+                    key={p.id}
+                    style={{
+                      ...chipStyle(false),
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '4px 4px 4px 8px',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateConfig({
+                          vignette: p.patch.vignette,
+                          grain: p.patch.grain,
+                          tint: p.patch.tint,
+                          lightLeak: p.patch.lightLeak,
+                          letterbox: p.patch.letterbox,
+                          frame: p.patch.frame,
+                        })
+                      }
+                      title={`Apply saved finishing "${p.name}"`}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                        padding: 0,
+                        font: 'inherit',
+                      }}
+                    >
+                      {p.name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteUserFinishingPreset(p.id)}
+                      title={`Delete "${p.name}"`}
+                      aria-label={`Delete saved finishing ${p.name}`}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#9ca3af',
+                        cursor: 'pointer',
+                        padding: '0 2px',
+                        font: 'inherit',
+                        lineHeight: 1,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const name = window.prompt('Save current finishing as preset — enter a name:');
+                    if (!name || !name.trim()) return;
+                    saveUserFinishingPreset(name.trim(), {
+                      vignette: config.vignette,
+                      grain: config.grain,
+                      tint: config.tint,
+                      lightLeak: config.lightLeak,
+                      letterbox: config.letterbox,
+                      frame: config.frame,
+                    });
+                  }}
+                  style={chipStyle(false)}
+                  title="Save the current vignette + grain + tint + leak + letterbox + frame as a named preset (stored locally)"
+                >
+                  + Save current as…
+                </button>
               </div>
             </div>
             {/* Phase 4.37: vignette overlay. A subtle radial-gradient
@@ -3925,6 +4013,134 @@ export function FlexIconGridPanel({
                   Heads up: above ~70% strength the live preview drifts slightly from the final render (CSS vs Sharp blend-order). Final render is authoritative.
                 </p>
               )}
+            </div>
+            {/* Phase 4.44: dust / scratches overlay — sparse
+                irregular specks distinct from grain (uniform
+                noise). White specks at low density give a
+                "weathered print" feel; black specks at higher
+                density read as scratches on the emulsion. Off by
+                default; default seed = bright white dust at 20%
+                intensity and 25% density. */}
+            <div>
+              <label style={labelStyle}>
+                Dust / scratches
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (film-stock decay)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.dust}
+                  onClick={() =>
+                    updateConfig({
+                      dust: config.dust
+                        ? undefined
+                        : { color: '#ffffff', intensity: 0.6, density: 0.25 },
+                    })
+                  }
+                  style={chipStyle(!!config.dust)}
+                  title={
+                    config.dust
+                      ? 'Click to turn dust / scratches off'
+                      : 'Click to add sparse irregular specks (default: white at 25% density)'
+                  }
+                >
+                  {config.dust ? 'Dust on' : 'Dust off'}
+                </button>
+                {config.dust && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.dust.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          dust: { ...config.dust!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Dust colour"
+                      title="White = bright dust (screen blend), black = dark scratches (multiply blend)"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    <input
+                      type="range"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.dust.intensity}
+                      onChange={(e) =>
+                        updateConfig({
+                          dust: { ...config.dust!, intensity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Dust intensity"
+                      title={`Strength: ${Math.round(config.dust.intensity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.dust.intensity}
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      onCommit={(next) =>
+                        updateConfig({ dust: { ...config.dust!, intensity: next } })
+                      }
+                      ariaLabel="Dust intensity (numeric)"
+                      title="Type any value 0.01–1.00; commits on Enter or blur"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 44 }}>Density</span>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={config.dust.density}
+                      onChange={(e) =>
+                        updateConfig({
+                          dust: { ...config.dust!, density: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Dust density"
+                      title={`Density: ${Math.round(config.dust.density * 100)}% (higher = more cluttered)`}
+                      style={{ width: 100 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.dust.density}
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      onCommit={(next) =>
+                        updateConfig({ dust: { ...config.dust!, density: next } })
+                      }
+                      ariaLabel="Dust density (numeric)"
+                      title="Density 0.05–1.00; commits on Enter or blur"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateConfig({
+                          dust: { ...config.dust!, seed: Math.floor(Math.random() * 10000) },
+                        })
+                      }
+                      style={chipStyle(false)}
+                      title="Re-roll the dust pattern with a new random seed"
+                    >
+                      Re-roll
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
             {/* Phase 4.39: colour-grade tint overlay. Flat colour
                 composited over the whole canvas with a blend mode —
@@ -4478,12 +4694,14 @@ export function FlexIconGridPanel({
                 >
                   {config.letterbox ? 'Letterbox on' : 'Letterbox off'}
                 </button>
-                {/* Phase 4.43: snap-to-ratio chip row. Each chip
-                    computes exact bar pixels for the current
-                    canvas via `computeLetterboxBars`. The chosen
-                    ratio is highlighted by comparing the current
-                    side bars against the recomputed values — saves
-                    storing a separate "active ratio" field. */}
+                {/* Phase 4.43 → 4.44: snap-to-ratio chip row. Each
+                    chip computes exact bar pixels via
+                    `computeLetterboxBars`. Phase 4.44 adds a
+                    "drifted" state — when bars are within ±5 px of
+                    a ratio's exact values, the chip shows a faded
+                    highlight so users know which ratio they're
+                    near after a small manual tweak, without losing
+                    the precise-mode signal. */}
                 {config.letterbox && (
                   <>
                     <span style={{ fontSize: 10, color: '#71717a', minWidth: 32 }}>Ratio</span>
@@ -4497,23 +4715,46 @@ export function FlexIconGridPanel({
                       ] as const
                     ).map((opt) => {
                       const bars = computeLetterboxBars(config.width, config.height, opt.value);
-                      const active =
+                      const exact =
                         config.letterbox!.top === bars.top &&
                         config.letterbox!.bottom === bars.bottom &&
                         config.letterbox!.left === bars.left &&
                         config.letterbox!.right === bars.right;
+                      const drifted =
+                        !exact &&
+                        Math.abs(config.letterbox!.top - bars.top) <= 5 &&
+                        Math.abs(config.letterbox!.bottom - bars.bottom) <= 5 &&
+                        Math.abs(config.letterbox!.left - bars.left) <= 5 &&
+                        Math.abs(config.letterbox!.right - bars.right) <= 5;
+                      const baseStyle = chipStyle(exact);
+                      const driftedStyle = drifted
+                        ? {
+                            ...baseStyle,
+                            // Half-opacity highlight: faded active
+                            // background tint without the full
+                            // pressed-chip border.
+                            background: 'rgba(56, 189, 248, 0.12)',
+                            borderColor: 'rgba(56, 189, 248, 0.35)',
+                          }
+                        : baseStyle;
                       return (
                         <button
                           key={opt.label}
                           type="button"
-                          aria-pressed={active}
+                          aria-pressed={exact}
                           onClick={() =>
                             updateConfig({
                               letterbox: { ...config.letterbox!, ...bars },
                             })
                           }
-                          style={chipStyle(active)}
-                          title={`Snap to ${opt.label} (${bars.top || bars.left}px bars)`}
+                          style={driftedStyle}
+                          title={
+                            exact
+                              ? `${opt.label} exact (${bars.top || bars.left}px bars)`
+                              : drifted
+                                ? `Near ${opt.label} (±5 px) — click to snap`
+                                : `Snap to ${opt.label} (${bars.top || bars.left}px bars)`
+                          }
                         >
                           {opt.label}
                         </button>
@@ -6963,12 +7204,30 @@ function BufferedNumericInput({
           // at the OS rate (~30/s on macOS, ~25/s on Windows) and
           // a per-keystroke commit re-renders the whole panel +
           // live preview, which gets choppy. Coalesce the pending
-          // delta into a ref and flush once per animation frame —
-          // the user still sees smooth real-time updates but
-          // React only re-renders ~60 times/s instead of >250.
+          // delta into a ref and flush once per animation frame.
+          //
+          // Phase 4.44: commit the FIRST keystroke immediately
+          // (zero-latency feedback for a single tap) and only
+          // rAF-throttle subsequent events in the same burst.
+          // `e.repeat` is true for autorepeat events and false for
+          // the initial press, so we use it as the burst signal —
+          // works regardless of how busy the render thread is when
+          // the first frame schedules.
           e.preventDefault();
           const multiplier = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
           const delta = step * multiplier * (e.key === 'ArrowUp' ? 1 : -1);
+          if (!e.repeat) {
+            // First keystroke (or first after a key release): apply
+            // immediately so a single tap is never delayed.
+            const raw = Number(draft);
+            const base = Number.isFinite(raw) ? raw : value;
+            const next = Math.max(min, Math.min(max, base + delta));
+            setDraft(formatValue(next));
+            setInvalid(false);
+            if (next !== value) onCommit(next);
+            return;
+          }
+          // Autorepeat path — accumulate and flush per frame.
           pendingDeltaRef.current += delta;
           if (rafRef.current === null) {
             rafRef.current = requestAnimationFrame(() => {
@@ -7145,6 +7404,89 @@ function FrameStyleSwatch({
       />
     </svg>
   );
+}
+
+/**
+ * Phase 4.44: localStorage-backed user finishing presets. Each
+ * saved entry is a name + the six finishing fields the panel
+ * persists. Versioned schema key (`flex-icon-grid:effects-presets:v1`)
+ * lets future migrations land cleanly without colliding with old
+ * data.
+ *
+ * The patch we store omits `undefined` keys when serialised, so a
+ * preset that turns OFF a finishing field doesn't bloat the JSON.
+ * On apply, `updateConfig` receives every key (some `undefined`)
+ * so toggling between two saved presets fully overwrites previous
+ * effects — no leakage.
+ */
+const USER_FINISHING_PRESETS_KEY = 'flex-icon-grid:effects-presets:v1';
+
+interface UserFinishingPresetPatch {
+  vignette: FlexIconGridConfig['vignette'];
+  grain: FlexIconGridConfig['grain'];
+  tint: FlexIconGridConfig['tint'];
+  lightLeak: FlexIconGridConfig['lightLeak'];
+  letterbox: FlexIconGridConfig['letterbox'];
+  frame: FlexIconGridConfig['frame'];
+}
+
+interface UserFinishingPreset {
+  id: string;
+  name: string;
+  patch: UserFinishingPresetPatch;
+}
+
+function useUserFinishingPresets(): {
+  presets: UserFinishingPreset[];
+  save: (name: string, patch: UserFinishingPresetPatch) => void;
+  deletePreset: (id: string) => void;
+} {
+  const [presets, setPresets] = useState<UserFinishingPreset[]>(() => {
+    // SSR-safe: window may be undefined on first render in some
+    // environments. Empty list is the right fallback — saves can
+    // still happen client-side after hydration.
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem(USER_FINISHING_PRESETS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (p): p is UserFinishingPreset =>
+          !!p &&
+          typeof p === 'object' &&
+          typeof (p as { id?: unknown }).id === 'string' &&
+          typeof (p as { name?: unknown }).name === 'string' &&
+          typeof (p as { patch?: unknown }).patch === 'object',
+      );
+    } catch {
+      // Corrupt JSON — drop silently, preserve user's other state.
+      return [];
+    }
+  });
+  const persist = useCallback((next: UserFinishingPreset[]) => {
+    setPresets(next);
+    try {
+      window.localStorage.setItem(USER_FINISHING_PRESETS_KEY, JSON.stringify(next));
+    } catch {
+      // Quota exceeded or storage disabled — keep the in-memory
+      // state usable for the rest of the session.
+    }
+  }, []);
+  const save = useCallback(
+    (name: string, patch: UserFinishingPresetPatch) => {
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      persist([...presets, { id, name, patch }]);
+    },
+    [presets, persist],
+  );
+  const deletePreset = useCallback(
+    (id: string) => {
+      persist(presets.filter((p) => p.id !== id));
+    },
+    [presets, persist],
+  );
+  return { presets, save, deletePreset };
 }
 
 /**

@@ -702,6 +702,30 @@ export interface FlexIconGridConfig {
       | 'right';
     blendMode?: 'multiply' | 'screen' | 'overlay' | 'soft-light';
   };
+  /** Phase 4.44: optional dust / scratches overlay — sparse,
+   *  irregular bright (or dark) specks scattered across the canvas,
+   *  mimicking real film-stock decay. Distinct from `grain` (which
+   *  is uniform low-amplitude noise across every pixel): dust is
+   *  high-contrast specks at low density, the sort of artefact you
+   *  see on a worn print rather than the underlying emulsion.
+   *
+   *  Rendered AFTER grain but BEFORE the tint so the dust takes the
+   *  colour grade. Off by default.
+   *  - `color` — speck colour (white for bright dust, black for
+   *    scratch-like dark specks).
+   *  - `intensity` (0..1) — peak speck opacity.
+   *  - `density` (0..1) — how many specks; higher = more cluttered.
+   *    Mapped to a feComponentTransfer threshold so the relationship
+   *    is roughly linear (0.1 = a handful of specks, 0.5 = clearly
+   *    distressed, 1.0 = unusably busy).
+   *  - `seed` (optional 0..9999) — feTurbulence seed for a specific
+   *    spatter pattern. Defaults to 41 for back-compat. */
+  dust?: {
+    color: string;
+    intensity: number;
+    density: number;
+    seed?: number;
+  };
   /** Phase 4.38: optional film-grain / noise finishing overlay.
    *  Rendered AFTER cells + title bar but BEFORE the vignette so the
    *  grain reads as being baked into the image rather than floating
@@ -1605,6 +1629,27 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
       return { ok: false, reason: 'lightLeak.blendMode must be multiply | screen | overlay | soft-light or undefined' };
     }
   }
+  // Phase 4.44: dust shape check.
+  if (config.dust !== undefined) {
+    if (typeof config.dust !== 'object' || config.dust === null) {
+      return { ok: false, reason: 'dust must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.dust.color)) {
+      return { ok: false, reason: 'dust.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.dust.intensity) || config.dust.intensity < 0 || config.dust.intensity > 1) {
+      return { ok: false, reason: 'dust.intensity must be a number in [0, 1]' };
+    }
+    if (!Number.isFinite(config.dust.density) || config.dust.density < 0 || config.dust.density > 1) {
+      return { ok: false, reason: 'dust.density must be a number in [0, 1]' };
+    }
+    if (
+      config.dust.seed !== undefined &&
+      (!Number.isFinite(config.dust.seed) || config.dust.seed < 0 || config.dust.seed > 9999)
+    ) {
+      return { ok: false, reason: 'dust.seed must be a number in [0, 9999] or undefined' };
+    }
+  }
   // Phase 4.38: grain shape check.
   if (config.grain !== undefined) {
     if (typeof config.grain !== 'object' || config.grain === null) {
@@ -2040,6 +2085,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     vignette: parseVignette(o.vignette),
     // Phase 4.38: grain overlay; same tolerant posture as vignette.
     grain: parseGrain(o.grain),
+    // Phase 4.44: dust / scratches overlay; same tolerant posture.
+    dust: parseDust(o.dust),
     // Phase 4.39: tint overlay; tolerant posture, drops on bad / zero.
     tint: parseTint(o.tint),
     // Phase 4.40: light-leak overlay; same tolerant pattern.
@@ -2314,6 +2361,37 @@ function parseTint(
     ...(shadows !== undefined ? { shadows } : {}),
     ...(highlights !== undefined ? { highlights } : {}),
     ...(splitToneStrength !== undefined ? { splitToneStrength } : {}),
+  };
+}
+
+/** Phase 4.44: tolerant dust parser. Drops when required fields
+ *  are missing / non-finite. Density 0 OR intensity 0 both drop
+ *  (an "off" dust shouldn't round-trip). Seed only kept when it's
+ *  a finite integer in [0, 9999]. */
+function parseDust(
+  v: unknown,
+): { color: string; intensity: number; density: number; seed?: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const intensity =
+    typeof o.intensity === 'number' && Number.isFinite(o.intensity)
+      ? Math.max(0, Math.min(1, o.intensity))
+      : undefined;
+  const density =
+    typeof o.density === 'number' && Number.isFinite(o.density)
+      ? Math.max(0, Math.min(1, o.density))
+      : undefined;
+  if (intensity === undefined || density === undefined) return undefined;
+  if (intensity === 0 || density === 0) return undefined;
+  const seed =
+    typeof o.seed === 'number' && Number.isFinite(o.seed) && o.seed >= 0 && o.seed <= 9999
+      ? Math.round(o.seed)
+      : undefined;
+  return {
+    color: stringOr(o.color, '#ffffff'),
+    intensity,
+    density,
+    ...(seed !== undefined ? { seed } : {}),
   };
 }
 
