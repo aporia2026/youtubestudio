@@ -1729,6 +1729,63 @@ describe('Phase 4.37 — vignette overlay', () => {
   });
 });
 
+describe('Phase 4.38 — grain finishing overlay', () => {
+  it('round-trips grain through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.grain = { intensity: 0.18, scale: 1.4, monochrome: true };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.grain).toEqual({ intensity: 0.18, scale: 1.4, monochrome: true });
+  });
+  it('clamps grain intensity to [0, 1] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      grain: { intensity: 1.7, scale: 1, monochrome: false },
+    });
+    expect(reparsed.grain?.intensity).toBe(1);
+    expect(reparsed.grain?.monochrome).toBe(false);
+  });
+  it('clamps grain scale to [0.5, 5] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      grain: { intensity: 0.2, scale: 0.1, monochrome: true },
+    });
+    expect(reparsed.grain?.scale).toBe(0.5);
+  });
+  it('drops grain with zero intensity (renders as no-op)', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      grain: { intensity: 0, scale: 1, monochrome: true },
+    });
+    expect(reparsed.grain).toBeUndefined();
+  });
+  it('defaults grain.monochrome to true when omitted', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      grain: { intensity: 0.3, scale: 1.5 },
+    });
+    expect(reparsed.grain?.monochrome).toBe(true);
+  });
+  it('rejects grain.intensity out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.grain = { intensity: 1.5, scale: 1, monochrome: true };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/grain\.intensity/);
+  });
+  it('rejects grain.monochrome with non-boolean on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    // Force-cast to bypass TS so we can test runtime validation.
+    config.grain = { intensity: 0.2, scale: 1, monochrome: 'yes' as unknown as boolean };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/grain\.monochrome/);
+  });
+});
+
 describe('Phase 4.36 — image filter modes', () => {
   it('round-trips upload filter through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

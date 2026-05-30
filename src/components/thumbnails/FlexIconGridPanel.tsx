@@ -1930,12 +1930,19 @@ export function FlexIconGridPanel({
                       });
                     }}
                   />
-                  {/* Phase 4.36: image filter picker. */}
+                  {/* Phase 4.36 → 4.38: image filter picker. Pass
+                      the upload URL so each chip's swatch previews
+                      the filter against the real image. */}
                   <ImageFilterPicker
                     filter={
                       selectedCell.content.type === 'upload'
                         ? selectedCell.content.filter ?? 'none'
                         : 'none'
+                    }
+                    sampleUrl={
+                      selectedCell.content.type === 'upload'
+                        ? selectedCell.content.url
+                        : null
                     }
                     onChange={(next) => {
                       if (selectedCell.content.type !== 'upload') return;
@@ -2058,12 +2065,19 @@ export function FlexIconGridPanel({
                       });
                     }}
                   />
-                  {/* Phase 4.36: image filter picker for stickers. */}
+                  {/* Phase 4.36 → 4.38: image filter picker for
+                      stickers. Pass the generated sticker URL (if
+                      any) as the swatch sample. */}
                   <ImageFilterPicker
                     filter={
                       selectedCell.content.type === 'ai-sticker'
                         ? selectedCell.content.filter ?? 'none'
                         : 'none'
+                    }
+                    sampleUrl={
+                      selectedCell.content.type === 'ai-sticker'
+                        ? selectedCell.content.url ?? null
+                        : null
                     }
                     onChange={(next) => {
                       if (selectedCell.content.type !== 'ai-sticker') return;
@@ -3653,11 +3667,16 @@ export function FlexIconGridPanel({
                       style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
                     />
                     <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    {/* Phase 4.37 → 4.38: lowered slider min from 0.05
+                        to 0.01 and step from 0.05 to 0.01 so the
+                        subtle-vignette range (1–5%) is now reachable.
+                        Power-user numeric input next to the slider
+                        accepts any value the validator allows. */}
                     <input
                       type="range"
-                      min={0.05}
+                      min={0.01}
                       max={1}
-                      step={0.05}
+                      step={0.01}
                       value={config.vignette.intensity}
                       onChange={(e) =>
                         updateConfig({
@@ -3667,6 +3686,24 @@ export function FlexIconGridPanel({
                       aria-label="Vignette intensity"
                       title={`Strength: ${Math.round(config.vignette.intensity * 100)}%`}
                       style={{ width: 100 }}
+                    />
+                    <input
+                      type="number"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.vignette.intensity.toFixed(2)}
+                      onChange={(e) => {
+                        const raw = Number(e.target.value);
+                        if (!Number.isFinite(raw)) return;
+                        const clamped = Math.max(0.01, Math.min(1, raw));
+                        updateConfig({
+                          vignette: { ...config.vignette!, intensity: clamped },
+                        });
+                      }}
+                      aria-label="Vignette intensity (numeric)"
+                      title="Type any value 0.01–1.00 for precise control"
+                      style={{ ...inputStyle, width: 64, padding: '4px 6px', fontSize: 12 }}
                     />
                     <span style={{ fontSize: 10, color: '#71717a', minWidth: 24 }}>Radius</span>
                     <input
@@ -3684,6 +3721,116 @@ export function FlexIconGridPanel({
                       title={`Radius: ${Math.round(config.vignette.radius * 100)}% (lower = tighter centre)`}
                       style={{ width: 100 }}
                     />
+                  </>
+                )}
+              </div>
+            </div>
+            {/* Phase 4.38: grain / noise finishing overlay. Same
+                row pattern as Vignette. Off by default; turning it on
+                seeds a subtle silver-halide look at 15%. Mono +
+                scale=1 mimics ISO-3200 film; colour + larger scale
+                reads as cheap-sensor video noise. Painted UNDER the
+                vignette so the corner-dim affects the grain too —
+                more realistic than a uniform-brightness noise layer. */}
+            <div>
+              <label style={labelStyle}>
+                Grain
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (film / sensor noise)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.grain}
+                  onClick={() =>
+                    updateConfig({
+                      grain: config.grain
+                        ? undefined
+                        : { intensity: 0.15, scale: 1, monochrome: true },
+                    })
+                  }
+                  style={chipStyle(!!config.grain)}
+                >
+                  {config.grain ? 'Grain on' : 'Grain off'}
+                </button>
+                {config.grain && (
+                  <>
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    <input
+                      type="range"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.grain.intensity}
+                      onChange={(e) =>
+                        updateConfig({
+                          grain: { ...config.grain!, intensity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Grain intensity"
+                      title={`Strength: ${Math.round(config.grain.intensity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <input
+                      type="number"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.grain.intensity.toFixed(2)}
+                      onChange={(e) => {
+                        const raw = Number(e.target.value);
+                        if (!Number.isFinite(raw)) return;
+                        const clamped = Math.max(0.01, Math.min(1, raw));
+                        updateConfig({
+                          grain: { ...config.grain!, intensity: clamped },
+                        });
+                      }}
+                      aria-label="Grain intensity (numeric)"
+                      title="Type any value 0.01–1.00 for precise control"
+                      style={{ ...inputStyle, width: 64, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Size</span>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={5}
+                      step={0.1}
+                      value={config.grain.scale}
+                      onChange={(e) =>
+                        updateConfig({
+                          grain: { ...config.grain!, scale: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Grain size"
+                      title={`Size: ${config.grain.scale.toFixed(1)}× (1 = fine, 5 = chunky)`}
+                      style={{ width: 100 }}
+                    />
+                    <button
+                      type="button"
+                      aria-pressed={config.grain.monochrome}
+                      onClick={() =>
+                        updateConfig({
+                          grain: { ...config.grain!, monochrome: !config.grain!.monochrome },
+                        })
+                      }
+                      style={chipStyle(config.grain.monochrome)}
+                      title={
+                        config.grain.monochrome
+                          ? 'Mono: classic silver-halide film look'
+                          : 'Colour: cheap-sensor video noise'
+                      }
+                    >
+                      {config.grain.monochrome ? 'Mono' : 'Colour'}
+                    </button>
                   </>
                 )}
               </div>
@@ -5745,19 +5892,26 @@ function ImageFitPicker({
  */
 function FilterSwatch({
   mode,
+  sampleUrl,
 }: {
   mode: 'none' | 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert';
+  /** Phase 4.38: when present, the swatch shows the current cell's
+   *  actual image under the filter instead of the synthetic R→G→B
+   *  gradient. This lets the user judge how the filter looks on the
+   *  real subject they're editing — the previous reference gradient
+   *  was readable but didn't represent typical photographic content. */
+  sampleUrl?: string | null;
 }) {
   // Filter id is local to this swatch so multiple swatches don't
-  // collide. Hash the mode into the id; same id is fine across
-  // multiple instances since they all use identical filter defs.
-  const id = `fg-filter-swatch-${mode}`;
+  // collide. Hash the mode + sample-presence into the id so a
+  // sampled and reference swatch don't share defs accidentally.
+  const id = `fg-filter-swatch-${mode}${sampleUrl ? '-img' : ''}`;
   return (
     <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <defs>
         {/* Reference gradient: 3-stop horizontal red→green→blue plus
             a vertical lighten so each filter has chroma + lightness
-            to act on. */}
+            to act on. Only used when no sampleUrl is supplied. */}
         <linearGradient id={`${id}-h`} x1="0" y1="0" x2="1" y2="0">
           <stop offset="0%" stopColor="#e53e3e" />
           <stop offset="50%" stopColor="#48bb78" />
@@ -5818,8 +5972,23 @@ function FilterSwatch({
         )}
       </defs>
       <g filter={mode === 'none' ? undefined : `url(#${id})`}>
-        <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-h)`} />
-        <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-v)`} />
+        {sampleUrl ? (
+          // Phase 4.38: real cell image as the swatch source. Cover
+          // the swatch so a non-square upload still fills the chip.
+          <image
+            href={sampleUrl}
+            x={0}
+            y={0}
+            width={16}
+            height={16}
+            preserveAspectRatio="xMidYMid slice"
+          />
+        ) : (
+          <>
+            <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-h)`} />
+            <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-v)`} />
+          </>
+        )}
       </g>
       {/* Subtle outline so the swatch reads as a tile, not paint
           inside the chip. */}
@@ -5840,15 +6009,22 @@ function FilterSwatch({
  * Phase 4.36: chip-row picker for `upload`/`ai-sticker` cell
  * content filter mode. `none` is the no-filter option; the others
  * map to Sharp-side server filters AND CSS preview filters.
+ *
+ * Phase 4.38: when `sampleUrl` is supplied, each chip's swatch
+ * renders the actual cell image under the filter, so the user can
+ * judge real-content fit rather than read the synthetic R→G→B
+ * gradient.
  */
 function ImageFilterPicker({
   filter,
   onChange,
+  sampleUrl,
 }: {
   filter: 'none' | 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert';
   onChange: (
     next: 'none' | 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert',
   ) => void;
+  sampleUrl?: string | null;
 }) {
   return (
     <div style={{ marginTop: 10 }}>
@@ -5886,7 +6062,7 @@ function ImageFilterPicker({
                           : 'Colour inversion'
               }
             >
-              <FilterSwatch mode={opt.value} />
+              <FilterSwatch mode={opt.value} sampleUrl={sampleUrl} />
               {opt.label}
             </button>
           );

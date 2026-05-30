@@ -596,6 +596,20 @@ export interface FlexIconGridConfig {
     intensity: number;
     radius: number;
   };
+  /** Phase 4.38: optional film-grain / noise finishing overlay.
+   *  Rendered AFTER cells + title bar but BEFORE the vignette so the
+   *  grain reads as being baked into the image rather than floating
+   *  above the lens-style darkening. Off by default.
+   *  - `intensity` (0..1) — opacity of the noise layer.
+   *  - `scale` (0.5..5) — grain size; higher = chunkier grain.
+   *  - `monochrome` — when true, noise is luminance-only (classic
+   *    silver-halide look); when false, RGB chroma noise mimics
+   *    cheap-sensor video grain. */
+  grain?: {
+    intensity: number;
+    scale: number;
+    monochrome: boolean;
+  };
   cells: FlexIconCell[];
   titleBar?: TitleBarSpec;
 }
@@ -1372,6 +1386,21 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
       return { ok: false, reason: 'vignette.radius must be a number in [0.3, 1.5]' };
     }
   }
+  // Phase 4.38: grain shape check.
+  if (config.grain !== undefined) {
+    if (typeof config.grain !== 'object' || config.grain === null) {
+      return { ok: false, reason: 'grain must be an object or undefined' };
+    }
+    if (!Number.isFinite(config.grain.intensity) || config.grain.intensity < 0 || config.grain.intensity > 1) {
+      return { ok: false, reason: 'grain.intensity must be a number in [0, 1]' };
+    }
+    if (!Number.isFinite(config.grain.scale) || config.grain.scale < 0.5 || config.grain.scale > 5) {
+      return { ok: false, reason: 'grain.scale must be a number in [0.5, 5]' };
+    }
+    if (typeof config.grain.monochrome !== 'boolean') {
+      return { ok: false, reason: 'grain.monochrome must be a boolean' };
+    }
+  }
   // Phase 4.31: defaultCellStroke gets the same hex + non-negative
   // thickness check as the per-cell version so a config-level
   // garbage value is caught before reaching the renderer.
@@ -1593,6 +1622,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     // Phase 4.37: vignette overlay parsed tolerantly — drops the
     // field when required keys are missing or out-of-range.
     vignette: parseVignette(o.vignette),
+    // Phase 4.38: grain overlay; same tolerant posture as vignette.
+    grain: parseGrain(o.grain),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1678,6 +1709,33 @@ function parseVignette(
     color: stringOr(o.color, '#000000'),
     intensity,
     radius,
+  };
+}
+
+/** Phase 4.38: tolerant grain parser. Returns undefined when
+ *  required fields are missing / non-finite; drops zero-intensity
+ *  so an "off" grain doesn't round-trip into JSON state. Scale
+ *  clamps to [0.5, 5]; monochrome defaults to true (the more
+ *  classic film-grain look). */
+function parseGrain(
+  v: unknown,
+): { intensity: number; scale: number; monochrome: boolean } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const intensity =
+    typeof o.intensity === 'number' && Number.isFinite(o.intensity)
+      ? Math.max(0, Math.min(1, o.intensity))
+      : undefined;
+  const scale =
+    typeof o.scale === 'number' && Number.isFinite(o.scale)
+      ? Math.max(0.5, Math.min(5, o.scale))
+      : undefined;
+  if (intensity === undefined || scale === undefined) return undefined;
+  if (intensity === 0) return undefined;
+  return {
+    intensity,
+    scale,
+    monochrome: typeof o.monochrome === 'boolean' ? o.monochrome : true,
   };
 }
 

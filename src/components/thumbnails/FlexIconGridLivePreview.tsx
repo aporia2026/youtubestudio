@@ -655,40 +655,139 @@ export function FlexIconGridLivePreview({
             highlighted={highlightedCellIndex === cell.index}
             conflict={conflict}
             onClick={onCellClick}
+            canvasW={config.width}
+            canvasH={config.height}
           />
         ))}
 
-        {/* Phase 4.37: vignette overlay — rendered LAST so it sits
-            on top of cells + title bar. Uses an SVG
-            `<radialGradient>` matching the composer's
-            `buildVignetteOverlay` SVG so on-screen lines up with
-            the rendered PNG. */}
-        {config.vignette && (
+        {/* Phase 4.38: grain overlay — rendered BEFORE the vignette
+            so the corner-dimming pulls down the grain too (mirrors
+            the composer's overlay order). Uses the same
+            feTurbulence + tableValues + alpha-scale primitives as
+            the server build so visual match is exact. The
+            `mix-blend-mode: overlay` is set via CSS on the rect to
+            mirror Sharp's `blend: 'overlay'` composite. */}
+        {config.grain && (
           <>
             <defs>
-              <radialGradient id="fg-preview-vignette" cx="50%" cy="50%" r="50%">
-                <stop
-                  offset={`${Math.round(config.vignette.radius * 100)}%`}
-                  stopColor={config.vignette.color}
-                  stopOpacity={0}
+              <filter
+                id="fg-preview-grain"
+                x={0}
+                y={0}
+                width="100%"
+                height="100%"
+                filterUnits="userSpaceOnUse"
+                primitiveUnits="userSpaceOnUse"
+              >
+                <feTurbulence
+                  type="fractalNoise"
+                  baseFrequency={(0.9 / config.grain.scale).toFixed(4)}
+                  numOctaves={2}
+                  seed={7}
+                  stitchTiles="stitch"
+                  result="noise"
                 />
-                <stop
-                  offset="100%"
-                  stopColor={config.vignette.color}
-                  stopOpacity={config.vignette.intensity}
+                <feComponentTransfer in="noise" result="punched">
+                  <feFuncR type="table" tableValues="0 1 0 1 0 1" />
+                  <feFuncG type="table" tableValues="0 1 0 1 0 1" />
+                  <feFuncB type="table" tableValues="0 1 0 1 0 1" />
+                </feComponentTransfer>
+                {config.grain.monochrome ? (
+                  <feColorMatrix
+                    in="punched"
+                    type="matrix"
+                    values="0.2126 0.7152 0.0722 0 0
+                            0.2126 0.7152 0.0722 0 0
+                            0.2126 0.7152 0.0722 0 0
+                            0      0      0      1 0"
+                    result="grain"
+                  />
+                ) : (
+                  <feColorMatrix
+                    in="punched"
+                    type="matrix"
+                    values="1 0 0 0 0
+                            0 1 0 0 0
+                            0 0 1 0 0
+                            0 0 0 1 0"
+                    result="grain"
+                  />
+                )}
+                <feColorMatrix
+                  in="grain"
+                  type="matrix"
+                  values={`1 0 0 0 0
+                           0 1 0 0 0
+                           0 0 1 0 0
+                           0 0 0 ${config.grain.intensity.toFixed(3)} 0`}
                 />
-              </radialGradient>
+              </filter>
             </defs>
             <rect
               x={0}
               y={0}
               width={config.width}
               height={config.height}
-              fill="url(#fg-preview-vignette)"
+              fill="#808080"
+              filter="url(#fg-preview-grain)"
+              style={{ mixBlendMode: 'overlay' }}
               pointerEvents="none"
             />
           </>
         )}
+
+        {/* Phase 4.37 → 4.38: vignette overlay — rendered LAST so it
+            sits on top of cells + title bar. Uses an SVG
+            `<radialGradient>` matching the composer's
+            `buildVignetteOverlay` SVG so on-screen lines up with the
+            rendered PNG.
+
+            Phase 4.38 caveat fix: `gradientUnits="userSpaceOnUse"`
+            with cx/cy at canvas centre and `r` = half-diagonal. The
+            inner-edge offset is `(radius * halfMin) / halfDiag` so
+            the falloff stays circular instead of stretching with the
+            canvas aspect ratio. */}
+        {config.vignette && (() => {
+          const cx = config.width / 2;
+          const cy = config.height / 2;
+          const halfMin = Math.min(config.width, config.height) / 2;
+          const halfDiag = Math.sqrt(
+            config.width * config.width + config.height * config.height,
+          ) / 2;
+          const startPct = Math.round(((config.vignette.radius * halfMin) / halfDiag) * 100);
+          return (
+            <>
+              <defs>
+                <radialGradient
+                  id="fg-preview-vignette"
+                  gradientUnits="userSpaceOnUse"
+                  cx={cx}
+                  cy={cy}
+                  r={halfDiag}
+                >
+                  <stop
+                    offset={`${startPct}%`}
+                    stopColor={config.vignette.color}
+                    stopOpacity={0}
+                  />
+                  <stop
+                    offset="100%"
+                    stopColor={config.vignette.color}
+                    stopOpacity={config.vignette.intensity}
+                  />
+                </radialGradient>
+              </defs>
+              <rect
+                x={0}
+                y={0}
+                width={config.width}
+                height={config.height}
+                fill="url(#fg-preview-vignette)"
+                pointerEvents="none"
+              />
+            </>
+          );
+        })()}
       </svg>
     </div>
   );
@@ -797,6 +896,11 @@ interface CellGroupProps {
   highlighted: boolean;
   conflict: SpanConflictReason | null;
   onClick?: (cellIndex: number) => void;
+  /** Phase 4.38: canvas dimensions threaded down so child filter
+   *  defs (image filters, future drop-shadows) can pin their
+   *  `filterUnits="userSpaceOnUse"` region to the canvas. */
+  canvasW: number;
+  canvasH: number;
 }
 
 function CellGroup({
@@ -814,6 +918,8 @@ function CellGroup({
   highlighted,
   conflict,
   onClick,
+  canvasW,
+  canvasH,
 }: CellGroupProps) {
   const handleClick = onClick ? () => onClick(cell.index) : undefined;
   const labelText = applyLabelCase(sanitizeUserText(cell.label, 60), labelStyle.case);
@@ -885,10 +991,10 @@ function CellGroup({
               <EmojiContent char={cell.content.char} geom={geom} />
             )}
             {cell.content.type === 'upload' && (
-              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} filter={cell.content.filter} />
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} filter={cell.content.filter} canvasW={canvasW} canvasH={canvasH} />
             )}
             {cell.content.type === 'ai-sticker' && cell.content.url && (
-              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} filter={cell.content.filter} />
+              <UploadContent url={cell.content.url} geom={geom} shape={shape} cornerRadius={cornerRadius} fit={cell.content.fit} filter={cell.content.filter} canvasW={canvasW} canvasH={canvasH} />
             )}
             {cell.content.type === 'text-only' && (
               <TextOnlyContent
@@ -1352,10 +1458,24 @@ function imageFilterId(mode: string): string {
  * `<image>` wasn't supported in Safari's WebKit. Each primitive is
  * tuned to visually match the server-side Sharp output as closely
  * as possible (see `buildUploadOverlay` in the composer).
+ *
+ * Phase 4.38 caveat fix: explicit `filterUnits="userSpaceOnUse"`
+ * + region spanning the entire canvas. The default `objectBoundingBox`
+ * units with `-10%/120%` region clips drop-style or wide-blur filters
+ * at cell edges — by pinning the region to the canvas (which is the
+ * outermost bound any cell can occupy), every future filter mode
+ * we add (drop-shadow, posterize, glow, etc.) gets the room it needs
+ * without changing the filter contract.
+ *
+ * `primitiveUnits` defaults to `userSpaceOnUse` here as well so any
+ * future `stdDeviation` or `dx`/`dy` on primitives is interpreted in
+ * pixels rather than fractional-of-region units.
  */
 function PreviewImageFilter({
   id,
   mode,
+  canvasW,
+  canvasH,
 }: {
   id: string;
   mode:
@@ -1364,11 +1484,26 @@ function PreviewImageFilter({
     | 'high-contrast'
     | 'low-contrast'
     | 'invert';
+  canvasW: number;
+  canvasH: number;
 }) {
+  // Filter region: pinned to the entire canvas so primitives that
+  // extend beyond the image bounds (future blurs, shadows) aren't
+  // clipped. feColorMatrix / feComponentTransfer don't expand the
+  // bounds today, but ensuring the canonical region now keeps the
+  // contract stable as we add more primitives.
+  const regionProps = {
+    filterUnits: 'userSpaceOnUse' as const,
+    primitiveUnits: 'userSpaceOnUse' as const,
+    x: 0,
+    y: 0,
+    width: canvasW,
+    height: canvasH,
+  };
   if (mode === 'grayscale') {
     // Luminosity grayscale (matches Sharp's .greyscale()).
     return (
-      <filter id={id}>
+      <filter id={id} {...regionProps}>
         <feColorMatrix
           type="matrix"
           values="0.2126 0.7152 0.0722 0 0
@@ -1383,7 +1518,7 @@ function PreviewImageFilter({
     // Sepia toned to match Sharp's `.greyscale().tint({r:112,g:66,b:20})`.
     // Slightly warmer + brighter than the canonical sepia matrix.
     return (
-      <filter id={id}>
+      <filter id={id} {...regionProps}>
         <feColorMatrix
           type="matrix"
           values="0.39 0.77 0.19 0 0
@@ -1397,7 +1532,7 @@ function PreviewImageFilter({
   if (mode === 'high-contrast') {
     // Match Sharp's `.linear(1.4, -50)` per channel.
     return (
-      <filter id={id}>
+      <filter id={id} {...regionProps}>
         <feComponentTransfer>
           <feFuncR type="linear" slope={1.4} intercept={-0.196} />
           <feFuncG type="linear" slope={1.4} intercept={-0.196} />
@@ -1409,7 +1544,7 @@ function PreviewImageFilter({
   if (mode === 'low-contrast') {
     // Match Sharp's `.linear(0.65, 45)`.
     return (
-      <filter id={id}>
+      <filter id={id} {...regionProps}>
         <feComponentTransfer>
           <feFuncR type="linear" slope={0.65} intercept={0.176} />
           <feFuncG type="linear" slope={0.65} intercept={0.176} />
@@ -1420,7 +1555,7 @@ function PreviewImageFilter({
   }
   // invert
   return (
-    <filter id={id}>
+    <filter id={id} {...regionProps}>
       <feComponentTransfer>
         <feFuncR type="table" tableValues="1 0" />
         <feFuncG type="table" tableValues="1 0" />
@@ -1437,6 +1572,8 @@ function UploadContent({
   cornerRadius,
   fit,
   filter,
+  canvasW,
+  canvasH,
 }: {
   url: string;
   geom: ReturnType<typeof computeCellGeometry>;
@@ -1450,6 +1587,9 @@ function UploadContent({
     | 'high-contrast'
     | 'low-contrast'
     | 'invert';
+  /** Phase 4.38: canvas dimensions for filter region pinning. */
+  canvasW: number;
+  canvasH: number;
 }) {
   // Mask uploaded images to the cell shape via SVG <clipPath>. Each
   // cell gets a unique clip id so multiple uploads in one preview
@@ -1507,7 +1647,12 @@ function UploadContent({
           per mode so multiple filtered cells dedupe. */}
       {filter && filter !== 'none' && (
         <defs>
-          <PreviewImageFilter id={imageFilterId(filter)} mode={filter} />
+          <PreviewImageFilter
+            id={imageFilterId(filter)}
+            mode={filter}
+            canvasW={canvasW}
+            canvasH={canvasH}
+          />
         </defs>
       )}
       <image

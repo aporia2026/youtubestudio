@@ -327,9 +327,19 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (titleOverlays) overlays.push(...titleOverlays);
     }
 
-    // 3.5) Phase 4.37: vignette overlay — pushed LAST so it sits on
-    //      top of cells + title bar, darkening the canvas corners
-    //      uniformly. A single full-canvas radial-gradient PNG.
+    // 3.5) Phase 4.38: grain overlay — pushed BEFORE the vignette
+    //      so that the corner-darkening visually dims the grain too
+    //      (mimics real film, where the silver-halide noise lives
+    //      under the lens vignette rather than floating on top).
+    if (config.grain) {
+      const grainOverlay = await buildGrainOverlay(config);
+      if (grainOverlay) overlays.push(grainOverlay);
+    }
+
+    // 3.6) Phase 4.37: vignette overlay — pushed LAST so it sits on
+    //      top of cells + title bar (and grain), darkening the
+    //      canvas corners uniformly. A single full-canvas
+    //      radial-gradient PNG.
     if (config.vignette) {
       const vignetteOverlay = await buildVignetteOverlay(config);
       if (vignetteOverlay) overlays.push(vignetteOverlay);
@@ -1780,12 +1790,22 @@ async function buildBadgeOverlay(
 // ─── Vignette overlay (Phase 4.37) ──────────────────────────────────────────
 
 /**
- * Phase 4.37: build a full-canvas radial-gradient PNG overlay for
- * the vignette effect. The gradient is centred at canvas mid; the
- * `radius` value controls where the dimming starts to fade in (as a
- * fraction of the canvas half-diagonal). Below `radius * halfDiag`
- * the pixels are fully transparent (no dimming); above, they fade
- * to the vignette colour at the configured intensity.
+ * Phase 4.37 → 4.38: build a full-canvas radial-gradient PNG overlay
+ * for the vignette effect. The gradient is centred at canvas mid; the
+ * `radius` value controls where the dimming starts to fade in.
+ *
+ * Phase 4.38 caveat fix: switched from `objectBoundingBox` units
+ * (the SVG default) to `gradientUnits="userSpaceOnUse"` pinned to
+ * `min(width,height)/2`. The `objectBoundingBox` mode stretches the
+ * gradient's circle into an ellipse on non-square canvases — the
+ * 16:9 default brightened the short axis far more than the long axis,
+ * which looked wrong. User-space units guarantee a truly circular
+ * falloff regardless of aspect.
+ *
+ * Below `radius * halfMin` the pixels are fully transparent (no
+ * dimming); above, they fade to the vignette colour at the
+ * configured intensity. The endStop is `halfDiag` so the corners of
+ * any aspect ratio receive the full intensity.
  */
 async function buildVignetteOverlay(
   config: FlexIconGridConfig,
@@ -1793,17 +1813,20 @@ async function buildVignetteOverlay(
   const v = config.vignette;
   if (!v) return null;
   const { width, height } = config;
+  const cx = width / 2;
+  const cy = height / 2;
+  const halfMin = Math.min(width, height) / 2;
   const halfDiag = Math.sqrt(width * width + height * height) / 2;
-  // SVG <radialGradient> centred at the canvas centre. `r` is the
-  // gradient's radius; stops define the transparency ramp.
-  const startStop = v.radius * halfDiag;
-  const endStop = halfDiag;
-  // Express as percentages of `r` (= `endStop`) so SVG offsets are
-  // normalised to the gradient's own coordinate space.
-  const startPct = Math.round((startStop / endStop) * 100);
+  // The gradient's own `r` is the corner-reaching half-diagonal so
+  // the gradient covers the full canvas; offsets are computed against
+  // that radius. The visible inner edge is `v.radius * halfMin` —
+  // pinning to the SHORT axis is what keeps the falloff circular on
+  // 16:9 / 9:16 instead of elliptical.
+  const startStop = v.radius * halfMin;
+  const startPct = Math.round((startStop / halfDiag) * 100);
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
-    `<defs><radialGradient id="vg" cx="50%" cy="50%" r="50%">`,
+    `<defs><radialGradient id="vg" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${halfDiag}">`,
     `<stop offset="${startPct}%" stop-color="${escapeSvgText(v.color)}" stop-opacity="0"/>`,
     `<stop offset="100%" stop-color="${escapeSvgText(v.color)}" stop-opacity="${v.intensity}"/>`,
     `</radialGradient></defs>`,
@@ -1812,6 +1835,83 @@ async function buildVignetteOverlay(
   ].join('');
   const buf = await sharp(Buffer.from(svg)).png().toBuffer();
   return { input: buf, top: 0, left: 0 };
+}
+
+// ─── Grain overlay (Phase 4.38) ─────────────────────────────────────────────
+
+/**
+ * Phase 4.38: build a full-canvas film-grain / noise PNG overlay.
+ *
+ * Uses SVG `feTurbulence` to synthesise pseudo-random noise (librsvg
+ * supports the primitive), then either flattens to luminance
+ * (`monochrome: true`, classic silver-halide look) or keeps the
+ * chroma noise (`monochrome: false`, video-grain look). Opacity is
+ * driven by `intensity`.
+ *
+ * The `scale` value maps inversely to feTurbulence's `baseFrequency`:
+ * scale=1 → baseFrequency=0.9 (fine grain). scale=2 → 0.45
+ * (coarser). The mapping is `0.9 / scale` so the unit value matches
+ * a typical photographic ISO-3200-ish look at default size.
+ *
+ * `feComponentTransfer` is layered on top so the noise distribution
+ * is more contrasty (raw turbulence has a soft Gaussian-ish histogram
+ * which reads as low-frequency blur rather than grain). The discrete
+ * tableValues remap the midtones to a punchier black/white split.
+ */
+async function buildGrainOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const g = config.grain;
+  if (!g) return null;
+  const { width, height } = config;
+  const baseFreq = (0.9 / g.scale).toFixed(4);
+  // Two octaves give the grain enough texture variation to read as
+  // film, not as a regular dot pattern. Seed fixed so the output is
+  // deterministic for caching / diffing purposes — picking a random
+  // seed each render would defeat regression tests.
+  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq}" numOctaves="2" seed="7" stitchTiles="stitch" result="noise"/>`;
+  // Contrast remap: tableValues "0 1 0 1 0 1" turns the smooth
+  // turbulence into a higher-frequency on/off pattern that reads
+  // like silver-halide grain rather than smoke.
+  const punchUp =
+    `<feComponentTransfer in="noise" result="punched">` +
+    `<feFuncR type="table" tableValues="0 1 0 1 0 1"/>` +
+    `<feFuncG type="table" tableValues="0 1 0 1 0 1"/>` +
+    `<feFuncB type="table" tableValues="0 1 0 1 0 1"/>` +
+    `</feComponentTransfer>`;
+  // Monochrome path: luminance flatten via feColorMatrix.
+  const mono = g.monochrome
+    ? `<feColorMatrix in="punched" type="matrix" values="
+        0.2126 0.7152 0.0722 0 0
+        0.2126 0.7152 0.0722 0 0
+        0.2126 0.7152 0.0722 0 0
+        0 0 0 1 0" result="grain"/>`
+    : `<feColorMatrix in="punched" type="matrix" values="
+        1 0 0 0 0
+        0 1 0 0 0
+        0 0 1 0 0
+        0 0 0 1 0" result="grain"/>`;
+  // Final opacity: scale the alpha channel by the configured
+  // intensity so the same SVG can drive 5%-grain or 60%-grain
+  // overlays just by changing one number.
+  const alpha = `<feColorMatrix in="grain" type="matrix" values="
+    1 0 0 0 0
+    0 1 0 0 0
+    0 0 1 0 0
+    0 0 0 ${g.intensity.toFixed(3)} 0"/>`;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<defs><filter id="grain" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">`,
+    turbulence,
+    punchUp,
+    mono,
+    alpha,
+    `</filter></defs>`,
+    `<rect width="${width}" height="${height}" fill="#808080" filter="url(#grain)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0, blend: 'overlay' };
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
