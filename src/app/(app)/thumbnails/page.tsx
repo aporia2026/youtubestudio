@@ -323,10 +323,29 @@ function ThumbnailsPage() {
     try { localStorage.setItem('thumb_default_image_model_free_form', imageModel); } catch { /* ignore */ }
   }, [imageModel]);
   const [referenceImageUrl, setReferenceImageUrl] = useState('');
+  // R2 key of the currently-attached reference, tracked separately from
+  // the download URL so the "remove" button can issue a DELETE against
+  // the bucket and free the bytes. Empty when the ref came from a pasted
+  // URL (we don't own those objects) or when no ref is attached.
+  const [referenceImageR2Key, setReferenceImageR2Key] = useState('');
+  const [deletingRef, setDeletingRef] = useState(false);
   const [generatingImages, setGeneratingImages] = useState<Record<number, boolean>>({});
   const [generatedImages, setGeneratedImages] = useState<Record<number, string>>({});
   const [uploadingRef, setUploadingRef] = useState(false);
   const [refPreviewUrl, setRefPreviewUrl] = useState('');
+
+  // Drop the tracked R2 key the moment the reference URL no longer
+  // contains it — happens when the user pastes a different URL, loads a
+  // draft / history entry, or clears the field. The download URL for an
+  // R2 object (presigned or public) always contains the key as a path
+  // segment, so the substring check is a robust invalidator. Without
+  // this, a stale key from an earlier upload could be DELETE'd when the
+  // user clears a totally unrelated pasted URL.
+  useEffect(() => {
+    if (referenceImageR2Key && !referenceImageUrl.includes(referenceImageR2Key)) {
+      setReferenceImageR2Key('');
+    }
+  }, [referenceImageUrl, referenceImageR2Key]);
 
   // Text overlay & style — loaded from localStorage after mount to avoid SSR hydration mismatch
   const [textOverlay, setTextOverlay] = useState<TextOverlaySettings>(DEFAULT_TEXT_OVERLAY);
@@ -585,6 +604,7 @@ function ThumbnailsPage() {
     setNLevelsResult(null);
     setReferenceImageUrl('');
     setRefPreviewUrl('');
+    setReferenceImageR2Key('');
     setImageGenEnabled(false);
     setShowImageSection(false);
     setGeneratedImages({});
@@ -737,14 +757,48 @@ function ThumbnailsPage() {
     }
   }
 
+  /**
+   * Clear the reference image and, when we have an R2 key, also delete
+   * the underlying object so the bucket doesn't accumulate orphans. UI
+   * state is cleared optimistically even if the network call fails —
+   * the user wants the preview gone now; we surface a toast and the
+   * stale key just leaves a few KB behind until R2 lifecycle cleans up.
+   */
+  async function removeReferenceImage() {
+    const keyToDelete = referenceImageR2Key;
+    setReferenceImageUrl('');
+    setRefPreviewUrl('');
+    setReferenceImageR2Key('');
+    if (!keyToDelete) return;
+    setDeletingRef(true);
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- DELETE: removes the R2 object for the cleared reference
+      const res = await fetch('/api/uploads/thumbnail-reference', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ r2Key: keyToDelete }),
+      });
+      console.info('[thumbnails ref-delete]', { r2Key: keyToDelete, status: res.status });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data && data.error) ? data.error : `Delete failed (${res.status})`);
+      }
+      toast.success('Reference image deleted from storage');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete reference image');
+    } finally {
+      setDeletingRef(false);
+    }
+  }
+
   async function uploadReferenceImage(file: File) {
     if (!file.type.startsWith('image/')) { toast.error('Please select an image file'); return; }
     // Direct browser → R2 upload (presigned PUT) so we bypass Vercel's
     // ~4.5 MB API body cap. Mirrors the voiceover-upload flow in
-    // projects/[id]/page.tsx. The 10 MB cap is enforced on both sides:
+    // projects/[id]/page.tsx. The 20 MB cap is enforced on both sides:
     // here for instant feedback, and in the presign route as the source
     // of truth.
-    if (file.size > 10 * 1024 * 1024) { toast.error('Image must be under 10MB'); return; }
+    if (file.size > 20 * 1024 * 1024) { toast.error('Image must be under 20MB'); return; }
     setUploadingRef(true);
     try {
       // eslint-disable-next-line no-restricted-syntax -- presign RPC: returns upload URL
@@ -757,7 +811,7 @@ function ThumbnailsPage() {
         const data = await presignRes.json().catch(() => ({}));
         throw new Error((data && data.error) ? data.error : `Presign failed (${presignRes.status})`);
       }
-      const { uploadUrl, downloadUrl } = await presignRes.json();
+      const { uploadUrl, downloadUrl, r2Key } = await presignRes.json();
       // eslint-disable-next-line no-restricted-syntax -- PUT to presigned R2 URL - file upload
       const putRes = await fetch(uploadUrl, {
         method: 'PUT',
@@ -767,6 +821,7 @@ function ThumbnailsPage() {
       if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
       setReferenceImageUrl(downloadUrl);
       setRefPreviewUrl(downloadUrl);
+      setReferenceImageR2Key(typeof r2Key === 'string' ? r2Key : '');
       toast.success('Reference image uploaded');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to upload reference image');
@@ -1393,16 +1448,17 @@ function ThumbnailsPage() {
                           <div className="flex items-center gap-2">
                             <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>or URL:</span>
                             <input className="input-field flex-1 text-xs" placeholder="https://example.com/image.jpg"
-                              value={referenceImageUrl} onChange={e => { setReferenceImageUrl(e.target.value); setRefPreviewUrl(e.target.value); }} />
+                              value={referenceImageUrl} onChange={e => { setReferenceImageUrl(e.target.value); setRefPreviewUrl(e.target.value); setReferenceImageR2Key(''); }} />
                           </div>
                           {/* Preview */}
                           {refPreviewUrl && (
                             <div className="relative">
                               <img src={refPreviewUrl} alt="Reference" className="w-full h-24 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }}
                                 onError={() => setRefPreviewUrl('')} />
-                              <button onClick={() => { setReferenceImageUrl(''); setRefPreviewUrl(''); }}
+                              <button onClick={removeReferenceImage} disabled={deletingRef}
+                                title={referenceImageR2Key ? 'Delete reference image from storage' : 'Remove reference image'}
                                 className="absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs"
-                                style={{ background: 'rgba(0,0,0,0.7)', color: '#ef4444' }}>×</button>
+                                style={{ background: 'rgba(0,0,0,0.7)', color: '#ef4444', opacity: deletingRef ? 0.5 : 1 }}>×</button>
                             </div>
                           )}
                         </div>
@@ -1422,10 +1478,16 @@ function ThumbnailsPage() {
                                 onChange={e => { const f = e.target.files?.[0]; if (f) uploadReferenceImage(f); e.target.value = ''; }} />
                             </label>
                             <input className="input-field w-full text-xs" placeholder="Or paste image URL..."
-                              value={referenceImageUrl} onChange={e => { setReferenceImageUrl(e.target.value); setRefPreviewUrl(e.target.value); }} />
+                              value={referenceImageUrl} onChange={e => { setReferenceImageUrl(e.target.value); setRefPreviewUrl(e.target.value); setReferenceImageR2Key(''); }} />
                             {refPreviewUrl && (
-                              <img src={refPreviewUrl} alt="Reference" className="w-full h-20 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }}
-                                onError={() => setRefPreviewUrl('')} />
+                              <div className="relative">
+                                <img src={refPreviewUrl} alt="Reference" className="w-full h-20 object-cover rounded-lg" style={{ border: '1px solid var(--border)' }}
+                                  onError={() => setRefPreviewUrl('')} />
+                                <button onClick={removeReferenceImage} disabled={deletingRef}
+                                  title={referenceImageR2Key ? 'Delete reference image from storage' : 'Remove reference image'}
+                                  className="absolute top-1 right-1 w-5 h-5 rounded-full flex items-center justify-center text-xs"
+                                  style={{ background: 'rgba(0,0,0,0.7)', color: '#ef4444', opacity: deletingRef ? 0.5 : 1 }}>×</button>
+                              </div>
                             )}
                           </div>
                         </details>

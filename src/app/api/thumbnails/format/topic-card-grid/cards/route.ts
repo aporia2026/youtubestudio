@@ -90,9 +90,9 @@ export const maxDuration = 120;
  * gates this endpoint's output before any image dollars are spent.
  */
 
-// Same 8 MB cap as the multimodal reference path in /api/thumbnails/generate.
-// Reference thumbnails are well under 1 MB in practice.
-const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+// Same 20 MB cap as the multimodal reference path in /api/thumbnails/generate.
+// Phone-camera uploads routinely exceed 8 MB; 20 MB is the new ceiling.
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 
 // Server-side sanity cap on grid dimensions. Plan said no UI cap; this is the
 // runaway-prevention layer (50×50 = 2500 cards is wildly past any reasonable
@@ -273,11 +273,11 @@ export async function POST(req: NextRequest) {
       }
       const declaredLen = Number.parseInt(imgRes.headers.get('content-length') ?? '', 10);
       if (Number.isFinite(declaredLen) && declaredLen > MAX_REFERENCE_BYTES) {
-        return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+        return NextResponse.json({ error: 'Reference image exceeds 20 MB cap' }, { status: 413 });
       }
       const arrayBuf = await imgRes.arrayBuffer();
       if (arrayBuf.byteLength > MAX_REFERENCE_BYTES) {
-        return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+        return NextResponse.json({ error: 'Reference image exceeds 20 MB cap' }, { status: 413 });
       }
       const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
       mimeType = contentType.includes('png')

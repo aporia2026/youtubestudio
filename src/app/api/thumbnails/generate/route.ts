@@ -11,12 +11,15 @@ import { resolveStyle } from '@/lib/production-doc-styles';
 
 export const maxDuration = 300;
 
-// Cap fetched reference image at 8 MB. Mirrors the cap used in
-// `/api/competitors/[id]/thumbnail-analyze` — reference thumbnails are
-// well under 1 MB in practice; anything larger is misconfigured or
-// adversarial. Cap is enforced via both the declared content-length
-// header AND the actual buffer byte length, since servers can lie.
-const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+// Cap fetched reference image at 20 MB. Phone-camera HEIC/PNG photos
+// routinely sit between 8-15 MB before resize, and rejecting them at
+// generate-time after a successful upload was the worst UX in the flow.
+// 20 MB still leaves a comfortable headroom under the Vercel function
+// memory budget and under multimodal LLM per-image limits (Anthropic
+// 5 MB / Gemini 7 MB — both downscale before transit). Cap is enforced
+// via both the declared content-length header AND the actual buffer
+// byte length, since servers can lie.
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 
 /**
  * Vision-capable models for the concept generator.
@@ -163,12 +166,12 @@ export async function POST(req: NextRequest) {
       const declaredLen = Number.parseInt(imgRes.headers.get('content-length') ?? '', 10);
       if (Number.isFinite(declaredLen) && declaredLen > MAX_REFERENCE_BYTES) {
         logger.warn('[thumb-concepts] reference rejected', { reason: `declared size ${declaredLen} > cap` });
-        return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+        return NextResponse.json({ error: 'Reference image exceeds 20 MB cap' }, { status: 413 });
       }
       const arrayBuf = await imgRes.arrayBuffer();
       if (arrayBuf.byteLength > MAX_REFERENCE_BYTES) {
         logger.warn('[thumb-concepts] reference rejected', { reason: `actual size ${arrayBuf.byteLength} > cap` });
-        return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+        return NextResponse.json({ error: 'Reference image exceeds 20 MB cap' }, { status: 413 });
       }
       const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
       // Anthropic only accepts jpeg/png/gif/webp; normalise anything else to jpeg

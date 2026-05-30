@@ -261,8 +261,8 @@ export async function POST(req: NextRequest) {
           throw new Error(`Failed to fetch reference image for OpenAI edit (HTTP ${refRes.status}).`);
         }
         const arrayBuf = await refRes.arrayBuffer();
-        if (arrayBuf.byteLength > 8 * 1024 * 1024) {
-          throw new Error('Reference image exceeds 8 MB cap for the OpenAI edit path.');
+        if (arrayBuf.byteLength > 20 * 1024 * 1024) {
+          throw new Error('Reference image exceeds 20 MB cap for the OpenAI edit path.');
         }
         referenceBytes = Buffer.from(arrayBuf);
         const ct = refRes.headers.get('content-type') || 'image/png';

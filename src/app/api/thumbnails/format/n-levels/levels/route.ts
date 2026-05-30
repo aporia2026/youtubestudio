@@ -22,7 +22,7 @@ export const maxDuration = 120;
  * call). Mirrors the sibling topic-card-grid/cards endpoint.
  */
 
-const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 
 // Server-side sanity cap on slice count. The UI doesn't surface a max; this
 // is the runaway-prevention layer (20+ levels would produce slices too thin
@@ -213,11 +213,11 @@ export async function POST(req: NextRequest) {
     }
     const declaredLen = Number.parseInt(imgRes.headers.get('content-length') ?? '', 10);
     if (Number.isFinite(declaredLen) && declaredLen > MAX_REFERENCE_BYTES) {
-      return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+      return NextResponse.json({ error: 'Reference image exceeds 20 MB cap' }, { status: 413 });
     }
     const arrayBuf = await imgRes.arrayBuffer();
     if (arrayBuf.byteLength > MAX_REFERENCE_BYTES) {
-      return NextResponse.json({ error: 'Reference image exceeds 8 MB cap' }, { status: 413 });
+      return NextResponse.json({ error: 'Reference image exceeds 20 MB cap' }, { status: 413 });
     }
     const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
     const mimeType = contentType.includes('png')
