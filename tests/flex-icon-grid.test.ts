@@ -18,6 +18,7 @@ import {
   computeGridLayout,
   computeRegions,
   DEFAULT_CANVAS,
+  DEFAULT_LABEL_STYLE,
   escapeSvgText,
   getAspectRatioPreset,
   getConsumedCellIndexes,
@@ -1687,6 +1688,55 @@ function seededRng(seq: number[]): () => number {
     return v;
   };
 }
+
+describe('Phase 4.32 — subtitle text shadow + per-cell label shadow', () => {
+  it('round-trips subtitleTextShadow through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000', color: '#fff', font: 'anton',
+      subtitleTextShadow: { offsetY: 3, blur: 4, color: '#000000', opacity: 0.4 },
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.titleBar?.subtitleTextShadow).toEqual({
+      offsetY: 3, blur: 4, color: '#000000', opacity: 0.4,
+    });
+  });
+  it('round-trips null subtitleTextShadow as explicit opt-out', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      titleBar: {
+        text: 'X', position: 'top', height: 96,
+        background: '#000', color: '#fff', font: 'anton',
+        subtitleTextShadow: null,
+      },
+    });
+    expect(reparsed.titleBar?.subtitleTextShadow).toBeNull();
+  });
+  it('rejects malformed subtitleTextShadow on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.titleBar = {
+      text: 'X', position: 'top', height: 96,
+      background: '#000000', color: '#ffffff', font: 'anton',
+      subtitleTextShadow: { offsetY: 4, blur: 6, color: 'red', opacity: 0.5 },
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/subtitleTextShadow/);
+  });
+  it('round-trips per-cell labelStyle.textShadow through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.cells[0].labelStyle = {
+      ...DEFAULT_LABEL_STYLE,
+      textShadow: { offsetY: 2, blur: 4, color: '#000000', opacity: 0.3 },
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.cells[0].labelStyle?.textShadow).toEqual({
+      offsetY: 2, blur: 4, color: '#000000', opacity: 0.3,
+    });
+  });
+});
 
 describe('Phase 4.31 — title text shadow + defaultCellStroke validation', () => {
   it('round-trips titleBar.textShadow through parseConfig', () => {

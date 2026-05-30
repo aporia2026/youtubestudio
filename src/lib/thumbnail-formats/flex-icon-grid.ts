@@ -173,6 +173,12 @@ export interface LabelStyle {
   /** Optional human-readable name for the custom font shown in the
    *  picker chip. Free-text — sanitised before display. */
   customFontLabel?: string;
+  /** Phase 4.32: optional drop shadow applied to the label glyphs
+   *  themselves. Reuses the per-cell `ShadowStyle` shape so the
+   *  parser + validator paths stay the same. Renders via the
+   *  same Sharp pipeline as the title text shadow on the
+   *  rendered PNG and an SVG filter in the live preview. */
+  textShadow?: ShadowStyle;
 }
 
 /**
@@ -358,6 +364,15 @@ export interface TitleBarSpec {
    *  applied to the text element in the preview and via a Sharp
    *  composite pass on the rasterised text buffer in the composer. */
   textShadow?: ShadowStyle;
+  /** Phase 4.32: independent drop shadow for the subtitle. Cascade
+   *  rules:
+   *    - explicit `null` → subtitle has NO shadow even when the main
+   *      `textShadow` is set;
+   *    - object → subtitle uses its own shadow spec;
+   *    - undefined → subtitle inherits `textShadow`.
+   *  Lets a user shadow only the main title without spilling the
+   *  effect onto the kicker subtitle. */
+  subtitleTextShadow?: ShadowStyle;
   /** Phase 4.30: optional independent horizontal alignment for the
    *  subtitle. Falls back to `textAlign` when undefined so a single-
    *  alignment thumbnail stays consistent. A user wanting a
@@ -1242,6 +1257,12 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     // Phase 4.31: text-only shadow validation.
     const textShadowResult = validateShadow(config.titleBar.textShadow, 'titleBar.textShadow');
     if (!textShadowResult.ok) return textShadowResult;
+    // Phase 4.32: subtitle text shadow validation.
+    const subtitleTextShadowResult = validateShadow(
+      config.titleBar.subtitleTextShadow,
+      'titleBar.subtitleTextShadow',
+    );
+    if (!subtitleTextShadowResult.ok) return subtitleTextShadowResult;
     // Phase 4.28: gradient backgrounds — both stops must be valid
     // hex; angle is a finite number (any value works as a rotation).
     if (config.titleBar.backgroundGradient) {
@@ -1627,6 +1648,9 @@ function parseLabelStyle(v: unknown, fallback: LabelStyle): LabelStyle {
     font === 'custom' && typeof o.customFontLabel === 'string'
       ? o.customFontLabel
       : undefined;
+  // Phase 4.32: label drop shadow uses the same parseShadow as the
+  // title text shadow so the cascade rules are consistent.
+  const textShadow = 'textShadow' in o ? parseShadow(o.textShadow) : undefined;
   return {
     position: safePos,
     font,
@@ -1636,6 +1660,7 @@ function parseLabelStyle(v: unknown, fallback: LabelStyle): LabelStyle {
     maxLines,
     customFontUrl,
     customFontLabel,
+    textShadow,
   };
 }
 
@@ -1708,6 +1733,9 @@ function parseTitleBar(v: unknown): TitleBarSpec {
     shadow: 'shadow' in o ? parseShadow(o.shadow) : undefined,
     // Phase 4.31: text-only drop shadow uses the same shape.
     textShadow: 'textShadow' in o ? parseShadow(o.textShadow) : undefined,
+    // Phase 4.32: subtitle text shadow has the same cascade as the
+    // title text shadow but inherits when undefined.
+    subtitleTextShadow: 'subtitleTextShadow' in o ? parseShadow(o.subtitleTextShadow) : undefined,
     // Phase 4.28: optional gradient. Parsed tolerantly — drops the
     // field entirely when the object is missing required keys
     // (`from`, `to`) so a doctored config can't sneak a malformed

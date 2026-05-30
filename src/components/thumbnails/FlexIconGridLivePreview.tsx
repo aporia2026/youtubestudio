@@ -367,16 +367,25 @@ export function FlexIconGridLivePreview({
           const textX = main.x;
           const anchor = main.anchor;
           if (!hasSubtitle) {
-            // Phase 4.31: text shadow filter (when set) wraps the
-            // single-line <text> just like the two-line case below.
+            // Phase 4.31 → 4.32: text shadow filter (when set) wraps
+            // the single-line <text> just like the two-line case.
+            // Region from shared `computeShadowFilterRegion` so big
+            // shadows don't clip.
             const ts = tb.textShadow;
             const tsId = ts ? 'fg-preview-title-text-shadow' : null;
+            const tsRegion = ts ? computeShadowFilterRegion(ts, mainSize) : null;
             return (
               <>
                 <defs>
                   {clipRect}
-                  {ts && (
-                    <filter id={tsId!} x="-25%" y="-25%" width="150%" height="150%">
+                  {ts && tsRegion && (
+                    <filter
+                      id={tsId!}
+                      x={`${tsRegion.x}%`}
+                      y={`${tsRegion.y}%`}
+                      width={`${tsRegion.w}%`}
+                      height={`${tsRegion.h}%`}
+                    >
                       <feGaussianBlur in="SourceAlpha" stdDeviation={ts.blur} />
                       <feOffset dx={0} dy={ts.offsetY} result="off" />
                       <feFlood floodColor={ts.color} floodOpacity={ts.opacity} />
@@ -436,18 +445,45 @@ export function FlexIconGridLivePreview({
           // honest (real glyph-metric line-height), and per-tspan
           // anchors honour independent subtitle alignment without
           // the Phase-4.30 split-text approximation.
-          // Phase 4.31: optional drop shadow on the title TEXT
+          // Phase 4.31 → 4.32: optional drop shadow on the title TEXT
           // (separate from the bar's rect shadow). Mirrors the
           // composer's wrap step via an SVG filter referenced from
-          // the <text>'s `filter` attribute.
+          // the <text>'s `filter` attribute. Region from
+          // `computeShadowFilterRegion`. Phase 4.32 — subtitle can
+          // carry its own text shadow (or opt out with explicit
+          // null). When the subtitle's effective shadow differs
+          // from the main's, the subtitle gets its own <text>
+          // element + filter id since `<tspan>` doesn't accept
+          // `filter`.
           const textShadow = tb.textShadow;
+          const resolvedSubShadow =
+            tb.subtitleTextShadow === null
+              ? null
+              : tb.subtitleTextShadow ?? tb.textShadow ?? null;
+          const subShadowDiffers =
+            JSON.stringify(resolvedSubShadow) !== JSON.stringify(tb.textShadow ?? null);
           const textShadowId = textShadow ? 'fg-preview-title-text-shadow' : null;
+          const subShadowId = resolvedSubShadow && subShadowDiffers
+            ? 'fg-preview-title-sub-text-shadow'
+            : null;
+          const textShadowRegion = textShadow
+            ? computeShadowFilterRegion(textShadow, mainSize)
+            : null;
+          const subShadowRegion = resolvedSubShadow && subShadowDiffers
+            ? computeShadowFilterRegion(resolvedSubShadow, subSize)
+            : null;
           return (
             <>
               <defs>
                 {clipRect}
-                {textShadow && (
-                  <filter id={textShadowId!} x="-25%" y="-25%" width="150%" height="150%">
+                {textShadow && textShadowRegion && (
+                  <filter
+                    id={textShadowId!}
+                    x={`${textShadowRegion.x}%`}
+                    y={`${textShadowRegion.y}%`}
+                    width={`${textShadowRegion.w}%`}
+                    height={`${textShadowRegion.h}%`}
+                  >
                     <feGaussianBlur in="SourceAlpha" stdDeviation={textShadow.blur} />
                     <feOffset dx={0} dy={textShadow.offsetY} result="off" />
                     <feFlood floodColor={textShadow.color} floodOpacity={textShadow.opacity} />
@@ -458,37 +494,94 @@ export function FlexIconGridLivePreview({
                     </feMerge>
                   </filter>
                 )}
+                {subShadowId && resolvedSubShadow && subShadowRegion && (
+                  <filter
+                    id={subShadowId}
+                    x={`${subShadowRegion.x}%`}
+                    y={`${subShadowRegion.y}%`}
+                    width={`${subShadowRegion.w}%`}
+                    height={`${subShadowRegion.h}%`}
+                  >
+                    <feGaussianBlur in="SourceAlpha" stdDeviation={resolvedSubShadow.blur} />
+                    <feOffset dx={0} dy={resolvedSubShadow.offsetY} result="sub-off" />
+                    <feFlood floodColor={resolvedSubShadow.color} floodOpacity={resolvedSubShadow.opacity} />
+                    <feComposite in2="sub-off" operator="in" />
+                    <feMerge>
+                      <feMergeNode />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                )}
               </defs>
-              <text
-                x={textX}
-                y={barCenterY}
-                fontFamily={fontFamily}
-                fill={tb.color}
-                textAnchor={anchor}
-                dominantBaseline="middle"
-                clipPath={clipPathRef}
-                filter={textShadowId ? `url(#${textShadowId})` : undefined}
-              >
-                <tspan
-                  x={main.x}
-                  textAnchor={main.anchor}
-                  fontSize={mainSize}
-                  fontWeight={900}
+              {/* Phase 4.32: when subtitle shadow differs from main,
+                  render the subtitle as its OWN <text> with its own
+                  filter. The main stays a unified <text> + <tspan>
+                  with the main filter applied. Approximates the
+                  baseline-offset distance so the visual stacking
+                  stays close to the unified case. */}
+              {subShadowDiffers ? (
+                <>
+                  <text
+                    x={textX}
+                    y={barCenterY - subSize / 2}
+                    fontFamily={fontFamily}
+                    fontSize={mainSize}
+                    fontWeight={900}
+                    fill={tb.color}
+                    textAnchor={anchor}
+                    dominantBaseline="middle"
+                    clipPath={clipPathRef}
+                    filter={textShadowId ? `url(#${textShadowId})` : undefined}
+                  >
+                    {sanitizeUserText(tb.text, 80)}
+                  </text>
+                  <text
+                    x={sub.x}
+                    y={barCenterY + mainSize / 2 + Math.round(tb.height * 0.05)}
+                    fontFamily={subFontFamily}
+                    fontSize={subSize}
+                    fontWeight={700}
+                    fill={tb.subtitleColor ?? tb.color}
+                    textAnchor={sub.anchor}
+                    dominantBaseline="middle"
+                    clipPath={clipPathRef}
+                    filter={subShadowId ? `url(#${subShadowId})` : undefined}
+                  >
+                    {subtitleText}
+                  </text>
+                </>
+              ) : (
+                <text
+                  x={textX}
+                  y={barCenterY}
+                  fontFamily={fontFamily}
+                  fill={tb.color}
+                  textAnchor={anchor}
+                  dominantBaseline="middle"
+                  clipPath={clipPathRef}
+                  filter={textShadowId ? `url(#${textShadowId})` : undefined}
                 >
-                  {sanitizeUserText(tb.text, 80)}
-                </tspan>
-                <tspan
-                  x={sub.x}
-                  textAnchor={sub.anchor}
-                  dy={subDy}
-                  fontFamily={subFontFamily}
-                  fontSize={subSize}
-                  fontWeight={700}
-                  fill={tb.subtitleColor ?? tb.color}
-                >
-                  {subtitleText}
-                </tspan>
-              </text>
+                  <tspan
+                    x={main.x}
+                    textAnchor={main.anchor}
+                    fontSize={mainSize}
+                    fontWeight={900}
+                  >
+                    {sanitizeUserText(tb.text, 80)}
+                  </tspan>
+                  <tspan
+                    x={sub.x}
+                    textAnchor={sub.anchor}
+                    dy={subDy}
+                    fontFamily={subFontFamily}
+                    fontSize={subSize}
+                    fontWeight={700}
+                    fill={tb.subtitleColor ?? tb.color}
+                  >
+                    {subtitleText}
+                  </tspan>
+                </text>
+              )}
             </>
           );
         })()}
@@ -754,7 +847,7 @@ function CellGroup({
 
       {/* Label (skip when content is text-only since the label IS the content). */}
       {labelStyle.position !== 'hidden' && cell.content.type !== 'text-only' && (
-        <LabelText label={labelText} geom={geom} labelStyle={labelStyle} colour={labelColour} />
+        <LabelText label={labelText} geom={geom} labelStyle={labelStyle} colour={labelColour} cellIndex={cell.index} />
       )}
 
       {/* Phase 4.12: corner badge. Sized + positioned to mirror the
@@ -1252,33 +1345,65 @@ function LabelText({
   geom,
   labelStyle,
   colour,
+  cellIndex,
 }: {
   label: string;
   geom: ReturnType<typeof computeCellGeometry>;
   labelStyle: LabelStyle;
   colour: string;
+  cellIndex: number;
 }) {
   const bandH = labelStyle.position === 'overlay' ? geom.labelH * 0.7 : geom.labelH;
   const sizePx = Math.max(
     12,
     Math.round(bandH * (labelStyle.maxLines === 2 ? 0.42 : 0.62)),
   );
+  // Phase 4.32: optional label text shadow rendered via SVG filter.
+  // Unique id per cell so multiple shadowed labels in one grid
+  // don't collide. Region from `computeShadowFilterRegion` keyed on
+  // the label's rendered size so big shadows don't clip.
+  const ts = labelStyle.textShadow;
+  const tsId = ts ? `fg-preview-label-shadow-${cellIndex}` : null;
+  const tsRegion = ts ? computeShadowFilterRegion(ts, sizePx) : null;
   return (
-    <text
-      x={geom.labelX + geom.labelW / 2}
-      y={geom.labelY + geom.labelH / 2}
-      fontFamily={resolveFontCssFor(labelStyle)}
-      fontSize={sizePx}
-      fontWeight={900}
-      fill={colour}
-      stroke={labelStyle.stroke ? labelStyle.stroke.color : undefined}
-      strokeWidth={labelStyle.stroke ? labelStyle.stroke.thickness : undefined}
-      paintOrder="stroke fill"
-      textAnchor="middle"
-      dominantBaseline="middle"
-    >
-      {label}
-    </text>
+    <>
+      {ts && tsRegion && (
+        <defs>
+          <filter
+            id={tsId!}
+            x={`${tsRegion.x}%`}
+            y={`${tsRegion.y}%`}
+            width={`${tsRegion.w}%`}
+            height={`${tsRegion.h}%`}
+          >
+            <feGaussianBlur in="SourceAlpha" stdDeviation={ts.blur} />
+            <feOffset dx={0} dy={ts.offsetY} result="off" />
+            <feFlood floodColor={ts.color} floodOpacity={ts.opacity} />
+            <feComposite in2="off" operator="in" />
+            <feMerge>
+              <feMergeNode />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+      )}
+      <text
+        x={geom.labelX + geom.labelW / 2}
+        y={geom.labelY + geom.labelH / 2}
+        fontFamily={resolveFontCssFor(labelStyle)}
+        fontSize={sizePx}
+        fontWeight={900}
+        fill={colour}
+        stroke={labelStyle.stroke ? labelStyle.stroke.color : undefined}
+        strokeWidth={labelStyle.stroke ? labelStyle.stroke.thickness : undefined}
+        paintOrder="stroke fill"
+        textAnchor="middle"
+        dominantBaseline="middle"
+        filter={tsId ? `url(#${tsId})` : undefined}
+      >
+        {label}
+      </text>
+    </>
   );
 }
 

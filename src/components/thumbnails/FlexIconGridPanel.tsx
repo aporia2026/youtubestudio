@@ -2342,6 +2342,105 @@ export function FlexIconGridPanel({
             )}
           </div>
 
+          {/* Phase 4.32: per-cell label drop shadow. Mirrors the
+              title text shadow but applies to the cell's label
+              glyphs. Toggle on / off; offset, blur, opacity, and
+              colour controls appear when enabled. Useful when the
+              cell has a busy pattern or image background and the
+              label needs extra contrast against it. */}
+          <label style={labelStyle}>Label shadow (this cell)</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              aria-pressed={!!selectedCell.labelStyle?.textShadow}
+              onClick={() => {
+                const hasShadow = !!selectedCell.labelStyle?.textShadow;
+                updateCell(selectedCell.index, {
+                  labelStyle: {
+                    ...(selectedCell.labelStyle ?? {}),
+                    textShadow: hasShadow ? undefined : DEFAULT_SHADOW,
+                  },
+                });
+              }}
+              style={chipStyle(!!selectedCell.labelStyle?.textShadow)}
+            >
+              {selectedCell.labelStyle?.textShadow ? 'Shadow on' : 'Shadow off'}
+            </button>
+            {selectedCell.labelStyle?.textShadow && (
+              <>
+                <input
+                  type="range"
+                  min={0}
+                  max={24}
+                  step={1}
+                  value={selectedCell.labelStyle.textShadow.offsetY}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      labelStyle: {
+                        ...(selectedCell.labelStyle ?? {}),
+                        textShadow: { ...selectedCell.labelStyle!.textShadow!, offsetY: Number(e.target.value) },
+                      },
+                    })
+                  }
+                  aria-label="Label shadow offset"
+                  title={`Offset: ${selectedCell.labelStyle.textShadow.offsetY}px`}
+                  style={{ width: 100 }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={24}
+                  step={1}
+                  value={selectedCell.labelStyle.textShadow.blur}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      labelStyle: {
+                        ...(selectedCell.labelStyle ?? {}),
+                        textShadow: { ...selectedCell.labelStyle!.textShadow!, blur: Number(e.target.value) },
+                      },
+                    })
+                  }
+                  aria-label="Label shadow blur"
+                  title={`Blur: ${selectedCell.labelStyle.textShadow.blur}px`}
+                  style={{ width: 100 }}
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={selectedCell.labelStyle.textShadow.opacity}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      labelStyle: {
+                        ...(selectedCell.labelStyle ?? {}),
+                        textShadow: { ...selectedCell.labelStyle!.textShadow!, opacity: Number(e.target.value) },
+                      },
+                    })
+                  }
+                  aria-label="Label shadow opacity"
+                  title={`Opacity: ${Math.round(selectedCell.labelStyle.textShadow.opacity * 100)}%`}
+                  style={{ width: 80 }}
+                />
+                <input
+                  type="color"
+                  value={selectedCell.labelStyle.textShadow.color}
+                  onChange={(e) =>
+                    updateCell(selectedCell.index, {
+                      labelStyle: {
+                        ...(selectedCell.labelStyle ?? {}),
+                        textShadow: { ...selectedCell.labelStyle!.textShadow!, color: e.target.value },
+                      },
+                    })
+                  }
+                  aria-label="Label shadow colour"
+                  title="Label shadow colour"
+                  style={{ width: 32, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                />
+              </>
+            )}
+          </div>
+
           {/* Phase 4.8a: per-cell font override. Lets a single cell
               pick its own bundled font or registered custom font
               independently of the grid's defaultLabel font. The
@@ -3179,7 +3278,25 @@ export function FlexIconGridPanel({
                 cell editor. Off by default — the reference channels
                 don't use frames. */}
             <div>
-              <label style={labelStyle}>Cell outer stroke</label>
+              <label style={labelStyle}>
+                Cell outer stroke
+                {/* Phase 4.32: explicit "applies to all cells" hint so
+                    the canvas-level UI feels coherent with the
+                    per-cell Inherit / Off / Custom tristate next
+                    door. This IS the inherit source — there's
+                    nothing to inherit from, hence no third option. */}
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (default for every cell unless overridden)
+                </span>
+              </label>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <button
                   type="button"
@@ -3897,6 +4014,72 @@ export function FlexIconGridPanel({
                       </>
                     )}
                   </div>
+                  {/* Phase 4.32: subtitle text shadow tristate.
+                      Inherit (undefined) → follows the main title's
+                      `textShadow`; Off (null) → no shadow even when
+                      main has one; Custom (object) → cell-specific.
+                      Only surfaced once the user has typed a
+                      subtitle so the panel stays clean. */}
+                  {config.titleBar.subtitle && (
+                    <div style={{ marginTop: 8 }}>
+                      <label style={{ ...labelStyle, marginTop: 0, fontSize: 11 }}>
+                        Subtitle text shadow
+                      </label>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          aria-pressed={config.titleBar.subtitleTextShadow === undefined}
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: { ...config.titleBar!, subtitleTextShadow: undefined },
+                            })
+                          }
+                          style={{ ...chipStyle(config.titleBar.subtitleTextShadow === undefined), fontStyle: 'italic', borderStyle: 'dashed' }}
+                          title="Inherit the main title's text shadow"
+                        >
+                          Inherit
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={config.titleBar.subtitleTextShadow === null}
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: { ...config.titleBar!, subtitleTextShadow: null },
+                            })
+                          }
+                          style={chipStyle(config.titleBar.subtitleTextShadow === null)}
+                          title="No shadow on the subtitle even if the main has one"
+                        >
+                          Off
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={
+                            config.titleBar.subtitleTextShadow !== undefined &&
+                            config.titleBar.subtitleTextShadow !== null
+                          }
+                          onClick={() =>
+                            updateConfig({
+                              titleBar: {
+                                ...config.titleBar!,
+                                subtitleTextShadow:
+                                  config.titleBar!.subtitleTextShadow &&
+                                  config.titleBar!.subtitleTextShadow !== null
+                                    ? config.titleBar!.subtitleTextShadow
+                                    : config.titleBar!.textShadow ?? DEFAULT_SHADOW,
+                              },
+                            })
+                          }
+                          style={chipStyle(
+                            config.titleBar.subtitleTextShadow !== undefined &&
+                              config.titleBar.subtitleTextShadow !== null,
+                          )}
+                        >
+                          Custom
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {/* Phase 4.27: title bar drop shadow. Off by default —

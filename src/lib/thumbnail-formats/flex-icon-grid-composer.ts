@@ -1156,6 +1156,13 @@ async function buildLabelOverlay(
       .png()
       .toBuffer();
   }
+  // Phase 4.32: apply the optional label text shadow BEFORE the
+  // band-fit clamp so the clamp considers the shadow halo too.
+  // Mirrors the title text shadow pipeline in
+  // `wrapTextWithShadow` for visual + behavioural consistency.
+  if (labelStyle.textShadow) {
+    buf = await wrapTextWithShadow(buf, labelStyle.textShadow);
+  }
   // Resize-inside if Pango rendered taller than the band (long
   // unbreakable words). Mirrors the guard in topic-card-grid-composite.
   const finalMeta = await sharp(buf).metadata();
@@ -1205,15 +1212,21 @@ async function wrapTextWithShadow(
 
   // Build the shadow layer: recolour + alpha-scale + blur.
   let shadowBuf = await tintPngTo(textBuf, shadow.color);
-  // Scale the alpha by the requested opacity. `composite` with a
-  // semi-transparent rect using `dest-in` reduces the alpha
-  // multiplicatively across the buffer.
+  // Phase 4.31 → 4.32: scale the alpha by the requested opacity via
+  // a `dest-in` composite. Uses Sharp's `create()` to mint a uniform
+  // RGBA buffer instead of round-tripping through an SVG string —
+  // avoids the SVG parser and roughly halves this step's cost.
   shadowBuf = await sharp(shadowBuf)
     .composite([
       {
-        input: Buffer.from(
-          `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="${w}" height="${h}" fill="white" fill-opacity="${shadow.opacity}"/></svg>`,
-        ),
+        input: {
+          create: {
+            width: w,
+            height: h,
+            channels: 4,
+            background: { r: 255, g: 255, b: 255, alpha: shadow.opacity },
+          },
+        },
         blend: 'dest-in',
       },
     ])
@@ -1395,10 +1408,16 @@ async function buildTitleBarOverlay(
     .toBuffer();
   const subColor = titleBar.subtitleColor ?? titleBar.color;
   subBuf = await tintPngTo(subBuf, subColor);
-  // Phase 4.31: subtitle inherits the same drop shadow as the main
-  // title so the stack reads as one styled unit.
-  if (titleBar.textShadow) {
-    subBuf = await wrapTextWithShadow(subBuf, titleBar.textShadow);
+  // Phase 4.31 → 4.32: subtitle resolves its own text shadow with
+  // tristate cascade — explicit subtitleTextShadow wins; explicit
+  // `null` opts out (no shadow even when main has one); undefined
+  // inherits the main `textShadow`.
+  const subShadow: NonNullable<ShadowStyle> | null =
+    titleBar.subtitleTextShadow === null
+      ? null
+      : titleBar.subtitleTextShadow ?? titleBar.textShadow ?? null;
+  if (subShadow) {
+    subBuf = await wrapTextWithShadow(subBuf, subShadow);
   }
   let subMeta = await sharp(subBuf).metadata();
   let subBw = subMeta.width ?? safeW;
