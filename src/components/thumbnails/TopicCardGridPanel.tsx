@@ -108,7 +108,61 @@ export interface TopicCardGridDraftState {
   /** Selected font id (see THUMBNAIL_FONTS). Drafts saved before the
    *  font picker shipped restore as Patrick Hand. */
   fontId?: string;
+  /** Post-process effects (filter / vignette / grain). Drafts saved
+   *  before the Post-process section shipped restore with this field
+   *  undefined, which the panel treats as "all effects off". */
+  postProcess?: PanelPostProcessState;
 }
+
+/** Image-filter ids understood by the post-process pipeline. Mirrored
+ *  from `ImageFilter` in `src/lib/thumbnail-formats/shared-overlay-pipeline.ts`
+ *  so this client component doesn't depend on a server-only module. */
+export type PanelImageFilter =
+  | 'grayscale'
+  | 'sepia'
+  | 'high-contrast'
+  | 'low-contrast'
+  | 'invert';
+
+/** Panel-side shape for the Post-process section's state. Granular
+ *  fields (not a nested vignette / grain object) because each control
+ *  binds to one field — flat state is easier to debug + survives
+ *  partial JSON-restore from older drafts cleanly. The request body
+ *  builder collapses this back into the server's
+ *  `PostProcessConfig` shape before sending. */
+export interface PanelPostProcessState {
+  /** `null` means "no filter" (mapped to undefined server-side). */
+  filter: PanelImageFilter | null;
+  vignetteEnabled: boolean;
+  /** Hex `#RRGGBB`. Validated server-side via `safeHexColor`. */
+  vignetteColor: string;
+  /** 0 - 1. */
+  vignetteIntensity: number;
+  /** 0.3 - 1. */
+  vignetteRadius: number;
+  grainEnabled: boolean;
+  /** 0 - 1. */
+  grainIntensity: number;
+  /** 0.5 - 5. */
+  grainSize: number;
+  grainMonochrome: boolean;
+}
+
+/** Default Post-process state. Every effect off, sensible mid-values
+ *  pre-filled for the controls that don't gate on an enable toggle so
+ *  flipping a toggle on immediately produces a visible effect rather
+ *  than landing on 0. */
+const DEFAULT_POST_PROCESS_STATE: PanelPostProcessState = {
+  filter: null,
+  vignetteEnabled: false,
+  vignetteColor: '#000000',
+  vignetteIntensity: 0.4,
+  vignetteRadius: 0.5,
+  grainEnabled: false,
+  grainIntensity: 0.3,
+  grainSize: 1,
+  grainMonochrome: true,
+};
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -141,6 +195,10 @@ const STYLE_PREF_KEY = 'topic_card_grid_default_style';
 const STYLE_FREE_FORM_PREF_KEY = 'topic_card_grid_default_style_free_form';
 const LABEL_SIZE_PREF_KEY = 'topic_card_grid_default_label_size';
 const FONT_ID_PREF_KEY = 'topic_card_grid_default_font_id';
+/** Single localStorage key for the whole Post-process section. One JSON
+ *  blob is cheaper to read / write than nine keys, and the panel only
+ *  ever reads / writes the whole object, never individual fields. */
+const POST_PROCESS_PREF_KEY = 'topic_card_grid_default_post_process';
 
 /** Label-size multiplier bounds. Mirrored from
  *  `LABEL_SIZE_MIN` / `LABEL_SIZE_MAX` in
@@ -201,6 +259,75 @@ function ICON_CONCEPT_TEXTAREA_STYLE(disabled: boolean): CSSProperties {
  *  the browser surfaces the error before the round trip — the route is
  *  still the source of truth. */
 const MAX_CELL_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+/** Post-process filter chips. `null` value = "no filter" (renders as a
+ *  selected chip when nothing else is picked). Order is chosen so the
+ *  most common picks (None, Grayscale, Sepia) sit first. */
+const POST_PROCESS_FILTER_OPTIONS: { value: PanelImageFilter | null; label: string }[] = [
+  { value: null, label: 'None' },
+  { value: 'grayscale', label: 'Grayscale' },
+  { value: 'sepia', label: 'Sepia' },
+  { value: 'high-contrast', label: 'High contrast' },
+  { value: 'low-contrast', label: 'Low contrast' },
+  { value: 'invert', label: 'Invert' },
+];
+
+/** Coerce a raw localStorage JSON read back into a `PanelPostProcessState`.
+ *  Defends against partial / corrupt payloads (older drafts, stale clients)
+ *  by clamping every numeric field and dropping unknown filter ids — same
+ *  forgiving shape the server's `parsePostProcessConfig` uses. */
+function coercePostProcessState(raw: unknown): PanelPostProcessState {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_POST_PROCESS_STATE };
+  const r = raw as Record<string, unknown>;
+  const filter = r.filter;
+  const filterValid = filter === 'grayscale' || filter === 'sepia'
+    || filter === 'high-contrast' || filter === 'low-contrast' || filter === 'invert';
+  const clamp = (n: unknown, lo: number, hi: number, fb: number): number => {
+    if (typeof n !== 'number' || !Number.isFinite(n)) return fb;
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  };
+  const hex = typeof r.vignetteColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(r.vignetteColor)
+    ? r.vignetteColor
+    : DEFAULT_POST_PROCESS_STATE.vignetteColor;
+  return {
+    filter: filterValid ? (filter as PanelImageFilter) : null,
+    vignetteEnabled: r.vignetteEnabled === true,
+    vignetteColor: hex,
+    vignetteIntensity: clamp(r.vignetteIntensity, 0, 1, DEFAULT_POST_PROCESS_STATE.vignetteIntensity),
+    vignetteRadius: clamp(r.vignetteRadius, 0.3, 1, DEFAULT_POST_PROCESS_STATE.vignetteRadius),
+    grainEnabled: r.grainEnabled === true,
+    grainIntensity: clamp(r.grainIntensity, 0, 1, DEFAULT_POST_PROCESS_STATE.grainIntensity),
+    grainSize: clamp(r.grainSize, 0.5, 5, DEFAULT_POST_PROCESS_STATE.grainSize),
+    grainMonochrome: r.grainMonochrome !== false,
+  };
+}
+
+/** Build the wire-shape `postProcess` payload from the panel's state.
+ *  Returns `undefined` when nothing would have a visible effect so the
+ *  server can short-circuit the post-process pass entirely. Mirrors the
+ *  empty-payload short-circuit in `parsePostProcessConfig`. */
+function buildPostProcessRequestPayload(s: PanelPostProcessState): {
+  filter?: PanelImageFilter;
+  vignette?: { color: string; intensity: number; radius: number };
+  grain?: { intensity: number; size: number; monochrome: boolean };
+} | undefined {
+  const out: {
+    filter?: PanelImageFilter;
+    vignette?: { color: string; intensity: number; radius: number };
+    grain?: { intensity: number; size: number; monochrome: boolean };
+  } = {};
+  if (s.filter) out.filter = s.filter;
+  if (s.vignetteEnabled && s.vignetteIntensity > 0) {
+    out.vignette = { color: s.vignetteColor, intensity: s.vignetteIntensity, radius: s.vignetteRadius };
+  }
+  if (s.grainEnabled && s.grainIntensity > 0) {
+    out.grain = { intensity: s.grainIntensity, size: s.grainSize, monochrome: s.grainMonochrome };
+  }
+  if (!out.filter && !out.vignette && !out.grain) return undefined;
+  return out;
+}
 
 /** Allowed MIME types for per-cell uploads. Matches the presign route's
  *  allowlist exactly. */
@@ -402,6 +529,36 @@ export function TopicCardGridPanel({
   }, [fontId]);
   const selectedFont: ThumbnailFont = findFontById(fontId) ?? findFontById(DEFAULT_FONT_ID)!;
 
+  // Post-process knobs — filter / vignette / grain. Run server-side
+  // AFTER the AI image returns, in a single Sharp composite call. Cheap
+  // to tweak: each change re-runs only the post-process step, never the
+  // AI call. Persisted as one JSON blob in localStorage per rule 15;
+  // older drafts without the field default to all-off.
+  const [postProcess, setPostProcess] = useState<PanelPostProcessState>(() => {
+    if (typeof window === 'undefined') return { ...DEFAULT_POST_PROCESS_STATE };
+    try {
+      const raw = localStorage.getItem(POST_PROCESS_PREF_KEY);
+      if (!raw) return { ...DEFAULT_POST_PROCESS_STATE };
+      return coercePostProcessState(JSON.parse(raw));
+    } catch {
+      /* fall through */
+    }
+    return { ...DEFAULT_POST_PROCESS_STATE };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(POST_PROCESS_PREF_KEY, JSON.stringify(postProcess));
+    } catch {
+      /* ignore */
+    }
+  }, [postProcess]);
+  /** Patch a subset of Post-process fields. Keeps the call sites tight
+   *  (`updatePostProcess({ filter: 'sepia' })`) without spreading state
+   *  by hand in every onChange. */
+  function updatePostProcess(patch: Partial<PanelPostProcessState>) {
+    setPostProcess((prev) => ({ ...prev, ...patch }));
+  }
+
   // Per-cell uploads. Keyed by 1-based card index so the same number that
   // appears in the LLM's TopicCard.index is the lookup key. Values are
   // R2 download URLs returned by the presign upload route.
@@ -480,6 +637,12 @@ export function TopicCardGridPanel({
     if (typeof restoredDraftState.fontId === 'string' && findFontById(restoredDraftState.fontId)) {
       setFontId(restoredDraftState.fontId);
     }
+    if (restoredDraftState.postProcess) {
+      // coerce so an older draft with a partial / corrupt payload
+      // doesn't poison the panel state. Same path the localStorage
+      // boot reads through.
+      setPostProcess(coercePostProcessState(restoredDraftState.postProcess));
+    }
     console.info('[topic-card-grid panel draft] hydrated', {
       card_count: restoredDraftState.cards?.length ?? 0,
       grid_mode: restoredDraftState.gridMode,
@@ -512,11 +675,13 @@ export function TopicCardGridPanel({
       styleFreeForm,
       labelSize,
       fontId,
+      postProcess,
     });
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
     cardShape, uploads, style, styleFreeForm, labelSize, fontId,
+    postProcess,
     onDraftStateChange,
   ]);
 
@@ -773,6 +938,7 @@ export function TopicCardGridPanel({
           styleFreeForm: style === 'free-form' ? styleFreeForm.trim() : undefined,
           labelSize,
           fontId,
+          postProcess: buildPostProcessRequestPayload(postProcess),
         }),
       });
       if (!res.ok) {
@@ -1270,6 +1436,239 @@ export function TopicCardGridPanel({
               <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
                 Same font &amp; size across all cells.
               </span>
+            </div>
+          </div>
+
+          {/* Post-process — vignette, grain, and image filters that run
+              AFTER the AI image returns. Cheap to tweak: no AI re-render
+              required, each change re-runs only the server-side Sharp
+              pipeline. Three sub-sections: Filter (chip row), Vignette
+              (toggle + color/intensity/radius), Grain (toggle + intensity/
+              size + monochrome). All effects default to off. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Post-process
+            </label>
+
+            {/* Filter chip row */}
+            <div className="mb-3">
+              <p className="text-[10px] mb-1" style={{ color: 'var(--text-muted)' }}>
+                Filter
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {POST_PROCESS_FILTER_OPTIONS.map((opt) => {
+                  const active = postProcess.filter === opt.value;
+                  return (
+                    <button
+                      key={opt.value ?? 'none'}
+                      type="button"
+                      onClick={() => {
+                        console.info('[topic-card-grid panel post-process filter change]', {
+                          from: postProcess.filter,
+                          to: opt.value,
+                        });
+                        updatePostProcess({ filter: opt.value });
+                      }}
+                      className="px-2.5 py-1 rounded text-xs"
+                      style={{
+                        background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                        color: active ? '#fff' : 'var(--text-secondary)',
+                        border: '1px solid var(--border)',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Vignette */}
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  Vignette
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.info('[topic-card-grid panel post-process vignette toggle]', {
+                      from: postProcess.vignetteEnabled,
+                      to: !postProcess.vignetteEnabled,
+                    });
+                    updatePostProcess({ vignetteEnabled: !postProcess.vignetteEnabled });
+                  }}
+                  className="px-2 py-0.5 rounded text-[10px]"
+                  style={{
+                    background: postProcess.vignetteEnabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                    color: postProcess.vignetteEnabled ? '#fff' : 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  aria-pressed={postProcess.vignetteEnabled}
+                >
+                  {postProcess.vignetteEnabled ? 'On' : 'Off'}
+                </button>
+              </div>
+              {postProcess.vignetteEnabled && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={postProcess.vignetteColor}
+                      onChange={(e) => updatePostProcess({ vignetteColor: e.target.value })}
+                      className="rounded cursor-pointer"
+                      style={{ width: 32, height: 24, border: '1px solid var(--border)' }}
+                      aria-label="Vignette colour"
+                    />
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {postProcess.vignetteColor}
+                    </span>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Intensity</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {Math.round(postProcess.vignetteIntensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={postProcess.vignetteIntensity}
+                      onChange={(e) => {
+                        const v = Number.parseFloat(e.target.value);
+                        if (Number.isFinite(v)) updatePostProcess({ vignetteIntensity: v });
+                      }}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-pink)' }}
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Radius</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {Math.round(postProcess.vignetteRadius * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.3}
+                      max={1}
+                      step={0.05}
+                      value={postProcess.vignetteRadius}
+                      onChange={(e) => {
+                        const v = Number.parseFloat(e.target.value);
+                        if (Number.isFinite(v)) updatePostProcess({ vignetteRadius: v });
+                      }}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-pink)' }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Grain */}
+            <div className="mb-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  Grain
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.info('[topic-card-grid panel post-process grain toggle]', {
+                      from: postProcess.grainEnabled,
+                      to: !postProcess.grainEnabled,
+                    });
+                    updatePostProcess({ grainEnabled: !postProcess.grainEnabled });
+                  }}
+                  className="px-2 py-0.5 rounded text-[10px]"
+                  style={{
+                    background: postProcess.grainEnabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                    color: postProcess.grainEnabled ? '#fff' : 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  aria-pressed={postProcess.grainEnabled}
+                >
+                  {postProcess.grainEnabled ? 'On' : 'Off'}
+                </button>
+              </div>
+              {postProcess.grainEnabled && (
+                <div className="space-y-2">
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Intensity</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {Math.round(postProcess.grainIntensity * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={postProcess.grainIntensity}
+                      onChange={(e) => {
+                        const v = Number.parseFloat(e.target.value);
+                        if (Number.isFinite(v)) updatePostProcess({ grainIntensity: v });
+                      }}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-pink)' }}
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Size</span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {postProcess.grainSize.toFixed(1)}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={5}
+                      step={0.1}
+                      value={postProcess.grainSize}
+                      onChange={(e) => {
+                        const v = Number.parseFloat(e.target.value);
+                        if (Number.isFinite(v)) updatePostProcess({ grainSize: v });
+                      }}
+                      className="w-full"
+                      style={{ accentColor: 'var(--accent-pink)' }}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => updatePostProcess({ grainMonochrome: !postProcess.grainMonochrome })}
+                    className="px-2 py-0.5 rounded text-[10px]"
+                    style={{
+                      background: postProcess.grainMonochrome ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: postProcess.grainMonochrome ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    aria-pressed={postProcess.grainMonochrome}
+                  >
+                    {postProcess.grainMonochrome ? 'Monochrome grain' : 'Colour grain'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between mt-2">
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Runs after the AI image. Tweaks re-render in seconds, no new AI call.
+              </p>
+              <button
+                type="button"
+                onClick={() => setPostProcess({ ...DEFAULT_POST_PROCESS_STATE })}
+                className="text-[10px] underline"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Reset
+              </button>
             </div>
           </div>
 
