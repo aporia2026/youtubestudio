@@ -739,23 +739,97 @@ export function FlexIconGridLivePreview({
           </>
         )}
 
-        {/* Phase 4.39: tint overlay — composited AFTER grain and
-            BEFORE vignette to mirror the composer's overlay order.
-            Uses CSS `mix-blend-mode` matching the configured Sharp
-            blend mode so the on-screen result lines up with the
-            rendered PNG. */}
+        {/* Phase 4.39 → 4.40: tint overlay — composited AFTER grain
+            and BEFORE vignette to mirror the composer's overlay
+            order. Uses CSS `mix-blend-mode` matching the configured
+            Sharp blend mode so on-screen lines up with the rendered
+            PNG. Phase 4.40: split-tone shadows (multiply) +
+            highlights (screen) are rendered after the base tint at
+            half intensity, in the same stack order as the
+            composer's overlays. */}
         {config.tint && (
-          <rect
-            x={0}
-            y={0}
-            width={config.width}
-            height={config.height}
-            fill={config.tint.color}
-            fillOpacity={config.tint.intensity}
-            style={{ mixBlendMode: config.tint.blendMode }}
-            pointerEvents="none"
-          />
+          <>
+            <rect
+              x={0}
+              y={0}
+              width={config.width}
+              height={config.height}
+              fill={config.tint.color}
+              fillOpacity={config.tint.intensity}
+              style={{ mixBlendMode: config.tint.blendMode }}
+              pointerEvents="none"
+            />
+            {config.tint.shadows && (
+              <rect
+                x={0}
+                y={0}
+                width={config.width}
+                height={config.height}
+                fill={config.tint.shadows}
+                fillOpacity={config.tint.intensity / 2}
+                style={{ mixBlendMode: 'multiply' }}
+                pointerEvents="none"
+              />
+            )}
+            {config.tint.highlights && (
+              <rect
+                x={0}
+                y={0}
+                width={config.width}
+                height={config.height}
+                fill={config.tint.highlights}
+                fillOpacity={config.tint.intensity / 2}
+                style={{ mixBlendMode: 'screen' }}
+                pointerEvents="none"
+              />
+            )}
+          </>
         )}
+
+        {/* Phase 4.40: light-leak overlay — rendered AFTER tint and
+            BEFORE vignette to mirror the composer's order. Uses CSS
+            `mix-blend-mode: screen` matching Sharp `blend: 'screen'`. */}
+        {config.lightLeak && (() => {
+          const l = config.lightLeak;
+          const halfMin = Math.min(config.width, config.height) / 2;
+          const r = l.radius * halfMin;
+          const anchors = {
+            'top-left': { cx: 0, cy: 0 },
+            'top-right': { cx: config.width, cy: 0 },
+            'bottom-left': { cx: 0, cy: config.height },
+            'bottom-right': { cx: config.width, cy: config.height },
+            top: { cx: config.width / 2, cy: 0 },
+            bottom: { cx: config.width / 2, cy: config.height },
+            left: { cx: 0, cy: config.height / 2 },
+            right: { cx: config.width, cy: config.height / 2 },
+          } as const;
+          const { cx, cy } = anchors[l.position];
+          return (
+            <>
+              <defs>
+                <radialGradient
+                  id="fg-preview-lightleak"
+                  gradientUnits="userSpaceOnUse"
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                >
+                  <stop offset="0%" stopColor={l.color} stopOpacity={l.intensity} />
+                  <stop offset="100%" stopColor={l.color} stopOpacity={0} />
+                </radialGradient>
+              </defs>
+              <rect
+                x={0}
+                y={0}
+                width={config.width}
+                height={config.height}
+                fill="url(#fg-preview-lightleak)"
+                style={{ mixBlendMode: 'screen' }}
+                pointerEvents="none"
+              />
+            </>
+          );
+        })()}
 
         {/* Phase 4.37 → 4.38: vignette overlay — rendered LAST so it
             sits on top of cells + title bar. Uses an SVG

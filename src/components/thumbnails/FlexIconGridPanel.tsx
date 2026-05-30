@@ -3936,6 +3936,16 @@ export function FlexIconGridPanel({
                       title="Tint hue"
                       style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
                     />
+                    {/* Phase 4.40: sample-from-palette chips so the
+                        user can grab a complementary tint hue from
+                        the active palette without leaving the panel. */}
+                    <PaletteSampleChips
+                      palette={config.palette}
+                      onPick={(hex) =>
+                        updateConfig({ tint: { ...config.tint!, color: hex } })
+                      }
+                      ariaLabel="Sample tint colour from palette"
+                    />
                     <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
                     <input
                       type="range"
@@ -3987,15 +3997,288 @@ export function FlexIconGridPanel({
                             tint: { ...config.tint!, blendMode: mode.value },
                           })
                         }
-                        style={chipStyle(config.tint!.blendMode === mode.value)}
+                        style={{
+                          ...chipStyle(config.tint!.blendMode === mode.value),
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
                         title={mode.hint}
                       >
+                        {/* Phase 4.40: live blend-mode swatch so users
+                            can preview each mode's look on the
+                            current tint colour at the current
+                            intensity, instead of trying every chip. */}
+                        <TintBlendSwatch
+                          color={config.tint!.color}
+                          intensity={config.tint!.intensity}
+                          blendMode={mode.value}
+                        />
                         {mode.label}
                       </button>
                     ))}
                   </>
                 )}
               </div>
+              {/* Phase 4.40: split-tone row — separate shadows
+                  (multiply) + highlights (screen) tints on top of
+                  the base tint. The classic cinematic
+                  "teal-and-orange" grade is shadows=#0a3a4a +
+                  highlights=#f0a060. Off by default (toggle each
+                  colour independently via the on/off chip). */}
+              {config.tint && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                  <span style={{ fontSize: 10, color: '#71717a', minWidth: 60 }}>
+                    Split-tone
+                  </span>
+                  <button
+                    type="button"
+                    aria-pressed={!!config.tint.shadows}
+                    onClick={() => {
+                      const next = { ...config.tint! };
+                      if (next.shadows) delete next.shadows;
+                      else next.shadows = '#0a3a4a';
+                      updateConfig({ tint: next });
+                    }}
+                    style={chipStyle(!!config.tint.shadows)}
+                    title="Shadows tint (multiply blend) — usually a cool / desaturated hue"
+                  >
+                    {config.tint.shadows ? 'Shadows on' : 'Shadows off'}
+                  </button>
+                  {config.tint.shadows && (
+                    <input
+                      type="color"
+                      value={config.tint.shadows}
+                      onChange={(e) =>
+                        updateConfig({
+                          tint: { ...config.tint!, shadows: e.target.value },
+                        })
+                      }
+                      aria-label="Shadows tint colour"
+                      title="Shadows hue"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    aria-pressed={!!config.tint.highlights}
+                    onClick={() => {
+                      const next = { ...config.tint! };
+                      if (next.highlights) delete next.highlights;
+                      else next.highlights = '#f0a060';
+                      updateConfig({ tint: next });
+                    }}
+                    style={chipStyle(!!config.tint.highlights)}
+                    title="Highlights tint (screen blend) — usually a warm hue for the cinematic teal-and-orange look"
+                  >
+                    {config.tint.highlights ? 'Highlights on' : 'Highlights off'}
+                  </button>
+                  {config.tint.highlights && (
+                    <input
+                      type="color"
+                      value={config.tint.highlights}
+                      onChange={(e) =>
+                        updateConfig({
+                          tint: { ...config.tint!, highlights: e.target.value },
+                        })
+                      }
+                      aria-label="Highlights tint colour"
+                      title="Highlights hue"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                  )}
+                  {(config.tint.shadows || config.tint.highlights) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateConfig({
+                          tint: { ...config.tint!, shadows: '#0a3a4a', highlights: '#f0a060' },
+                        })
+                      }
+                      style={chipStyle(false)}
+                      title="Apply the classic cinematic teal-shadows + orange-highlights preset"
+                    >
+                      Teal + orange
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* Phase 4.40: light-leak / corner flare overlay. A
+                soft radial blot anchored at one of 8 positions
+                (4 corners + 4 edges). Composited with `screen`
+                blend so the leak lifts the underlying image —
+                pairs naturally with the vignette as a film-style
+                lens artefact. Off by default. */}
+            <div>
+              <label style={labelStyle}>
+                Light leak
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (corner / edge flare)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.lightLeak}
+                  onClick={() =>
+                    updateConfig({
+                      lightLeak: config.lightLeak
+                        ? undefined
+                        : {
+                            color: '#ffd28a',
+                            intensity: 0.5,
+                            radius: 0.7,
+                            position: 'top-right',
+                          },
+                    })
+                  }
+                  style={chipStyle(!!config.lightLeak)}
+                  title={
+                    config.lightLeak
+                      ? 'Click to turn the light leak off'
+                      : 'Click to add a warm corner flare (default top-right)'
+                  }
+                >
+                  {config.lightLeak ? 'Leak on' : 'Leak off'}
+                </button>
+                {config.lightLeak && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.lightLeak.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          lightLeak: { ...config.lightLeak!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Light leak colour"
+                      title="Leak hue (typical: warm yellow / orange)"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 28 }}>Strength</span>
+                    <input
+                      type="range"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={config.lightLeak.intensity}
+                      onChange={(e) =>
+                        updateConfig({
+                          lightLeak: { ...config.lightLeak!, intensity: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Light leak intensity"
+                      title={`Strength: ${Math.round(config.lightLeak.intensity * 100)}%`}
+                      style={{ width: 100 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.lightLeak.intensity}
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      onCommit={(next) =>
+                        updateConfig({
+                          lightLeak: { ...config.lightLeak!, intensity: next },
+                        })
+                      }
+                      ariaLabel="Light leak intensity (numeric)"
+                      title="Type any value 0.01–1.00; commits on Enter or blur"
+                      style={{ width: 64, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 24 }}>Size</span>
+                    <input
+                      type="range"
+                      min={0.2}
+                      max={1}
+                      step={0.05}
+                      value={config.lightLeak.radius}
+                      onChange={(e) =>
+                        updateConfig({
+                          lightLeak: { ...config.lightLeak!, radius: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Light leak radius"
+                      title={`Radius: ${Math.round(config.lightLeak.radius * 100)}% of canvas half-axis`}
+                      style={{ width: 100 }}
+                    />
+                  </>
+                )}
+              </div>
+              {/* 3×3 position picker — corners + edges, with the
+                  centre disabled (a centred leak would just look
+                  like a tint). Mirrors how editorial leaks always
+                  anchor to an edge. */}
+              {config.lightLeak && (
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, 28px)',
+                    gridTemplateRows: 'repeat(3, 24px)',
+                    gap: 4,
+                    marginTop: 8,
+                  }}
+                  role="radiogroup"
+                  aria-label="Light leak position"
+                >
+                  {(
+                    [
+                      { value: 'top-left', label: '↖' },
+                      { value: 'top', label: '↑' },
+                      { value: 'top-right', label: '↗' },
+                      { value: 'left', label: '←' },
+                      null,
+                      { value: 'right', label: '→' },
+                      { value: 'bottom-left', label: '↙' },
+                      { value: 'bottom', label: '↓' },
+                      { value: 'bottom-right', label: '↘' },
+                    ] as const
+                  ).map((opt, i) =>
+                    opt === null ? (
+                      <div
+                        key="centre-placeholder"
+                        style={{
+                          width: 28,
+                          height: 24,
+                          border: '1px dashed rgba(255,255,255,0.1)',
+                          borderRadius: 4,
+                        }}
+                        aria-hidden
+                      />
+                    ) : (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={config.lightLeak!.position === opt.value}
+                        onClick={() =>
+                          updateConfig({
+                            lightLeak: { ...config.lightLeak!, position: opt.value },
+                          })
+                        }
+                        style={{
+                          ...chipStyle(config.lightLeak!.position === opt.value),
+                          width: 28,
+                          height: 24,
+                          padding: 0,
+                          fontSize: 14,
+                        }}
+                        title={`Anchor leak at ${opt.value.replace('-', ' ')}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ),
+                  )}
+                </div>
+              )}
             </div>
             {/* Phase 4.31: canvas-level default cell stroke. Same
                 toggle pattern as Cell shadow — when on, every cell
@@ -6083,16 +6366,20 @@ function BufferedNumericInput({
   );
   const [draft, setDraft] = useState<string>(() => formatValue(value));
   const [invalid, setInvalid] = useState(false);
-  // Sync external value changes (e.g. slider movement) into the
-  // draft, unless the user is mid-edit on this field. We detect
-  // mid-edit via the input being focused.
+  // Phase 4.40 caveat fix: track focus via local state instead of
+  // `document.activeElement`. The latter can be stale or wrong in
+  // keyboard-only flows where another control updates the value
+  // while the cursor is still inside this input. Local state from
+  // onFocus / onBlur is deterministic and correctly avoids
+  // clobbering an in-progress edit.
+  const [isFocused, setIsFocused] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (document.activeElement !== ref.current) {
+    if (!isFocused) {
       setDraft(formatValue(value));
       setInvalid(false);
     }
-  }, [value, formatValue]);
+  }, [value, formatValue, isFocused]);
 
   const commit = () => {
     const raw = Number(draft);
@@ -6130,7 +6417,11 @@ function BufferedNumericInput({
           parsed > max;
         setInvalid(bad);
       }}
-      onBlur={commit}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => {
+        setIsFocused(false);
+        commit();
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -6154,6 +6445,115 @@ function BufferedNumericInput({
         borderColor: invalid ? '#f87171' : (inputStyle as React.CSSProperties).borderColor,
       }}
     />
+  );
+}
+
+/**
+ * Phase 4.40: tiny chip row that exposes the active palette's
+ * colours as one-click "use this hue" buttons next to the tint
+ * colour picker. Saves the user round-tripping through a separate
+ * colour-picker app to find a complementary colour to the palette
+ * they've already chosen for the cells. Deduplicates exact-match
+ * colours and caps at 8 chips so the row stays compact.
+ */
+function PaletteSampleChips({
+  palette,
+  onPick,
+  ariaLabel,
+}: {
+  palette: PaletteSpec;
+  onPick: (hex: string) => void;
+  ariaLabel: string;
+}) {
+  const colours = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const c of paletteColours(palette)) {
+      const k = c.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(c);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }, [palette]);
+  if (colours.length === 0) return null;
+  return (
+    <div
+      role="group"
+      aria-label={ariaLabel}
+      style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}
+    >
+      {colours.map((hex) => (
+        <button
+          key={hex}
+          type="button"
+          onClick={() => onPick(hex)}
+          title={`Use palette colour ${hex}`}
+          aria-label={`Use palette colour ${hex}`}
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: 4,
+            border: '1px solid rgba(255,255,255,0.2)',
+            background: hex,
+            cursor: 'pointer',
+            padding: 0,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Phase 4.40: 16×16 SVG swatch showing the current tint colour at
+ * the current intensity composited with the chip's blend mode over
+ * a small reference luminance ramp (black -> mid-grey -> white).
+ * Lets the user judge which blend mode gives the look they want
+ * without having to click each one. The luminance ramp matters
+ * because the four blend modes (multiply, screen, overlay,
+ * soft-light) all behave differently across dark vs light pixels.
+ */
+function TintBlendSwatch({
+  color,
+  intensity,
+  blendMode,
+}: {
+  color: string;
+  intensity: number;
+  blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light';
+}) {
+  const id = `fg-tint-swatch-${blendMode}`;
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={`${id}-ramp`} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#202020" />
+          <stop offset="50%" stopColor="#808080" />
+          <stop offset="100%" stopColor="#e8e8e8" />
+        </linearGradient>
+      </defs>
+      <rect x={0} y={0} width={16} height={16} fill={`url(#${id}-ramp)`} />
+      <rect
+        x={0}
+        y={0}
+        width={16}
+        height={16}
+        fill={color}
+        fillOpacity={intensity}
+        style={{ mixBlendMode: blendMode }}
+      />
+      <rect
+        x={0.5}
+        y={0.5}
+        width={15}
+        height={15}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity={0.2}
+      />
+    </svg>
   );
 }
 

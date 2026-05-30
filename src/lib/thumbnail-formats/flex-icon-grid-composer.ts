@@ -336,20 +336,31 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (grainOverlay) overlays.push(grainOverlay);
     }
 
-    // 3.6) Phase 4.39: tint overlay — composited AFTER grain so the
-    //      tint hue washes over the noise, BEFORE the vignette so
-    //      the corner darkening reads through the tint. A single
-    //      flat-colour PNG composited with the configured blend
-    //      mode.
+    // 3.6) Phase 4.39 → 4.40: tint overlay — composited AFTER grain
+    //      so the tint hue washes over the noise, BEFORE the
+    //      vignette so the corner darkening reads through the tint.
+    //      Phase 4.40: split-tone returns up to 3 overlays (base
+    //      tint + shadows-multiply + highlights-screen) in the
+    //      stack order they should be composited.
     if (config.tint) {
-      const tintOverlay = await buildTintOverlay(config);
-      if (tintOverlay) overlays.push(tintOverlay);
+      const tintOverlays = await buildTintOverlays(config);
+      if (tintOverlays.length > 0) overlays.push(...tintOverlays);
+    }
+
+    // 3.65) Phase 4.40: light-leak overlay — composited AFTER the
+    //       tint so the leak lifts the colour-graded image, BEFORE
+    //       the vignette so the corner darkening still reads
+    //       beyond the leak's radius. Uses screen blend (lifts
+    //       without tinting).
+    if (config.lightLeak) {
+      const leakOverlay = await buildLightLeakOverlay(config);
+      if (leakOverlay) overlays.push(leakOverlay);
     }
 
     // 3.7) Phase 4.37: vignette overlay — pushed LAST so it sits on
-    //      top of cells + title bar (and grain + tint), darkening
-    //      the canvas corners uniformly. A single full-canvas
-    //      radial-gradient PNG.
+    //      top of cells + title bar (and grain + tint + leak),
+    //      darkening the canvas corners uniformly. A single
+    //      full-canvas radial-gradient PNG.
     if (config.vignette) {
       const vignetteOverlay = await buildVignetteOverlay(config);
       if (vignetteOverlay) overlays.push(vignetteOverlay);
@@ -1847,28 +1858,117 @@ async function buildVignetteOverlay(
   return { input: buf, top: 0, left: 0 };
 }
 
-// ─── Tint overlay (Phase 4.39) ──────────────────────────────────────────────
+// ─── Light-leak overlay (Phase 4.40) ────────────────────────────────────────
 
 /**
- * Phase 4.39: build a flat-colour PNG covering the whole canvas at
+ * Phase 4.40: build a full-canvas radial-gradient PNG anchored at
+ * one of eight positions (4 corners + 4 edges). The gradient
+ * centre sits ON the edge so half the colour bleeds off-canvas,
+ * mirroring real lens leaks. Composited with `screen` blend so the
+ * leak lifts the underlying image rather than tinting it.
+ *
+ * Radius is expressed as a fraction of the canvas's SHORT half-axis
+ * (`min(w,h)/2`), so the leak doesn't stretch into an ellipse on
+ * non-square canvases — same posture as the vignette fix from
+ * Phase 4.38.
+ */
+async function buildLightLeakOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const l = config.lightLeak;
+  if (!l) return null;
+  const { width, height } = config;
+  const halfMin = Math.min(width, height) / 2;
+  const r = l.radius * halfMin;
+  // Anchor map: corners sit on the actual corner pixel; edges sit
+  // at the midpoint of that edge.
+  const anchors: Record<typeof l.position, { cx: number; cy: number }> = {
+    'top-left': { cx: 0, cy: 0 },
+    'top-right': { cx: width, cy: 0 },
+    'bottom-left': { cx: 0, cy: height },
+    'bottom-right': { cx: width, cy: height },
+    top: { cx: width / 2, cy: 0 },
+    bottom: { cx: width / 2, cy: height },
+    left: { cx: 0, cy: height / 2 },
+    right: { cx: width, cy: height / 2 },
+  };
+  const { cx, cy } = anchors[l.position];
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<defs><radialGradient id="ll" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,
+    `<stop offset="0%" stop-color="${escapeSvgText(l.color)}" stop-opacity="${l.intensity}"/>`,
+    `<stop offset="100%" stop-color="${escapeSvgText(l.color)}" stop-opacity="0"/>`,
+    `</radialGradient></defs>`,
+    `<rect width="${width}" height="${height}" fill="url(#ll)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0, blend: 'screen' };
+}
+
+// ─── Tint overlays (Phase 4.39 → 4.40) ──────────────────────────────────────
+
+/**
+ * Phase 4.39: build flat-colour PNGs covering the whole canvas at
  * the configured intensity, composited with the configured blend
  * mode. The four supported blend modes map 1:1 to Sharp's composite
  * blend strings (`multiply`, `screen`, `overlay`, `soft-light`) so
  * the on-screen `mix-blend-mode` and the rendered output match.
+ *
+ * Phase 4.40: when `tint.shadows` and/or `tint.highlights` are set,
+ * adds two extra overlays for a split-tone grade:
+ *   - shadows are composited with `multiply` (darkens dark areas
+ *     with the chosen hue, the cinematic "teal shadow" leg of a
+ *     teal-and-orange grade)
+ *   - highlights are composited with `screen` (lifts light areas
+ *     with the chosen hue, the "orange highlight" leg)
+ * Each split-tone layer runs at half the base intensity so the
+ * effect stacks subtly rather than overwhelming the base wash.
  */
-async function buildTintOverlay(
+async function buildTintOverlays(
   config: FlexIconGridConfig,
-): Promise<sharp.OverlayOptions | null> {
+): Promise<sharp.OverlayOptions[]> {
   const t = config.tint;
-  if (!t) return null;
+  if (!t) return [];
   const { width, height } = config;
-  const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
-    `<rect width="${width}" height="${height}" fill="${escapeSvgText(t.color)}" fill-opacity="${t.intensity}"/>`,
-    `</svg>`,
-  ].join('');
-  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
-  return { input: buf, top: 0, left: 0, blend: t.blendMode };
+  const overlays: sharp.OverlayOptions[] = [];
+  const makeFlatColorBuf = async (color: string, alpha: number): Promise<Buffer> => {
+    const svg = [
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+      `<rect width="${width}" height="${height}" fill="${escapeSvgText(color)}" fill-opacity="${alpha}"/>`,
+      `</svg>`,
+    ].join('');
+    return sharp(Buffer.from(svg)).png().toBuffer();
+  };
+  // Base tint — same as Phase 4.39.
+  overlays.push({
+    input: await makeFlatColorBuf(t.color, t.intensity),
+    top: 0,
+    left: 0,
+    blend: t.blendMode,
+  });
+  // Phase 4.40: split-tone shadows — multiply blend at half
+  // intensity so it stacks with the base tint without overpowering.
+  if (t.shadows) {
+    overlays.push({
+      input: await makeFlatColorBuf(t.shadows, t.intensity / 2),
+      top: 0,
+      left: 0,
+      blend: 'multiply',
+    });
+  }
+  // Phase 4.40: split-tone highlights — screen blend at half
+  // intensity. Picked AFTER shadows so a teal-and-orange grade
+  // reads with the orange lifted on top of the teal mood.
+  if (t.highlights) {
+    overlays.push({
+      input: await makeFlatColorBuf(t.highlights, t.intensity / 2),
+      top: 0,
+      left: 0,
+      blend: 'screen',
+    });
+  }
+  return overlays;
 }
 
 // ─── Grain overlay (Phase 4.38) ─────────────────────────────────────────────

@@ -604,11 +604,52 @@ export interface FlexIconGridConfig {
    *  - `intensity` (0..1) — opacity of the tint layer.
    *  - `blendMode` — one of `multiply` (saturated colour cast),
    *    `screen` (lightens with hue), `overlay` (mid-tone push), or
-   *    `soft-light` (subtle warmth / coolness shift). */
+   *    `soft-light` (subtle warmth / coolness shift).
+   *
+   *  Phase 4.40: optional `shadows` + `highlights` for a split-tone
+   *  grade. When either is set, the composer adds extra overlays
+   *  alongside the base tint — `shadows` is composited with
+   *  `multiply` (darkens dark areas with hue), `highlights` is
+   *  composited with `screen` (lightens light areas with hue). Each
+   *  uses half the base intensity so the look stacks subtly. The
+   *  classic "teal-and-orange" editorial grade is shadows=teal,
+   *  highlights=orange. */
   tint?: {
     color: string;
     intensity: number;
     blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light';
+    shadows?: string;
+    highlights?: string;
+  };
+  /** Phase 4.40: optional light-leak / corner flare — a soft
+   *  radial blot of colour positioned at one of eight anchor points
+   *  on the canvas (4 corners + 4 edges). Mimics a film artifact
+   *  where light has leaked into the negative. Composited with
+   *  `screen` blend so the leak lifts rather than tints the image.
+   *  Rendered AFTER tint but BEFORE the vignette so the corner
+   *  darkening still reads beyond the leak's radius. Off by
+   *  default.
+   *  - `color` — the leak hue (typically a warm yellow/orange).
+   *  - `intensity` (0..1) — peak opacity at the leak's centre.
+   *  - `radius` (0.2..1.0) — leak's extent as a fraction of the
+   *    canvas's short half-axis. Larger = wider, more diffuse.
+   *  - `position` — anchor point: one of `top-left`, `top-right`,
+   *    `bottom-left`, `bottom-right`, `top`, `bottom`, `left`,
+   *    `right`. The leak's centre sits ON the edge so half the
+   *    gradient bleeds off-canvas, mirroring real lens leaks. */
+  lightLeak?: {
+    color: string;
+    intensity: number;
+    radius: number;
+    position:
+      | 'top-left'
+      | 'top-right'
+      | 'bottom-left'
+      | 'bottom-right'
+      | 'top'
+      | 'bottom'
+      | 'left'
+      | 'right';
   };
   /** Phase 4.38: optional film-grain / noise finishing overlay.
    *  Rendered AFTER cells + title bar but BEFORE the vignette so the
@@ -1424,6 +1465,31 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     ) {
       return { ok: false, reason: 'tint.blendMode must be multiply | screen | overlay | soft-light' };
     }
+    if (config.tint.shadows !== undefined && !HEX_COLOR_RE.test(config.tint.shadows)) {
+      return { ok: false, reason: 'tint.shadows is not a valid hex color' };
+    }
+    if (config.tint.highlights !== undefined && !HEX_COLOR_RE.test(config.tint.highlights)) {
+      return { ok: false, reason: 'tint.highlights is not a valid hex color' };
+    }
+  }
+  // Phase 4.40: lightLeak shape check.
+  if (config.lightLeak !== undefined) {
+    if (typeof config.lightLeak !== 'object' || config.lightLeak === null) {
+      return { ok: false, reason: 'lightLeak must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.lightLeak.color)) {
+      return { ok: false, reason: 'lightLeak.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.lightLeak.intensity) || config.lightLeak.intensity < 0 || config.lightLeak.intensity > 1) {
+      return { ok: false, reason: 'lightLeak.intensity must be a number in [0, 1]' };
+    }
+    if (!Number.isFinite(config.lightLeak.radius) || config.lightLeak.radius < 0.2 || config.lightLeak.radius > 1) {
+      return { ok: false, reason: 'lightLeak.radius must be a number in [0.2, 1]' };
+    }
+    const validPositions = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'top', 'bottom', 'left', 'right'];
+    if (!validPositions.includes(config.lightLeak.position)) {
+      return { ok: false, reason: `lightLeak.position must be one of ${validPositions.join(' | ')}` };
+    }
   }
   // Phase 4.38: grain shape check.
   if (config.grain !== undefined) {
@@ -1671,6 +1737,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     grain: parseGrain(o.grain),
     // Phase 4.39: tint overlay; tolerant posture, drops on bad / zero.
     tint: parseTint(o.tint),
+    // Phase 4.40: light-leak overlay; same tolerant pattern.
+    lightLeak: parseLightLeak(o.lightLeak),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1759,6 +1827,54 @@ function parseVignette(
   };
 }
 
+/** Phase 4.40: tolerant light-leak parser. Drops on missing /
+ *  out-of-range fields or unknown position. Zero intensity drops
+ *  so an "off" leak doesn't round-trip into JSON state. */
+function parseLightLeak(
+  v: unknown,
+):
+  | {
+      color: string;
+      intensity: number;
+      radius: number;
+      position:
+        | 'top-left'
+        | 'top-right'
+        | 'bottom-left'
+        | 'bottom-right'
+        | 'top'
+        | 'bottom'
+        | 'left'
+        | 'right';
+    }
+  | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const intensity =
+    typeof o.intensity === 'number' && Number.isFinite(o.intensity)
+      ? Math.max(0, Math.min(1, o.intensity))
+      : undefined;
+  const radius =
+    typeof o.radius === 'number' && Number.isFinite(o.radius)
+      ? Math.max(0.2, Math.min(1, o.radius))
+      : undefined;
+  if (intensity === undefined || radius === undefined) return undefined;
+  if (intensity === 0) return undefined;
+  const validPositions = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'top', 'bottom', 'left', 'right'] as const;
+  type LeakPos = typeof validPositions[number];
+  const position: LeakPos | undefined =
+    typeof o.position === 'string' && (validPositions as readonly string[]).includes(o.position)
+      ? (o.position as LeakPos)
+      : undefined;
+  if (position === undefined) return undefined;
+  return {
+    color: stringOr(o.color, '#ffd28a'),
+    intensity,
+    radius,
+    position,
+  };
+}
+
 /** Phase 4.39: tolerant tint parser. Drops when required fields
  *  are missing / non-finite / unknown blend mode. Colour falls back
  *  to '#ffb27a' (a warm-grade default) so a malformed colour string
@@ -1788,10 +1904,19 @@ function parseTint(
       ? (o.blendMode as 'multiply' | 'screen' | 'overlay' | 'soft-light')
       : undefined;
   if (blendMode === undefined) return undefined;
+  // Phase 4.40: shadows / highlights only kept when they parse as
+  // valid hex colours; bad values drop silently so a doctored
+  // config doesn't fail-closed on the whole tint.
+  const shadows =
+    typeof o.shadows === 'string' && HEX_COLOR_RE.test(o.shadows) ? o.shadows : undefined;
+  const highlights =
+    typeof o.highlights === 'string' && HEX_COLOR_RE.test(o.highlights) ? o.highlights : undefined;
   return {
     color: stringOr(o.color, '#ffb27a'),
     intensity,
     blendMode,
+    ...(shadows !== undefined ? { shadows } : {}),
+    ...(highlights !== undefined ? { highlights } : {}),
   };
 }
 

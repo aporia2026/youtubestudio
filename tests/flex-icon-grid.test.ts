@@ -1856,6 +1856,107 @@ describe('Phase 4.39 — colour-grade tint overlay', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/tint\.blendMode/);
   });
+  it('round-trips tint.shadows + tint.highlights through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.tint = {
+      color: '#000000',
+      intensity: 0.4,
+      blendMode: 'multiply',
+      shadows: '#0a3a4a',
+      highlights: '#f0a060',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.tint?.shadows).toBe('#0a3a4a');
+    expect(reparsed.tint?.highlights).toBe('#f0a060');
+  });
+  it('drops malformed tint.shadows colour silently on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      tint: { color: '#3a80c0', intensity: 0.3, blendMode: 'overlay', shadows: 'navy' },
+    });
+    expect(reparsed.tint).toBeDefined();
+    expect(reparsed.tint?.shadows).toBeUndefined();
+  });
+  it('rejects malformed tint.highlights on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.tint = {
+      color: '#3a80c0',
+      intensity: 0.3,
+      blendMode: 'overlay',
+      highlights: 'orange',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/tint\.highlights/);
+  });
+});
+
+describe('Phase 4.40 — light leak / corner flare', () => {
+  it('round-trips lightLeak through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.lightLeak = {
+      color: '#ffd28a',
+      intensity: 0.5,
+      radius: 0.7,
+      position: 'top-right',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.lightLeak).toEqual({
+      color: '#ffd28a',
+      intensity: 0.5,
+      radius: 0.7,
+      position: 'top-right',
+    });
+  });
+  it('clamps lightLeak.radius to [0.2, 1] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      lightLeak: { color: '#ffd28a', intensity: 0.5, radius: 0.01, position: 'top-left' },
+    });
+    expect(reparsed.lightLeak?.radius).toBe(0.2);
+  });
+  it('drops lightLeak with unknown position', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      lightLeak: { color: '#ffd28a', intensity: 0.5, radius: 0.5, position: 'centre' },
+    });
+    expect(reparsed.lightLeak).toBeUndefined();
+  });
+  it('drops lightLeak with zero intensity', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      lightLeak: { color: '#ffd28a', intensity: 0, radius: 0.5, position: 'top-right' },
+    });
+    expect(reparsed.lightLeak).toBeUndefined();
+  });
+  it('rejects lightLeak.color malformed on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.lightLeak = {
+      color: 'gold',
+      intensity: 0.5,
+      radius: 0.5,
+      position: 'top-left',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/lightLeak\.color/);
+  });
+  it('rejects lightLeak.position out of enum on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.lightLeak = {
+      color: '#ffd28a',
+      intensity: 0.5,
+      radius: 0.5,
+      position: 'centre' as 'top-left',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/lightLeak\.position/);
+  });
 });
 
 describe('Phase 4.36 — image filter modes', () => {
