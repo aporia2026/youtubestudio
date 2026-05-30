@@ -561,11 +561,20 @@ const DARK_ROW_COVERAGE = 0.5;
  * our own hairline replaces it at the exact same y. Result: a
  * single clean hairline at the seam, no gap.
  *
- * Scanner: walks DOWN through the cell from 40% of cellH looking
- * for the FIRST row whose dark-pixel ratio exceeds
- * `DARK_ROW_COVERAGE`. That's the top edge of the AI's divider
- * line. We stop scanning at 95% of cellH so a stray dark row near
- * the cell's bottom border can't get picked.
+ * Scanner: walks DOWN through the cell from 60% of cellH looking
+ * for the first row whose dark-pixel ratio exceeds
+ * `DARK_ROW_COVERAGE`. Stops scanning at 95% of cellH so a stray
+ * dark row at the cell's bottom border can't get picked.
+ *
+ * r2.4.1: also REQUIRES the candidate row to be followed within a
+ * few rows by a predominantly white row. A real divider sits right
+ * above the white label band, so the bright stripe below confirms
+ * it. Without this check, photoreal style renders trip on dark
+ * patches in the illustration (the underside of a broken piggy
+ * bank, the dark wood under a product photo, the dark laptop
+ * background behind a logo) and place the band overlay way too
+ * high — making the band ~2× taller than intended and the rendered
+ * label font ~2× too big.
  *
  * Returns the y coordinate of the divider's top edge in canvas
  * coords, or `null` when no candidate row is found (caller should
@@ -582,9 +591,14 @@ export function detectAiDividerLine(
   const xStart = Math.max(0, detected.x + 2);
   const xEnd = Math.min(canvasW, detected.x + detected.w - 2);
   const totalX = Math.max(1, xEnd - xStart);
-  const scanStart = Math.max(0, detected.y + Math.floor(detected.h * 0.4));
+  // Scan window deliberately narrow: real dividers in this format
+  // never appear higher than ~70% of cellH. Starting at 60% adds a
+  // small safety margin for AI renders that put the illustration
+  // panel a touch shorter than the prompt asked for, while keeping
+  // the upper half of the cell out of reach of false positives.
+  const scanStart = Math.max(0, detected.y + Math.floor(detected.h * 0.6));
   const scanEnd = Math.min(canvasH - 1, detected.y + Math.floor(detected.h * 0.95));
-  for (let y = scanStart; y <= scanEnd; y++) {
+  const rowDarkRatio = (y: number): number => {
     let darkCount = 0;
     for (let x = xStart; x < xEnd; x++) {
       const idx = (y * canvasW + x) * channels;
@@ -592,7 +606,37 @@ export function detectAiDividerLine(
         darkCount++;
       }
     }
-    if (darkCount / totalX >= DARK_ROW_COVERAGE) return y;
+    return darkCount / totalX;
+  };
+  const rowWhiteRatio = (y: number): number => {
+    let whiteCount = 0;
+    for (let x = xStart; x < xEnd; x++) {
+      const idx = (y * canvasW + x) * channels;
+      if (rawData[idx] + rawData[idx + 1] + rawData[idx + 2] > WHITE_PIXEL_THRESHOLD) {
+        whiteCount++;
+      }
+    }
+    return whiteCount / totalX;
+  };
+  for (let y = scanStart; y <= scanEnd; y++) {
+    if (rowDarkRatio(y) < DARK_ROW_COVERAGE) continue;
+    // Candidate dark row found. Verify the label band sits directly
+    // beneath it: look 2-8 rows down for at least one mostly-white
+    // row. The dy range allows for divider strokes 1-3 px thick + a
+    // possible 1-pixel anti-alias before the band's white interior
+    // starts.
+    let whiteVerified = false;
+    for (let dy = 2; dy <= 8; dy++) {
+      const verifyY = y + dy;
+      if (verifyY > scanEnd) break;
+      if (rowWhiteRatio(verifyY) > WHITE_ROW_COVERAGE) {
+        whiteVerified = true;
+        break;
+      }
+    }
+    if (whiteVerified) return y;
+    // Not a real divider — dark patch in the illustration. Keep
+    // scanning further down for the actual divider, if any.
   }
   return null;
 }

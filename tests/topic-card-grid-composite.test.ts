@@ -200,6 +200,52 @@ describe('detectAiDividerLine', () => {
     expect(dividerY).toBeNull();
   });
 
+  it('does NOT false-positive on a wide dark band inside the illustration (r2.4.1)', async () => {
+    // Regression for the Photoreal failure mode: photoreal images have
+    // wide dark patches mid-cell (a shadow under a product, the dark
+    // wood under a piggy bank, the dark laptop background behind a
+    // logo). The pre-r2.4.1 scanner picked the FIRST mostly-dark row,
+    // which landed inside the illustration and made the band overlay
+    // ~2× too tall (label font then rendered ~2× too big).
+    //
+    // r2.4.1 requires the candidate row to be followed by a
+    // predominantly white row — the actual label band — so dark rows
+    // inside the illustration get skipped. This synthetic case has a
+    // wide black band at 65% of cellH (inside the illustration) and
+    // NO label band beneath; the scanner must return null.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="red"/>
+      <rect x="10" y="62" width="80" height="6" fill="black"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 0, y: 0, w: 100, h: 100 };
+    const dividerY = detectAiDividerLine(raw.data, raw.width, raw.height, raw.channels, detected);
+    // No white label band beneath the dark band → scanner falls back
+    // to null and the caller uses the 80% percentage fallback.
+    expect(dividerY).toBeNull();
+  });
+
+  it('skips a dark patch in the illustration and finds the REAL divider below it (r2.4.1)', async () => {
+    // Same setup as the regression above, but with a real divider at
+    // y=82 followed by white. The scanner must skip the dark patch
+    // at y=65 (no white below it) and pick the divider at y=82.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="0" y="0" width="100" height="80" fill="red"/>
+      <rect x="10" y="62" width="80" height="6" fill="black"/>
+      <line x1="0" y1="82" x2="100" y2="82" stroke="black" stroke-width="2"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 0, y: 0, w: 100, h: 100 };
+    const dividerY = detectAiDividerLine(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(dividerY).not.toBeNull();
+    // Should be at the real divider (~82), not the dark patch (~62-68).
+    expect(dividerY!).toBeGreaterThanOrEqual(78);
+    expect(dividerY!).toBeLessThanOrEqual(86);
+  });
+
   it('finds the divider even when the illustration above also contains dark pixels', async () => {
     // Illustration with scattered dark pixels (mimics anti-aliased
     // details in a real illustration) followed by a divider at y=72.
