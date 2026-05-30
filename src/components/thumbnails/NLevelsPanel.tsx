@@ -386,6 +386,35 @@ export interface ThumbnailStyleClipboardEnvelope {
   titleBar: PanelTitleBarState;
 }
 
+/** Clipboard envelope shape for full-draft export. Wraps a complete
+ *  `NLevelsDraftState` in a versioned object. Format-specific (NOT
+ *  shareable with the Topic Card Grid envelope) because N Levels drafts
+ *  carry level lists, title topic, tagline — fields a card-grid draft
+ *  doesn't have. */
+export interface NLevelsDraftExportEnvelope {
+  type: 'n-levels-draft';
+  version: 1;
+  exportedAt: string;
+  draft: NLevelsDraftState;
+}
+
+/** Parse a full-draft clipboard payload. Returns null when the payload
+ *  is not a recognised N Levels draft envelope. */
+export function parseNLevelsDraftEnvelope(raw: string): NLevelsDraftState | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const r = parsed as Record<string, unknown>;
+  if (r.type !== 'n-levels-draft') return null;
+  if (r.version !== 1) return null;
+  if (!r.draft || typeof r.draft !== 'object') return null;
+  return r.draft as NLevelsDraftState;
+}
+
 /** Build a clipboard envelope from the current panel style. */
 export function buildStyleClipboardEnvelope(
   postProcess: PanelPostProcessState,
@@ -1906,6 +1935,125 @@ export function NLevelsPanel({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Workspace — full-draft export / import via clipboard.
+              Format-specific envelope (type: 'n-levels-draft') so a
+              Topic Card Grid draft can't be imported here by mistake. */}
+          <div>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Draft
+              </label>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const envelope: NLevelsDraftExportEnvelope = {
+                        type: 'n-levels-draft',
+                        version: 1,
+                        exportedAt: new Date().toISOString(),
+                        draft: {
+                          count,
+                          showBottomTitle,
+                          showLevelLabels,
+                          titleTopic,
+                          titleTagline,
+                          taglineEnabled,
+                          formatMode,
+                          prefilledLabels,
+                          imageModelId,
+                          levels,
+                          refinedTopic,
+                          notesForImageModel,
+                          postProcess,
+                          titleBar,
+                        },
+                      };
+                      await navigator.clipboard.writeText(JSON.stringify(envelope, null, 2));
+                      toast.success('Draft exported to clipboard');
+                      console.info('[n-levels panel draft export]', {
+                        level_count: levels?.length ?? 0,
+                        show_bottom_title: showBottomTitle,
+                        bytes: JSON.stringify(envelope).length,
+                      });
+                    } catch (err) {
+                      toast.error('Could not export draft — clipboard access denied.');
+                      console.warn('[n-levels panel draft export] error', {
+                        detail: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  title="Copy the whole draft state (levels, title, style, all settings) to clipboard"
+                >
+                  Export
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      const draft = parseNLevelsDraftEnvelope(text);
+                      if (!draft) {
+                        toast.error('Clipboard does not contain an N Levels draft.');
+                        console.info('[n-levels panel draft import] rejected', {
+                          length: text.length,
+                        });
+                        return;
+                      }
+                      // Inline setter sequence mirrors the
+                      // restoredDraftState useEffect — see the
+                      // TopicCardGridPanel comment for the trade-off
+                      // (verbose vs. shared helper).
+                      setCount(draft.count);
+                      setShowBottomTitle(draft.showBottomTitle);
+                      setShowLevelLabels(draft.showLevelLabels);
+                      setTitleTopic(draft.titleTopic);
+                      setTitleTagline(draft.titleTagline);
+                      setTaglineEnabled(draft.taglineEnabled);
+                      setFormatMode(draft.formatMode);
+                      setPrefilledLabels(draft.prefilledLabels);
+                      setImageModelId(draft.imageModelId);
+                      setLevels(draft.levels);
+                      setRefinedTopic(draft.refinedTopic);
+                      setNotesForImageModel(draft.notesForImageModel);
+                      if (draft.postProcess) setPostProcess(coercePostProcessState(draft.postProcess));
+                      if (draft.titleBar) setTitleBar(coerceTitleBarState(draft.titleBar));
+                      toast.success('Draft imported');
+                      console.info('[n-levels panel draft import]', {
+                        level_count: draft.levels?.length ?? 0,
+                        show_bottom_title: draft.showBottomTitle,
+                      });
+                    } catch (err) {
+                      toast.error('Could not import draft — clipboard access denied.');
+                      console.warn('[n-levels panel draft import] error', {
+                        detail: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  title="Hydrate the panel from an N Levels draft JSON in the clipboard"
+                >
+                  Import
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              Export copies the whole draft (levels, title, style, all settings) as JSON.
+              Import hydrates the panel from a previously-exported draft.
+            </p>
           </div>
 
           {/* Mode chips */}

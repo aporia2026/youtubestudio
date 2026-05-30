@@ -519,6 +519,38 @@ export interface ThumbnailStyleClipboardEnvelope {
   titleBar: PanelTitleBarState;
 }
 
+/** Clipboard envelope shape for full-draft export. Wraps a complete
+ *  `TopicCardGridDraftState` plus a timestamp + version so a future
+ *  schema change can be detected and migrated. The `type` field is
+ *  format-specific (NOT shareable between Topic Card Grid and N Levels
+ *  — drafts include format-specific fields like cards / palette /
+ *  uploads that don't translate between formats). */
+export interface TopicCardGridDraftExportEnvelope {
+  type: 'topic-card-grid-draft';
+  version: 1;
+  exportedAt: string;
+  draft: TopicCardGridDraftState;
+}
+
+/** Parse a full-draft clipboard payload. Returns null when the payload
+ *  is not a recognised Topic Card Grid draft envelope. Strict on `type`
+ *  to prevent cross-format pastes (an N Levels draft would silently
+ *  hydrate the wrong fields if we accepted it). */
+export function parseTopicCardGridDraftEnvelope(raw: string): TopicCardGridDraftState | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const r = parsed as Record<string, unknown>;
+  if (r.type !== 'topic-card-grid-draft') return null;
+  if (r.version !== 1) return null;
+  if (!r.draft || typeof r.draft !== 'object') return null;
+  return r.draft as TopicCardGridDraftState;
+}
+
 /** Build a clipboard envelope from the current panel style. Both
  *  postProcess and titleBar are always included (even when disabled)
  *  so paste preserves the exact panel state the user copied — including
@@ -2512,6 +2544,150 @@ export function TopicCardGridPanel({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Workspace — full-draft export / import via clipboard. Wraps
+              the entire panel state (grid, cards, palette, uploads,
+              post-process, title bar, font picker, etc.) in a versioned
+              JSON envelope so users can back up, share, or transfer a
+              draft between sessions. Format-specific: an N Levels draft
+              cannot be imported here and vice-versa (the parser checks
+              `type` strictly). */}
+          <div>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Draft
+              </label>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const envelope: TopicCardGridDraftExportEnvelope = {
+                        type: 'topic-card-grid-draft',
+                        version: 1,
+                        exportedAt: new Date().toISOString(),
+                        draft: {
+                          gridMode,
+                          presetIdx,
+                          customRows,
+                          customCols,
+                          formatMode,
+                          prefilledLabels,
+                          imageModelId,
+                          cards,
+                          palette,
+                          notesForImageModel,
+                          cardShape,
+                          uploads,
+                          uploadFit,
+                          uploadFilter,
+                          style,
+                          styleFreeForm,
+                          labelSize,
+                          fontId,
+                          postProcess,
+                          titleBar,
+                        },
+                      };
+                      await navigator.clipboard.writeText(JSON.stringify(envelope, null, 2));
+                      toast.success('Draft exported to clipboard');
+                      console.info('[topic-card-grid panel draft export]', {
+                        cards_count: cards?.length ?? 0,
+                        uploads_count: Object.keys(uploads).length,
+                        bytes: JSON.stringify(envelope).length,
+                      });
+                    } catch (err) {
+                      toast.error('Could not export draft — clipboard access denied.');
+                      console.warn('[topic-card-grid panel draft export] error', {
+                        detail: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  title="Copy the whole draft state (cards, palette, uploads, style, all settings) to clipboard"
+                >
+                  Export
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      const draft = parseTopicCardGridDraftEnvelope(text);
+                      if (!draft) {
+                        toast.error('Clipboard does not contain a Topic Card Grid draft.');
+                        console.info('[topic-card-grid panel draft import] rejected', {
+                          length: text.length,
+                        });
+                        return;
+                      }
+                      // Apply the imported draft via the same setter
+                      // sequence the restoredDraftState useEffect uses.
+                      // Keeping this inline (rather than extracting into
+                      // a shared function) avoids a refactor of the
+                      // existing hydration logic — the cost is verbose
+                      // duplication that's easy to spot if either path
+                      // grows a new field.
+                      setGridMode(draft.gridMode);
+                      setPresetIdx(draft.presetIdx);
+                      setCustomRows(draft.customRows);
+                      setCustomCols(draft.customCols);
+                      setFormatMode(draft.formatMode);
+                      setPrefilledLabels(draft.prefilledLabels);
+                      setImageModelId(draft.imageModelId);
+                      setCardShape(draft.cardShape ?? 'square');
+                      setUploads(draft.uploads ?? {});
+                      setUploadFit(draft.uploadFit ?? {});
+                      setUploadFilter(draft.uploadFilter ?? {});
+                      setCards(draft.cards);
+                      setPalette(draft.palette);
+                      setNotesForImageModel(draft.notesForImageModel);
+                      if (draft.style && STYLE_OPTIONS.some((o) => o.value === draft.style)) {
+                        setStyle(draft.style);
+                      }
+                      if (typeof draft.styleFreeForm === 'string') setStyleFreeForm(draft.styleFreeForm);
+                      if (typeof draft.labelSize === 'number' && Number.isFinite(draft.labelSize)) {
+                        setLabelSize(Math.min(LABEL_SIZE_MAX, Math.max(LABEL_SIZE_MIN, draft.labelSize)));
+                      }
+                      if (typeof draft.fontId === 'string' && findFontById(draft.fontId)) {
+                        setFontId(draft.fontId);
+                      }
+                      if (draft.postProcess) setPostProcess(coercePostProcessState(draft.postProcess));
+                      if (draft.titleBar) setTitleBar(coerceTitleBarState(draft.titleBar));
+                      toast.success('Draft imported');
+                      console.info('[topic-card-grid panel draft import]', {
+                        cards_count: draft.cards?.length ?? 0,
+                        uploads_count: Object.keys(draft.uploads ?? {}).length,
+                      });
+                    } catch (err) {
+                      toast.error('Could not import draft — clipboard access denied.');
+                      console.warn('[topic-card-grid panel draft import] error', {
+                        detail: err instanceof Error ? err.message : String(err),
+                      });
+                    }
+                  }}
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                  title="Hydrate the panel from a Topic Card Grid draft JSON in the clipboard"
+                >
+                  Import
+                </button>
+              </div>
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              Export copies the whole draft (cards, palette, uploads, style, all settings) as JSON.
+              Import hydrates the panel from a previously-exported draft.
+            </p>
           </div>
 
           {/* Mode chips */}
