@@ -4101,6 +4101,51 @@ export function FlexIconGridPanel({
                       Teal + orange
                     </button>
                   )}
+                  {/* Phase 4.41: split-tone strength scales the two
+                      split layers independently of the base wash.
+                      Only shown once at least one split colour is
+                      on, since it has no effect otherwise. Default
+                      0.5 reproduces the previous fixed half-intensity
+                      behaviour. */}
+                  {(config.tint.shadows || config.tint.highlights) && (
+                    <>
+                      <span style={{ fontSize: 10, color: '#71717a', minWidth: 60, marginLeft: 6 }}>
+                        Split strength
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={config.tint.splitToneStrength ?? 0.5}
+                        onChange={(e) =>
+                          updateConfig({
+                            tint: {
+                              ...config.tint!,
+                              splitToneStrength: Number(e.target.value),
+                            },
+                          })
+                        }
+                        aria-label="Split-tone strength"
+                        title={`Split strength: ${Math.round((config.tint.splitToneStrength ?? 0.5) * 100)}% of base intensity`}
+                        style={{ width: 80 }}
+                      />
+                      <BufferedNumericInput
+                        value={config.tint.splitToneStrength ?? 0.5}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        onCommit={(next) =>
+                          updateConfig({
+                            tint: { ...config.tint!, splitToneStrength: next },
+                          })
+                        }
+                        ariaLabel="Split-tone strength (numeric)"
+                        title="Split layer opacity as fraction of base intensity (0–1)"
+                        style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                      />
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -4210,6 +4255,46 @@ export function FlexIconGridPanel({
                       title={`Radius: ${Math.round(config.lightLeak.radius * 100)}% of canvas half-axis`}
                       style={{ width: 100 }}
                     />
+                    {/* Phase 4.41: blend-mode chip-row for the leak.
+                        Same 4 options as tint; defaults to 'screen'
+                        which lifts the underlying image. Multiply
+                        gives a dark coloured shadow leak instead. */}
+                    {(
+                      [
+                        { value: 'screen', label: 'Screen', hint: 'Lift underlying image with hue (default leak)' },
+                        { value: 'soft-light', label: 'Soft', hint: 'Subtle wash' },
+                        { value: 'overlay', label: 'Overlay', hint: 'Boost contrast and tint mid-tones' },
+                        { value: 'multiply', label: 'Multiply', hint: 'Dark coloured shadow leak' },
+                      ] as const
+                    ).map((mode) => {
+                      const current = config.lightLeak!.blendMode ?? 'screen';
+                      return (
+                        <button
+                          key={mode.value}
+                          type="button"
+                          aria-pressed={current === mode.value}
+                          onClick={() =>
+                            updateConfig({
+                              lightLeak: { ...config.lightLeak!, blendMode: mode.value },
+                            })
+                          }
+                          style={{
+                            ...chipStyle(current === mode.value),
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                          }}
+                          title={mode.hint}
+                        >
+                          <TintBlendSwatch
+                            color={config.lightLeak!.color}
+                            intensity={config.lightLeak!.intensity}
+                            blendMode={mode.value}
+                          />
+                          {mode.label}
+                        </button>
+                      );
+                    })}
                   </>
                 )}
               </div>
@@ -4231,17 +4316,17 @@ export function FlexIconGridPanel({
                 >
                   {(
                     [
-                      { value: 'top-left', label: '↖' },
-                      { value: 'top', label: '↑' },
-                      { value: 'top-right', label: '↗' },
-                      { value: 'left', label: '←' },
+                      { value: 'top-left', dx: -1, dy: -1 },
+                      { value: 'top', dx: 0, dy: -1 },
+                      { value: 'top-right', dx: 1, dy: -1 },
+                      { value: 'left', dx: -1, dy: 0 },
                       null,
-                      { value: 'right', label: '→' },
-                      { value: 'bottom-left', label: '↙' },
-                      { value: 'bottom', label: '↓' },
-                      { value: 'bottom-right', label: '↘' },
+                      { value: 'right', dx: 1, dy: 0 },
+                      { value: 'bottom-left', dx: -1, dy: 1 },
+                      { value: 'bottom', dx: 0, dy: 1 },
+                      { value: 'bottom-right', dx: 1, dy: 1 },
                     ] as const
-                  ).map((opt, i) =>
+                  ).map((opt) =>
                     opt === null ? (
                       <div
                         key="centre-placeholder"
@@ -4269,16 +4354,137 @@ export function FlexIconGridPanel({
                           width: 28,
                           height: 24,
                           padding: 0,
-                          fontSize: 14,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
                         }}
                         title={`Anchor leak at ${opt.value.replace('-', ' ')}`}
                       >
-                        {opt.label}
+                        <PositionArrowIcon dx={opt.dx} dy={opt.dy} />
                       </button>
                     ),
                   )}
                 </div>
               )}
+            </div>
+            {/* Phase 4.41: outer canvas frame — a single solid
+                stroke around the entire image. Rendered on top of
+                every other finishing layer (including vignette).
+                Off by default; default seed is a white 6px stroke
+                with no inset. Cell-level strokes still configure
+                independently below. */}
+            <div>
+              <label style={labelStyle}>
+                Outer frame
+                <span
+                  style={{
+                    marginLeft: 6,
+                    fontSize: 10,
+                    color: '#71717a',
+                    fontStyle: 'italic',
+                    fontWeight: 400,
+                  }}
+                >
+                  (single stroke around the canvas)
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  aria-pressed={!!config.frame}
+                  onClick={() =>
+                    updateConfig({
+                      frame: config.frame
+                        ? undefined
+                        : { color: '#ffffff', thickness: 6, inset: 0 },
+                    })
+                  }
+                  style={chipStyle(!!config.frame)}
+                  title={
+                    config.frame
+                      ? 'Click to turn the outer frame off'
+                      : 'Click to add a single-stroke frame around the canvas'
+                  }
+                >
+                  {config.frame ? 'Frame on' : 'Frame off'}
+                </button>
+                {config.frame && (
+                  <>
+                    <input
+                      type="color"
+                      value={config.frame.color}
+                      onChange={(e) =>
+                        updateConfig({
+                          frame: { ...config.frame!, color: e.target.value },
+                        })
+                      }
+                      aria-label="Frame colour"
+                      title="Frame stroke colour"
+                      style={{ width: 36, height: 32, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 50 }}>Thickness</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={40}
+                      step={1}
+                      value={config.frame.thickness}
+                      onChange={(e) =>
+                        updateConfig({
+                          frame: { ...config.frame!, thickness: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Frame thickness"
+                      title={`Thickness: ${config.frame.thickness}px`}
+                      style={{ width: 100 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.frame.thickness}
+                      min={1}
+                      max={40}
+                      step={1}
+                      onCommit={(next) =>
+                        updateConfig({
+                          frame: { ...config.frame!, thickness: next },
+                        })
+                      }
+                      ariaLabel="Frame thickness (numeric)"
+                      title="Stroke thickness 1–40 px; commits on Enter or blur"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    <span style={{ fontSize: 10, color: '#71717a', minWidth: 32 }}>Inset</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={80}
+                      step={1}
+                      value={config.frame.inset}
+                      onChange={(e) =>
+                        updateConfig({
+                          frame: { ...config.frame!, inset: Number(e.target.value) },
+                        })
+                      }
+                      aria-label="Frame inset"
+                      title={`Inset from edge: ${config.frame.inset}px (matted look)`}
+                      style={{ width: 100 }}
+                    />
+                    <BufferedNumericInput
+                      value={config.frame.inset}
+                      min={0}
+                      max={80}
+                      step={1}
+                      onCommit={(next) =>
+                        updateConfig({
+                          frame: { ...config.frame!, inset: next },
+                        })
+                      }
+                      ariaLabel="Frame inset (numeric)"
+                      title="Distance from canvas edge 0–80 px; commits on Enter or blur"
+                      style={{ width: 56, padding: '4px 6px', fontSize: 12 }}
+                    />
+                  </>
+                )}
+              </div>
             </div>
             {/* Phase 4.31: canvas-level default cell stroke. Same
                 toggle pattern as Cell shadow — when on, every cell
@@ -6449,6 +6655,54 @@ function BufferedNumericInput({
 }
 
 /**
+ * Phase 4.41: inline SVG arrow for the light-leak position picker.
+ * Replaces Unicode arrow glyphs (↖, ↑, ↗, etc.) whose rendering
+ * varies wildly across fonts and platforms — macOS Safari/Chrome
+ * substitute coloured emoji variants which clash with the chip's
+ * text colour. SVG arrows render identically on every platform and
+ * inherit `currentColor` from the parent so they match the chip's
+ * tone (active vs inactive). `dx`/`dy` ∈ {-1, 0, 1} encode the
+ * compass direction.
+ */
+function PositionArrowIcon({ dx, dy }: { dx: -1 | 0 | 1; dy: -1 | 0 | 1 }) {
+  const cx = 7;
+  const cy = 7;
+  const r = 5;
+  const tipX = cx + dx * r;
+  const tipY = cy + dy * r;
+  // Two short "tail" lines splayed back from the tip — gives the
+  // arrow a recognisable chevron silhouette at 14×14.
+  const back = 3;
+  const perpX = dy === 0 ? 1.6 : 0;
+  const perpY = dx === 0 ? 1.6 : 0;
+  // Diagonal arrows need a 45° perpendicular split.
+  const diagPerp = dx !== 0 && dy !== 0 ? 1.6 : 0;
+  const baseX = tipX - dx * back;
+  const baseY = tipY - dy * back;
+  const wing1X = baseX + (dx !== 0 && dy !== 0 ? -dy * diagPerp : -perpX);
+  const wing1Y = baseY + (dx !== 0 && dy !== 0 ? dx * diagPerp : -perpY);
+  const wing2X = baseX + (dx !== 0 && dy !== 0 ? dy * diagPerp : perpX);
+  const wing2Y = baseY + (dx !== 0 && dy !== 0 ? -dx * diagPerp : perpY);
+  return (
+    <svg
+      width={14}
+      height={14}
+      viewBox="0 0 14 14"
+      aria-hidden="true"
+      focusable="false"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      fill="none"
+    >
+      <line x1={cx} y1={cy} x2={tipX} y2={tipY} />
+      <polyline points={`${wing1X},${wing1Y} ${tipX},${tipY} ${wing2X},${wing2Y}`} />
+    </svg>
+  );
+}
+
+/**
  * Phase 4.40: tiny chip row that exposes the active palette's
  * colours as one-click "use this hue" buttons next to the tint
  * colour picker. Saves the user round-tripping through a separate
@@ -6482,26 +6736,41 @@ function PaletteSampleChips({
     <div
       role="group"
       aria-label={ariaLabel}
-      style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}
+      style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}
     >
-      {colours.map((hex) => (
-        <button
-          key={hex}
-          type="button"
-          onClick={() => onPick(hex)}
-          title={`Use palette colour ${hex}`}
-          aria-label={`Use palette colour ${hex}`}
-          style={{
-            width: 18,
-            height: 18,
-            borderRadius: 4,
-            border: '1px solid rgba(255,255,255,0.2)',
-            background: hex,
-            cursor: 'pointer',
-            padding: 0,
-          }}
-        />
-      ))}
+      {/* Phase 4.41: a thin vertical divider + "Palette" label sit
+          between the native colour picker and the swatch row so the
+          chips clearly read as clickable controls, not decoration. */}
+      <span
+        aria-hidden
+        style={{
+          width: 1,
+          height: 22,
+          background: 'rgba(255,255,255,0.12)',
+          marginRight: 2,
+        }}
+      />
+      <span style={{ fontSize: 10, color: '#71717a' }}>Palette</span>
+      <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+        {colours.map((hex) => (
+          <button
+            key={hex}
+            type="button"
+            onClick={() => onPick(hex)}
+            title={`Use palette colour ${hex}`}
+            aria-label={`Use palette colour ${hex}`}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 4,
+              border: '1px solid rgba(255,255,255,0.2)',
+              background: hex,
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }

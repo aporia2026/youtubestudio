@@ -759,6 +759,9 @@ export function FlexIconGridLivePreview({
               style={{ mixBlendMode: config.tint.blendMode }}
               pointerEvents="none"
             />
+            {/* Phase 4.41: split-tone strength scales independently;
+                falls back to 0.5 (the original hard-coded behaviour)
+                when unset. */}
             {config.tint.shadows && (
               <rect
                 x={0}
@@ -766,7 +769,7 @@ export function FlexIconGridLivePreview({
                 width={config.width}
                 height={config.height}
                 fill={config.tint.shadows}
-                fillOpacity={config.tint.intensity / 2}
+                fillOpacity={config.tint.intensity * (config.tint.splitToneStrength ?? 0.5)}
                 style={{ mixBlendMode: 'multiply' }}
                 pointerEvents="none"
               />
@@ -778,7 +781,7 @@ export function FlexIconGridLivePreview({
                 width={config.width}
                 height={config.height}
                 fill={config.tint.highlights}
-                fillOpacity={config.tint.intensity / 2}
+                fillOpacity={config.tint.intensity * (config.tint.splitToneStrength ?? 0.5)}
                 style={{ mixBlendMode: 'screen' }}
                 pointerEvents="none"
               />
@@ -824,7 +827,7 @@ export function FlexIconGridLivePreview({
                 width={config.width}
                 height={config.height}
                 fill="url(#fg-preview-lightleak)"
-                style={{ mixBlendMode: 'screen' }}
+                style={{ mixBlendMode: l.blendMode ?? 'screen' }}
                 pointerEvents="none"
               />
             </>
@@ -881,6 +884,31 @@ export function FlexIconGridLivePreview({
                 pointerEvents="none"
               />
             </>
+          );
+        })()}
+
+        {/* Phase 4.41: outer frame — rendered LAST so the stroke
+            sits on top of every other finishing layer (including
+            vignette). Mirrors the composer: stroke is centred on
+            the path, so we inset by inset + thickness/2 and use
+            stroke-width = thickness. */}
+        {config.frame && (() => {
+          const f = config.frame;
+          const offset = f.inset + f.thickness / 2;
+          const rectW = Math.max(0, config.width - 2 * offset);
+          const rectH = Math.max(0, config.height - 2 * offset);
+          if (rectW <= 0 || rectH <= 0) return null;
+          return (
+            <rect
+              x={offset}
+              y={offset}
+              width={rectW}
+              height={rectH}
+              fill="none"
+              stroke={f.color}
+              strokeWidth={f.thickness}
+              pointerEvents="none"
+            />
           );
         })()}
       </svg>

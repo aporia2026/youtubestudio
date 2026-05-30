@@ -1959,6 +1959,133 @@ describe('Phase 4.40 — light leak / corner flare', () => {
   });
 });
 
+describe('Phase 4.41 — caveat fixes (lightLeak.blendMode, tint.splitToneStrength)', () => {
+  it('round-trips lightLeak.blendMode through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.lightLeak = {
+      color: '#ffd28a',
+      intensity: 0.5,
+      radius: 0.5,
+      position: 'top-right',
+      blendMode: 'overlay',
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.lightLeak?.blendMode).toBe('overlay');
+  });
+  it('drops lightLeak.blendMode when unknown', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      lightLeak: {
+        color: '#ffd28a',
+        intensity: 0.5,
+        radius: 0.5,
+        position: 'top-right',
+        blendMode: 'difference',
+      },
+    });
+    expect(reparsed.lightLeak?.blendMode).toBeUndefined();
+  });
+  it('rejects lightLeak.blendMode out of enum on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.lightLeak = {
+      color: '#ffd28a',
+      intensity: 0.5,
+      radius: 0.5,
+      position: 'top-right',
+      blendMode: 'difference' as 'multiply',
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/lightLeak\.blendMode/);
+  });
+  it('round-trips tint.splitToneStrength', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.tint = {
+      color: '#000000',
+      intensity: 0.5,
+      blendMode: 'multiply',
+      shadows: '#0a3a4a',
+      highlights: '#f0a060',
+      splitToneStrength: 0.3,
+    };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.tint?.splitToneStrength).toBe(0.3);
+  });
+  it('drops tint.splitToneStrength when out of [0, 1]', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      tint: { color: '#000000', intensity: 0.5, blendMode: 'multiply', splitToneStrength: 1.5 },
+    });
+    expect(reparsed.tint?.splitToneStrength).toBeUndefined();
+  });
+  it('rejects tint.splitToneStrength out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.tint = {
+      color: '#000000',
+      intensity: 0.5,
+      blendMode: 'multiply',
+      splitToneStrength: 2,
+    };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/tint\.splitToneStrength/);
+  });
+});
+
+describe('Phase 4.41 — outer canvas frame', () => {
+  it('round-trips frame through parseConfig', () => {
+    const original = makeDefaultConfig(1, 1);
+    original.frame = { color: '#ffffff', thickness: 6, inset: 0 };
+    const reparsed = parseConfig(JSON.parse(JSON.stringify(original)));
+    expect(reparsed.frame).toEqual({ color: '#ffffff', thickness: 6, inset: 0 });
+  });
+  it('clamps frame.thickness to [0, 40] on parse and drops when < 1', () => {
+    const dropped = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      frame: { color: '#ffffff', thickness: 0.5, inset: 0 },
+    });
+    expect(dropped.frame).toBeUndefined();
+    const clamped = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      frame: { color: '#ffffff', thickness: 200, inset: 0 },
+    });
+    expect(clamped.frame?.thickness).toBe(40);
+  });
+  it('clamps frame.inset to [0, 80] on parse', () => {
+    const reparsed = parseConfig({
+      rows: 1, cols: 1,
+      cells: [{ index: 1, label: 'A', content: { type: 'text-only' } }],
+      frame: { color: '#ffffff', thickness: 4, inset: 999 },
+    });
+    expect(reparsed.frame?.inset).toBe(80);
+  });
+  it('rejects malformed frame.color on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.frame = { color: 'white', thickness: 4, inset: 0 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/frame\.color/);
+  });
+  it('rejects frame.thickness out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.frame = { color: '#ffffff', thickness: 60, inset: 0 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/frame\.thickness/);
+  });
+  it('rejects frame.inset out of range on validation', () => {
+    const config = makeDefaultConfig(1, 1);
+    config.frame = { color: '#ffffff', thickness: 4, inset: 200 };
+    const result = validateConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/frame\.inset/);
+  });
+});
+
 describe('Phase 4.36 — image filter modes', () => {
   it('round-trips upload filter through parseConfig', () => {
     const original = makeDefaultConfig(1, 1);

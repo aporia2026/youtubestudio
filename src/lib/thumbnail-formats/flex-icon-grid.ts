@@ -610,25 +610,47 @@ export interface FlexIconGridConfig {
    *  grade. When either is set, the composer adds extra overlays
    *  alongside the base tint — `shadows` is composited with
    *  `multiply` (darkens dark areas with hue), `highlights` is
-   *  composited with `screen` (lightens light areas with hue). Each
-   *  uses half the base intensity so the look stacks subtly. The
+   *  composited with `screen` (lightens light areas with hue). The
    *  classic "teal-and-orange" editorial grade is shadows=teal,
-   *  highlights=orange. */
+   *  highlights=orange.
+   *
+   *  Phase 4.41: `splitToneStrength` (0..1) scales the split-tone
+   *  layers independently of the base wash. Defaults to 0.5 (the
+   *  previous hard-coded `intensity / 2` behaviour) when omitted,
+   *  so existing configs render pixel-identical. Drop to ~0.2 at
+   *  high base intensity to keep shadow / highlight detail. */
   tint?: {
     color: string;
     intensity: number;
     blendMode: 'multiply' | 'screen' | 'overlay' | 'soft-light';
     shadows?: string;
     highlights?: string;
+    splitToneStrength?: number;
+  };
+  /** Phase 4.41: optional outer canvas frame — a single solid
+   *  stroke line around the entire image. Rendered LAST (after
+   *  vignette) so the frame sits on top of every other finishing
+   *  layer. Off by default.
+   *  - `color` — the stroke colour.
+   *  - `thickness` (1..40) — stroke width in pixels.
+   *  - `inset` (0..80) — distance from the canvas edge to the
+   *    OUTER edge of the stroke, in pixels. 0 = flush with edge.
+   *    A non-zero inset lets the underlying canvas show through
+   *    on the outside of the frame (matted look). */
+  frame?: {
+    color: string;
+    thickness: number;
+    inset: number;
   };
   /** Phase 4.40: optional light-leak / corner flare — a soft
    *  radial blot of colour positioned at one of eight anchor points
    *  on the canvas (4 corners + 4 edges). Mimics a film artifact
-   *  where light has leaked into the negative. Composited with
-   *  `screen` blend so the leak lifts rather than tints the image.
-   *  Rendered AFTER tint but BEFORE the vignette so the corner
-   *  darkening still reads beyond the leak's radius. Off by
-   *  default.
+   *  where light has leaked into the negative. Composited with the
+   *  configured blend mode (default `screen` lifts the underlying
+   *  image; `multiply` darkens; `overlay`/`soft-light` punches
+   *  mid-tones). Rendered AFTER tint but BEFORE the vignette so
+   *  the corner darkening still reads beyond the leak's radius.
+   *  Off by default.
    *  - `color` — the leak hue (typically a warm yellow/orange).
    *  - `intensity` (0..1) — peak opacity at the leak's centre.
    *  - `radius` (0.2..1.0) — leak's extent as a fraction of the
@@ -636,7 +658,9 @@ export interface FlexIconGridConfig {
    *  - `position` — anchor point: one of `top-left`, `top-right`,
    *    `bottom-left`, `bottom-right`, `top`, `bottom`, `left`,
    *    `right`. The leak's centre sits ON the edge so half the
-   *    gradient bleeds off-canvas, mirroring real lens leaks. */
+   *    gradient bleeds off-canvas, mirroring real lens leaks.
+   *  - `blendMode` (Phase 4.41) — same enum as tint. Defaults to
+   *    `screen` when omitted so existing presets stay identical. */
   lightLeak?: {
     color: string;
     intensity: number;
@@ -650,6 +674,7 @@ export interface FlexIconGridConfig {
       | 'bottom'
       | 'left'
       | 'right';
+    blendMode?: 'multiply' | 'screen' | 'overlay' | 'soft-light';
   };
   /** Phase 4.38: optional film-grain / noise finishing overlay.
    *  Rendered AFTER cells + title bar but BEFORE the vignette so the
@@ -1471,6 +1496,29 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     if (config.tint.highlights !== undefined && !HEX_COLOR_RE.test(config.tint.highlights)) {
       return { ok: false, reason: 'tint.highlights is not a valid hex color' };
     }
+    if (
+      config.tint.splitToneStrength !== undefined &&
+      (!Number.isFinite(config.tint.splitToneStrength) ||
+        config.tint.splitToneStrength < 0 ||
+        config.tint.splitToneStrength > 1)
+    ) {
+      return { ok: false, reason: 'tint.splitToneStrength must be a number in [0, 1] or undefined' };
+    }
+  }
+  // Phase 4.41: frame shape check.
+  if (config.frame !== undefined) {
+    if (typeof config.frame !== 'object' || config.frame === null) {
+      return { ok: false, reason: 'frame must be an object or undefined' };
+    }
+    if (!HEX_COLOR_RE.test(config.frame.color)) {
+      return { ok: false, reason: 'frame.color is not a valid hex color' };
+    }
+    if (!Number.isFinite(config.frame.thickness) || config.frame.thickness < 1 || config.frame.thickness > 40) {
+      return { ok: false, reason: 'frame.thickness must be a number in [1, 40]' };
+    }
+    if (!Number.isFinite(config.frame.inset) || config.frame.inset < 0 || config.frame.inset > 80) {
+      return { ok: false, reason: 'frame.inset must be a number in [0, 80]' };
+    }
   }
   // Phase 4.40: lightLeak shape check.
   if (config.lightLeak !== undefined) {
@@ -1489,6 +1537,15 @@ export function validateConfig(config: FlexIconGridConfig): ValidationResult {
     const validPositions = ['top-left', 'top-right', 'bottom-left', 'bottom-right', 'top', 'bottom', 'left', 'right'];
     if (!validPositions.includes(config.lightLeak.position)) {
       return { ok: false, reason: `lightLeak.position must be one of ${validPositions.join(' | ')}` };
+    }
+    if (
+      config.lightLeak.blendMode !== undefined &&
+      config.lightLeak.blendMode !== 'multiply' &&
+      config.lightLeak.blendMode !== 'screen' &&
+      config.lightLeak.blendMode !== 'overlay' &&
+      config.lightLeak.blendMode !== 'soft-light'
+    ) {
+      return { ok: false, reason: 'lightLeak.blendMode must be multiply | screen | overlay | soft-light or undefined' };
     }
   }
   // Phase 4.38: grain shape check.
@@ -1739,6 +1796,8 @@ export function parseConfig(raw: unknown): FlexIconGridConfig {
     tint: parseTint(o.tint),
     // Phase 4.40: light-leak overlay; same tolerant pattern.
     lightLeak: parseLightLeak(o.lightLeak),
+    // Phase 4.41: outer canvas frame; tolerant pattern.
+    frame: parseFrame(o.frame),
     // Phase 4.15: palette cursor offset for shuffle. Coerce to a
     // non-negative integer; the resolver takes modulo anyway, but
     // keeping the field tidy makes diff-friendly history entries.
@@ -1827,6 +1886,31 @@ function parseVignette(
   };
 }
 
+/** Phase 4.41: tolerant outer-frame parser. Drops the field when
+ *  required values are missing, non-finite, or out of range.
+ *  Zero thickness is treated as "no frame" so an explicit
+ *  `{ thickness: 0 }` doesn't round-trip into JSON state. */
+function parseFrame(
+  v: unknown,
+): { color: string; thickness: number; inset: number } | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const o = v as Record<string, unknown>;
+  const thickness =
+    typeof o.thickness === 'number' && Number.isFinite(o.thickness)
+      ? Math.max(0, Math.min(40, o.thickness))
+      : undefined;
+  const inset =
+    typeof o.inset === 'number' && Number.isFinite(o.inset)
+      ? Math.max(0, Math.min(80, o.inset))
+      : 0;
+  if (thickness === undefined || thickness < 1) return undefined;
+  return {
+    color: stringOr(o.color, '#ffffff'),
+    thickness,
+    inset,
+  };
+}
+
 /** Phase 4.40: tolerant light-leak parser. Drops on missing /
  *  out-of-range fields or unknown position. Zero intensity drops
  *  so an "off" leak doesn't round-trip into JSON state. */
@@ -1867,11 +1951,20 @@ function parseLightLeak(
       ? (o.position as LeakPos)
       : undefined;
   if (position === undefined) return undefined;
+  // Phase 4.41: blendMode optional — defaults to 'screen' downstream.
+  const blendMode =
+    o.blendMode === 'multiply' ||
+    o.blendMode === 'screen' ||
+    o.blendMode === 'overlay' ||
+    o.blendMode === 'soft-light'
+      ? (o.blendMode as 'multiply' | 'screen' | 'overlay' | 'soft-light')
+      : undefined;
   return {
     color: stringOr(o.color, '#ffd28a'),
     intensity,
     radius,
     position,
+    ...(blendMode !== undefined ? { blendMode } : {}),
   };
 }
 
@@ -1911,12 +2004,23 @@ function parseTint(
     typeof o.shadows === 'string' && HEX_COLOR_RE.test(o.shadows) ? o.shadows : undefined;
   const highlights =
     typeof o.highlights === 'string' && HEX_COLOR_RE.test(o.highlights) ? o.highlights : undefined;
+  // Phase 4.41: splitToneStrength optional [0..1]. Clamps in range;
+  // out-of-range values fall back to undefined so the composer's
+  // default (0.5) kicks in.
+  const splitToneStrength =
+    typeof o.splitToneStrength === 'number' &&
+    Number.isFinite(o.splitToneStrength) &&
+    o.splitToneStrength >= 0 &&
+    o.splitToneStrength <= 1
+      ? o.splitToneStrength
+      : undefined;
   return {
     color: stringOr(o.color, '#ffb27a'),
     intensity,
     blendMode,
     ...(shadows !== undefined ? { shadows } : {}),
     ...(highlights !== undefined ? { highlights } : {}),
+    ...(splitToneStrength !== undefined ? { splitToneStrength } : {}),
   };
 }
 

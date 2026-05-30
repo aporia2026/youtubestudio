@@ -357,13 +357,22 @@ export async function composeFlexIconGrid(input: ComposeInput): Promise<ComposeR
       if (leakOverlay) overlays.push(leakOverlay);
     }
 
-    // 3.7) Phase 4.37: vignette overlay — pushed LAST so it sits on
-    //      top of cells + title bar (and grain + tint + leak),
-    //      darkening the canvas corners uniformly. A single
-    //      full-canvas radial-gradient PNG.
+    // 3.7) Phase 4.37: vignette overlay — sits on top of cells +
+    //      title bar (and grain + tint + leak), darkening the
+    //      canvas corners uniformly. A single full-canvas
+    //      radial-gradient PNG.
     if (config.vignette) {
       const vignetteOverlay = await buildVignetteOverlay(config);
       if (vignetteOverlay) overlays.push(vignetteOverlay);
+    }
+
+    // 3.8) Phase 4.41: outer frame — pushed LAST so the stroke sits
+    //      on top of every other finishing layer (including the
+    //      vignette). A single transparent-fill SVG with a
+    //      rectangular stroke at the configured inset / thickness.
+    if (config.frame) {
+      const frameOverlay = await buildFrameOverlay(config);
+      if (frameOverlay) overlays.push(frameOverlay);
     }
 
     // 4) Single composite pass — one decode of the base, one encode of
@@ -1858,6 +1867,41 @@ async function buildVignetteOverlay(
   return { input: buf, top: 0, left: 0 };
 }
 
+// ─── Outer frame overlay (Phase 4.41) ───────────────────────────────────────
+
+/**
+ * Phase 4.41: build a transparent-fill SVG with a single rectangle
+ * stroke around the entire canvas. The stroke's OUTER edge sits at
+ * `inset` pixels from the canvas edge; SVG strokes paint centred
+ * on the path, so we draw the rect inset by `inset + thickness/2`
+ * and use `stroke-width=thickness`. That keeps the stroke fully
+ * inside the canvas regardless of inset.
+ */
+async function buildFrameOverlay(
+  config: FlexIconGridConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const f = config.frame;
+  if (!f) return null;
+  const { width, height } = config;
+  // Centre the stroke between outer-edge and inner-edge of the
+  // visible band.
+  const offset = f.inset + f.thickness / 2;
+  const rectX = offset;
+  const rectY = offset;
+  const rectW = Math.max(0, width - 2 * offset);
+  const rectH = Math.max(0, height - 2 * offset);
+  // Degenerate case: inset + thickness exceeds half the canvas.
+  // Skip rather than draw an inverted rect.
+  if (rectW <= 0 || rectH <= 0) return null;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
+    `<rect x="${rectX}" y="${rectY}" width="${rectW}" height="${rectH}" fill="none" stroke="${escapeSvgText(f.color)}" stroke-width="${f.thickness}"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0 };
+}
+
 // ─── Light-leak overlay (Phase 4.40) ────────────────────────────────────────
 
 /**
@@ -1903,7 +1947,9 @@ async function buildLightLeakOverlay(
     `</svg>`,
   ].join('');
   const buf = await sharp(Buffer.from(svg)).png().toBuffer();
-  return { input: buf, top: 0, left: 0, blend: 'screen' };
+  // Phase 4.41: blendMode is configurable; defaults to 'screen' to
+  // keep existing presets pixel-identical.
+  return { input: buf, top: 0, left: 0, blend: l.blendMode ?? 'screen' };
 }
 
 // ─── Tint overlays (Phase 4.39 → 4.40) ──────────────────────────────────────
@@ -1947,22 +1993,27 @@ async function buildTintOverlays(
     left: 0,
     blend: t.blendMode,
   });
-  // Phase 4.40: split-tone shadows — multiply blend at half
-  // intensity so it stacks with the base tint without overpowering.
+  // Phase 4.40 → 4.41: split-tone strength scales the two split
+  // layers independently of the base wash. Default 0.5 reproduces
+  // the original `intensity / 2` behaviour exactly.
+  const splitStrength = t.splitToneStrength ?? 0.5;
+  // Phase 4.40: split-tone shadows — multiply blend so it darkens
+  // dark areas with the chosen hue.
   if (t.shadows) {
     overlays.push({
-      input: await makeFlatColorBuf(t.shadows, t.intensity / 2),
+      input: await makeFlatColorBuf(t.shadows, t.intensity * splitStrength),
       top: 0,
       left: 0,
       blend: 'multiply',
     });
   }
-  // Phase 4.40: split-tone highlights — screen blend at half
-  // intensity. Picked AFTER shadows so a teal-and-orange grade
-  // reads with the orange lifted on top of the teal mood.
+  // Phase 4.40: split-tone highlights — screen blend so it lifts
+  // light areas with the chosen hue. Picked AFTER shadows so a
+  // teal-and-orange grade reads with the orange lifted on top of
+  // the teal mood.
   if (t.highlights) {
     overlays.push({
-      input: await makeFlatColorBuf(t.highlights, t.intensity / 2),
+      input: await makeFlatColorBuf(t.highlights, t.intensity * splitStrength),
       top: 0,
       left: 0,
       blend: 'screen',
