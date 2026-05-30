@@ -270,24 +270,31 @@ export async function buildSquareCellChrome(cellW: number, cellH: number): Promi
  * every other cell), instead of the AI's per-cell auto-scaling that
  * blows up short labels like "UVB-76" to twice the size of longer ones.
  *
- * The returned PNG is `cellW × labelH` (bottom strip only). Caller
- * composites it at `(cell.x, cell.y + illustrationH)` so the AI's
- * illustration region is left untouched.
+ * The returned PNG is `cellW × labelH`. Caller is responsible for the
+ * y position — the function doesn't know whether the band lands at the
+ * canonical 80% mark or at a pixel-scan-detected label-area top.
+ *
+ * r2.3 (2026-05-30) — band height is now passed directly by the caller
+ * instead of computed as `cellH * 0.2`. Earlier revisions computed
+ * `labelH` from `cellH` inside this function which forced every band
+ * to be 20% of the detected cell, leaving the AI's gap + label-box-top
+ * visible above our overlay when GPT Image 2 rendered cards as two
+ * stacked rectangles. The caller now passes the exact band height
+ * (typically `detected.bottom - detectAiLabelTop()`) so the overlay
+ * covers the entire AI-rendered label area.
  */
 export async function buildSquareLabelBandOverlay(
   label: string,
   cellW: number,
-  cellH: number,
-): Promise<{ overlay: Buffer; topOffset: number }> {
-  const illustrationH = Math.round(cellH * SQUARE_ILLUSTRATION_FRAC);
-  const labelH = cellH - illustrationH;
+  labelH: number,
+): Promise<Buffer> {
   const borderPx = squareBorderPx(cellW);
   const halfBorder = borderPx / 2;
   // White rect covering the band, plus the bottom + left + right sides
   // of the cell's outer border (the top hairline is drawn separately so
   // it sits exactly on the illustration/label seam). The band PNG is
   // composited at the cell's labelTop, so its origin (0,0) corresponds
-  // to (cell.x, cell.y + illustrationH) in canvas coords.
+  // to the label-area top in canvas coords.
   const bandSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cellW}" height="${labelH}">
     <rect x="0" y="0" width="${cellW}" height="${labelH}" fill="white"/>
     <rect x="${halfBorder}" y="0" width="${cellW - borderPx}" height="${labelH - halfBorder}" fill="none" stroke="${BLACK}" stroke-width="${borderPx}"/>
@@ -313,7 +320,7 @@ export async function buildSquareLabelBandOverlay(
   const labelTextH = finalLabelMeta.height ?? 1;
   const labelLeft = Math.max(0, Math.round((cellW - labelW) / 2));
   const labelTop = Math.max(0, Math.round((labelH - labelTextH) / 2));
-  const overlay = await sharp({
+  return await sharp({
     create: { width: cellW, height: labelH, channels: 4, background: WHITE },
   })
     .composite([
@@ -322,7 +329,6 @@ export async function buildSquareLabelBandOverlay(
     ])
     .png()
     .toBuffer();
-  return { overlay, topOffset: illustrationH };
 }
 
 // ─── AI cell border detection ───────────────────────────────────────────────
@@ -513,6 +519,70 @@ export function detectAiCellRect(
   };
 }
 
+/**
+ * Threshold for "white pixel" detection. R+G+B sum greater than this
+ * counts as white-ish. 700 catches pure white (765) and lightly-tinted
+ * near-white pixels without flagging mid-tone illustration content.
+ */
+const WHITE_PIXEL_THRESHOLD = 700;
+
+/**
+ * Row coverage ratio required to call a row "mostly white". 0.7 lets
+ * the row carry up to 30% non-white pixels (a stray label-box border
+ * outline, a corner of the illustration that intrudes a row or two)
+ * without misclassifying the row as illustration.
+ */
+const WHITE_ROW_COVERAGE = 0.7;
+
+/**
+ * Find the top of the AI's label area inside a detected cell rect.
+ *
+ * GPT Image 2 frequently renders each card as TWO stacked rectangles
+ * — an illustration panel on top, a narrower label box beneath, with
+ * a white gap between them — instead of one unified cell with an
+ * internal label strip. The pure 80%-from-the-top heuristic for the
+ * band overlay then either lands in the gap (leaving the AI's label
+ * box's top half visible above our overlay) or partially over the
+ * illustration. Neither looks aligned.
+ *
+ * This scanner walks DOWN through the cell starting at 40% of cell
+ * height looking for the FIRST mostly-white row. That row is either
+ * the gap between illustration and label box (two-rectangle render)
+ * or the top of the AI's label strip (unified render). Either way
+ * it's the right place for our band overlay to start.
+ *
+ * Returns the y coordinate of the first mostly-white row in cell
+ * coords, or `null` if no such row is found before reaching the
+ * bottom 5% of the cell (caller should fall back to the 80% default
+ * in that case).
+ */
+export function detectAiLabelTop(
+  rawData: Uint8Array | Buffer,
+  canvasW: number,
+  canvasH: number,
+  channels: number,
+  detected: { x: number; y: number; w: number; h: number },
+): number | null {
+  const xStart = Math.max(0, detected.x + 2);
+  const xEnd = Math.min(canvasW, detected.x + detected.w - 2);
+  const totalX = Math.max(1, xEnd - xStart);
+  // Scan from 40% of cellH down to 95% of cellH. Starting at 40%
+  // keeps us safely below typical illustration content; stopping
+  // at 95% prevents snapping onto the cell's bottom border line.
+  const scanStart = Math.max(0, detected.y + Math.floor(detected.h * 0.4));
+  const scanEnd = Math.min(canvasH - 1, detected.y + Math.floor(detected.h * 0.95));
+  for (let y = scanStart; y <= scanEnd; y++) {
+    let whiteCount = 0;
+    for (let x = xStart; x < xEnd; x++) {
+      const idx = (y * canvasW + x) * channels;
+      const sum = rawData[idx] + rawData[idx + 1] + rawData[idx + 2];
+      if (sum > WHITE_PIXEL_THRESHOLD) whiteCount++;
+    }
+    if (whiteCount / totalX > WHITE_ROW_COVERAGE) return y;
+  }
+  return null;
+}
+
 // ─── Top-level ──────────────────────────────────────────────────────────────
 
 /**
@@ -625,11 +695,22 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   // chrome at our cellRect, so detection wouldn't help there.
   const useBorderDetection = !someUploadsProvided && cardShape === 'square' && cards.length > 0;
   let detectedRects: Map<number, { x: number; y: number; w: number; h: number }> | null = null;
+  // Hoist the decoded raw pixels so the per-card loop can reuse them
+  // for `detectAiLabelTop`. Decoding a 4K base image is the expensive
+  // step (~50 ms); running multiple scans over the same buffer is
+  // cheap (a few hundred µs each).
+  let aiPixels: { data: Buffer; width: number; height: number; channels: number } | null = null;
   if (useBorderDetection) {
     const { data: rawPixels, info: rawInfo } = await sharp(baseImage, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
+    aiPixels = {
+      data: rawPixels as Buffer,
+      width: rawInfo.width,
+      height: rawInfo.height,
+      channels: rawInfo.channels,
+    };
     // Search range is half the inter-cell gutter so the scan can't
     // wander onto a neighbouring cell's border. Floor at 8 px so very
     // small test canvases still get a usable window.
@@ -699,24 +780,47 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       // Anchor everything (band overlay, side wipes, row gutter wipe)
       // to the AI's detected cell rectangle instead of our cellRect-
       // math rect, so the composite's border matches the illustration
-      // panel's border above it. See `detectAiCellRect` for why.
-      // Falls back to `rect` if detection wasn't run or failed for
-      // this card.
+      // panel's border above it. Falls back to `rect` if detection
+      // wasn't run or failed for this card.
       const aiRect = detectedRects?.get(card.index) ?? rect;
+      // Find the AI's actual label-area top. When the AI rendered
+      // the card as two stacked rectangles (illustration panel + a
+      // narrower label box with a gap between), this is the y where
+      // the gap or label box begins. When the AI rendered a unified
+      // cell, this is the y where the AI's white label strip begins.
+      // Either way it's the right top edge for our band overlay.
+      // Falls back to the 80%-of-cellH default if the scanner can't
+      // find a mostly-white row.
+      const fallbackBandTop = aiRect.y + Math.round(aiRect.h * SQUARE_ILLUSTRATION_FRAC);
+      const detectedLabelTop = (() => {
+        if (!useBorderDetection || !aiPixels) return null;
+        return detectAiLabelTop(
+          aiPixels.data,
+          aiPixels.width,
+          aiPixels.height,
+          aiPixels.channels,
+          aiRect,
+        );
+      })();
+      // Clamp the detected top so the band doesn't end up taller than
+      // 40% of cellH (sanity floor — we don't want to swallow the
+      // illustration if the scanner snaps to a stray white row).
+      const minBandTop = aiRect.y + Math.round(aiRect.h * 0.6);
+      const bandTop = detectedLabelTop !== null
+        ? Math.max(minBandTop, detectedLabelTop)
+        : fallbackBandTop;
+      const bandH = aiRect.y + aiRect.h - bandTop;
       // L-shaped slack wipe around the band. Anchored at the DETECTED
       // edges so the wipe lands in genuine AI gutter slack rather
       // than inside the illustration. With detection in place this is
       // mostly a no-op on a well-aligned base, but stays as belt-and-
       // braces against detection drift on edge cases.
-      const illustrationFracForWipe = 0.8; // mirrors SQUARE_ILLUSTRATION_FRAC
-      const labelH = aiRect.h - Math.round(aiRect.h * illustrationFracForWipe);
-      if (gutterPad > 0 && labelH > 0) {
-        const bandTop = aiRect.y + aiRect.h - labelH;
+      if (gutterPad > 0 && bandH > 0) {
         const leftWipeLeft = Math.max(0, aiRect.x - gutterPad);
         const leftWipeW = Math.max(0, aiRect.x - leftWipeLeft);
         if (leftWipeW > 0) {
           const leftWipePng = await sharp({
-            create: { width: leftWipeW, height: labelH, channels: 4, background: WHITE },
+            create: { width: leftWipeW, height: bandH, channels: 4, background: WHITE },
           })
             .png()
             .toBuffer();
@@ -726,7 +830,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
         const rightWipeW = Math.max(0, rightWipeRight - (aiRect.x + aiRect.w));
         if (rightWipeW > 0) {
           const rightWipePng = await sharp({
-            create: { width: rightWipeW, height: labelH, channels: 4, background: WHITE },
+            create: { width: rightWipeW, height: bandH, channels: 4, background: WHITE },
           })
             .png()
             .toBuffer();
@@ -747,8 +851,10 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
           wipeOverlays.push({ input: bottomWipePng, top: bottomWipeTop, left: bottomWipeLeft });
         }
       }
-      const { overlay, topOffset } = await buildSquareLabelBandOverlay(card.label, aiRect.w, aiRect.h);
-      overlays.push({ input: overlay, top: aiRect.y + topOffset, left: aiRect.x });
+      if (bandH > 0) {
+        const overlay = await buildSquareLabelBandOverlay(card.label, aiRect.w, bandH);
+        overlays.push({ input: overlay, top: bandTop, left: aiRect.x });
+      }
     }
   }
 

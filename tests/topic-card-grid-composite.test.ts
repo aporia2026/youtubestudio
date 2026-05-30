@@ -5,6 +5,7 @@ import {
   cellRect,
   circularMaskSvg,
   detectAiCellRect,
+  detectAiLabelTop,
   escapePangoText,
   fitCover,
   renderLabelPng,
@@ -155,6 +156,66 @@ describe('detectAiCellRect', () => {
     // not the gap to the right cell.
     expect(detected.x).toBeLessThan(20);
     expect(detected.x + detected.w).toBeLessThan(50);
+  });
+});
+
+// ─── detectAiLabelTop ───────────────────────────────────────────────────────
+
+describe('detectAiLabelTop', () => {
+  it('finds the first mostly-white row in the bottom half of a two-rectangle render', async () => {
+    // Simulated AI two-box render: blue illustration panel from (10, 10)
+    // to (90, 55), then a white gap from 55 to 70, then a smaller label
+    // box (with text-like content represented as a single dark stroke at
+    // row 75) from (25, 70) to (75, 85). The first mostly-white row when
+    // walking down from 40% of cell height (= y ≥ 38) should be in the
+    // gap area (around y=56).
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="10" width="80" height="45" fill="blue"/>
+      <rect x="25" y="70" width="50" height="15" fill="white" stroke="black" stroke-width="1"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 10, y: 10, w: 80, h: 75 }; // detection earlier found this cell rect
+    const labelTop = detectAiLabelTop(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(labelTop).not.toBeNull();
+    // The gap starts at y=55. First mostly-white row should be at or just
+    // after y=55.
+    expect(labelTop!).toBeGreaterThanOrEqual(55);
+    expect(labelTop!).toBeLessThan(70);
+  });
+
+  it('returns null when there is no mostly-white row (illustration extends down)', async () => {
+    // Solid blue cell from top to bottom — no white gap or label area.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="10" width="80" height="80" fill="blue"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 10, y: 10, w: 80, h: 80 };
+    const labelTop = detectAiLabelTop(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(labelTop).toBeNull();
+  });
+
+  it('finds the band start in a unified-cell render (white strip at the bottom)', async () => {
+    // Unified cell: illustration on top, hairline at 80%, white label
+    // strip at the bottom — exactly the layout the prompt asks for.
+    // Scanner should find the white strip just below the hairline.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+      <rect x="0" y="0" width="100" height="100" fill="white"/>
+      <rect x="10" y="10" width="80" height="80" fill="none" stroke="black" stroke-width="2"/>
+      <rect x="10" y="10" width="80" height="64" fill="red"/>
+      <line x1="10" y1="74" x2="90" y2="74" stroke="black" stroke-width="1"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const detected = { x: 10, y: 10, w: 80, h: 80 };
+    const labelTop = detectAiLabelTop(raw.data, raw.width, raw.height, raw.channels, detected);
+    expect(labelTop).not.toBeNull();
+    // Should find the white strip area at y >= 75 (just past the hairline).
+    expect(labelTop!).toBeGreaterThanOrEqual(74);
+    expect(labelTop!).toBeLessThan(85);
   });
 });
 
