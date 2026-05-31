@@ -1441,6 +1441,34 @@ export function TopicCardGridPanel({
   const [palette, setPalette] = useState<FormatPalette | null>(null);
   const [notesForImageModel, setNotesForImageModel] = useState<string | undefined>();
   const [result, setResult] = useState<FormatGenerationResult | null>(null);
+
+  // Bug fix 2026-05-31: in free-form mode, resize the cards array to
+  // match `totalCards` (gridRows × gridCols) whenever the grid size
+  // changes. Without this, a stale cards list (e.g. 6 cards from a
+  // 2×3) collides with a new layout (e.g. 12 cells from a 3×4) — the
+  // free-form renderer maps cards through `regions[i]` and crashes
+  // when i ≥ regions.length.
+  //
+  // AI mode is unchanged: the existing `cardListMismatch` warning
+  // lets the user choose whether to add / delete manually.
+  useEffect(() => {
+    if (renderMode !== 'free-form') return;
+    if (!cards) return;
+    const target = gridRows * gridCols;
+    if (cards.length === target) return;
+    setCards((prev) => {
+      if (!prev) return prev;
+      if (prev.length === target) return prev;
+      if (prev.length > target) {
+        return prev.slice(0, target);
+      }
+      const grown = [...prev];
+      for (let i = prev.length; i < target; i++) {
+        grown.push({ index: i + 1, label: '', icon_concept: '', accent_color: '#ffffff' });
+      }
+      return grown;
+    });
+  }, [renderMode, gridRows, gridCols, cards]);
   // r2.8+ live preview: data URL of the rendered thumbnail with the
   // current post-process / title-bar config applied client-side via the
   // /api/thumbnails/post-process-preview endpoint. Falls back to
@@ -4084,16 +4112,27 @@ export function TopicCardGridPanel({
             freeFormCanvasH,
             'square',
           );
+          // Bug fix 2026-05-31: when the user changes grid size AFTER
+          // generating cards (or after auto-creating placeholders), the
+          // cards array length doesn't match the new layout. Clamp the
+          // iteration to `min(cards.length, regions.length)` so a stale
+          // card without a matching region doesn't crash the renderer
+          // with "Cannot read properties of undefined (reading 'x')".
+          // A separate effect re-syncs `cards` to the new grid size
+          // when in free-form mode (see below) so this is mostly
+          // defence-in-depth.
           const regions = computeRegions(
             layout,
             cards.map((c) => c.label),
             () => Math.random().toString(36).slice(2),
           );
-          const inputs: FreeFormCellInput[] = cards.map((card, i) => ({
-            index: card.index,
-            label: card.label,
-            bounds: { x: regions[i].x, y: regions[i].y, w: regions[i].w, h: regions[i].h },
-          }));
+          const inputs: FreeFormCellInput[] = cards
+            .slice(0, regions.length)
+            .map((card, i) => ({
+              index: card.index,
+              label: card.label,
+              bounds: { x: regions[i].x, y: regions[i].y, w: regions[i].w, h: regions[i].h },
+            }));
           return (
           <FreeFormPreviewPanel
             inputs={inputs}

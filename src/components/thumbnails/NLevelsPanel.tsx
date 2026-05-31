@@ -1094,6 +1094,28 @@ export function NLevelsPanel({
   const [refinedTopic, setRefinedTopic] = useState('');
   const [notesForImageModel, setNotesForImageModel] = useState<string | undefined>();
   const [result, setResult] = useState<NLevelsGenerationResult | null>(null);
+
+  // Bug fix 2026-05-31: free-form mode resizes the levels array when
+  // the count changes (parallel to the TopicCardGridPanel fix).
+  // Without this a stale levels list collides with a new slice count
+  // when computing the per-slice bounds.
+  useEffect(() => {
+    if (renderMode !== 'free-form') return;
+    if (!levels) return;
+    if (levels.length === count) return;
+    setLevels((prev) => {
+      if (!prev) return prev;
+      if (prev.length === count) return prev;
+      if (prev.length > count) {
+        return prev.slice(0, count);
+      }
+      const grown = [...prev];
+      for (let i = prev.length; i < count; i++) {
+        grown.push({ level: i + 1, label: '', illustration_concept: '' });
+      }
+      return grown;
+    });
+  }, [renderMode, count, levels]);
   // r2.8+ live preview — mirrors the TopicCardGridPanel wiring.
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState<boolean>(false);
