@@ -26,10 +26,12 @@ import {
 import {
   ChipPicker,
   ColorAndSlider,
+  FinishingPresetRow,
   HexInput,
   OverlayCard,
   RangeRow,
   SubToggle,
+  type FinishingOverlaysPatch,
   type PanelColorGradeBlend,
   type PanelFrameStyle,
   type PanelHalftoneBlend,
@@ -1360,6 +1362,97 @@ export function TopicCardGridPanel({
   const [palette, setPalette] = useState<FormatPalette | null>(null);
   const [notesForImageModel, setNotesForImageModel] = useState<string | undefined>();
   const [result, setResult] = useState<FormatGenerationResult | null>(null);
+  // r2.8+ live preview: data URL of the rendered thumbnail with the
+  // current post-process / title-bar config applied client-side via the
+  // /api/thumbnails/post-process-preview endpoint. Falls back to
+  // `result.imageUrl` (the last fully-rendered AI image) when no
+  // preview has been generated yet OR when the user changes a control
+  // and we're still fetching the new preview.
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const previewAbortRef = useRef<AbortController | null>(null);
+
+  // r2.8+ live preview: debounced re-render of post-process + title-bar
+  // overlays on top of the LAST RENDERED AI image. Calls
+  // `/api/thumbnails/post-process-preview` 400 ms after the user stops
+  // tweaking; cancels any in-flight request when a new tweak comes in.
+  // Updates `previewImageUrl` with the preview's data URL; the image
+  // display swaps to that URL when present.
+  //
+  // No-op when there's no rendered result yet (the preview needs an AI
+  // image as its base) OR when neither postProcess nor titleBar would
+  // produce a visible effect (avoids burning a roundtrip on an all-off
+  // state).
+  useEffect(() => {
+    if (!result?.imageUrl) {
+      setPreviewImageUrl(null);
+      return;
+    }
+    const postProcessPayload = buildPostProcessRequestPayload(postProcess);
+    const titleBarPayload = titleBar.enabled
+      ? {
+          text: titleBar.text,
+          subtitle: titleBar.subtitle,
+          position: titleBar.position,
+          heightFraction: titleBar.heightFraction,
+          align: titleBar.align,
+          subtitleAlign: titleBar.subtitleAlign,
+          backgroundColor: titleBar.backgroundColor,
+          backgroundOpacity: titleBar.backgroundOpacity,
+          textColor: titleBar.textColor,
+          subtitleColor: titleBar.subtitleColor,
+          fontId: titleBar.fontId,
+          subtitleFontId: titleBar.subtitleFontId || undefined,
+          shadow: titleBar.shadowEnabled
+            ? {
+                offsetPx: titleBar.shadowOffsetPx,
+                blurPx: titleBar.shadowBlurPx,
+                opacity: titleBar.shadowOpacity,
+                color: titleBar.shadowColor,
+              }
+            : undefined,
+        }
+      : null;
+    if (!postProcessPayload && !titleBarPayload) {
+      setPreviewImageUrl(null);
+      return;
+    }
+    const handle = setTimeout(() => {
+      previewAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      previewAbortRef.current = ctrl;
+      setPreviewLoading(true);
+      fetch('/api/thumbnails/post-process-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baseImageUrl: result.imageUrl,
+          postProcess: postProcessPayload,
+          titleBar: titleBarPayload,
+          canvasWidth: result.outputWidth,
+          canvasHeight: result.outputHeight,
+        }),
+        signal: ctrl.signal,
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const detail = await res.text().catch(() => '');
+            console.warn('[topic-card-grid preview]', { status: res.status, detail });
+            return;
+          }
+          const data = (await res.json()) as { imageUrl?: string };
+          if (typeof data.imageUrl === 'string') setPreviewImageUrl(data.imageUrl);
+        })
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          console.warn('[topic-card-grid preview]', { detail: String(err) });
+        })
+        .finally(() => {
+          if (previewAbortRef.current === ctrl) setPreviewLoading(false);
+        });
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [postProcess, titleBar, result]);
 
   // Hydrate from a history-restored result. Runs when `restoredResult`
   // changes to a new non-null value — typically the parent setting it on
@@ -2544,7 +2637,12 @@ export function TopicCardGridPanel({
                 frame. Each section follows the vignette/grain pattern:
                 enable toggle + collapsed body when off. Server-side parsers
                 clamp / drop malformed values, so the controls are forgiving
-                about edge cases. */}
+                about edge cases. Finishing presets sit above the 7 cards
+                for one-click "vintage film" / "cinematic 2.39" / etc.
+                application. */}
+            <FinishingPresetRow
+              onApply={(patch: FinishingOverlaysPatch) => updatePostProcess(patch)}
+            />
             <OverlayCard
               title="Tint"
               hint="Flat colour wash + optional split-tone shadows/highlights."
@@ -3827,6 +3925,8 @@ export function TopicCardGridPanel({
             onEditCards={() => setResult(null)}
             onRegenerateImage={() => runStep2()}
             busy={busyStep === 'image'}
+            previewImageUrl={previewImageUrl}
+            previewLoading={previewLoading}
           />
         )}
       </div>
@@ -4245,6 +4345,11 @@ interface ResultProps {
   onEditCards: () => void;
   onRegenerateImage: () => void;
   busy: boolean;
+  /** r2.8+ live-preview data URL. When set, the image display swaps to
+   *  it instead of `result.imageUrl` — lets the user see post-process /
+   *  title-bar tweaks land in ~500 ms without a new AI render. */
+  previewImageUrl: string | null;
+  previewLoading: boolean;
 }
 
 /** Preview zoom presets (per Flex Icon Grid convention). Custom values
@@ -4252,7 +4357,7 @@ interface ResultProps {
  *  reference points. */
 const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
 
-function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, onRegenerateImage, busy }: ResultProps) {
+function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, onRegenerateImage, busy, previewImageUrl, previewLoading }: ResultProps) {
   const aspect = result.outputHeight / result.outputWidth;
   // Preview zoom on the rendered image. 1.0 = fits container width
   // (default). Above 1.0 the inner image is wider than the outer
@@ -4344,9 +4449,18 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, on
           }}
         >
           <img
-            src={result.imageUrl}
+            src={previewImageUrl ?? result.imageUrl}
             alt="Generated thumbnail"
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: 'block',
+              // Subtle loading hint while the preview is being fetched —
+              // the displayed image stays usable but signals "stale".
+              opacity: previewLoading ? 0.75 : 1,
+              transition: 'opacity 120ms ease-out',
+            }}
           />
         {regionOverlayOn && (
           <svg

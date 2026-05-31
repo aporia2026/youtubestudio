@@ -40,6 +40,231 @@ export type PanelLightLeakPosition =
 /** Frame stroke style. */
 export type PanelFrameStyle = 'solid' | 'double' | 'dashed';
 
+// ─── Finishing presets ──────────────────────────────────────────────────────
+
+/** Partial state patch for the 10 finishing fields a preset can touch
+ *  (filter + vignette + grain + 7 r2.8 overlays). Type-only structure
+ *  shared by both panels — they each store a full `PanelPostProcessState`
+ *  but a preset patches just the finishing-relevant subset. */
+export interface FinishingOverlaysPatch {
+  filter?: 'grayscale' | 'sepia' | 'high-contrast' | 'low-contrast' | 'invert' | null;
+  vignetteEnabled?: boolean;
+  vignetteColor?: string;
+  vignetteIntensity?: number;
+  vignetteRadius?: number;
+  grainEnabled?: boolean;
+  grainIntensity?: number;
+  grainSize?: number;
+  grainMonochrome?: boolean;
+  tintEnabled?: boolean;
+  tintColor?: string;
+  tintIntensity?: number;
+  tintBlendMode?: PanelColorGradeBlend;
+  tintShadowsEnabled?: boolean;
+  tintShadows?: string;
+  tintHighlightsEnabled?: boolean;
+  tintHighlights?: string;
+  tintSplitStrength?: number;
+  lightLeakEnabled?: boolean;
+  lightLeakColor?: string;
+  lightLeakIntensity?: number;
+  lightLeakRadius?: number;
+  lightLeakPosition?: PanelLightLeakPosition;
+  lightLeakBlendMode?: PanelColorGradeBlend;
+  innerGlowEnabled?: boolean;
+  innerGlowColor?: string;
+  innerGlowIntensity?: number;
+  innerGlowRadius?: number;
+  innerGlowBlendMode?: PanelInnerGlowBlend;
+  dustEnabled?: boolean;
+  dustColor?: string;
+  dustIntensity?: number;
+  dustDensity?: number;
+  dustSeed?: number;
+  halftoneEnabled?: boolean;
+  halftoneColor?: string;
+  halftoneOpacity?: number;
+  halftoneDotSize?: number;
+  halftoneSpacing?: number;
+  halftoneBlendMode?: PanelHalftoneBlend;
+  halftoneAngle?: number;
+  letterboxEnabled?: boolean;
+  letterboxColor?: string;
+  letterboxTop?: number;
+  letterboxBottom?: number;
+  letterboxLeft?: number;
+  letterboxRight?: number;
+  letterboxOpacity?: number;
+  frameEnabled?: boolean;
+  frameColor?: string;
+  frameThickness?: number;
+  frameInset?: number;
+  frameStyle?: PanelFrameStyle;
+}
+
+/** One named finishing preset — applied as a one-click patch on top of
+ *  the current state. The patch is FULL (every finishing field
+ *  explicitly set or explicitly `false`) so re-applying a preset always
+ *  produces the same end state regardless of what was there before. */
+export interface FinishingPreset {
+  id: string;
+  label: string;
+  hint: string;
+  patch: FinishingOverlaysPatch;
+}
+
+/** Off / reset patch — explicitly disables EVERY finishing effect. Used
+ *  both as a standalone "Off" preset button AND as the base every other
+ *  preset starts from so the result is deterministic regardless of
+ *  previous toggles. */
+const OFF_PATCH: FinishingOverlaysPatch = {
+  filter: null,
+  vignetteEnabled: false,
+  grainEnabled: false,
+  tintEnabled: false,
+  tintShadowsEnabled: false,
+  tintHighlightsEnabled: false,
+  lightLeakEnabled: false,
+  innerGlowEnabled: false,
+  dustEnabled: false,
+  halftoneEnabled: false,
+  letterboxEnabled: false,
+  frameEnabled: false,
+};
+
+/** Curated presets matching the Flex Icon Grid finishing palette so a user
+ *  who already learned the look-names there finds them in the same place
+ *  here. Each preset's patch starts from `OFF_PATCH` so applying it
+ *  produces the same result regardless of the panel's previous state. */
+export const FINISHING_PRESETS: readonly FinishingPreset[] = [
+  {
+    id: 'off',
+    label: 'Off',
+    hint: 'All finishing effects disabled.',
+    patch: { ...OFF_PATCH },
+  },
+  {
+    id: 'vintage-film',
+    label: 'Vintage film',
+    hint: 'Worn-print grade: vignette, monochrome grain, dust, warm wash.',
+    patch: {
+      ...OFF_PATCH,
+      vignetteEnabled: true,
+      vignetteColor: '#000000',
+      vignetteIntensity: 0.4,
+      vignetteRadius: 0.7,
+      grainEnabled: true,
+      grainIntensity: 0.18,
+      grainSize: 1.4,
+      grainMonochrome: true,
+      dustEnabled: true,
+      dustColor: '#ffffff',
+      dustIntensity: 0.35,
+      dustDensity: 0.18,
+      tintEnabled: true,
+      tintColor: '#ffb27a',
+      tintIntensity: 0.18,
+      tintBlendMode: 'soft-light',
+    },
+  },
+  {
+    id: 'cinematic-239',
+    label: 'Cinematic 2.39',
+    hint: 'Strong vignette + warm centre lift + black bars + thin white stroke.',
+    patch: {
+      ...OFF_PATCH,
+      vignetteEnabled: true,
+      vignetteColor: '#000000',
+      vignetteIntensity: 0.55,
+      vignetteRadius: 0.55,
+      innerGlowEnabled: true,
+      innerGlowColor: '#fff4dc',
+      innerGlowIntensity: 0.15,
+      innerGlowRadius: 0.9,
+      innerGlowBlendMode: 'soft-light',
+      letterboxEnabled: true,
+      letterboxColor: '#000000',
+      // ~9% of a 1080-tall canvas (~96 px). Matches the look at standard
+      // 16:9 thumbnail dimensions; user can tweak per cell.
+      letterboxTop: 96,
+      letterboxBottom: 96,
+      letterboxLeft: 0,
+      letterboxRight: 0,
+      letterboxOpacity: 1,
+      frameEnabled: true,
+      frameColor: '#ffffff',
+      frameThickness: 2,
+      frameInset: 0,
+      frameStyle: 'solid',
+    },
+  },
+  {
+    id: 'editorial-clean',
+    label: 'Editorial clean',
+    hint: 'Just a clean double-line white frame. No grain, no vignette.',
+    patch: {
+      ...OFF_PATCH,
+      frameEnabled: true,
+      frameColor: '#ffffff',
+      frameThickness: 8,
+      frameInset: 16,
+      frameStyle: 'double',
+    },
+  },
+  {
+    id: 'newsprint',
+    label: 'Newsprint',
+    hint: 'Halftone dots + low-contrast filter for a printed-page feel.',
+    patch: {
+      ...OFF_PATCH,
+      filter: 'low-contrast',
+      halftoneEnabled: true,
+      halftoneColor: '#000000',
+      halftoneOpacity: 0.35,
+      halftoneDotSize: 1.5,
+      halftoneSpacing: 5,
+      halftoneBlendMode: 'multiply',
+      halftoneAngle: 15,
+    },
+  },
+];
+
+/** Component that renders the preset row above the finishing overlays.
+ *  Each preset's button applies its patch via the caller-supplied
+ *  `onApply`. The caller is responsible for spreading the patch into
+ *  panel state (because the panel owns the state setter, not us). */
+export function FinishingPresetRow({
+  onApply,
+}: {
+  onApply: (patch: FinishingOverlaysPatch) => void;
+}): ReactElement {
+  return (
+    <div className="mt-3">
+      <span className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+        Finishing presets
+      </span>
+      <div className="flex flex-wrap gap-1">
+        {FINISHING_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            onClick={() => onApply(preset.patch)}
+            className="px-2 py-0.5 rounded text-[10px]"
+            style={{
+              background: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border)',
+            }}
+            title={preset.hint}
+          >
+            {preset.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Components ────────────────────────────────────────────────────────────
 
 export function OverlayCard({

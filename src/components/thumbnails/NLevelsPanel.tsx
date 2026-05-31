@@ -27,10 +27,12 @@ import {
 import {
   ChipPicker,
   ColorAndSlider,
+  FinishingPresetRow,
   HexInput,
   OverlayCard,
   RangeRow,
   SubToggle,
+  type FinishingOverlaysPatch,
   type PanelColorGradeBlend,
   type PanelFrameStyle,
   type PanelHalftoneBlend,
@@ -1045,6 +1047,81 @@ export function NLevelsPanel({
   const [refinedTopic, setRefinedTopic] = useState('');
   const [notesForImageModel, setNotesForImageModel] = useState<string | undefined>();
   const [result, setResult] = useState<NLevelsGenerationResult | null>(null);
+  // r2.8+ live preview — mirrors the TopicCardGridPanel wiring.
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const previewAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (!result?.imageUrl) {
+      setPreviewImageUrl(null);
+      return;
+    }
+    const postProcessPayload = buildPostProcessRequestPayload(postProcess);
+    const titleBarPayload = titleBar.enabled
+      ? {
+          text: titleBar.text,
+          subtitle: titleBar.subtitle,
+          position: titleBar.position,
+          heightFraction: titleBar.heightFraction,
+          align: titleBar.align,
+          subtitleAlign: titleBar.subtitleAlign,
+          backgroundColor: titleBar.backgroundColor,
+          backgroundOpacity: titleBar.backgroundOpacity,
+          textColor: titleBar.textColor,
+          subtitleColor: titleBar.subtitleColor,
+          fontId: titleBar.fontId,
+          subtitleFontId: titleBar.subtitleFontId || undefined,
+          shadow: titleBar.shadowEnabled
+            ? {
+                offsetPx: titleBar.shadowOffsetPx,
+                blurPx: titleBar.shadowBlurPx,
+                opacity: titleBar.shadowOpacity,
+                color: titleBar.shadowColor,
+              }
+            : undefined,
+        }
+      : null;
+    if (!postProcessPayload && !titleBarPayload) {
+      setPreviewImageUrl(null);
+      return;
+    }
+    const handle = setTimeout(() => {
+      previewAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      previewAbortRef.current = ctrl;
+      setPreviewLoading(true);
+      fetch('/api/thumbnails/post-process-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          baseImageUrl: result.imageUrl,
+          postProcess: postProcessPayload,
+          titleBar: titleBarPayload,
+          canvasWidth: result.outputWidth,
+          canvasHeight: result.outputHeight,
+        }),
+        signal: ctrl.signal,
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const detail = await res.text().catch(() => '');
+            console.warn('[n-levels preview]', { status: res.status, detail });
+            return;
+          }
+          const data = (await res.json()) as { imageUrl?: string };
+          if (typeof data.imageUrl === 'string') setPreviewImageUrl(data.imageUrl);
+        })
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          console.warn('[n-levels preview]', { detail: String(err) });
+        })
+        .finally(() => {
+          if (previewAbortRef.current === ctrl) setPreviewLoading(false);
+        });
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [postProcess, titleBar, result]);
 
   // Hydrate from history-restored result.
   useEffect(() => {
@@ -1878,7 +1955,11 @@ export function NLevelsPanel({
 
             {/* r2.8: seven finishing overlays ported from TopicCardGridPanel.
                 Sub-components from _overlay-controls.tsx so the markup stays
-                declarative. */}
+                declarative. Finishing presets sit above the 7 cards for
+                one-click "vintage film" / "cinematic 2.39" / etc. */}
+            <FinishingPresetRow
+              onApply={(patch: FinishingOverlaysPatch) => updatePostProcess(patch)}
+            />
             <OverlayCard
               title="Tint"
               hint="Flat colour wash + optional split-tone shadows/highlights."
@@ -3142,6 +3223,8 @@ export function NLevelsPanel({
             onEditList={() => setResult(null)}
             onRegenerateImage={() => runStep2()}
             busy={busyStep === 'image'}
+            previewImageUrl={previewImageUrl}
+            previewLoading={previewLoading}
           />
         )}
       </div>
@@ -3378,13 +3461,18 @@ interface ResultProps {
   onEditList: () => void;
   onRegenerateImage: () => void;
   busy: boolean;
+  /** r2.8+ live-preview data URL. Same wiring as TopicCardGridPanel —
+   *  the image display swaps to this URL when set so post-process /
+   *  title-bar tweaks land in ~500 ms without a new AI render. */
+  previewImageUrl: string | null;
+  previewLoading: boolean;
 }
 
 /** Preview zoom presets (mirrors TopicCardGridPanel's PREVIEW_ZOOM_PRESETS
  *  and the Flex Icon Grid convention). */
 const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
 
-function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy }: ResultProps) {
+function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy, previewImageUrl, previewLoading }: ResultProps) {
   // Preview zoom on the rendered image. Same shape as TopicCardGridPanel:
   // 1.0 = fits viewport width, above 1.0 scrolls horizontally, below 1.0
   // centres the image at reduced size. Ephemeral per ResultState mount.
@@ -3467,9 +3555,16 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onR
           }}
         >
           <img
-            src={result.imageUrl}
+            src={previewImageUrl ?? result.imageUrl}
             alt="Generated thumbnail"
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: 'block',
+              opacity: previewLoading ? 0.75 : 1,
+              transition: 'opacity 120ms ease-out',
+            }}
           />
           {regionOverlayOn && (
             <svg
