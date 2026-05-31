@@ -24,6 +24,11 @@ export interface ExtractedTitle {
   text: string;
   /** The sentinel placed where the heading line was (e.g. "<<TITLE_0>>"). */
   sentinel: string;
+  /** The script line as it appeared BEFORE sentinel replacement. Used by the
+   *  pre-flight title-review feature: when a user deletes a detected title in
+   *  the UI, the route restores this exact text into `stripped` so the LLM
+   *  sees the section as plain prose rather than a title boundary. */
+  originalLine: string;
 }
 
 export interface ExtractedScript {
@@ -193,7 +198,7 @@ export function extractScriptTitles(script: string): ExtractedScript {
       }
 
       const sentinel = `<<TITLE_${titles.length}>>`;
-      titles.push({ text, sentinel });
+      titles.push({ text, sentinel, originalLine: line });
       outLines.push(sentinel);
       continue;
     }
@@ -219,7 +224,7 @@ export function extractScriptTitles(script: string): ExtractedScript {
         ? trimmedText.slice(0, MAX_TITLE_CHARS)
         : trimmedText;
       const sentinel = `<<TITLE_${titles.length}>>`;
-      titles.push({ text, sentinel });
+      titles.push({ text, sentinel, originalLine: line });
       outLines.push(sentinel);
       heuristicHits++;
       continue;
@@ -244,3 +249,217 @@ export function extractScriptTitles(script: string): ExtractedScript {
 
 /** Regex used by the post-validator to detect sentinel leakage in LLM output. */
 export const TITLE_SENTINEL_LEAK_RE = /<<TITLE_\d+>>/;
+
+// ---------------------------------------------------------------------------
+// Pre-flight user-title overrides
+//
+// The production-doc page renders a TitleReviewPanel that lets the user
+// EDIT detected title text, DELETE detected titles (false positives), and
+// ADD titles the heuristic missed. The page submits the final list as
+// `userTitles` in the generation request; the route calls
+// `applyUserTitleOverrides` to rebuild the `{stripped, titles}` pair the
+// prompt + post-validator consume.
+//
+// See `_plans/2026-05-31-preflight-title-review.md`.
+// ---------------------------------------------------------------------------
+
+export interface UserTitleSpec {
+  /** Final title text (after the user's edits). Required and non-empty. */
+  text: string;
+  /** Present iff this title corresponds to a detected one. The route uses
+   *  it to look up the matching `ExtractedTitle` for position + original
+   *  line. Absent ⇒ this is a user-added title. */
+  sourceSentinel?: string;
+  /** For ADDED titles only: the sentinel to insert AFTER. Use `null` to
+   *  insert at the start of the script. Ignored when `sourceSentinel` is
+   *  set. */
+  insertAfterSentinel?: string | null;
+  /** Marks a detected title for removal — its sentinel in the stripped
+   *  script is replaced with its `originalLine` and the title is dropped
+   *  from the prompt's title list. */
+  deleted?: boolean;
+}
+
+export interface AppliedTitleOverrides {
+  /** Rebuilt stripped script with sentinel edits, deletions, and
+   *  insertions applied. */
+  stripped: string;
+  /** Final ordered title list (matches the order in `stripped`). */
+  titles: ExtractedTitle[];
+  /** Diagnostics surfaced to the user as generation_warnings. */
+  warnings: string[];
+  /** Counts for the [production-doc title-overrides] log line. */
+  counts: { edited: number; deleted: number; added: number };
+}
+
+/** Sentinel string for a user-added title at zero-based index `i`. */
+function userTitleSentinel(i: number): string {
+  return `<<TITLE_USER_${i}>>`;
+}
+
+/**
+ * Rebuild the stripped script + title list from a baseline `extracted`
+ * result and a user-edited title list. The returned `{stripped, titles}`
+ * is what the prompt builder + post-LLM allowlist should use.
+ *
+ * Algorithm:
+ *   1. Iterate the user's ordered title list. For each entry:
+ *      - `sourceSentinel` set, NOT `deleted`: kept-as-is detected title.
+ *        Carry forward, override text.
+ *      - `sourceSentinel` set, `deleted`: drop. We remember the sentinel
+ *        so step 3 can restore the original line in `stripped`.
+ *      - `sourceSentinel` absent: added title. Park it under the
+ *        `insertAfterSentinel` bucket; null bucket = "at start".
+ *   2. Assign new sentinels: walk in script order using the baseline
+ *      `extracted.stripped` so kept detected sentinels keep their place
+ *      and added ones land where the user wanted.
+ *   3. Apply edits to `stripped`: replace deleted sentinels with their
+ *      original lines, and inject added sentinels after the indicated
+ *      sentinel (or at the start).
+ *
+ * Unknown `sourceSentinel` / `insertAfterSentinel` values become warnings
+ * rather than errors — the front-end may legitimately fall slightly out
+ * of sync with the latest detection, and we'd rather degrade gracefully.
+ */
+export function applyUserTitleOverrides(
+  extracted: ExtractedScript,
+  userTitles: readonly UserTitleSpec[],
+): AppliedTitleOverrides {
+  const warnings: string[] = [];
+  let edited = 0;
+  let deleted = 0;
+  let added = 0;
+
+  const detectedBySentinel = new Map<string, ExtractedTitle>();
+  for (const t of extracted.titles) detectedBySentinel.set(t.sentinel, t);
+
+  // Group ADDED titles by which existing sentinel they insert after.
+  // `null` ⇒ at start. Unknown `insertAfterSentinel` (sentinel that no
+  // longer exists) ⇒ at end — this is the graceful-degrade path when
+  // the front-end is slightly out of sync with the latest detection.
+  const additionsAtStart: { text: string; userIndex: number }[] = [];
+  const additionsAfter = new Map<string, { text: string; userIndex: number }[]>();
+  const additionsAtEnd: { text: string; userIndex: number }[] = [];
+
+  // Which detected sentinels survived (kept or edited).
+  const keptDetected = new Map<string, ExtractedTitle>();
+  // Order in which user surfaces the kept-detected titles. Used only for
+  // the final `titles` array ordering — `stripped` ordering is driven by
+  // the baseline script positions.
+  const keptOrder: string[] = [];
+
+  let addedIndex = 0;
+  for (const spec of userTitles) {
+    const text = (spec.text ?? '').trim();
+    if (!text) {
+      warnings.push('A title with empty text was skipped.');
+      continue;
+    }
+    if (spec.sourceSentinel) {
+      const detected = detectedBySentinel.get(spec.sourceSentinel);
+      if (!detected) {
+        warnings.push(
+          `Ignoring an edit to "${text}" — its source title is no longer in the script. Re-detect titles if the script was changed.`,
+        );
+        continue;
+      }
+      if (spec.deleted) {
+        deleted += 1;
+        continue;
+      }
+      const updated: ExtractedTitle = {
+        ...detected,
+        text,
+      };
+      if (updated.text !== detected.text) edited += 1;
+      keptDetected.set(spec.sourceSentinel, updated);
+      keptOrder.push(spec.sourceSentinel);
+    } else {
+      const at = spec.insertAfterSentinel ?? null;
+      added += 1;
+      const entry = { text, userIndex: addedIndex++ };
+      if (at === null) {
+        additionsAtStart.push(entry);
+      } else if (detectedBySentinel.has(at)) {
+        const bucket = additionsAfter.get(at) ?? [];
+        bucket.push(entry);
+        additionsAfter.set(at, bucket);
+      } else {
+        warnings.push(
+          `Added title "${text}" pointed at a sentinel that no longer exists — inserted at the end instead.`,
+        );
+        additionsAtEnd.push(entry);
+      }
+    }
+  }
+
+  // Build a list of operations against `stripped`. Each detected sentinel
+  // line in the stripped script is either kept, deleted (replaced with
+  // its originalLine), and may have one-or-more added sentinels injected
+  // after it. Plus a leading bucket for "at start" additions.
+  const lines = extracted.stripped.split(/\r?\n/);
+  const finalLines: string[] = [];
+  const finalTitles: ExtractedTitle[] = [];
+
+  // Emit any "at start" additions first.
+  for (const a of additionsAtStart) {
+    const sentinel = userTitleSentinel(a.userIndex);
+    finalLines.push(sentinel);
+    finalTitles.push({ text: a.text, sentinel, originalLine: sentinel });
+  }
+
+  for (const line of lines) {
+    const sentinelMatch = line.match(/^<<TITLE_\d+>>$/);
+    if (!sentinelMatch) {
+      finalLines.push(line);
+      continue;
+    }
+    const sentinel = sentinelMatch[0];
+    const detected = detectedBySentinel.get(sentinel);
+    if (!detected) {
+      // Sentinel shape but not in the detected map — leave as-is. Shouldn't
+      // happen in normal flow but guards against script tampering.
+      finalLines.push(line);
+      continue;
+    }
+    const kept = keptDetected.get(sentinel);
+    if (kept) {
+      finalLines.push(sentinel);
+      finalTitles.push(kept);
+    } else {
+      // Detected but the user did NOT include it in `userTitles` — treat
+      // as a delete. Two paths land here: explicit `deleted: true` (already
+      // counted above) and silent omission. Both restore the original line.
+      finalLines.push(detected.originalLine);
+      // Only count silent omissions here so we don't double-count.
+      // `deleted` already incremented when `deleted: true` was set.
+      // userTitles silently omitting a detected sentinel: count it.
+      const userHadIt = userTitles.some(u => u.sourceSentinel === sentinel);
+      if (!userHadIt) deleted += 1;
+    }
+    // Then any additions parked after this sentinel.
+    const after = additionsAfter.get(sentinel);
+    if (after) {
+      for (const a of after) {
+        const newSentinel = userTitleSentinel(a.userIndex);
+        finalLines.push(newSentinel);
+        finalTitles.push({ text: a.text, sentinel: newSentinel, originalLine: newSentinel });
+      }
+    }
+  }
+
+  // Trailing additions — graceful-degrade bucket for adds whose target
+  // sentinel was no longer in the script (front-end out of sync).
+  for (const a of additionsAtEnd) {
+    const newSentinel = userTitleSentinel(a.userIndex);
+    finalLines.push(newSentinel);
+    finalTitles.push({ text: a.text, sentinel: newSentinel, originalLine: newSentinel });
+  }
+
+  return {
+    stripped: finalLines.join('\n'),
+    titles: finalTitles,
+    warnings,
+    counts: { edited, deleted, added },
+  };
+}

@@ -21,7 +21,12 @@ import {
 import { refineVariantPromptsInDoc } from '@/lib/variant-prompt-refiner';
 import { autoGroupVariants } from '@/lib/auto-group-variants';
 import { dedupVariantIndexCollisions } from '@/lib/production-doc-postprocess';
-import { extractScriptTitles, TITLE_SENTINEL_LEAK_RE } from '@/lib/script-titles';
+import {
+  extractScriptTitles,
+  applyUserTitleOverrides,
+  TITLE_SENTINEL_LEAK_RE,
+  type UserTitleSpec,
+} from '@/lib/script-titles';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
 export const maxDuration = 300;
@@ -50,6 +55,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     isChunk,
     overlaysDisabled,
     motionCollageSettings,
+    userTitles,
   } = body as {
     modelId?: string; script?: string; niche?: string; topic?: string;
     speakingPaceWpm?: number;
@@ -77,6 +83,13 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       min_per_frame_ms?: number;
       max_per_frame_ms?: number;
     };
+    /** Pre-flight title review overrides (see
+     *  `_plans/2026-05-31-preflight-title-review.md`). When the user has
+     *  reviewed the detected `##` titles in the page panel — edited
+     *  text, deleted false positives, added missed sections — the final
+     *  list arrives here. Undefined ⇒ the route uses the raw extractor
+     *  output unchanged (backwards-compatible). */
+    userTitles?: UserTitleSpec[];
   };
 
   if (!script || !niche) {
@@ -147,9 +160,32 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     warnings: extracted.warnings,
   });
 
+  // Apply pre-flight title-review overrides. When the user reviewed and
+  // corrected the detected titles in the page UI, `userTitles` holds the
+  // final ordered list. We rebuild `effectiveStripped` + `effectiveTitles`
+  // from that list and feed those (instead of `extracted.*`) to the prompt
+  // builder + the post-LLM Title Card allowlist. When `userTitles` is
+  // absent, both effective values fall back to the extractor output —
+  // preserving the original behavior for callers that haven't adopted the
+  // review panel (chunked generation, auto-pipeline, etc.).
+  let effectiveStripped = extracted.stripped;
+  let effectiveTitles = extracted.titles;
+  const titleOverrideWarnings: string[] = [];
+  if (Array.isArray(userTitles)) {
+    const applied = applyUserTitleOverrides(extracted, userTitles);
+    effectiveStripped = applied.stripped;
+    effectiveTitles = applied.titles;
+    titleOverrideWarnings.push(...applied.warnings);
+    logger.info('[production-doc title-overrides]', {
+      ...applied.counts,
+      finalTitleCount: applied.titles.length,
+      warningCount: applied.warnings.length,
+    });
+  }
+
   const { system, user } = productionDocPrompt({
-    script: extracted.stripped,
-    titles: extracted.titles,
+    script: effectiveStripped,
+    titles: effectiveTitles,
     ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
     niche, topic, speakingPaceWpm, style, creativeBrief,
     startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
@@ -299,7 +335,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         .replace(/[.,;:!?]+$/, '')
         .replace(/\s+/g, ' ');
     const allowedTitleSet = new Set(
-      extracted.titles.map((t) => normalizeTitleText(t.text)),
+      effectiveTitles.map((t) => normalizeTitleText(t.text)),
     );
     const demotedTitleCards: string[] = [];
     for (const r of result.rows) {
@@ -345,7 +381,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     const emittedTexts = titleCardRows.map(r =>
       typeof r.script_text === 'string' ? r.script_text.trim() : '',
     );
-    const expectedTexts = extracted.titles.map(t => t.text);
+    const expectedTexts = effectiveTitles.map(t => t.text);
 
     const emittedCounts = new Map<string, { display: string; count: number }>();
     for (const t of emittedTexts) {
@@ -407,6 +443,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     }
     if (extracted.warnings.length > 0) {
       generation_warnings.push(...extracted.warnings);
+    }
+    if (titleOverrideWarnings.length > 0) {
+      generation_warnings.push(...titleOverrideWarnings);
     }
   }
 

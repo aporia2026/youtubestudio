@@ -63,6 +63,7 @@ import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { PaintExplainerV1SettingsPanel } from '@/components/production-doc/PaintExplainerV1SettingsPanel';
+import { TitleReviewPanel, type UserTitleSpec } from '@/components/production-doc/TitleReviewPanel';
 import { DoodleExplainer2MotionCollageSettingsPanel } from '@/components/production-doc/DoodleExplainer2MotionCollageSettingsPanel';
 import { MotionCollageRowEditor } from '@/components/production-doc/MotionCollageRowEditor';
 import type {
@@ -2406,6 +2407,13 @@ function ProductionDocPage() {
   // drives the disabled state of the "Mark as title" button. We update on
   // every select/keyup so the toolbar reacts to keyboard selection too.
   const [hasScriptSelection, setHasScriptSelection] = useState(false);
+  // Pre-flight title-review overrides. `null` ⇒ the panel never reviewed
+  // anything, generation falls back to the server-side extractor as
+  // before. A non-null array is what the TitleReviewPanel handed back —
+  // we forward it to /production-doc on chunk 0 only (continuation
+  // chunks suppress Title Cards anyway). See
+  // `_plans/2026-05-31-preflight-title-review.md`.
+  const [reviewedTitles, setReviewedTitles] = useState<UserTitleSpec[] | null>(null);
   const [niche, setNiche] = useState('');
   const [topic, setTopic] = useState('');
   // Per-session override only. The canonical default is set in
@@ -8086,6 +8094,14 @@ function ProductionDocPage() {
             // style other than doodle_explainer_2.
             motionCollageSettings:
               doc?.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings,
+            // Pre-flight title overrides — only meaningful for chunk 0,
+            // since continuation chunks suppress Title Cards in the
+            // prompt anyway. When the user never opened the review
+            // panel, `reviewedTitles` is null and we omit the field
+            // (server falls back to its auto-extractor).
+            ...(chunkIdx === 0 && reviewedTitles !== null
+              ? { userTitles: reviewedTitles }
+              : {}),
           }),
         });
         let attempts = 0;
@@ -9732,6 +9748,17 @@ function ProductionDocPage() {
             {overlaysDisabledPref ? '— off' : '— on'}
           </span>
         </label>
+
+        {/* Pre-flight title review. The panel is collapsed by default —
+            users who skip it get the same behavior as before (server-side
+            auto-extraction). Users who open it can correct the detected
+            list before generation runs. See
+            `_plans/2026-05-31-preflight-title-review.md`. */}
+        <TitleReviewPanel
+          script={script}
+          disabled={generating}
+          onChange={setReviewedTitles}
+        />
 
         {/* Model + Generate */}
         <div className="flex items-center gap-3">
