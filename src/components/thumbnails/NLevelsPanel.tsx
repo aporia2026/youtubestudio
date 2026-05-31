@@ -24,6 +24,19 @@ import {
   THUMBNAIL_FONT_CATEGORY_LABELS,
   type ThumbnailFont,
 } from '@/lib/thumbnail-formats/topic-card-grid-fonts';
+import {
+  ChipPicker,
+  ColorAndSlider,
+  HexInput,
+  OverlayCard,
+  RangeRow,
+  SubToggle,
+  type PanelColorGradeBlend,
+  type PanelFrameStyle,
+  type PanelHalftoneBlend,
+  type PanelInnerGlowBlend,
+  type PanelLightLeakPosition,
+} from '@/components/thumbnails/_overlay-controls';
 import type { ThumbnailRegion } from '@/remotion/types';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
@@ -88,7 +101,11 @@ export type PanelImageFilter =
 /** Panel-side shape for the Post-process section's state. Flat fields
  *  (not a nested vignette / grain object) because each control binds to
  *  one field — flat state is easier to debug + survives partial
- *  JSON-restore from older drafts cleanly. */
+ *  JSON-restore from older drafts cleanly. r2.8 ports 7 finishing
+ *  overlays (tint, light-leak, inner-glow, dust, halftone, letterbox,
+ *  frame) from TopicCardGridPanel so the two formats share the same
+ *  post-process surface. The wire-shape builder collapses these back
+ *  into the server's `PostProcessConfig` shape before sending. */
 export interface PanelPostProcessState {
   /** `null` means "no filter" (mapped to undefined server-side). */
   filter: PanelImageFilter | null;
@@ -105,6 +122,51 @@ export interface PanelPostProcessState {
   /** 0.5 - 5. */
   grainSize: number;
   grainMonochrome: boolean;
+  // r2.8 finishing overlays — same shape as TopicCardGridPanel.
+  tintEnabled: boolean;
+  tintColor: string;
+  tintIntensity: number;
+  tintBlendMode: PanelColorGradeBlend;
+  tintShadowsEnabled: boolean;
+  tintShadows: string;
+  tintHighlightsEnabled: boolean;
+  tintHighlights: string;
+  tintSplitStrength: number;
+  lightLeakEnabled: boolean;
+  lightLeakColor: string;
+  lightLeakIntensity: number;
+  lightLeakRadius: number;
+  lightLeakPosition: PanelLightLeakPosition;
+  lightLeakBlendMode: PanelColorGradeBlend;
+  innerGlowEnabled: boolean;
+  innerGlowColor: string;
+  innerGlowIntensity: number;
+  innerGlowRadius: number;
+  innerGlowBlendMode: PanelInnerGlowBlend;
+  dustEnabled: boolean;
+  dustColor: string;
+  dustIntensity: number;
+  dustDensity: number;
+  dustSeed: number;
+  halftoneEnabled: boolean;
+  halftoneColor: string;
+  halftoneOpacity: number;
+  halftoneDotSize: number;
+  halftoneSpacing: number;
+  halftoneBlendMode: PanelHalftoneBlend;
+  halftoneAngle: number;
+  letterboxEnabled: boolean;
+  letterboxColor: string;
+  letterboxTop: number;
+  letterboxBottom: number;
+  letterboxLeft: number;
+  letterboxRight: number;
+  letterboxOpacity: number;
+  frameEnabled: boolean;
+  frameColor: string;
+  frameThickness: number;
+  frameInset: number;
+  frameStyle: PanelFrameStyle;
 }
 
 /** Default Post-process state. Every effect off, sensible mid-values
@@ -120,6 +182,50 @@ const DEFAULT_POST_PROCESS_STATE: PanelPostProcessState = {
   grainIntensity: 0.3,
   grainSize: 1,
   grainMonochrome: true,
+  tintEnabled: false,
+  tintColor: '#ffb27a',
+  tintIntensity: 0.25,
+  tintBlendMode: 'soft-light',
+  tintShadowsEnabled: false,
+  tintShadows: '#0a3a5a',
+  tintHighlightsEnabled: false,
+  tintHighlights: '#ffd28a',
+  tintSplitStrength: 0.5,
+  lightLeakEnabled: false,
+  lightLeakColor: '#ffd28a',
+  lightLeakIntensity: 0.4,
+  lightLeakRadius: 0.6,
+  lightLeakPosition: 'top-right',
+  lightLeakBlendMode: 'screen',
+  innerGlowEnabled: false,
+  innerGlowColor: '#ffffff',
+  innerGlowIntensity: 0.2,
+  innerGlowRadius: 0.9,
+  innerGlowBlendMode: 'soft-light',
+  dustEnabled: false,
+  dustColor: '#ffffff',
+  dustIntensity: 0.4,
+  dustDensity: 0.25,
+  dustSeed: 41,
+  halftoneEnabled: false,
+  halftoneColor: '#000000',
+  halftoneOpacity: 0.3,
+  halftoneDotSize: 1.5,
+  halftoneSpacing: 6,
+  halftoneBlendMode: 'multiply',
+  halftoneAngle: 0,
+  letterboxEnabled: false,
+  letterboxColor: '#000000',
+  letterboxTop: 0,
+  letterboxBottom: 0,
+  letterboxLeft: 0,
+  letterboxRight: 0,
+  letterboxOpacity: 1,
+  frameEnabled: false,
+  frameColor: '#ffffff',
+  frameThickness: 4,
+  frameInset: 8,
+  frameStyle: 'solid',
 };
 
 /** Title-bar position. Mirrored from `TitleBarPosition` in
@@ -260,6 +366,40 @@ function coercePostProcessState(raw: unknown): PanelPostProcessState {
   const hex = typeof r.vignetteColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(r.vignetteColor)
     ? r.vignetteColor
     : DEFAULT_POST_PROCESS_STATE.vignetteColor;
+  const coerceHex = (raw: unknown, fb: string): string =>
+    typeof raw === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : fb;
+  const coerceColorGradeBlend = (raw: unknown, fb: PanelColorGradeBlend): PanelColorGradeBlend =>
+    raw === 'multiply' || raw === 'screen' || raw === 'overlay' || raw === 'soft-light'
+      ? (raw as PanelColorGradeBlend)
+      : fb;
+  const coerceHalftoneBlend = (raw: unknown, fb: PanelHalftoneBlend): PanelHalftoneBlend =>
+    raw === 'multiply' ||
+    raw === 'screen' ||
+    raw === 'overlay' ||
+    raw === 'soft-light' ||
+    raw === 'normal'
+      ? (raw as PanelHalftoneBlend)
+      : fb;
+  const coerceInnerGlowBlend = (raw: unknown, fb: PanelInnerGlowBlend): PanelInnerGlowBlend =>
+    raw === 'screen' || raw === 'overlay' || raw === 'soft-light'
+      ? (raw as PanelInnerGlowBlend)
+      : fb;
+  const coerceLightLeakPosition = (
+    raw: unknown,
+    fb: PanelLightLeakPosition,
+  ): PanelLightLeakPosition =>
+    raw === 'top-left' ||
+    raw === 'top-right' ||
+    raw === 'bottom-left' ||
+    raw === 'bottom-right' ||
+    raw === 'top' ||
+    raw === 'bottom' ||
+    raw === 'left' ||
+    raw === 'right'
+      ? (raw as PanelLightLeakPosition)
+      : fb;
+  const coerceFrameStyle = (raw: unknown, fb: PanelFrameStyle): PanelFrameStyle =>
+    raw === 'solid' || raw === 'double' || raw === 'dashed' ? (raw as PanelFrameStyle) : fb;
   return {
     filter: filterValid ? (filter as PanelImageFilter) : null,
     vignetteEnabled: r.vignetteEnabled === true,
@@ -270,6 +410,72 @@ function coercePostProcessState(raw: unknown): PanelPostProcessState {
     grainIntensity: clamp(r.grainIntensity, 0, 1, DEFAULT_POST_PROCESS_STATE.grainIntensity),
     grainSize: clamp(r.grainSize, 0.5, 5, DEFAULT_POST_PROCESS_STATE.grainSize),
     grainMonochrome: r.grainMonochrome !== false,
+    tintEnabled: r.tintEnabled === true,
+    tintColor: coerceHex(r.tintColor, DEFAULT_POST_PROCESS_STATE.tintColor),
+    tintIntensity: clamp(r.tintIntensity, 0, 1, DEFAULT_POST_PROCESS_STATE.tintIntensity),
+    tintBlendMode: coerceColorGradeBlend(r.tintBlendMode, DEFAULT_POST_PROCESS_STATE.tintBlendMode),
+    tintShadowsEnabled: r.tintShadowsEnabled === true,
+    tintShadows: coerceHex(r.tintShadows, DEFAULT_POST_PROCESS_STATE.tintShadows),
+    tintHighlightsEnabled: r.tintHighlightsEnabled === true,
+    tintHighlights: coerceHex(r.tintHighlights, DEFAULT_POST_PROCESS_STATE.tintHighlights),
+    tintSplitStrength: clamp(r.tintSplitStrength, 0, 1, DEFAULT_POST_PROCESS_STATE.tintSplitStrength),
+    lightLeakEnabled: r.lightLeakEnabled === true,
+    lightLeakColor: coerceHex(r.lightLeakColor, DEFAULT_POST_PROCESS_STATE.lightLeakColor),
+    lightLeakIntensity: clamp(
+      r.lightLeakIntensity,
+      0,
+      1,
+      DEFAULT_POST_PROCESS_STATE.lightLeakIntensity,
+    ),
+    lightLeakRadius: clamp(r.lightLeakRadius, 0.2, 1, DEFAULT_POST_PROCESS_STATE.lightLeakRadius),
+    lightLeakPosition: coerceLightLeakPosition(
+      r.lightLeakPosition,
+      DEFAULT_POST_PROCESS_STATE.lightLeakPosition,
+    ),
+    lightLeakBlendMode: coerceColorGradeBlend(
+      r.lightLeakBlendMode,
+      DEFAULT_POST_PROCESS_STATE.lightLeakBlendMode,
+    ),
+    innerGlowEnabled: r.innerGlowEnabled === true,
+    innerGlowColor: coerceHex(r.innerGlowColor, DEFAULT_POST_PROCESS_STATE.innerGlowColor),
+    innerGlowIntensity: clamp(
+      r.innerGlowIntensity,
+      0,
+      1,
+      DEFAULT_POST_PROCESS_STATE.innerGlowIntensity,
+    ),
+    innerGlowRadius: clamp(r.innerGlowRadius, 0.3, 1.5, DEFAULT_POST_PROCESS_STATE.innerGlowRadius),
+    innerGlowBlendMode: coerceInnerGlowBlend(
+      r.innerGlowBlendMode,
+      DEFAULT_POST_PROCESS_STATE.innerGlowBlendMode,
+    ),
+    dustEnabled: r.dustEnabled === true,
+    dustColor: coerceHex(r.dustColor, DEFAULT_POST_PROCESS_STATE.dustColor),
+    dustIntensity: clamp(r.dustIntensity, 0, 1, DEFAULT_POST_PROCESS_STATE.dustIntensity),
+    dustDensity: clamp(r.dustDensity, 0, 1, DEFAULT_POST_PROCESS_STATE.dustDensity),
+    dustSeed: clamp(r.dustSeed, 0, 9999, DEFAULT_POST_PROCESS_STATE.dustSeed),
+    halftoneEnabled: r.halftoneEnabled === true,
+    halftoneColor: coerceHex(r.halftoneColor, DEFAULT_POST_PROCESS_STATE.halftoneColor),
+    halftoneOpacity: clamp(r.halftoneOpacity, 0, 1, DEFAULT_POST_PROCESS_STATE.halftoneOpacity),
+    halftoneDotSize: clamp(r.halftoneDotSize, 0.5, 10, DEFAULT_POST_PROCESS_STATE.halftoneDotSize),
+    halftoneSpacing: clamp(r.halftoneSpacing, 2, 40, DEFAULT_POST_PROCESS_STATE.halftoneSpacing),
+    halftoneBlendMode: coerceHalftoneBlend(
+      r.halftoneBlendMode,
+      DEFAULT_POST_PROCESS_STATE.halftoneBlendMode,
+    ),
+    halftoneAngle: clamp(r.halftoneAngle, 0, 90, DEFAULT_POST_PROCESS_STATE.halftoneAngle),
+    letterboxEnabled: r.letterboxEnabled === true,
+    letterboxColor: coerceHex(r.letterboxColor, DEFAULT_POST_PROCESS_STATE.letterboxColor),
+    letterboxTop: clamp(r.letterboxTop, 0, 240, DEFAULT_POST_PROCESS_STATE.letterboxTop),
+    letterboxBottom: clamp(r.letterboxBottom, 0, 240, DEFAULT_POST_PROCESS_STATE.letterboxBottom),
+    letterboxLeft: clamp(r.letterboxLeft, 0, 240, DEFAULT_POST_PROCESS_STATE.letterboxLeft),
+    letterboxRight: clamp(r.letterboxRight, 0, 240, DEFAULT_POST_PROCESS_STATE.letterboxRight),
+    letterboxOpacity: clamp(r.letterboxOpacity, 0, 1, DEFAULT_POST_PROCESS_STATE.letterboxOpacity),
+    frameEnabled: r.frameEnabled === true,
+    frameColor: coerceHex(r.frameColor, DEFAULT_POST_PROCESS_STATE.frameColor),
+    frameThickness: clamp(r.frameThickness, 1, 40, DEFAULT_POST_PROCESS_STATE.frameThickness),
+    frameInset: clamp(r.frameInset, 0, 80, DEFAULT_POST_PROCESS_STATE.frameInset),
+    frameStyle: coerceFrameStyle(r.frameStyle, DEFAULT_POST_PROCESS_STATE.frameStyle),
   };
 }
 
@@ -281,11 +487,84 @@ function buildPostProcessRequestPayload(s: PanelPostProcessState): {
   filter?: PanelImageFilter;
   vignette?: { color: string; intensity: number; radius: number };
   grain?: { intensity: number; size: number; monochrome: boolean };
+  tint?: {
+    color: string;
+    intensity: number;
+    blendMode: PanelColorGradeBlend;
+    shadows?: string;
+    highlights?: string;
+    splitToneStrength?: number;
+  };
+  lightLeak?: {
+    color: string;
+    intensity: number;
+    radius: number;
+    position: PanelLightLeakPosition;
+    blendMode?: PanelColorGradeBlend;
+  };
+  innerGlow?: { color: string; intensity: number; radius: number; blendMode?: PanelInnerGlowBlend };
+  dust?: { color: string; intensity: number; density: number; seed?: number };
+  halftone?: {
+    color: string;
+    opacity: number;
+    dotSize: number;
+    spacing: number;
+    blendMode: PanelHalftoneBlend;
+    angle?: number;
+  };
+  letterbox?: {
+    color: string;
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    opacity?: number;
+  };
+  frame?: { color: string; thickness: number; inset: number; style?: PanelFrameStyle };
 } | undefined {
   const out: {
     filter?: PanelImageFilter;
     vignette?: { color: string; intensity: number; radius: number };
     grain?: { intensity: number; size: number; monochrome: boolean };
+    tint?: {
+      color: string;
+      intensity: number;
+      blendMode: PanelColorGradeBlend;
+      shadows?: string;
+      highlights?: string;
+      splitToneStrength?: number;
+    };
+    lightLeak?: {
+      color: string;
+      intensity: number;
+      radius: number;
+      position: PanelLightLeakPosition;
+      blendMode?: PanelColorGradeBlend;
+    };
+    innerGlow?: {
+      color: string;
+      intensity: number;
+      radius: number;
+      blendMode?: PanelInnerGlowBlend;
+    };
+    dust?: { color: string; intensity: number; density: number; seed?: number };
+    halftone?: {
+      color: string;
+      opacity: number;
+      dotSize: number;
+      spacing: number;
+      blendMode: PanelHalftoneBlend;
+      angle?: number;
+    };
+    letterbox?: {
+      color: string;
+      top: number;
+      bottom: number;
+      left: number;
+      right: number;
+      opacity?: number;
+    };
+    frame?: { color: string; thickness: number; inset: number; style?: PanelFrameStyle };
   } = {};
   if (s.filter) out.filter = s.filter;
   if (s.vignetteEnabled && s.vignetteIntensity > 0) {
@@ -294,7 +573,88 @@ function buildPostProcessRequestPayload(s: PanelPostProcessState): {
   if (s.grainEnabled && s.grainIntensity > 0) {
     out.grain = { intensity: s.grainIntensity, size: s.grainSize, monochrome: s.grainMonochrome };
   }
-  if (!out.filter && !out.vignette && !out.grain) return undefined;
+  if (s.tintEnabled && s.tintIntensity > 0) {
+    out.tint = {
+      color: s.tintColor,
+      intensity: s.tintIntensity,
+      blendMode: s.tintBlendMode,
+      ...(s.tintShadowsEnabled ? { shadows: s.tintShadows } : {}),
+      ...(s.tintHighlightsEnabled ? { highlights: s.tintHighlights } : {}),
+      ...(s.tintShadowsEnabled || s.tintHighlightsEnabled
+        ? { splitToneStrength: s.tintSplitStrength }
+        : {}),
+    };
+  }
+  if (s.lightLeakEnabled && s.lightLeakIntensity > 0) {
+    out.lightLeak = {
+      color: s.lightLeakColor,
+      intensity: s.lightLeakIntensity,
+      radius: s.lightLeakRadius,
+      position: s.lightLeakPosition,
+      blendMode: s.lightLeakBlendMode,
+    };
+  }
+  if (s.innerGlowEnabled && s.innerGlowIntensity > 0) {
+    out.innerGlow = {
+      color: s.innerGlowColor,
+      intensity: s.innerGlowIntensity,
+      radius: s.innerGlowRadius,
+      blendMode: s.innerGlowBlendMode,
+    };
+  }
+  if (s.dustEnabled && s.dustIntensity > 0 && s.dustDensity > 0) {
+    out.dust = {
+      color: s.dustColor,
+      intensity: s.dustIntensity,
+      density: s.dustDensity,
+      seed: s.dustSeed,
+    };
+  }
+  if (s.halftoneEnabled && s.halftoneOpacity > 0) {
+    out.halftone = {
+      color: s.halftoneColor,
+      opacity: s.halftoneOpacity,
+      dotSize: s.halftoneDotSize,
+      spacing: s.halftoneSpacing,
+      blendMode: s.halftoneBlendMode,
+      ...(s.halftoneAngle !== 0 ? { angle: s.halftoneAngle } : {}),
+    };
+  }
+  if (
+    s.letterboxEnabled &&
+    (s.letterboxTop > 0 || s.letterboxBottom > 0 || s.letterboxLeft > 0 || s.letterboxRight > 0)
+  ) {
+    out.letterbox = {
+      color: s.letterboxColor,
+      top: s.letterboxTop,
+      bottom: s.letterboxBottom,
+      left: s.letterboxLeft,
+      right: s.letterboxRight,
+      ...(s.letterboxOpacity < 1 ? { opacity: s.letterboxOpacity } : {}),
+    };
+  }
+  if (s.frameEnabled && s.frameThickness >= 1) {
+    out.frame = {
+      color: s.frameColor,
+      thickness: s.frameThickness,
+      inset: s.frameInset,
+      style: s.frameStyle,
+    };
+  }
+  if (
+    !out.filter &&
+    !out.vignette &&
+    !out.grain &&
+    !out.tint &&
+    !out.lightLeak &&
+    !out.innerGlow &&
+    !out.dust &&
+    !out.halftone &&
+    !out.letterbox &&
+    !out.frame
+  ) {
+    return undefined;
+  }
   return out;
 }
 
@@ -1515,6 +1875,391 @@ export function NLevelsPanel({
                 </div>
               )}
             </div>
+
+            {/* r2.8: seven finishing overlays ported from TopicCardGridPanel.
+                Sub-components from _overlay-controls.tsx so the markup stays
+                declarative. */}
+            <OverlayCard
+              title="Tint"
+              hint="Flat colour wash + optional split-tone shadows/highlights."
+              enabled={postProcess.tintEnabled}
+              onToggle={() => updatePostProcess({ tintEnabled: !postProcess.tintEnabled })}
+            >
+              <ColorAndSlider
+                label="Tint"
+                color={postProcess.tintColor}
+                onColor={(v) => updatePostProcess({ tintColor: v })}
+                value={postProcess.tintIntensity}
+                onValue={(v) => updatePostProcess({ tintIntensity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <ChipPicker
+                label="Blend"
+                value={postProcess.tintBlendMode}
+                onChange={(v) => updatePostProcess({ tintBlendMode: v as PanelColorGradeBlend })}
+                options={[
+                  { value: 'multiply', label: 'Multiply' },
+                  { value: 'screen', label: 'Screen' },
+                  { value: 'overlay', label: 'Overlay' },
+                  { value: 'soft-light', label: 'Soft light' },
+                ]}
+              />
+              <SubToggle
+                label="Split-tone shadows"
+                enabled={postProcess.tintShadowsEnabled}
+                onToggle={() =>
+                  updatePostProcess({ tintShadowsEnabled: !postProcess.tintShadowsEnabled })
+                }
+              >
+                <HexInput
+                  value={postProcess.tintShadows}
+                  onChange={(v) => updatePostProcess({ tintShadows: v })}
+                />
+              </SubToggle>
+              <SubToggle
+                label="Split-tone highlights"
+                enabled={postProcess.tintHighlightsEnabled}
+                onToggle={() =>
+                  updatePostProcess({
+                    tintHighlightsEnabled: !postProcess.tintHighlightsEnabled,
+                  })
+                }
+              >
+                <HexInput
+                  value={postProcess.tintHighlights}
+                  onChange={(v) => updatePostProcess({ tintHighlights: v })}
+                />
+              </SubToggle>
+              {(postProcess.tintShadowsEnabled || postProcess.tintHighlightsEnabled) && (
+                <RangeRow
+                  label="Split-tone strength"
+                  value={postProcess.tintSplitStrength}
+                  onChange={(v) => updatePostProcess({ tintSplitStrength: v })}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  fmt={(v) => `${Math.round(v * 100)}%`}
+                />
+              )}
+            </OverlayCard>
+
+            <OverlayCard
+              title="Light leak"
+              hint="Radial gradient anchored to one canvas edge."
+              enabled={postProcess.lightLeakEnabled}
+              onToggle={() =>
+                updatePostProcess({ lightLeakEnabled: !postProcess.lightLeakEnabled })
+              }
+            >
+              <ColorAndSlider
+                label="Leak"
+                color={postProcess.lightLeakColor}
+                onColor={(v) => updatePostProcess({ lightLeakColor: v })}
+                value={postProcess.lightLeakIntensity}
+                onValue={(v) => updatePostProcess({ lightLeakIntensity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <RangeRow
+                label="Radius"
+                value={postProcess.lightLeakRadius}
+                onChange={(v) => updatePostProcess({ lightLeakRadius: v })}
+                min={0.2}
+                max={1}
+                step={0.05}
+                fmt={(v) => v.toFixed(2)}
+              />
+              <ChipPicker
+                label="Position"
+                value={postProcess.lightLeakPosition}
+                onChange={(v) =>
+                  updatePostProcess({ lightLeakPosition: v as PanelLightLeakPosition })
+                }
+                options={[
+                  { value: 'top-left', label: '↖' },
+                  { value: 'top', label: '↑' },
+                  { value: 'top-right', label: '↗' },
+                  { value: 'left', label: '←' },
+                  { value: 'right', label: '→' },
+                  { value: 'bottom-left', label: '↙' },
+                  { value: 'bottom', label: '↓' },
+                  { value: 'bottom-right', label: '↘' },
+                ]}
+              />
+              <ChipPicker
+                label="Blend"
+                value={postProcess.lightLeakBlendMode}
+                onChange={(v) =>
+                  updatePostProcess({ lightLeakBlendMode: v as PanelColorGradeBlend })
+                }
+                options={[
+                  { value: 'screen', label: 'Screen' },
+                  { value: 'multiply', label: 'Multiply' },
+                  { value: 'overlay', label: 'Overlay' },
+                  { value: 'soft-light', label: 'Soft light' },
+                ]}
+              />
+            </OverlayCard>
+
+            <OverlayCard
+              title="Inner glow"
+              hint="Radial brightening at canvas centre."
+              enabled={postProcess.innerGlowEnabled}
+              onToggle={() =>
+                updatePostProcess({ innerGlowEnabled: !postProcess.innerGlowEnabled })
+              }
+            >
+              <ColorAndSlider
+                label="Glow"
+                color={postProcess.innerGlowColor}
+                onColor={(v) => updatePostProcess({ innerGlowColor: v })}
+                value={postProcess.innerGlowIntensity}
+                onValue={(v) => updatePostProcess({ innerGlowIntensity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <RangeRow
+                label="Radius"
+                value={postProcess.innerGlowRadius}
+                onChange={(v) => updatePostProcess({ innerGlowRadius: v })}
+                min={0.3}
+                max={1.5}
+                step={0.05}
+                fmt={(v) => v.toFixed(2)}
+              />
+              <ChipPicker
+                label="Blend"
+                value={postProcess.innerGlowBlendMode}
+                onChange={(v) =>
+                  updatePostProcess({ innerGlowBlendMode: v as PanelInnerGlowBlend })
+                }
+                options={[
+                  { value: 'screen', label: 'Screen' },
+                  { value: 'overlay', label: 'Overlay' },
+                  { value: 'soft-light', label: 'Soft light' },
+                ]}
+              />
+            </OverlayCard>
+
+            <OverlayCard
+              title="Dust & scratches"
+              hint="Sparse film-stock specks. Deterministic seed for round-trip stability."
+              enabled={postProcess.dustEnabled}
+              onToggle={() => updatePostProcess({ dustEnabled: !postProcess.dustEnabled })}
+            >
+              <ColorAndSlider
+                label="Specks"
+                color={postProcess.dustColor}
+                onColor={(v) => updatePostProcess({ dustColor: v })}
+                value={postProcess.dustIntensity}
+                onValue={(v) => updatePostProcess({ dustIntensity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <RangeRow
+                label="Density"
+                value={postProcess.dustDensity}
+                onChange={(v) => updatePostProcess({ dustDensity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                <span>Seed</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={9999}
+                  step={1}
+                  value={postProcess.dustSeed}
+                  onChange={(e) => {
+                    const v = Number.parseInt(e.target.value, 10);
+                    if (Number.isFinite(v)) updatePostProcess({ dustSeed: v });
+                  }}
+                  className="w-16 px-1 py-0.5 rounded text-[10px]"
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)',
+                    border: '1px solid var(--border)',
+                  }}
+                />
+              </div>
+            </OverlayCard>
+
+            <OverlayCard
+              title="Halftone"
+              hint="Uniform dot pattern. Increase spacing for chunkier dots."
+              enabled={postProcess.halftoneEnabled}
+              onToggle={() => updatePostProcess({ halftoneEnabled: !postProcess.halftoneEnabled })}
+            >
+              <ColorAndSlider
+                label="Dots"
+                color={postProcess.halftoneColor}
+                onColor={(v) => updatePostProcess({ halftoneColor: v })}
+                value={postProcess.halftoneOpacity}
+                onValue={(v) => updatePostProcess({ halftoneOpacity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <RangeRow
+                label="Dot size"
+                value={postProcess.halftoneDotSize}
+                onChange={(v) => updatePostProcess({ halftoneDotSize: v })}
+                min={0.5}
+                max={10}
+                step={0.1}
+                fmt={(v) => `${v.toFixed(1)}px`}
+              />
+              <RangeRow
+                label="Spacing"
+                value={postProcess.halftoneSpacing}
+                onChange={(v) => updatePostProcess({ halftoneSpacing: v })}
+                min={2}
+                max={40}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <RangeRow
+                label="Angle"
+                value={postProcess.halftoneAngle}
+                onChange={(v) => updatePostProcess({ halftoneAngle: v })}
+                min={0}
+                max={90}
+                step={1}
+                fmt={(v) => `${Math.round(v)}°`}
+              />
+              <ChipPicker
+                label="Blend"
+                value={postProcess.halftoneBlendMode}
+                onChange={(v) =>
+                  updatePostProcess({ halftoneBlendMode: v as PanelHalftoneBlend })
+                }
+                options={[
+                  { value: 'multiply', label: 'Multiply' },
+                  { value: 'screen', label: 'Screen' },
+                  { value: 'overlay', label: 'Overlay' },
+                  { value: 'soft-light', label: 'Soft light' },
+                  { value: 'normal', label: 'Normal' },
+                ]}
+              />
+            </OverlayCard>
+
+            <OverlayCard
+              title="Letterbox"
+              hint="Crop bars on each canvas edge. Set independent thicknesses per side."
+              enabled={postProcess.letterboxEnabled}
+              onToggle={() =>
+                updatePostProcess({ letterboxEnabled: !postProcess.letterboxEnabled })
+              }
+            >
+              <div className="flex items-center gap-2 text-[10px]">
+                <span style={{ color: 'var(--text-muted)' }}>Colour</span>
+                <HexInput
+                  value={postProcess.letterboxColor}
+                  onChange={(v) => updatePostProcess({ letterboxColor: v })}
+                />
+              </div>
+              <RangeRow
+                label="Top"
+                value={postProcess.letterboxTop}
+                onChange={(v) => updatePostProcess({ letterboxTop: v })}
+                min={0}
+                max={240}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <RangeRow
+                label="Bottom"
+                value={postProcess.letterboxBottom}
+                onChange={(v) => updatePostProcess({ letterboxBottom: v })}
+                min={0}
+                max={240}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <RangeRow
+                label="Left"
+                value={postProcess.letterboxLeft}
+                onChange={(v) => updatePostProcess({ letterboxLeft: v })}
+                min={0}
+                max={240}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <RangeRow
+                label="Right"
+                value={postProcess.letterboxRight}
+                onChange={(v) => updatePostProcess({ letterboxRight: v })}
+                min={0}
+                max={240}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <RangeRow
+                label="Opacity"
+                value={postProcess.letterboxOpacity}
+                onChange={(v) => updatePostProcess({ letterboxOpacity: v })}
+                min={0}
+                max={1}
+                step={0.05}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+            </OverlayCard>
+
+            <OverlayCard
+              title="Frame"
+              hint="Outer stroke around the canvas. Solid / double / dashed."
+              enabled={postProcess.frameEnabled}
+              onToggle={() => updatePostProcess({ frameEnabled: !postProcess.frameEnabled })}
+            >
+              <div className="flex items-center gap-2 text-[10px]">
+                <span style={{ color: 'var(--text-muted)' }}>Colour</span>
+                <HexInput
+                  value={postProcess.frameColor}
+                  onChange={(v) => updatePostProcess({ frameColor: v })}
+                />
+              </div>
+              <RangeRow
+                label="Thickness"
+                value={postProcess.frameThickness}
+                onChange={(v) => updatePostProcess({ frameThickness: v })}
+                min={1}
+                max={40}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <RangeRow
+                label="Inset"
+                value={postProcess.frameInset}
+                onChange={(v) => updatePostProcess({ frameInset: v })}
+                min={0}
+                max={80}
+                step={1}
+                fmt={(v) => `${Math.round(v)}px`}
+              />
+              <ChipPicker
+                label="Style"
+                value={postProcess.frameStyle}
+                onChange={(v) => updatePostProcess({ frameStyle: v as PanelFrameStyle })}
+                options={[
+                  { value: 'solid', label: 'Solid' },
+                  { value: 'double', label: 'Double' },
+                  { value: 'dashed', label: 'Dashed' },
+                ]}
+              />
+            </OverlayCard>
 
             <div className="flex items-center justify-between mt-2">
               <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>

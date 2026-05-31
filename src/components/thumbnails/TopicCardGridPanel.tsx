@@ -22,9 +22,20 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ReactElement,
-  type ReactNode,
 } from 'react';
+import {
+  ChipPicker,
+  ColorAndSlider,
+  HexInput,
+  OverlayCard,
+  RangeRow,
+  SubToggle,
+  type PanelColorGradeBlend,
+  type PanelFrameStyle,
+  type PanelHalftoneBlend,
+  type PanelInnerGlowBlend,
+  type PanelLightLeakPosition,
+} from '@/components/thumbnails/_overlay-controls';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -149,28 +160,6 @@ export type PanelImageFilter =
  *  `src/lib/thumbnail-formats/topic-card-grid-composite.ts` for the
  *  same client-boundary reasons as `PanelImageFilter`. */
 export type PanelUploadFit = 'cover' | 'contain' | 'fill';
-
-/** Tint / light-leak / inner-glow share the same four mixing blend modes. */
-export type PanelColorGradeBlend = 'multiply' | 'screen' | 'overlay' | 'soft-light';
-/** Halftone adds `normal` (flat paint) on top of the four mixing blends. */
-export type PanelHalftoneBlend = PanelColorGradeBlend | 'normal';
-/** Light-leak anchor positions — 4 corners + 4 edges. Mirrored from
- *  `LightLeakPosition` in the shared pipeline. */
-export type PanelLightLeakPosition =
-  | 'top-left'
-  | 'top-right'
-  | 'bottom-left'
-  | 'bottom-right'
-  | 'top'
-  | 'bottom'
-  | 'left'
-  | 'right';
-/** Frame stroke style. Mirrors `FrameStyle` in the shared pipeline. */
-export type PanelFrameStyle = 'solid' | 'double' | 'dashed';
-/** Inner-glow has a narrower blend choice than tint / light-leak —
- *  `screen` / `overlay` / `soft-light` only (no `multiply`, which would
- *  darken at the centre — visually wrong for a "glow"). */
-export type PanelInnerGlowBlend = 'screen' | 'overlay' | 'soft-light';
 
 /** Panel-side shape for the Post-process section's state. Granular
  *  fields (not a nested vignette / grain object) because each control
@@ -1078,245 +1067,6 @@ interface Props {
    *  mount. Distinct from `restoredResult`, which restores a rendered
    *  history entry. */
   restoredDraftState?: TopicCardGridDraftState | null;
-}
-
-// ─── r2.8 finishing overlay sub-components ──────────────────────────────────
-// Small focused helpers used by the seven overlay cards inserted into the
-// Post-process section. Each component is tight enough to inline; pulled
-// out so the seven sections read as a list of declarations instead of 700
-// lines of nested JSX.
-
-function OverlayCard({
-  title,
-  hint,
-  enabled,
-  onToggle,
-  children,
-}: {
-  title: string;
-  hint: string;
-  enabled: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}): ReactElement {
-  return (
-    <div className="mt-2">
-      <div className="flex items-center justify-between mb-1">
-        <div>
-          <span className="text-[11px]" style={{ color: 'var(--text-primary)' }}>
-            {title}
-          </span>
-          <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {hint}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onToggle}
-          className="px-2 py-0.5 rounded text-[10px]"
-          style={{
-            background: enabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
-            color: enabled ? '#fff' : 'var(--text-secondary)',
-            border: '1px solid var(--border)',
-          }}
-          aria-pressed={enabled}
-        >
-          {enabled ? 'On' : 'Off'}
-        </button>
-      </div>
-      {enabled && <div className="space-y-2">{children}</div>}
-    </div>
-  );
-}
-
-function RangeRow({
-  label,
-  value,
-  onChange,
-  min,
-  max,
-  step,
-  fmt,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  min: number;
-  max: number;
-  step: number;
-  fmt: (v: number) => string;
-}): ReactElement {
-  return (
-    <div>
-      <div className="flex items-center justify-between">
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          {label}
-        </span>
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          {fmt(value)}
-        </span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => {
-          const v = Number.parseFloat(e.target.value);
-          if (Number.isFinite(v)) onChange(v);
-        }}
-        className="w-full"
-        style={{ accentColor: 'var(--accent-pink)' }}
-      />
-    </div>
-  );
-}
-
-function HexInput({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}): ReactElement {
-  return (
-    <input
-      type="color"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
-      aria-label="colour"
-    />
-  );
-}
-
-function ColorAndSlider({
-  label,
-  color,
-  onColor,
-  value,
-  onValue,
-  min,
-  max,
-  step,
-  fmt,
-}: {
-  label: string;
-  color: string;
-  onColor: (v: string) => void;
-  value: number;
-  onValue: (v: number) => void;
-  min: number;
-  max: number;
-  step: number;
-  fmt: (v: number) => string;
-}): ReactElement {
-  return (
-    <div>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            {label}
-          </span>
-          <HexInput value={color} onChange={onColor} />
-        </div>
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          {fmt(value)}
-        </span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => {
-          const v = Number.parseFloat(e.target.value);
-          if (Number.isFinite(v)) onValue(v);
-        }}
-        className="w-full"
-        style={{ accentColor: 'var(--accent-pink)' }}
-      />
-    </div>
-  );
-}
-
-function ChipPicker<T extends string>({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string }[];
-}): ReactElement {
-  return (
-    <div>
-      <span className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>
-        {label}
-      </span>
-      <div className="flex flex-wrap gap-1">
-        {options.map((opt) => {
-          const active = value === opt.value;
-          return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => onChange(opt.value)}
-              className="px-2 py-0.5 rounded text-[10px]"
-              style={{
-                background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
-                color: active ? '#fff' : 'var(--text-secondary)',
-                border: '1px solid var(--border)',
-              }}
-              aria-pressed={active}
-            >
-              {opt.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function SubToggle({
-  label,
-  enabled,
-  onToggle,
-  children,
-}: {
-  label: string;
-  enabled: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}): ReactElement {
-  return (
-    <div>
-      <div className="flex items-center justify-between">
-        <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          {label}
-        </span>
-        <button
-          type="button"
-          onClick={onToggle}
-          className="px-2 py-0.5 rounded text-[10px]"
-          style={{
-            background: enabled ? 'var(--accent-pink)' : 'var(--bg-secondary)',
-            color: enabled ? '#fff' : 'var(--text-secondary)',
-            border: '1px solid var(--border)',
-          }}
-          aria-pressed={enabled}
-        >
-          {enabled ? 'On' : 'Off'}
-        </button>
-      </div>
-      {enabled && <div className="mt-1">{children}</div>}
-    </div>
-  );
 }
 
 export function TopicCardGridPanel({
