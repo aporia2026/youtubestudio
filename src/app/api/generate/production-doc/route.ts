@@ -260,15 +260,17 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   //      should never have become rows in the first place — they're
   //      stage directions, not narration. Drop them entirely.
   //
-  //   B. Title Card length cap. The LLM also emits Title Card rows
-  //      whose script_text is a full sentence/paragraph (e.g. "Intel
-  //      releases its flagship Pentium processor, heavily marketed to
-  //      revolutionize personal computing..."). Real title cards are
-  //      short labels — "Knight Capital", "Intel Pentium". Demote any
-  //      Title Card row whose word count > 5 to Animation.
+  //   B. Title Card strict allowlist. The ONLY rows that should be
+  //      Title Cards are the ones that match a `##` header extracted
+  //      from the source script (the user's hand-authored section
+  //      headers). Anything else the LLM tagged as Title Card is a
+  //      mistag — a full paragraph, a random script sentence, a [SFX:]
+  //      line, etc. Demote every non-matching Title Card row to
+  //      Animation. Matching is whitespace- and punctuation-tolerant
+  //      (the LLM occasionally adds a trailing period or mangles
+  //      casing) but otherwise strict.
   if (Array.isArray(result.rows)) {
     const productionNotePattern = /^\s*\[[^\]]*\]\s*$/;
-    const TITLE_CARD_WORD_CAP = 5;
     const beforeCount = result.rows.length;
     const droppedScriptTexts: string[] = [];
     result.rows = result.rows.filter((r) => {
@@ -290,22 +292,32 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       );
     }
 
-    let normalizedCount = 0;
+    const normalizeTitleText = (s: string): string =>
+      s
+        .trim()
+        .toLowerCase()
+        .replace(/[.,;:!?]+$/, '')
+        .replace(/\s+/g, ' ');
+    const allowedTitleSet = new Set(
+      extracted.titles.map((t) => normalizeTitleText(t.text)),
+    );
+    const demotedTitleCards: string[] = [];
     for (const r of result.rows) {
       if (r.visual_type !== 'Title Card') continue;
-      const wordCount = (r.script_text ?? '').trim().split(/\s+/).filter(Boolean).length;
-      if (wordCount > TITLE_CARD_WORD_CAP) {
-        r.visual_type = 'Animation';
-        normalizedCount += 1;
-      }
+      const script = (r.script_text ?? '').trim();
+      if (!script) continue;
+      if (allowedTitleSet.has(normalizeTitleText(script))) continue;
+      r.visual_type = 'Animation';
+      demotedTitleCards.push(script);
     }
-    if (normalizedCount > 0) {
-      logger.info('[production-doc title-card-normalized]', {
-        normalized_count: normalizedCount,
-        word_cap: TITLE_CARD_WORD_CAP,
+    if (demotedTitleCards.length > 0) {
+      logger.info('[production-doc title-card-demoted]', {
+        demoted_count: demotedTitleCards.length,
+        allowed_count: allowedTitleSet.size,
+        samples: demotedTitleCards.slice(0, 4),
       });
       generation_warnings.push(
-        `${normalizedCount} row${normalizedCount === 1 ? '' : 's'} the AI mistakenly tagged as Title Card had full sentences — re-tagged as Animation.`,
+        `${demotedTitleCards.length} row${demotedTitleCards.length === 1 ? ' was' : 's were'} mistagged as Title Card by the AI — only "## headers" from your script are real title cards. Re-tagged as Animation.`,
       );
     }
   }
@@ -315,7 +327,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   // Surfaces missing/extra/leaked-sentinel cases as warnings so the user can
   // recover with the Promote / Split row actions instead of having to
   // re-generate the whole doc.
+  //
+  // Matching uses the same whitespace+punctuation+casing normalizer as the
+  // strict allowlist above, so a Title Card whose script_text is "Knight
+  // Capital." (LLM added a period) still matches the extracted "Knight
+  // Capital" sentinel instead of being reported as both missing AND extra.
   if (Array.isArray(result.rows)) {
+    const normalize = (s: string): string =>
+      s
+        .trim()
+        .toLowerCase()
+        .replace(/[.,;:!?]+$/, '')
+        .replace(/\s+/g, ' ');
     const titleCardRows = result.rows.filter(
       r => r.visual_type === 'Title Card',
     );
@@ -324,18 +347,24 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
     const expectedTexts = extracted.titles.map(t => t.text);
 
-    const emittedCounts = new Map<string, number>();
-    for (const t of emittedTexts) emittedCounts.set(t, (emittedCounts.get(t) ?? 0) + 1);
+    const emittedCounts = new Map<string, { display: string; count: number }>();
+    for (const t of emittedTexts) {
+      const key = normalize(t);
+      const cur = emittedCounts.get(key);
+      if (cur) cur.count += 1;
+      else emittedCounts.set(key, { display: t, count: 1 });
+    }
 
     const missing: string[] = [];
     for (const expected of expectedTexts) {
-      const c = emittedCounts.get(expected) ?? 0;
-      if (c === 0) missing.push(expected);
-      else emittedCounts.set(expected, c - 1);
+      const key = normalize(expected);
+      const cur = emittedCounts.get(key);
+      if (!cur || cur.count === 0) missing.push(expected);
+      else cur.count -= 1;
     }
     const extra: string[] = [];
-    for (const [text, count] of emittedCounts) {
-      for (let i = 0; i < count; i++) if (text) extra.push(text);
+    for (const { display, count } of emittedCounts.values()) {
+      for (let i = 0; i < count; i++) if (display) extra.push(display);
     }
 
     const leaked = result.rows
