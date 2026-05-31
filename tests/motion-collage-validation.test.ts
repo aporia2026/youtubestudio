@@ -1,0 +1,323 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// generateMotionCollage's validation gate runs BEFORE any AI call:
+//   1. env kill switch (MOTION_COLLAGE_ENABLED='false')
+//   2. doc-level settings.allow_motion_collage === false
+//   3. grid missing / non-integer / cells < 1
+//   4. cells > MAX_COLLAGE_CELLS (hard cap)
+//   5. cells > doc settings.max_grid_panels
+//   6. panel_prompts.length !== cols × rows
+//   7. any panel prompt empty / non-string
+//   8. any panel prompt exceeds the per-panel cap
+//
+// These tests pin every rejection path. We mock the downstream
+// modules (Atlas T2I, image-gen-dispatch, upscale, slicer, provider-
+// generations, production-doc-styles) so the test file never touches
+// real services and any IO leak would surface as an unexpected mock
+// call.
+
+vi.mock('@/lib/atlas-cloud-images', () => ({
+  generateAtlasT2I: vi.fn(async () => ({ url: 'mock', predictionId: 'mock' })),
+}));
+vi.mock('@/lib/image-gen-dispatch', () => ({
+  cropTo16x9AndUpload: vi.fn(async () => 'mock-cropped'),
+}));
+vi.mock('@/lib/upscale', () => ({
+  upscaleViaRecraft: vi.fn(async () => ({ url: 'mock-upscaled' })),
+}));
+vi.mock('@/lib/collage-slicer', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/collage-slicer')>('@/lib/collage-slicer');
+  return {
+    ...actual,
+    sliceCollageGrid: vi.fn(async (_url: string, grid: { cols: number; rows: number }) => ({
+      panelUrls: Array.from({ length: grid.cols * grid.rows }, (_, i) => `mock-panel-${i}`),
+      sourceWidth: 6144,
+      sourceHeight: 3456,
+      panelWidth: 1536,
+      panelHeight: 864,
+      cols: grid.cols,
+      rows: grid.rows,
+      totalMs: 1,
+    })),
+  };
+});
+vi.mock('@/lib/provider-generations', () => ({
+  recordIntent: vi.fn(async () => ({ id: 'mock-intent' })),
+  markDelivered: vi.fn(),
+  markFailed: vi.fn(),
+}));
+vi.mock('@/lib/production-doc-styles', () => ({
+  resolveStyle: vi.fn(async () => ({ ai_image_suffix: 'mock-suffix' })),
+}));
+
+import {
+  generateMotionCollage,
+  type PipelineImageDoc,
+  type PipelineImageRow,
+} from '@/lib/auto-pipeline/production-doc-image-gen';
+import { generateAtlasT2I } from '@/lib/atlas-cloud-images';
+import { sliceCollageGrid } from '@/lib/collage-slicer';
+
+const mockedAtlas = vi.mocked(generateAtlasT2I);
+const mockedSlice = vi.mocked(sliceCollageGrid);
+
+function validRow(overrides: Partial<PipelineImageRow> = {}): PipelineImageRow {
+  return {
+    shot_kind: 'motion_collage',
+    motion_collage_grid: { cols: 2, rows: 2 },
+    motion_collage_panel_prompts: [
+      'Frame 1: stick figure standing',
+      'Frame 2: same figure, one foot lifted',
+      'Frame 3: same figure, mid-step',
+      'Frame 4: same figure, foot landing',
+    ],
+    ...overrides,
+  };
+}
+
+function docWithRow(row: PipelineImageRow, settings?: PipelineImageDoc['doodle_explainer_2_motion_collage_settings']): PipelineImageDoc {
+  return {
+    rows: [row],
+    style_preset: 'doodle_explainer_2',
+    doodle_explainer_2_motion_collage_settings: settings,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+afterEach(() => {
+  delete process.env.MOTION_COLLAGE_ENABLED;
+});
+
+describe('generateMotionCollage — happy path', () => {
+  it('returns panel URLs + cost when the row is fully valid', async () => {
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBeUndefined();
+    expect(result.panelUrls).toHaveLength(4);
+    expect(result.collageImageUrl).toBe('mock-upscaled');
+    expect(result.costUsd).toBeGreaterThan(0);
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
+    expect(mockedSlice).toHaveBeenCalledTimes(1);
+    expect(mockedSlice).toHaveBeenCalledWith(
+      'mock-upscaled',
+      { cols: 2, rows: 2 },
+      expect.objectContaining({ r2KeyPrefix: 'prodoc-images-motion-collage' }),
+    );
+  });
+
+  it('handles a 3×3 grid (9 panels) end-to-end', async () => {
+    const row = validRow({
+      motion_collage_grid: { cols: 3, rows: 3 },
+      motion_collage_panel_prompts: Array.from({ length: 9 }, (_, i) => `Frame ${i + 1}`),
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.panelUrls).toHaveLength(9);
+  });
+});
+
+describe('generateMotionCollage — kill switch + settings gates', () => {
+  it('refuses when MOTION_COLLAGE_ENABLED=false without any AI call', async () => {
+    process.env.MOTION_COLLAGE_ENABLED = 'false';
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('kill_switch');
+    expect(result.panelUrls).toBeUndefined();
+    expect(result.costUsd).toBe(0);
+    expect(mockedAtlas).not.toHaveBeenCalled();
+  });
+
+  it('runs when MOTION_COLLAGE_ENABLED is unset (default enabled)', async () => {
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBeUndefined();
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses when doc-level allow_motion_collage is false', async () => {
+    const row = validRow();
+    const doc = docWithRow(row, { allow_motion_collage: false });
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('settings_disabled');
+    expect(result.costUsd).toBe(0);
+    expect(mockedAtlas).not.toHaveBeenCalled();
+  });
+
+  it('still runs when allow_motion_collage is explicitly true', async () => {
+    const row = validRow();
+    const doc = docWithRow(row, { allow_motion_collage: true });
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBeUndefined();
+  });
+});
+
+describe('generateMotionCollage — grid validation', () => {
+  it.each([
+    { label: 'missing grid', overrides: { motion_collage_grid: undefined } },
+    { label: 'cols 0', overrides: { motion_collage_grid: { cols: 0, rows: 2 } } },
+    { label: 'rows 0', overrides: { motion_collage_grid: { cols: 2, rows: 0 } } },
+    { label: 'negative cols', overrides: { motion_collage_grid: { cols: -1, rows: 2 } } },
+    { label: 'non-integer cols', overrides: { motion_collage_grid: { cols: 1.5, rows: 2 } } },
+    { label: 'non-integer rows', overrides: { motion_collage_grid: { cols: 2, rows: 2.5 } } },
+  ])('rejects $label without any AI call', async ({ overrides }) => {
+    const row = validRow(overrides as Partial<PipelineImageRow>);
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toMatch(/^validation_failed:grid_missing_or_malformed/);
+    expect(result.costUsd).toBe(0);
+    expect(mockedAtlas).not.toHaveBeenCalled();
+  });
+
+  it('rejects grids that exceed MAX_COLLAGE_CELLS (hard cap = 16)', async () => {
+    const row = validRow({
+      motion_collage_grid: { cols: 5, rows: 4 },
+      motion_collage_panel_prompts: Array.from({ length: 20 }, (_, i) => `Frame ${i + 1}`),
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toMatch(/^validation_failed:grid_exceeds_hard_cap:20>16/);
+    expect(mockedAtlas).not.toHaveBeenCalled();
+  });
+
+  it('rejects grids that exceed the doc-level max_grid_panels even when under hard cap', async () => {
+    const row = validRow({
+      motion_collage_grid: { cols: 3, rows: 3 }, // 9 cells
+      motion_collage_panel_prompts: Array.from({ length: 9 }, (_, i) => `Frame ${i + 1}`),
+    });
+    const doc = docWithRow(row, { max_grid_panels: 6 });
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toMatch(/^validation_failed:grid_exceeds_doc_setting:9>6/);
+    expect(mockedAtlas).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateMotionCollage — panel_prompts validation', () => {
+  it('rejects when panel_prompts.length !== cols × rows', async () => {
+    const row = validRow({
+      motion_collage_grid: { cols: 2, rows: 2 }, // expects 4
+      motion_collage_panel_prompts: ['only', 'three', 'panels'],
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('validation_failed:panel_prompts_length_mismatch');
+    expect(mockedAtlas).not.toHaveBeenCalled();
+  });
+
+  it('rejects when panel_prompts is not an array', async () => {
+    const row = validRow({ motion_collage_panel_prompts: undefined });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('validation_failed:panel_prompts_length_mismatch');
+  });
+
+  it('rejects when any panel prompt is empty', async () => {
+    const row = validRow({
+      motion_collage_panel_prompts: ['ok', 'ok', '', 'ok'],
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('validation_failed:panel_prompt_empty');
+  });
+
+  it('rejects when any panel prompt is whitespace-only', async () => {
+    const row = validRow({
+      motion_collage_panel_prompts: ['ok', '   \n  ', 'ok', 'ok'],
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('validation_failed:panel_prompt_empty');
+  });
+
+  it('rejects when any panel prompt exceeds the per-panel character cap (1500)', async () => {
+    const row = validRow({
+      motion_collage_panel_prompts: [
+        'ok',
+        'a'.repeat(1501),
+        'ok',
+        'ok',
+      ],
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toMatch(/^validation_failed:panel_prompt_too_long/);
+  });
+});
+
+describe('generateMotionCollage — failure modes during generation', () => {
+  it('reports `atlas_threw:<head>` when Atlas T2I errors', async () => {
+    mockedAtlas.mockRejectedValueOnce(new Error('atlas rate limit'));
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toMatch(/^atlas_threw:atlas rate limit/);
+    expect(result.panelUrls).toBeUndefined();
+  });
+
+  it('reports `slice_failed:<head>` when the slicer throws', async () => {
+    mockedSlice.mockRejectedValueOnce(new Error('sharp metadata missing width'));
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toMatch(/^slice_failed:sharp metadata missing width/);
+    // collageImageUrl is set because generation succeeded; slice failed.
+    expect(result.collageImageUrl).toBe('mock-upscaled');
+    expect(result.panelUrls).toBeUndefined();
+  });
+
+  it('reports `slice_count_mismatch` when the slicer returns the wrong panel count', async () => {
+    mockedSlice.mockResolvedValueOnce({
+      panelUrls: ['only-one'],
+      sourceWidth: 100,
+      sourceHeight: 100,
+      panelWidth: 100,
+      panelHeight: 100,
+      cols: 2,
+      rows: 2,
+      totalMs: 1,
+    });
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBe('slice_count_mismatch');
+  });
+});

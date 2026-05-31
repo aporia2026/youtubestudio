@@ -63,7 +63,11 @@ import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { PaintExplainerV1SettingsPanel } from '@/components/production-doc/PaintExplainerV1SettingsPanel';
-import type { PaintExplainerV1Settings } from '@/remotion/utils';
+import { DoodleExplainer2MotionCollageSettingsPanel } from '@/components/production-doc/DoodleExplainer2MotionCollageSettingsPanel';
+import type {
+  DoodleExplainer2MotionCollageSettings,
+  PaintExplainerV1Settings,
+} from '@/remotion/utils';
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
 import { StyleSheetPanel } from '@/components/production-doc/StyleSheetPanel';
 import { resolveSheetReference } from '@/lib/style-sheet';
@@ -520,6 +524,11 @@ interface ProductionDoc {
    *  stay in sync. See §14 of
    *  `_plans/2026-05-28-paint-explainer-v1-architecture.md`. */
   paint_explainer_v1_settings?: PaintExplainerV1Settings;
+  /** doodle_explainer_2 (2026-05-31) — per-doc controls for
+   *  motion_collage shots. Mirrors the same field on the remotion-side
+   *  `ProductionDoc`; the two interfaces must stay in sync. See
+   *  `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
+  doodle_explainer_2_motion_collage_settings?: DoodleExplainer2MotionCollageSettings;
   /** Phase 1 / Phase 1.6 — doodle_explainer_2 character cache.
    *  Per-doc map from a recurring character's `character_id` slug
    *  to the i2i-generated base image URL captured on the FIRST row
@@ -8716,6 +8725,24 @@ function ProductionDocPage() {
               value={doc.paint_explainer_v1_settings}
               onChange={(next) => {
                 setDoc((prev) => (prev ? { ...prev, paint_explainer_v1_settings: next } : prev));
+              }}
+            />
+          )}
+
+          {/* doodle_explainer_2 motion-collage settings panel — mounts
+              only when the active style is doodle_explainer_2 AND a doc
+              exists. Same mount discipline as the paint_explainer_v1
+              panel above: pre-doc, the renderer hasn't run; post-Generate
+              the user can flip the four motion-collage knobs and watch
+              the next regen pick them up. See
+              `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */}
+          {doc && stylePreset === 'doodle_explainer_2' && (
+            <DoodleExplainer2MotionCollageSettingsPanel
+              value={doc.doodle_explainer_2_motion_collage_settings}
+              onChange={(next) => {
+                setDoc((prev) =>
+                  prev ? { ...prev, doodle_explainer_2_motion_collage_settings: next } : prev,
+                );
               }}
             />
           )}

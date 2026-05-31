@@ -32,10 +32,14 @@ export interface ResolveSceneFadeArgs {
    *  `productionDocToVideoConfig`. Undefined means "no per-row override
    *  — fall through to doc default." */
   shotSceneFade?: boolean;
-  /** paint_explainer_v1 shotKind. When `'hard_cut'`, the resolver
-   *  returns `false` regardless of any other input. Other values are
-   *  ignored by this resolver (they don't influence fade behaviour). */
-  shotKind?: 'static' | 'motion' | 'hard_cut';
+  /** Renderer shotKind. When `'hard_cut'`, the resolver returns
+   *  `false` regardless of any other input. Other values are ignored
+   *  by this resolver (they don't influence fade behaviour) —
+   *  `'motion_collage'` rows STILL respect their own per-row
+   *  `scene_fade` / doc default for the outer transition into the
+   *  shot; the hard cuts BETWEEN panels are a separate concern handled
+   *  inside `<MotionCollageScene>`. */
+  shotKind?: 'static' | 'motion' | 'hard_cut' | 'motion_collage';
   /** Doc-level default from `ProductionDoc.scene_fade_enabled` /
    *  `VideoConfig.sceneFadeEnabled`. Undefined ⇒ historical default. */
   docSceneFadeEnabled?: boolean;

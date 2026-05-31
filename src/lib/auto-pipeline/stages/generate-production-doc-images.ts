@@ -46,6 +46,7 @@ import {
   generateBaseImage,
   generateCharacterContinuationImage,
   generateCollageGroup,
+  generateMotionCollage,
   generateMouthRemovedForCharacter,
   generateSceneContinuationImage,
   generateVariantImage,
@@ -94,6 +95,16 @@ const MAX_VISION_PASS_PER_TICK = 3;
  *  Deferred entries come back next tick — the prop_slide beat's
  *  propPromptHint is still missing from the doc's prop cache. */
 const MAX_PROP_GEN_PER_TICK = 3;
+
+/** Hard cap on how many doodle_explainer_2 motion_collage rows this
+ *  tick processes. Lower than MAX_MOUTH_REMOVED_PER_TICK because each
+ *  motion_collage call is heavier: Atlas T2I against a more elaborate
+ *  prompt (~60-90 s) + Recraft 4× upscale on a ~4K target (~30 s) +
+ *  sharp slice into N panels (~5 s) ≈ ~125 s worst case. Two rows per
+ *  tick leaves a ~50 s headroom under the Vercel 300 s budget even
+ *  alongside other work. Rows deferred by this cap come back next tick
+ *  via the same retry pattern (image_url still empty triggers re-pick). */
+const MAX_MOTION_COLLAGE_PER_TICK = 2;
 
 /** Conservative cost per vision-pass call (kie-gemini-3.1-pro). The
  *  exact number depends on Kie's per-token rate at call time;
@@ -167,8 +178,14 @@ export async function handleGenerateProductionDocImages(
 
   // 2) Partition rows by what needs work. Bases first so variants
   //    have something to chain from. Skips rows that already have an
-  //    image_url (idempotent re-entry) or no ai_image_prompt
-  //    (title cards, talking heads — never need AI generation).
+  //    image_url (idempotent re-entry) or no usable prompt source.
+  //
+  //    A "usable prompt source" is either a non-empty `ai_image_prompt`
+  //    (regular base rows, including doodle_explainer_2 + paint_explainer_v1
+  //    standalone shots) OR a `shot_kind === 'motion_collage'` row with
+  //    its `motion_collage_panel_prompts` populated. The motion_collage
+  //    path uses a different prompt source per the new shot kind — see
+  //    `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
   const baseIndicesToGen: number[] = [];
   const variantIndicesToGen: number[] = [];
   doc.rows.forEach((row, i) => {
@@ -176,8 +193,12 @@ export async function handleGenerateProductionDocImages(
     const prompt = (row.ai_image_prompt ?? '').trim();
     const variantIdx = row.variant_index ?? 0;
     if (variantIdx === 0) {
-      // Base / standalone — needs a non-empty prompt to even attempt.
-      if (!prompt) return;
+      // Base / standalone — needs a non-empty prompt source. Motion
+      // collage rows carry their content in `motion_collage_panel_prompts`
+      // instead of `ai_image_prompt`; admit them here so the per-item
+      // loop's motion_collage branch can pick them up.
+      const isMotionCollage = row.shot_kind === 'motion_collage';
+      if (!prompt && !isMotionCollage) return;
       baseIndicesToGen.push(i);
     } else {
       // Variant — needs a non-empty variant_edit_prompt. Source
@@ -430,6 +451,16 @@ export async function handleGenerateProductionDocImages(
   let sceneCacheHits = 0;
   let sceneCacheMisses = 0;
   let sceneCacheEditFailures = 0;
+  // 2026-05-31 — motion_collage counters. All zero on docs that don't
+  // contain any motion_collage rows. Surfaced in the per-tick summary
+  // log so cost attribution is visible at a glance. Deferred rows (the
+  // per-tick cap kicks them to the next tick) bump `attempted` but not
+  // `succeeded`/`failed`; counting deferred separately keeps the
+  // success-rate math honest.
+  let motionCollageThisTick = 0;
+  let motionCollageSucceeded = 0;
+  let motionCollageFailed = 0;
+  let motionCollageDeferred = 0;
 
   // ─── Collage chunks first ──────────────────────────────────────────
   // Run scheduled collage chunks before the per-row plan. Each chunk:
@@ -501,6 +532,61 @@ export async function handleGenerateProductionDocImages(
 
   for (const item of plan) {
     const row = doc.rows[item.index];
+
+    // ─── doodle_explainer_2 motion_collage routing ────────────────────
+    // Runs BEFORE the character / scene cache paths. motion_collage
+    // shots produce real motion via N×M keyframes in one generation;
+    // they intentionally bypass the cache paths because:
+    //   - The cache paths preserve a SINGLE character identity via
+    //     Atlas Edit on a cached base. Motion collage's panels are all
+    //     drawn together in one t2i call, so identity is preserved
+    //     within the shot regardless of any cache hit.
+    //   - The cache paths assume `ai_image_prompt` is the input;
+    //     motion_collage rows leave that empty and carry per-panel
+    //     prompts in `motion_collage_panel_prompts`.
+    // Per-tick cap: MAX_MOTION_COLLAGE_PER_TICK. Deferred rows return
+    // next tick (image_url still empty triggers the partition re-pick).
+    // Plan: _plans/2026-05-31-doodle-explainer-2-motion-collage.md.
+    if (item.kind === 'base' && row.shot_kind === 'motion_collage') {
+      if (motionCollageThisTick >= MAX_MOTION_COLLAGE_PER_TICK) {
+        motionCollageDeferred += 1;
+        logger.info('[motion-collage pipeline] deferred to next tick', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          cap: MAX_MOTION_COLLAGE_PER_TICK,
+        });
+        continue;
+      }
+      motionCollageThisTick += 1;
+      const mc = await generateMotionCollage({
+        row,
+        doc,
+        workspaceId: video.workspace_id,
+      });
+      tickCostUsd += mc.costUsd;
+      if (mc.panelUrls && mc.panelUrls.length > 0) {
+        // Write back: collage + slices + sentinel image_url so the
+        // partition step skips this row on subsequent ticks (idempotent
+        // re-entry). Mirror panel 0 into image_url so any UI surface
+        // that reads .image_url (saliency, hover thumbs, …) shows the
+        // first frame instead of a blank.
+        doc.rows[item.index].motion_collage_image_url = mc.collageImageUrl;
+        doc.rows[item.index].motion_collage_panel_urls = mc.panelUrls;
+        doc.rows[item.index].image_url = mc.panelUrls[0];
+        motionCollageSucceeded += 1;
+        succeeded += 1;
+      } else {
+        motionCollageFailed += 1;
+        failed += 1;
+        logger.warn('[motion-collage pipeline] row failed', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          error: mc.error,
+          duration_ms: mc.durationMs,
+        });
+      }
+      continue;
+    }
 
     // doodle_explainer_2 character continuation — runs BEFORE the
     // normal base/variant generation path. When this row has a
@@ -1042,6 +1128,16 @@ export async function handleGenerateProductionDocImages(
     collage_chunks_fallback: collageChunksFallback,
     collage_cells_succeeded: collageCellsSucceeded,
     collage_cells_from_fallback: collageCellsFromFallback,
+    // 2026-05-31 motion_collage telemetry. All zero on docs without
+    // any motion_collage rows. `deferred` counts rows the tick cap
+    // kicked to the next tick — they ALSO show up in the partition
+    // next tick (image_url still empty), so the success rate over the
+    // whole job is `succeeded / (succeeded + failed)`, not
+    // `succeeded / attempted`.
+    motion_collage_attempted: motionCollageThisTick,
+    motion_collage_succeeded: motionCollageSucceeded,
+    motion_collage_failed: motionCollageFailed,
+    motion_collage_deferred: motionCollageDeferred,
   });
 
   return {

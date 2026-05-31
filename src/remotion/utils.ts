@@ -1,9 +1,9 @@
-import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig, type PaintExplainerV1Settings } from './types';
+import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig, type PaintExplainerV1Settings, type DoodleExplainer2MotionCollageSettings } from './types';
 // Re-export so callers can keep importing from `@/remotion/utils` —
 // the canonical interface lives in `./types` (next to VideoConfig)
 // but the constants + resolver below live here, so co-locating the
 // type re-export keeps the call surface single-import for consumers.
-export type { PaintExplainerV1Settings };
+export type { PaintExplainerV1Settings, DoodleExplainer2MotionCollageSettings };
 import { stripProductionMarkers } from '@/lib/script-markers';
 import {
   alignRowsToWords,
@@ -687,14 +687,19 @@ export interface ProductionRow {
    *  `ProductionDoc.paint_explainer_v1_character_cache` by this value. */
   character_id?: string;
 
-  /** Renderer routing for the paint_explainer_v1 style.
+  /** Renderer routing for the paint_explainer_v1 + doodle_explainer_2
+   *  styles.
    *  - `'static'` (default ⇒ same as the rest of the codebase): Ken Burns
    *    or still, current behaviour.
    *  - `'motion'`: render Layer 1 procedural overlays from `motion_beats`
    *    over the base image (mouth-swap, label-pop, prop-slide, …).
+   *    paint_explainer_v1 only.
    *  - `'hard_cut'`: signal that this shot enters as a snap cut from the
-   *    previous, no transition. */
-  shot_kind?: 'static' | 'motion' | 'hard_cut';
+   *    previous, no transition.
+   *  - `'motion_collage'`: render a hard-cut keyframe sequence from
+   *    `motion_collage_panel_urls`. doodle_explainer_2 only — see
+   *    `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
+  shot_kind?: 'static' | 'motion' | 'hard_cut' | 'motion_collage';
 
   /** Procedural motion overlays this row's `<MotionScene>` should run.
    *  Each beat's timing is relative to row start (ms); when the project
@@ -729,6 +734,43 @@ export interface ProductionRow {
    *  content per call; character identity is the higher-stakes anchor.
    *  See _plans/2026-05-28-doodle-2-scene-cache.md. */
   scene_id?: string;
+
+  // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────
+  //
+  // Additive, optional, only meaningful when `shot_kind === 'motion_collage'`.
+  // All four fields are absent on every other shot kind and on legacy
+  // docs. See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+
+  /** Grid layout for motion_collage shots. cols × rows = total
+   *  keyframes generated in a single collage image, then sliced and
+   *  played as a hard-cut sequence over the row's duration. Required
+   *  when `shot_kind === 'motion_collage'`; ignored otherwise. Bound:
+   *  cols × rows ≤ `MAX_COLLAGE_CELLS` (= 16) enforced in the slicer
+   *  AND server-side in `generateMotionCollage` before any AI call. */
+  motion_collage_grid?: { cols: number; rows: number };
+
+  /** Per-panel prompts describing the action progression. Index 0 is
+   *  top-left, subsequent indices walk row-major (left-to-right, then
+   *  top-to-bottom). Length MUST equal `motion_collage_grid.cols *
+   *  motion_collage_grid.rows` — server-side validation rejects
+   *  mismatched rows. Each entry describes ONE keyframe of motion: the
+   *  base composition / camera / character stays IDENTICAL across
+   *  panels, only the moving element advances. */
+  motion_collage_panel_prompts?: string[];
+
+  /** Pipeline-populated: R2 URL of the raw N×M collage image (post-
+   *  upscale). Kept for debugging and re-slice when settings change.
+   *  Not consumed by the renderer — the renderer reads the per-panel
+   *  URLs in `motion_collage_panel_urls`. */
+  motion_collage_image_url?: string;
+
+  /** Pipeline-populated: R2 URLs of the sliced per-panel images, in
+   *  the same index order as `motion_collage_panel_prompts`. Length
+   *  equals cols × rows on success. The renderer (`<MotionCollageScene>`)
+   *  reads from here. Empty / absent ⇒ pipeline hasn't run yet OR
+   *  generation failed; the renderer falls back to a held single
+   *  image. */
+  motion_collage_panel_urls?: string[];
 }
 
 /** A single procedural motion overlay attached to a paint_explainer_v1
@@ -1317,6 +1359,14 @@ export interface ProductionDoc {
    *  renderer reads via `productionDocToVideoConfig` → VideoConfig.
    *  Undefined on legacy / non-paint_explainer_v1 docs. */
   paint_explainer_v1_prop_cache?: Record<string, string>;
+
+  /** doodle_explainer_2 (2026-05-31): per-doc controls for
+   *  motion_collage shots. Every field optional —
+   *  `resolveDoodleExplainer2MotionCollageSettings` fills in the
+   *  canonical default for any field the user hasn't set. Undefined
+   *  on legacy / non-doodle_explainer_2 docs. See
+   *  `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
+  doodle_explainer_2_motion_collage_settings?: DoodleExplainer2MotionCollageSettings;
 }
 
 /** Canonical defaults applied by `resolvePaintExplainerV1Settings`.
@@ -1407,6 +1457,72 @@ function clampPaintSetting(
 
 function isValidHexColor(value: string | undefined): value is string {
   return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+// ─── doodle_explainer_2 motion-collage settings (2026-05-31) ────────
+//
+// Per-doc controls for the motion_collage shot kind. Mirrors the
+// PAINT_EXPLAINER_V1_* defaults / bounds / resolver pattern exactly
+// so the editor settings panel can compose against the same primitives.
+// See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+
+/** Canonical defaults applied by
+ *  `resolveDoodleExplainer2MotionCollageSettings`. Numbers picked from
+ *  the architecture plan's §Settings table — the floor / ceiling
+ *  constants live in `DOODLE_EXPLAINER_2_MOTION_COLLAGE_BOUNDS`. */
+export const DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS: Required<DoodleExplainer2MotionCollageSettings> = {
+  allow_motion_collage: true,
+  max_grid_panels: 12,
+  min_per_frame_ms: 200,
+  max_per_frame_ms: 800,
+};
+
+/** Bounds applied by `resolveDoodleExplainer2MotionCollageSettings` to
+ *  keep a stale / hand-edited doc value from breaking the pipeline.
+ *  Each entry is `[min, max]` inclusive. The `max_grid_panels` upper
+ *  bound is `MAX_COLLAGE_CELLS` from `src/lib/collage-slicer.ts` —
+ *  the slicer enforces the same number as a defense-in-depth ceiling,
+ *  so callers can rely on the floor + ceiling math holding regardless
+ *  of which surface reads it. */
+export const DOODLE_EXPLAINER_2_MOTION_COLLAGE_BOUNDS = {
+  max_grid_panels: [4, 16] as const,
+  min_per_frame_ms: [100, 500] as const,
+  max_per_frame_ms: [300, 1500] as const,
+};
+
+/** Resolve the effective doodle_explainer_2 motion-collage settings
+ *  for a doc: layer the stored values over the canonical defaults,
+ *  clamping numeric fields into their allowed bounds. Returns a
+ *  fully-populated shape so consumers (pipeline validator, settings
+ *  panel, mixing-rules cadence checker) don't have to handle
+ *  undefined on every field.
+ *
+ *  Pure: no IO. Safe to call from both server and renderer. */
+export function resolveDoodleExplainer2MotionCollageSettings(
+  doc: Pick<ProductionDoc, 'doodle_explainer_2_motion_collage_settings'> | null | undefined,
+): Required<DoodleExplainer2MotionCollageSettings> {
+  const stored = doc?.doodle_explainer_2_motion_collage_settings ?? {};
+  return {
+    allow_motion_collage:
+      typeof stored.allow_motion_collage === 'boolean'
+        ? stored.allow_motion_collage
+        : DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS.allow_motion_collage,
+    max_grid_panels: clampPaintSetting(
+      stored.max_grid_panels,
+      DOODLE_EXPLAINER_2_MOTION_COLLAGE_BOUNDS.max_grid_panels,
+      DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS.max_grid_panels,
+    ),
+    min_per_frame_ms: clampPaintSetting(
+      stored.min_per_frame_ms,
+      DOODLE_EXPLAINER_2_MOTION_COLLAGE_BOUNDS.min_per_frame_ms,
+      DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS.min_per_frame_ms,
+    ),
+    max_per_frame_ms: clampPaintSetting(
+      stored.max_per_frame_ms,
+      DOODLE_EXPLAINER_2_MOTION_COLLAGE_BOUNDS.max_per_frame_ms,
+      DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS.max_per_frame_ms,
+    ),
+  };
 }
 
 export interface RowImageState {
@@ -2068,6 +2184,13 @@ export function productionDocToVideoConfig(
       mouthAnchor: row.character_id
         ? doc.paint_explainer_v1_character_cache?.[row.character_id]?.anchors?.['auto-mouth']
         : undefined,
+      // doodle_explainer_2 motion_collage panel URLs — populated by the
+      // image-gen pipeline (`generateMotionCollage`). Undefined on
+      // every other shot_kind. `<MotionCollageScene>` reads from here
+      // to play the keyframes hard-cut across the row's window;
+      // missing / empty array falls back to the held single-image
+      // render path.
+      motionCollagePanelUrls: row.motion_collage_panel_urls,
       // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });

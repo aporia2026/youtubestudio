@@ -292,8 +292,11 @@ export interface VideoShot {
 
   /** Renderer routing hint. `'motion'` mounts `<MotionScene>` over the
    *  base image; `'hard_cut'` signals snap-cut entry (no fade);
-   *  `'static'` (or undefined) uses the current Ken-Burns-or-still path. */
-  shotKind?: 'static' | 'motion' | 'hard_cut';
+   *  `'motion_collage'` mounts `<MotionCollageScene>` and plays
+   *  `motionCollagePanelUrls` as hard-cut keyframes over the shot's
+   *  duration (doodle_explainer_2 motion collage); `'static'` (or
+   *  undefined) uses the current Ken-Burns-or-still path. */
+  shotKind?: 'static' | 'motion' | 'hard_cut' | 'motion_collage';
 
   /** Procedural motion overlays for this shot. Same shape as
    *  `ProductionRow.motion_beats`. Unrecognised kinds are skipped
@@ -347,6 +350,24 @@ export interface VideoShot {
    *  calibrated against. Absent when the vision-pass hasn't run or
    *  returned no useful result — MouthSwap falls back to the default. */
   mouthAnchor?: { xPct: number; yPct: number };
+
+  // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────
+  //
+  // Renderer-side mirror of ProductionRow.motion_collage_panel_urls.
+  // Plumbed through `productionDocToVideoConfig` so SceneRouter can
+  // route to `<MotionCollageScene>` when `shotKind === 'motion_collage'`,
+  // and that scene can divide the shot's duration evenly across the
+  // panels. Absent when shotKind is not 'motion_collage'. See
+  // `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+
+  /** Sliced per-panel R2 URLs for motion_collage shots. Index 0 is the
+   *  first keyframe (top-left of the source grid); subsequent indices
+   *  walk row-major across the grid. The renderer divides
+   *  `durationInFrames` by N panels with the remainder absorbed by the
+   *  last panel — every frame is hard-cut, no fades between panels.
+   *  When absent / empty, the renderer falls back to a held single
+   *  image (panel 0 mirrored into `imageUrl` by the pipeline). */
+  motionCollagePanelUrls?: string[];
 }
 
 // ─── paint_explainer_v1 settings ────────────────────────────────────
@@ -382,6 +403,39 @@ export interface PaintExplainerV1Settings {
   draw_on_default_duration_ms?: number;
   /** Transition between shots. `'snap'` matches the genre default. */
   hard_cut_transition?: 'snap' | 'micro-fade';
+}
+
+// ─── doodle_explainer_2 motion-collage settings (2026-05-31) ────────
+//
+// Per-doc controls for the motion_collage shot kind. Lives in this
+// file (the renderer's type module) so VideoConfig can reference it
+// without a circular import. The constants
+// (DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS, _BOUNDS) and the
+// resolver function live in `./utils` alongside the
+// paint_explainer_v1 equivalents. See
+// `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+
+export interface DoodleExplainer2MotionCollageSettings {
+  /** Global kill for motion_collage shots in this doc. When false, the
+   *  LLM is told to skip the new shot kind via mixing_rules AND the
+   *  pipeline refuses to generate any motion_collage row (defense in
+   *  depth — covers a stale doc where the LLM emitted before this
+   *  toggle was flipped). Default true. */
+  allow_motion_collage?: boolean;
+  /** Maximum panels per collage (cols × rows). Bounds spend per shot
+   *  and renderer load. Bounded [4, 16] — the hard ceiling is enforced
+   *  in `src/lib/collage-slicer.ts` via `MAX_COLLAGE_CELLS`. Default 12. */
+  max_grid_panels?: number;
+  /** Minimum per-frame duration (ms). Frames briefer than this read as
+   *  flicker; the pipeline rejects rows whose
+   *  `shot.durationMs / N < min_per_frame_ms`. Default 200 (5 fps
+   *  perceived floor). */
+  min_per_frame_ms?: number;
+  /** Maximum per-frame duration (ms). Frames longer than this stop
+   *  feeling like motion and start feeling like a slideshow — the LLM
+   *  is told to pick a grid such that `shot.durationMs / N` lands
+   *  below this. Default 800. */
+  max_per_frame_ms?: number;
 }
 
 // ─── Video Config ──────────────────────────────────────────────────────────────

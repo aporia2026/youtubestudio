@@ -13,6 +13,7 @@ import { ScreenMockupScene } from '../scenes/ScreenMockupScene';
 import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
 import { MotionScene } from '../scenes/MotionScene';
+import { MotionCollageScene } from '../scenes/MotionCollageScene';
 import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
 import { resolveSceneFade } from '../fade-resolution';
 import { RealImageOverlay } from '../components/RealImageOverlay';
@@ -489,6 +490,22 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
         lowerThirdVariant={lowerThirdVariant}
         paintSettings={config.paintExplainerV1Settings}
         propCache={config.paintExplainerV1PropCache}
+      />
+    );
+  }
+  // doodle_explainer_2 motion_collage — sliced N×M keyframes played
+  // hard-cut across the shot window. Parallel to the motion branch
+  // above but uses a different content source (panel URLs instead of
+  // procedural overlays on a held base). Falls through to the sceneType
+  // switch when shotKind is anything else. See
+  // `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+  if (shot.shotKind === 'motion_collage') {
+    return (
+      <MotionCollageScene
+        {...props}
+        shotIndex={shotIndex}
+        suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds}
+        lowerThirdVariant={lowerThirdVariant}
       />
     );
   }

@@ -33,7 +33,8 @@ import { generateGptImage2Edit } from '../gpt-image-2-edit';
 import { getUserSettings } from '../user-settings';
 import { composeCollagePrompt } from '../collage-prompt';
 import { detectMalformedCollage } from '../collage-detect';
-import { sliceCollage } from '../collage-slicer';
+import { sliceCollage, sliceCollageGrid, MAX_COLLAGE_CELLS } from '../collage-slicer';
+import { composeMotionCollagePrompt } from '../motion-collage-prompt';
 import { generateMouthRemovedBase } from '../atlas-mouth-removal';
 import { cropTo16x9AndUpload } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
@@ -97,6 +98,16 @@ export interface PipelineImageRow {
   /** Phase 3 — recurring location/object slug. Server-only mirror of
    *  ProductionRow.scene_id. */
   scene_id?: string;
+  // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────
+  // Server-only mirror of ProductionRow.{shot_kind, motion_collage_*}.
+  // Re-stated here (not imported) for the same reason as the
+  // paint_explainer_v1 block above. See
+  // `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+  shot_kind?: 'static' | 'motion' | 'hard_cut' | 'motion_collage';
+  motion_collage_grid?: { cols: number; rows: number };
+  motion_collage_panel_prompts?: string[];
+  motion_collage_image_url?: string;
+  motion_collage_panel_urls?: string[];
 }
 
 /** Doc-level fields the helper needs to dispatch correctly. */
@@ -156,6 +167,18 @@ export interface PipelineImageDoc {
    *  ProductionDoc; the auto-pipeline's collage planner reads this once
    *  per tick. See _plans/2026-05-28-auto-pipeline-collage-port.md. */
   collage_mode?: boolean;
+  // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────
+  // Server-only mirror of
+  // ProductionDoc.doodle_explainer_2_motion_collage_settings. The
+  // `generateMotionCollage` helper resolves defaults inline; this
+  // type only carries the optional stored shape. See
+  // `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+  doodle_explainer_2_motion_collage_settings?: {
+    allow_motion_collage?: boolean;
+    max_grid_panels?: number;
+    min_per_frame_ms?: number;
+    max_per_frame_ms?: number;
+  };
 }
 
 /**
@@ -1145,6 +1168,377 @@ export async function generateCollageGroup(args: {
     fallbackNeeded: false,
     durationMs,
   };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// doodle_explainer_2 motion_collage (2026-05-31)
+//
+// Distinct from generateCollageGroup above (which packs FOUR unrelated
+// shots into one image as a cost optimization). This helper generates ONE
+// motion-collage shot whose N×M panels are PLAYED IN SEQUENCE by the
+// renderer to produce real motion (a running character, falling object,
+// logo assembly, …). The panels are drawn in one model call so visual
+// coherence between frames is guaranteed.
+//
+// See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface PipelineMotionCollageResult {
+  /** R2 URL of the raw N×M collage image (post-upscale). Kept for
+   *  debugging + re-slice on settings change. Absent on validation or
+   *  generation failure. */
+  collageImageUrl?: string;
+  /** R2 URLs of the per-panel slices, in row-major order. Length
+   *  equals cols × rows on success. */
+  panelUrls?: string[];
+  /** Total cost across generation + upscale, in USD. Zero on a
+   *  validation rejection (no AI call made). */
+  costUsd: number;
+  /** Wall-clock duration including all retries. */
+  durationMs: number;
+  /** Classified failure reason when `panelUrls` is absent.
+   *  - `validation_failed:<detail>` — schema gate tripped before any
+   *    AI call (caller surfaces in the inspector).
+   *  - `settings_disabled` — doc-level `allow_motion_collage` is off.
+   *  - `kill_switch` — env `MOTION_COLLAGE_ENABLED=false`.
+   *  - `atlas_threw:<head>` — Atlas T2I errored.
+   *  - `slice_failed:<head>` — sliceCollageGrid threw.
+   *  - `slice_count_mismatch` — slice returned the wrong number of
+   *    panels (defensive — bounds check should have caught it). */
+  error?: string;
+}
+
+/**
+ * Generate one motion-collage shot end-to-end: validate the row, call
+ * Atlas T2I once with a same-scene-keyframes prompt, upscale via Recraft,
+ * slice into the row's `cols × rows` panels, upload to R2. Returns the
+ * panel URLs the caller writes onto the row.
+ *
+ * Failure posture: never throws — callers (the stage handler) want a
+ * single per-row outcome, not a per-stage exception. Each failure mode
+ * sets `error` to a classified short reason.
+ *
+ * The Atlas size is `1536×1024` (same as `generateCollageGroup`); after
+ * `cropTo16x9AndUpload` and Recraft 4× upscale the slice source lands
+ * at ~6144×3456. For a 4×4 grid that yields ~1536×864 per panel (HD),
+ * matching the per-shot resolution target. Larger grids drop panel
+ * resolution proportionally — that's a known cost of `MAX_COLLAGE_CELLS`
+ * being 16. Documented in the architecture plan.
+ *
+ * Aspect-ratio caveat: non-square grids (e.g. 3×2) produce non-16:9
+ * panels (1.185:1 in that case). The renderer's `objectFit: 'cover'`
+ * crops them to fit a 16:9 frame, losing vertical content on landscape
+ * grids and horizontal content on portrait grids. Acceptable for v1
+ * since most motion is horizontal; documented in mixing_rules so the
+ * LLM defaults to square grids (2×2 / 3×3 / 4×4) when in doubt.
+ */
+export async function generateMotionCollage(args: {
+  row: PipelineImageRow;
+  doc: PipelineImageDoc;
+  workspaceId: string;
+  ownerId?: string | null;
+}): Promise<PipelineMotionCollageResult> {
+  const t0 = Date.now();
+  const { row, doc, workspaceId, ownerId = null } = args;
+
+  // ─── 1. Env kill switch ─────────────────────────────────────────────
+  // Lets us disable motion_collage globally without a redeploy if a
+  // model regression breaks the feature. Default enabled — only the
+  // literal string 'false' (case-insensitive) trips the gate.
+  if ((process.env.MOTION_COLLAGE_ENABLED ?? '').toLowerCase() === 'false') {
+    logger.warn('[motion-collage pipeline] kill-switch off — skipping', {
+      env_value: process.env.MOTION_COLLAGE_ENABLED,
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: 'kill_switch',
+    };
+  }
+
+  // ─── 2. Doc-level settings gate ─────────────────────────────────────
+  // The LLM shouldn't have emitted motion_collage rows when the user
+  // flipped this off (mixing_rules tells it), but defense in depth: the
+  // pipeline refuses regardless of LLM emissions. Resolver inline — we
+  // don't want to bring the resolver from utils.ts (React-pull). The
+  // four settings carry sensible undefined → default fallback inline.
+  const settings = doc.doodle_explainer_2_motion_collage_settings ?? {};
+  const allowMotionCollage =
+    typeof settings.allow_motion_collage === 'boolean' ? settings.allow_motion_collage : true;
+  const maxGridPanelsRaw =
+    typeof settings.max_grid_panels === 'number' && Number.isFinite(settings.max_grid_panels)
+      ? settings.max_grid_panels
+      : 12;
+  const maxGridPanels = Math.max(4, Math.min(MAX_COLLAGE_CELLS, Math.round(maxGridPanelsRaw)));
+  if (!allowMotionCollage) {
+    logger.warn('[motion-collage pipeline] settings-disabled', {
+      row_index: lookupRowIndex(row, doc),
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: 'settings_disabled',
+    };
+  }
+
+  // ─── 3. Row validation ──────────────────────────────────────────────
+  // Reject early — no AI call, no upload, no DB write — when the row's
+  // motion_collage_* fields are malformed. Each branch logs a specific
+  // reason the inspector / stage handler can surface.
+  const grid = row.motion_collage_grid;
+  if (
+    !grid
+    || !Number.isInteger(grid.cols)
+    || !Number.isInteger(grid.rows)
+    || grid.cols < 1
+    || grid.rows < 1
+  ) {
+    logger.warn('[motion-collage pipeline] grid validation failed', {
+      reason: 'grid_missing_or_malformed',
+      grid,
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: 'validation_failed:grid_missing_or_malformed',
+    };
+  }
+  const N = grid.cols * grid.rows;
+  if (N > MAX_COLLAGE_CELLS) {
+    logger.warn('[motion-collage pipeline] grid validation failed', {
+      reason: 'grid_exceeds_hard_cap',
+      cols: grid.cols,
+      rows: grid.rows,
+      cells: N,
+      hard_cap: MAX_COLLAGE_CELLS,
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: `validation_failed:grid_exceeds_hard_cap:${N}>${MAX_COLLAGE_CELLS}`,
+    };
+  }
+  if (N > maxGridPanels) {
+    logger.warn('[motion-collage pipeline] grid validation failed', {
+      reason: 'grid_exceeds_doc_setting',
+      cols: grid.cols,
+      rows: grid.rows,
+      cells: N,
+      doc_max: maxGridPanels,
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: `validation_failed:grid_exceeds_doc_setting:${N}>${maxGridPanels}`,
+    };
+  }
+  const panelPrompts = row.motion_collage_panel_prompts;
+  if (!Array.isArray(panelPrompts) || panelPrompts.length !== N) {
+    logger.warn('[motion-collage pipeline] grid validation failed', {
+      reason: 'panel_prompts_length_mismatch',
+      expected: N,
+      actual: Array.isArray(panelPrompts) ? panelPrompts.length : null,
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: 'validation_failed:panel_prompts_length_mismatch',
+    };
+  }
+  if (panelPrompts.some((p) => typeof p !== 'string' || p.trim().length === 0)) {
+    logger.warn('[motion-collage pipeline] grid validation failed', {
+      reason: 'panel_prompt_empty',
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: 'validation_failed:panel_prompt_empty',
+    };
+  }
+  // Per-panel character cap. Mirrors the existing prompt-augmentation
+  // caps so the combined prompt doesn't blow past the model's context.
+  const MAX_PER_PANEL_CHARS = 1500;
+  if (panelPrompts.some((p) => p.length > MAX_PER_PANEL_CHARS)) {
+    logger.warn('[motion-collage pipeline] grid validation failed', {
+      reason: 'panel_prompt_too_long',
+      max: MAX_PER_PANEL_CHARS,
+    });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: `validation_failed:panel_prompt_too_long:max=${MAX_PER_PANEL_CHARS}`,
+    };
+  }
+
+  // ─── 4. Compose the collage prompt ──────────────────────────────────
+  // Resolve the style to pull its `ai_image_suffix` — the doodle
+  // aesthetic vocabulary lives there. Same lookup as generateBaseImage.
+  let styleSuffix: string | undefined;
+  if (doc.style_preset?.trim()) {
+    try {
+      const style = await resolveStyle(doc.style_preset, workspaceId, ownerId);
+      styleSuffix = style?.ai_image_suffix;
+    } catch (err) {
+      // Style lookup failure is non-fatal — the generation can still
+      // run with the panel prompts alone. Logged for debugging.
+      logger.warn('[motion-collage pipeline] style lookup failed — generating without suffix', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  let composedPrompt: string;
+  try {
+    composedPrompt = composeMotionCollagePrompt({
+      panelPrompts,
+      cols: grid.cols,
+      rows: grid.rows,
+      characterDescriptions: doc.doodle_explainer_2_character_descriptions,
+      styleSuffix,
+      reinforced: false,
+    });
+  } catch (err) {
+    // composeMotionCollagePrompt only throws on length mismatch, which
+    // we just validated. Defensive catch — bubble as classified error.
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('[motion-collage pipeline] prompt composition failed', { detail: msg.slice(0, 200) });
+    return {
+      costUsd: 0,
+      durationMs: Date.now() - t0,
+      error: `validation_failed:compose_threw:${msg.slice(0, 100)}`,
+    };
+  }
+
+  logger.info('[motion-collage pipeline] start', {
+    row_index: lookupRowIndex(row, doc),
+    grid: `${grid.cols}x${grid.rows}`,
+    panel_count: N,
+    prompt_chars: composedPrompt.length,
+  });
+
+  // ─── 5. Generate ────────────────────────────────────────────────────
+  // Single attempt — no malformed-detection retry in v1. The slicer's
+  // bounds check catches geometrically-impossible outputs; semantic
+  // quality issues (drift between panels) need a vision pass we haven't
+  // built yet. Reroll is the user's call from the inspector.
+  const intent = await recordIntent({
+    userId: ownerId,
+    workspaceId,
+    route: 'auto-pipeline:generateMotionCollage',
+    provider: 'atlas',
+    providerModel: `openai/gpt-image-2/t2i#motion-collage-${grid.cols}x${grid.rows}`,
+  });
+  let providerRequestId: string | null = null;
+  let upscaledUrl: string;
+  let generationCostUsd: number;
+  try {
+    const atlasResult = await generateAtlasT2I({
+      prompt: composedPrompt,
+      size: '1536x1024',
+      quality: 'low',
+    });
+    providerRequestId = atlasResult.predictionId ?? null;
+    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
+    const upscale = await upscaleViaRecraft(croppedUrl);
+    upscaledUrl = upscale.url;
+    // Atlas T2I low (~$0.011) + Recraft Crisp Upscale (~$0.0025) ≈ $0.014.
+    // Pinned here as a constant — the exact number is the source of
+    // truth for the stage handler's cost cap rollup. Live pricing
+    // verification is the implementer's responsibility per rule 8.
+    generationCostUsd = 0.014;
+    void markDelivered({
+      id: intent.id,
+      providerRequestId,
+      responseUrl: upscaledUrl,
+      costUsd: generationCostUsd,
+      durationMs: Date.now() - t0,
+    });
+    logger.info('[motion-collage pipeline] generated', {
+      row_index: lookupRowIndex(row, doc),
+      grid: `${grid.cols}x${grid.rows}`,
+      collage_url: upscaledUrl,
+      ms: Date.now() - t0,
+      cost_usd: generationCostUsd,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    void markFailed({
+      id: intent.id,
+      failureReason: msg,
+      providerRequestId,
+      durationMs: Date.now() - t0,
+    });
+    logger.error('[motion-collage pipeline] failed', {
+      stage: 'atlas_generation',
+      detail: msg.slice(0, 200),
+    });
+    return {
+      costUsd: 0, // not charged on a throw; provider audit covers attribution
+      durationMs: Date.now() - t0,
+      error: `atlas_threw:${msg.slice(0, 100)}`,
+    };
+  }
+
+  // ─── 6. Slice into per-panel JPEGs + upload ─────────────────────────
+  let sliceResult;
+  try {
+    sliceResult = await sliceCollageGrid(
+      upscaledUrl,
+      { cols: grid.cols, rows: grid.rows },
+      { r2KeyPrefix: 'prodoc-images-motion-collage' },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('[motion-collage pipeline] failed', {
+      stage: 'slice',
+      detail: msg.slice(0, 200),
+    });
+    return {
+      collageImageUrl: upscaledUrl,
+      costUsd: generationCostUsd,
+      durationMs: Date.now() - t0,
+      error: `slice_failed:${msg.slice(0, 100)}`,
+    };
+  }
+
+  // Defensive — the slicer guarantees length = cols × rows on success,
+  // but a future refactor could regress it silently. Bail loudly.
+  if (sliceResult.panelUrls.length !== N) {
+    logger.error('[motion-collage pipeline] slice count mismatch', {
+      expected: N,
+      actual: sliceResult.panelUrls.length,
+    });
+    return {
+      collageImageUrl: upscaledUrl,
+      costUsd: generationCostUsd,
+      durationMs: Date.now() - t0,
+      error: 'slice_count_mismatch',
+    };
+  }
+
+  logger.info('[motion-collage pipeline] sliced', {
+    row_index: lookupRowIndex(row, doc),
+    grid: `${grid.cols}x${grid.rows}`,
+    panel_count: sliceResult.panelUrls.length,
+    panel_w: sliceResult.panelWidth,
+    panel_h: sliceResult.panelHeight,
+    ms: sliceResult.totalMs,
+  });
+
+  return {
+    collageImageUrl: upscaledUrl,
+    panelUrls: sliceResult.panelUrls,
+    costUsd: generationCostUsd,
+    durationMs: Date.now() - t0,
+  };
+}
+
+/** Find a row's index in the doc for log attribution. Returns -1 when
+ *  the row isn't actually in the doc (defensive — shouldn't happen in
+ *  the pipeline path). Used purely for telemetry; never affects
+ *  control flow. */
+function lookupRowIndex(row: PipelineImageRow, doc: PipelineImageDoc): number {
+  return doc.rows.findIndex((r) => r === row);
 }
 
 /**
