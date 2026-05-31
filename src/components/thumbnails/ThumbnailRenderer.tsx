@@ -44,6 +44,10 @@
  */
 
 import { useId, type CSSProperties, type ReactElement, type ReactNode } from 'react';
+import {
+  extractIconInner,
+  getIconEntry,
+} from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import type {
   FrameConfig,
   HalftoneBlend,
@@ -124,6 +128,16 @@ export interface FreeFormCell {
    *  fractions of the cell extent, -0.5..0.5. Defaults to 0. */
   emojiOffsetX?: number;
   emojiOffsetY?: number;
+  // ─── Lucide icon support (final session) ─────────────────────────────────
+  /** Lucide icon slug (matches `flex-icon-grid-icons.ts`'s registry).
+   *  When set, takes PRECEDENCE over `emoji` — the renderer paints the
+   *  inline SVG icon instead of the emoji text. Same per-cell transforms
+   *  (rotation / flip / offset) apply. */
+  iconSlug?: string;
+  /** Icon stroke / fill colour. Defaults to `#000000`. */
+  iconColor?: string;
+  /** Stroke width for outline icons. Defaults to 2 (Lucide convention). */
+  iconStrokeWidth?: number;
 }
 
 export interface ThumbnailRendererProps {
@@ -771,11 +785,69 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
     <g>
       {/* Cell background. */}
       <rect x={x} y={y} width={w} height={h} fill={bg} />
+      {/* Lucide icon path — takes precedence over emoji when both are
+          set. Same transform pipeline as the emoji branch (rotation
+          / flip / offset around the cell centre). The icon is
+          imported as an SVG string from `flex-icon-grid-icons.ts` and
+          embedded via `dangerouslySetInnerHTML` on a wrapping `<g>`
+          (React doesn't natively parse raw SVG markup into elements). */}
+      {cell.iconSlug && getIconEntry(cell.iconSlug) && (() => {
+        const cx = x + w / 2;
+        const cy = y + illustrationH / 2;
+        const offsetX = (cell.emojiOffsetX ?? 0) * w;
+        const offsetY = (cell.emojiOffsetY ?? 0) * illustrationH;
+        const rotation = cell.emojiRotation ?? 0;
+        const flipX = cell.emojiFlipX ? -1 : 1;
+        const flipY = cell.emojiFlipY ? -1 : 1;
+        const iconSize = Math.round(Math.min(w, illustrationH) * 0.55);
+        const iconColor = cell.iconColor ?? '#000000';
+        const strokeWidth = cell.iconStrokeWidth ?? 2;
+        const entry = getIconEntry(cell.iconSlug);
+        if (!entry) return null;
+        const inner = extractIconInner(entry.svg);
+        if (!inner) return null;
+        const scale = iconSize / 24;
+        const tx = cx - iconSize / 2;
+        const ty = cy - iconSize / 2;
+        const transform = [
+          `translate(${cx + offsetX}, ${cy + offsetY})`,
+          rotation !== 0 ? `rotate(${rotation})` : null,
+          flipX !== 1 || flipY !== 1 ? `scale(${flipX}, ${flipY})` : null,
+          `translate(${-cx}, ${-cy})`,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        // The outer wrap applies the per-cell user transform. The
+        // inner wrap applies the icon's own translate+scale to map
+        // its 24×24 view-box onto the cell-sized target.
+        const groupProps =
+          entry.iconStyle === 'fill'
+            ? { fill: iconColor, stroke: 'none' }
+            : {
+                fill: 'none',
+                stroke: iconColor,
+                strokeWidth: strokeWidth / scale,
+                strokeLinecap: 'round' as const,
+                strokeLinejoin: 'round' as const,
+              };
+        return (
+          <g transform={transform}>
+            <g
+              transform={`translate(${tx} ${ty}) scale(${scale})`}
+              {...groupProps}
+              dangerouslySetInnerHTML={{ __html: inner }}
+            />
+          </g>
+        );
+      })()}
       {/* Emoji illustration — centred in the top 80 % with optional
           per-cell offset / rotation / flip. The transform is applied
           ONLY to the emoji glyph (not the background or border) so the
-          cell frame stays axis-aligned regardless of the rotation. */}
-      {cell.emoji && cell.emoji.trim() && (() => {
+          cell frame stays axis-aligned regardless of the rotation.
+          Skipped when an iconSlug is set AND resolves to a known entry
+          (icon takes precedence). Unknown slugs fall through to emoji
+          so the user always sees SOMETHING in the cell. */}
+      {!(cell.iconSlug && getIconEntry(cell.iconSlug)) && cell.emoji && cell.emoji.trim() && (() => {
         const cx = x + w / 2;
         const cy = y + illustrationH / 2;
         const offsetX = (cell.emojiOffsetX ?? 0) * w;

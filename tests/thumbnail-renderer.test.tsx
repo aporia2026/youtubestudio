@@ -255,6 +255,49 @@ describe('ThumbnailRenderer — free-form cells (Phase B4)', () => {
     expect(html).toContain('fill="#ffffff"');
   });
 
+  it('renders a Lucide icon inline when iconSlug is set (takes precedence over emoji)', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            bgColor: '#ffffff',
+            emoji: '🎯',
+            iconSlug: 'star',
+            iconColor: '#ff8800',
+            label: 'Star',
+          },
+        ]}
+      />,
+    );
+    // Lucide star path content includes a polygon — verify it's inlined.
+    expect(html).toMatch(/polygon|path/);
+    // Icon colour applied to the wrapper `<g>`.
+    expect(html).toContain('stroke="#ff8800"');
+    // The emoji 🎯 should NOT be rendered (icon wins).
+    expect(html).not.toContain('🎯');
+  });
+
+  it('falls back to emoji when iconSlug is unknown', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            emoji: '🚀',
+            iconSlug: 'definitely-not-a-real-icon-slug',
+          },
+        ]}
+      />,
+    );
+    // Unknown icon → renderer skips the icon branch and emoji shows.
+    expect(html).toContain('🚀');
+  });
+
   it('cells path still applies the post-process overlays on top', () => {
     const html = renderToStaticMarkup(
       <ThumbnailRenderer

@@ -17,13 +17,17 @@
  * a pure UI primitive driven entirely by props.
  */
 
-import { useRef, useState, type ReactElement } from 'react';
+import { useMemo, useRef, useState, type ReactElement } from 'react';
 import { toast } from 'sonner';
 import {
   ThumbnailRenderer,
   type FreeFormCell,
   type TitleBarRendererInput,
 } from '@/components/thumbnails/ThumbnailRenderer';
+import {
+  ICON_REGISTRY,
+  getIconEntry,
+} from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 
 export interface FreeFormCellState {
@@ -34,6 +38,11 @@ export interface FreeFormCellState {
   emojiFlipY: boolean;
   emojiOffsetX: number;
   emojiOffsetY: number;
+  /** Lucide icon slug (final session). When set, takes precedence over
+   *  `emoji` — the renderer paints the Lucide icon instead. */
+  iconSlug?: string;
+  /** Icon stroke / fill colour. Defaults to '#000000' downstream. */
+  iconColor?: string;
 }
 
 export const DEFAULT_FREE_FORM_CELL_STATE: FreeFormCellState = {
@@ -102,8 +111,36 @@ export function FreeFormPreviewPanel({
       emojiFlipY: content.emojiFlipY,
       emojiOffsetX: content.emojiOffsetX,
       emojiOffsetY: content.emojiOffsetY,
+      iconSlug: content.iconSlug,
+      iconColor: content.iconColor ?? '#000000',
     };
   });
+  // Icon picker UI state — search query + per-cell open dropdown id.
+  const [iconQuery, setIconQuery] = useState('');
+  const [iconPickerForIndex, setIconPickerForIndex] = useState<number | null>(null);
+  const filteredIcons = useMemo(() => {
+    const q = iconQuery.trim().toLowerCase();
+    if (!q) return ICON_REGISTRY;
+    return ICON_REGISTRY.filter(
+      (entry) => entry.slug.includes(q) || entry.label.toLowerCase().includes(q),
+    );
+  }, [iconQuery]);
+  // Quick-pick popular icons rendered as a small palette row above the
+  // per-cell picker — matches the 16-emoji palette pattern.
+  const POPULAR_ICON_SLUGS = [
+    'star',
+    'shield',
+    'lock',
+    'zap',
+    'flame',
+    'rocket',
+    'target',
+    'sparkles',
+    'check',
+    'x',
+    'alert-triangle',
+    'heart',
+  ];
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -211,27 +248,135 @@ export function FreeFormPreviewPanel({
                 <span className="text-[11px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
                   {input.label || `(${cellNoun} ${input.index})`}
                 </span>
-                <input
-                  type="text"
-                  value={content.emoji}
-                  onChange={(e) => onUpdateCell(input.index, { emoji: e.target.value.slice(0, 4) })}
-                  placeholder="🎯"
-                  className="w-10 px-1 py-0.5 rounded text-center text-sm"
+                {content.iconSlug ? (
+                  // Selected icon indicator with clear button. Replaces
+                  // the emoji input when an icon is set (icon wins over
+                  // emoji per renderer precedence).
+                  <div
+                    className="flex items-center gap-1 px-1 py-0.5 rounded text-[10px]"
+                    style={{
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-secondary)',
+                    }}
+                  >
+                    <IconPreview slug={content.iconSlug} colour={content.iconColor ?? '#000000'} />
+                    <span className="font-mono">{content.iconSlug}</span>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateCell(input.index, { iconSlug: undefined })}
+                      className="hover:opacity-60"
+                      title="Clear icon"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    value={content.emoji}
+                    onChange={(e) => onUpdateCell(input.index, { emoji: e.target.value.slice(0, 4) })}
+                    placeholder="🎯"
+                    className="w-10 px-1 py-0.5 rounded text-center text-sm"
+                    style={{
+                      background: 'var(--bg-card)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    aria-label={`Emoji for ${cellNoun} ${input.index}`}
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setIconPickerForIndex(
+                      iconPickerForIndex === input.index ? null : input.index,
+                    )
+                  }
+                  className="px-1 py-0.5 rounded text-[10px]"
                   style={{
-                    background: 'var(--bg-card)',
-                    color: 'var(--text-primary)',
+                    background:
+                      iconPickerForIndex === input.index
+                        ? 'var(--accent-pink)'
+                        : 'var(--bg-card)',
+                    color: iconPickerForIndex === input.index ? '#fff' : 'var(--text-secondary)',
                     border: '1px solid var(--border)',
                   }}
-                  aria-label={`Emoji for ${cellNoun} ${input.index}`}
-                />
+                  title="Pick Lucide icon"
+                  aria-pressed={iconPickerForIndex === input.index}
+                >
+                  🎨
+                </button>
                 <input
                   type="color"
-                  value={content.bgColor}
-                  onChange={(e) => onUpdateCell(input.index, { bgColor: e.target.value })}
+                  value={content.iconSlug ? (content.iconColor ?? '#000000') : content.bgColor}
+                  onChange={(e) =>
+                    onUpdateCell(
+                      input.index,
+                      content.iconSlug ? { iconColor: e.target.value } : { bgColor: e.target.value },
+                    )
+                  }
                   className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
-                  aria-label={`Background colour for ${cellNoun} ${input.index}`}
+                  aria-label={
+                    content.iconSlug
+                      ? `Icon colour for ${cellNoun} ${input.index}`
+                      : `Background colour for ${cellNoun} ${input.index}`
+                  }
                 />
               </div>
+              {iconPickerForIndex === input.index && (
+                <div
+                  className="rounded mt-1 px-2 py-1 space-y-1"
+                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}
+                >
+                  <input
+                    type="text"
+                    value={iconQuery}
+                    onChange={(e) => setIconQuery(e.target.value)}
+                    placeholder="Search icons…"
+                    className="w-full px-1 py-0.5 rounded text-[11px]"
+                    style={{
+                      background: 'var(--bg-secondary)',
+                      color: 'var(--text-primary)',
+                      border: '1px solid var(--border)',
+                    }}
+                  />
+                  <div
+                    className="grid gap-1 overflow-auto"
+                    style={{
+                      gridTemplateColumns: 'repeat(8, minmax(0, 1fr))',
+                      maxHeight: 180,
+                    }}
+                  >
+                    {filteredIcons.map((entry) => (
+                      <button
+                        key={entry.slug}
+                        type="button"
+                        onClick={() => {
+                          onUpdateCell(input.index, {
+                            iconSlug: entry.slug,
+                            iconColor: content.iconColor ?? '#000000',
+                          });
+                          setIconPickerForIndex(null);
+                        }}
+                        className="aspect-square flex items-center justify-center rounded hover:opacity-80"
+                        style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+                        title={`${entry.label} (${entry.slug})`}
+                      >
+                        <IconPreview slug={entry.slug} colour="#888" />
+                      </button>
+                    ))}
+                    {filteredIcons.length === 0 && (
+                      <span
+                        className="text-[10px] col-span-8 px-1"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        No icons match &quot;{iconQuery}&quot;
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
               {content.emoji.trim() !== '' && (
                 <details open={hasTransform}>
                   <summary
@@ -365,7 +510,9 @@ export function FreeFormPreviewPanel({
               type="button"
               onClick={() => {
                 const target = inputs.find(
-                  (input) => !(freeFormCells[input.index]?.emoji ?? '').trim(),
+                  (input) =>
+                    !freeFormCells[input.index]?.iconSlug &&
+                    !(freeFormCells[input.index]?.emoji ?? '').trim(),
                 );
                 if (target) onUpdateCell(target.index, { emoji });
               }}
@@ -378,6 +525,70 @@ export function FreeFormPreviewPanel({
           ))}
         </div>
       </div>
+      <div>
+        <span className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+          Quick Lucide icon palette
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {POPULAR_ICON_SLUGS.map((slug) => (
+            <button
+              key={slug}
+              type="button"
+              onClick={() => {
+                const target = inputs.find(
+                  (input) =>
+                    !freeFormCells[input.index]?.iconSlug &&
+                    !(freeFormCells[input.index]?.emoji ?? '').trim(),
+                );
+                if (target) onUpdateCell(target.index, { iconSlug: slug });
+              }}
+              className="p-1 rounded"
+              style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              title={`Fill next empty ${cellNoun} with ${slug}`}
+            >
+              <IconPreview slug={slug} colour="#888" />
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
+  );
+}
+
+/** Small inline SVG preview for an icon slug. Used inside the picker
+ *  buttons and the selected-icon indicator. 16×16 fixed size so it
+ *  fits the dense per-cell row without re-layout. */
+function IconPreview({
+  slug,
+  colour,
+  size = 16,
+}: {
+  slug: string;
+  colour: string;
+  size?: number;
+}): ReactElement {
+  const entry = getIconEntry(slug);
+  if (!entry) {
+    return <span style={{ width: size, height: size, display: 'inline-block' }} />;
+  }
+  // Lucide raw SVG ships with its own width/height/stroke attrs. The
+  // inner content uses stroke="currentColor" / fill="currentColor" so
+  // `color` on the wrapper drives the visible glyph colour.
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        width: size,
+        height: size,
+        color: colour,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      dangerouslySetInnerHTML={{
+        __html: entry.svg
+          .replace(/width="\d+"/, `width="${size}"`)
+          .replace(/height="\d+"/, `height="${size}"`),
+      }}
+    />
   );
 }

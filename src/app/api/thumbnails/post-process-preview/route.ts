@@ -56,6 +56,13 @@ export const maxDuration = 30;
 
 interface ReqBody {
   baseImageUrl?: string;
+  /** Phase B6 alternative to `baseImageUrl` — caller embeds the base
+   *  image as a `data:image/png;base64,…` URL so the server can apply
+   *  overlays WITHOUT fetching from an external host. Used by the
+   *  free-form Save PNG flow: the client rasterises its SVG renderer
+   *  to a canvas, encodes as data URL, and sends it here for the
+   *  server pipeline to bake in pixel-perfect overlays. */
+  baseImageDataUrl?: string;
   postProcess?: unknown;
   titleBar?: unknown;
   /** Optional canvas dimensions override — used when the panel hasn't
@@ -88,47 +95,83 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const baseImageUrl = (body.baseImageUrl ?? '').trim();
-    if (!baseImageUrl) {
-      return NextResponse.json({ error: 'baseImageUrl is required' }, { status: 400 });
-    }
-
-    // SSRF guard — same posture as the format routes' reference-image
-    // guard. https only so we don't leak metadata via DNS / proxy chains.
-    let safeUrl: URL;
-    try {
-      safeUrl = assertSafePublicUrl(baseImageUrl, { allowedProtocols: ['https:'] });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+    const baseImageDataUrl = (body.baseImageDataUrl ?? '').trim();
+    if (!baseImageUrl && !baseImageDataUrl) {
       return NextResponse.json(
-        { error: `baseImageUrl was rejected: ${reason}` },
+        { error: 'baseImageUrl or baseImageDataUrl is required' },
         { status: 400 },
       );
     }
 
-    // Fetch the base image. R2 presigned URLs typically respond in
-    // 50-200 ms so this stays well under the 30 s function timeout.
-    const baseRes = await fetch(safeUrl);
-    if (!baseRes.ok) {
-      return NextResponse.json(
-        { error: `Failed to fetch base image (HTTP ${baseRes.status})` },
-        { status: 502 },
+    // Resolve the base image bytes from EITHER an https URL (fetched
+    // with SSRF guard) or an inline data URL (no fetch). Data URL path
+    // is used by the Phase B6 free-form Save PNG flow — the client
+    // rasterises its SVG to canvas and sends the bytes inline so we
+    // can apply overlays without touching R2.
+    let baseBytes: Buffer;
+    let baseSource: 'url' | 'data-url';
+    let baseUrlHost = '';
+    if (baseImageDataUrl) {
+      // Defence in depth: only accept image/png data URLs and cap the
+      // size BEFORE decoding so a pathological client can't decode
+      // gigabytes into memory.
+      const dataMatch = /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/.exec(
+        baseImageDataUrl,
       );
+      if (!dataMatch) {
+        return NextResponse.json(
+          { error: 'baseImageDataUrl must be a base64 data URL with image/png/jpeg/webp mime' },
+          { status: 400 },
+        );
+      }
+      const base64 = dataMatch[2];
+      // Rough size estimate from base64 length: 3 bytes per 4 chars.
+      if (Math.floor((base64.length * 3) / 4) > MAX_INPUT_BYTES) {
+        return NextResponse.json(
+          { error: `baseImageDataUrl exceeds the ${Math.round(MAX_INPUT_BYTES / 1024 / 1024)} MB cap.` },
+          { status: 413 },
+        );
+      }
+      baseBytes = Buffer.from(base64, 'base64');
+      baseSource = 'data-url';
+    } else {
+      // SSRF guard — same posture as the format routes' reference-image
+      // guard. https only so we don't leak metadata via DNS / proxy chains.
+      let safeUrl: URL;
+      try {
+        safeUrl = assertSafePublicUrl(baseImageUrl, { allowedProtocols: ['https:'] });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return NextResponse.json(
+          { error: `baseImageUrl was rejected: ${reason}` },
+          { status: 400 },
+        );
+      }
+      const baseRes = await fetch(safeUrl);
+      if (!baseRes.ok) {
+        return NextResponse.json(
+          { error: `Failed to fetch base image (HTTP ${baseRes.status})` },
+          { status: 502 },
+        );
+      }
+      const declaredLen = Number.parseInt(baseRes.headers.get('content-length') ?? '', 10);
+      if (Number.isFinite(declaredLen) && declaredLen > MAX_INPUT_BYTES) {
+        return NextResponse.json(
+          { error: `Base image exceeds the ${Math.round(MAX_INPUT_BYTES / 1024 / 1024)} MB cap.` },
+          { status: 413 },
+        );
+      }
+      const arrayBuf = await baseRes.arrayBuffer();
+      if (arrayBuf.byteLength > MAX_INPUT_BYTES) {
+        return NextResponse.json(
+          { error: `Base image exceeds the ${Math.round(MAX_INPUT_BYTES / 1024 / 1024)} MB cap.` },
+          { status: 413 },
+        );
+      }
+      baseBytes = Buffer.from(arrayBuf);
+      baseSource = 'url';
+      baseUrlHost = safeUrl.hostname;
     }
-    const declaredLen = Number.parseInt(baseRes.headers.get('content-length') ?? '', 10);
-    if (Number.isFinite(declaredLen) && declaredLen > MAX_INPUT_BYTES) {
-      return NextResponse.json(
-        { error: `Base image exceeds the ${Math.round(MAX_INPUT_BYTES / 1024 / 1024)} MB cap.` },
-        { status: 413 },
-      );
-    }
-    const arrayBuf = await baseRes.arrayBuffer();
-    if (arrayBuf.byteLength > MAX_INPUT_BYTES) {
-      return NextResponse.json(
-        { error: `Base image exceeds the ${Math.round(MAX_INPUT_BYTES / 1024 / 1024)} MB cap.` },
-        { status: 413 },
-      );
-    }
-    const baseBytes = Buffer.from(arrayBuf);
 
     // Probe canvas dimensions. Caller can override (saves the probe when
     // the panel already has them); otherwise sharp.metadata is cheap.
@@ -191,7 +234,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       title_bar_applied: !!titleBar,
       input_bytes: baseBytes.byteLength,
       output_bytes: finalBytes.byteLength,
-      base_url_host: safeUrl.hostname,
+      base_source: baseSource,
+      base_url_host: baseUrlHost || null,
     });
 
     return NextResponse.json({ imageUrl: dataUrl });
