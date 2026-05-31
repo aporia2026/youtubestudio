@@ -705,3 +705,182 @@ describe('applySharedOverlays', () => {
     expect(g).toBe(b);
   });
 });
+
+// ─── r2.8 finishing overlays ────────────────────────────────────────────────
+
+describe('r2.8 finishing overlay parsing', () => {
+  it('parses a full postProcess payload with all r2.8 fields', () => {
+    const parsed = parsePostProcessConfig({
+      tint: { color: '#ff8000', intensity: 0.3, blendMode: 'soft-light' },
+      lightLeak: { color: '#ffd28a', intensity: 0.4, radius: 0.6, position: 'top-right' },
+      innerGlow: { color: '#ffffff', intensity: 0.2, radius: 0.8, blendMode: 'screen' },
+      dust: { color: '#ffffff', intensity: 0.5, density: 0.4, seed: 7 },
+      halftone: { color: '#000000', opacity: 0.3, dotSize: 1.5, spacing: 6, blendMode: 'multiply' },
+      letterbox: { color: '#000000', top: 40, bottom: 40, left: 0, right: 0 },
+      frame: { color: '#ffffff', thickness: 4, inset: 8, style: 'double' },
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.tint?.intensity).toBe(0.3);
+    expect(parsed!.lightLeak?.position).toBe('top-right');
+    expect(parsed!.innerGlow?.blendMode).toBe('screen');
+    expect(parsed!.dust?.seed).toBe(7);
+    expect(parsed!.halftone?.dotSize).toBe(1.5);
+    expect(parsed!.letterbox?.top).toBe(40);
+    expect(parsed!.frame?.style).toBe('double');
+  });
+
+  it('drops zero-intensity overlays (no JSON-state round-trip for "off" knobs)', () => {
+    const parsed = parsePostProcessConfig({
+      tint: { color: '#ff8000', intensity: 0, blendMode: 'multiply' },
+      lightLeak: { color: '#ffd28a', intensity: 0, radius: 0.6, position: 'top' },
+      innerGlow: { color: '#ffffff', intensity: 0, radius: 0.8 },
+      dust: { color: '#ffffff', intensity: 0.3, density: 0 },
+      halftone: { color: '#000000', opacity: 0, dotSize: 1, spacing: 6 },
+    });
+    expect(parsed).toBeNull();
+  });
+
+  it('drops malformed sub-objects but keeps the rest', () => {
+    const parsed = parsePostProcessConfig({
+      tint: 'not-an-object',
+      halftone: { color: '#ff0000', opacity: 0.5, dotSize: 2, spacing: 8, blendMode: 'multiply' },
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.tint).toBeUndefined();
+    expect(parsed!.halftone).toBeDefined();
+  });
+
+  it('clamps out-of-range numerics (letterbox up to 240, frame up to 40)', () => {
+    const parsed = parsePostProcessConfig({
+      letterbox: { color: '#000000', top: 9999, bottom: -50, left: 0, right: 0 },
+      frame: { color: '#fff', thickness: 9999, inset: -10 },
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.letterbox?.top).toBe(240);
+    expect(parsed!.letterbox?.bottom).toBe(0);
+    expect(parsed!.frame?.thickness).toBe(40);
+    expect(parsed!.frame?.inset).toBe(0);
+  });
+
+  it('drops the field when required keys are missing (tint without blendMode, lightLeak without position)', () => {
+    const parsed = parsePostProcessConfig({
+      tint: { color: '#ff0000', intensity: 0.5 },
+      lightLeak: { color: '#ff0000', intensity: 0.5, radius: 0.6 },
+    });
+    expect(parsed).toBeNull();
+  });
+});
+
+describe('r2.8 finishing overlay rendering', () => {
+  it('halftone overlay paints dots that change pixel values vs base', async () => {
+    const base = await makeSolidPng(120, 120, { r: 255, g: 255, b: 255 });
+    const out = await applySharedOverlays({
+      baseImage: base,
+      canvas: { width: 120, height: 120 },
+      postProcess: {
+        halftone: {
+          color: '#000000',
+          opacity: 1,
+          dotSize: 3,
+          spacing: 6,
+          blendMode: 'multiply',
+        },
+      },
+    });
+    // White base + black dots → variance must rise. White pixel sum was
+    // ~765 uniformly; with dots painted, at least one sample should be
+    // significantly darker.
+    let foundDark = false;
+    for (let x = 0; x < 60; x += 3) {
+      for (let y = 0; y < 60; y += 3) {
+        const [r, g, b] = await pixelAt(out, x, y);
+        if (r + g + b < 600) {
+          foundDark = true;
+          break;
+        }
+      }
+      if (foundDark) break;
+    }
+    expect(foundDark).toBe(true);
+  });
+
+  it('tint overlay shifts colour toward the configured hue (red on white via multiply)', async () => {
+    const base = await makeSolidPng(50, 50, { r: 255, g: 255, b: 255 });
+    const out = await applySharedOverlays({
+      baseImage: base,
+      canvas: { width: 50, height: 50 },
+      postProcess: { tint: { color: '#ff0000', intensity: 1, blendMode: 'multiply' } },
+    });
+    const [r, g, b] = await pixelAt(out, 25, 25);
+    // Multiply by pure red on white = red. R stays high, G/B drop.
+    expect(r).toBeGreaterThan(200);
+    expect(g).toBeLessThan(60);
+    expect(b).toBeLessThan(60);
+  });
+
+  it('frame overlay paints a stroke at the canvas edge (top-left inset corner is dark)', async () => {
+    const base = await makeSolidPng(100, 100, { r: 255, g: 255, b: 255 });
+    const out = await applySharedOverlays({
+      baseImage: base,
+      canvas: { width: 100, height: 100 },
+      postProcess: {
+        frame: { color: '#000000', thickness: 4, inset: 2, style: 'solid' },
+      },
+    });
+    // Stroke is centred at inset + thickness/2 = 4. So pixel (4, 50) is
+    // on the left vertical stroke = black.
+    const [r, g, b] = await pixelAt(out, 4, 50);
+    expect(r + g + b).toBeLessThan(150);
+    // A pixel well inside the frame should still be white.
+    const [r2, g2, b2] = await pixelAt(out, 50, 50);
+    expect(r2 + g2 + b2).toBeGreaterThan(700);
+  });
+
+  it('letterbox overlay paints bars on the configured sides (top + bottom = black, middle = white)', async () => {
+    const base = await makeSolidPng(100, 100, { r: 255, g: 255, b: 255 });
+    const out = await applySharedOverlays({
+      baseImage: base,
+      canvas: { width: 100, height: 100 },
+      postProcess: {
+        letterbox: { color: '#000000', top: 10, bottom: 10, left: 0, right: 0 },
+      },
+    });
+    const [topR, topG, topB] = await pixelAt(out, 50, 5);
+    expect(topR + topG + topB).toBeLessThan(50);
+    const [botR, botG, botB] = await pixelAt(out, 50, 95);
+    expect(botR + botG + botB).toBeLessThan(50);
+    const [midR, midG, midB] = await pixelAt(out, 50, 50);
+    expect(midR + midG + midB).toBeGreaterThan(700);
+  });
+
+  it('inner glow overlay lifts the centre but not the edges (white glow on grey base)', async () => {
+    const base = await makeSolidPng(100, 100, { r: 64, g: 64, b: 64 });
+    const out = await applySharedOverlays({
+      baseImage: base,
+      canvas: { width: 100, height: 100 },
+      postProcess: {
+        innerGlow: { color: '#ffffff', intensity: 1, radius: 1, blendMode: 'screen' },
+      },
+    });
+    const [cR, cG, cB] = await pixelAt(out, 50, 50);
+    const [eR, eG, eB] = await pixelAt(out, 5, 5);
+    // Centre brighter than corner.
+    expect(cR + cG + cB).toBeGreaterThan(eR + eG + eB);
+  });
+
+  it('does NOT apply overlays whose intensity / opacity / density is 0 (no-op pass)', async () => {
+    const base = await makeSolidPng(50, 50, { r: 100, g: 100, b: 100 });
+    const out = await applySharedOverlays({
+      baseImage: base,
+      canvas: { width: 50, height: 50 },
+      postProcess: {
+        // Intensity 0 → parser drops the field via `parsePostProcessConfig`
+        // upstream; here we test the pipeline tolerates an empty config too.
+      },
+    });
+    const [r, g, b] = await pixelAt(out, 25, 25);
+    expect(r).toBe(100);
+    expect(g).toBe(100);
+    expect(b).toBe(100);
+  });
+});

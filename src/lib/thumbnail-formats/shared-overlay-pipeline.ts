@@ -85,10 +85,130 @@ export interface GrainConfig {
   monochrome: boolean;
 }
 
+// ─── New r2.8 finishing overlays — ported from flex-icon-grid-composer ──────
+
+/** Blend modes shared by tint / light-leak / inner-glow. Maps 1:1 onto Sharp's
+ *  `composite({ blend })` strings. */
+export type ColorGradeBlend = 'multiply' | 'screen' | 'overlay' | 'soft-light';
+
+/** Halftone has the same four mixing modes PLUS a `normal` (paint-flat)
+ *  option for when the dots should sit ON TOP of the canvas rather than
+ *  blending into it. */
+export type HalftoneBlend = ColorGradeBlend | 'normal';
+
+/** Light-leak anchor positions. Eight presets covering 4 corners + 4 edges
+ *  — the gradient centre sits ON the named edge so half the colour bleeds
+ *  off-canvas, mimicking real lens leaks. */
+export type LightLeakPosition =
+  | 'top-left'
+  | 'top-right'
+  | 'bottom-left'
+  | 'bottom-right'
+  | 'top'
+  | 'bottom'
+  | 'left'
+  | 'right';
+
+/** Frame stroke style. `solid` = one continuous stroke. `double` = two
+ *  parallel strokes with a gap. `dashed` = solid stroke with stroke-dasharray. */
+export type FrameStyle = 'solid' | 'double' | 'dashed';
+
+export interface TintConfig {
+  /** Tint colour hex. */
+  color: string;
+  /** Overlay alpha, 0-1. */
+  intensity: number;
+  /** Sharp blend mode for the tint composite. */
+  blendMode: ColorGradeBlend;
+  /** Optional split-tone shadows hex — composited with `multiply` at
+   *  `intensity * splitToneStrength` so dark areas get tinted with this hue. */
+  shadows?: string;
+  /** Optional split-tone highlights hex — composited with `screen` at
+   *  `intensity * splitToneStrength` so light areas get lifted with this hue. */
+  highlights?: string;
+  /** Strength of the split-tone layers. 0-1. Defaults to 0.5 when omitted. */
+  splitToneStrength?: number;
+}
+
+export interface LightLeakConfig {
+  color: string;
+  intensity: number;
+  /** Radius as a fraction of the canvas's SHORT half-axis. 0.2 - 1. */
+  radius: number;
+  position: LightLeakPosition;
+  /** Defaults to `'screen'` when omitted. */
+  blendMode?: ColorGradeBlend;
+}
+
+export interface InnerGlowConfig {
+  color: string;
+  intensity: number;
+  /** Glow radius as a fraction of the canvas's SHORT half-axis. 0.3 - 1.5. */
+  radius: number;
+  /** Defaults to `'screen'` when omitted. */
+  blendMode?: 'screen' | 'overlay' | 'soft-light';
+}
+
+export interface DustConfig {
+  /** Speck colour. White = bright dust, black = dark scratches. */
+  color: string;
+  /** Speck alpha, 0-1. */
+  intensity: number;
+  /** Density 0-1. Higher = more specks per area. */
+  density: number;
+  /** Optional turbulence seed (0-9999) for deterministic output. Defaults
+   *  to 41 when omitted. */
+  seed?: number;
+}
+
+export interface HalftoneConfig {
+  color: string;
+  /** Dot alpha 0-1. */
+  opacity: number;
+  /** Dot radius in pixels. 0.5 - 10. */
+  dotSize: number;
+  /** Tile spacing in pixels. 2 - 40. Smaller = denser. */
+  spacing: number;
+  blendMode: HalftoneBlend;
+  /** Pattern rotation in degrees. 0 - 90. Defaults to 0 when omitted. */
+  angle?: number;
+}
+
+export interface LetterboxConfig {
+  color: string;
+  /** Bar thickness in pixels per side. 0 = no bar on that side. 0 - 240. */
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  /** Optional bar opacity 0-1. Defaults to 1 (fully opaque). */
+  opacity?: number;
+}
+
+export interface FrameConfig {
+  color: string;
+  /** Stroke thickness in pixels. 1 - 40. */
+  thickness: number;
+  /** Distance from canvas edge to the stroke's outer edge in pixels. 0 - 80. */
+  inset: number;
+  /** Defaults to `'solid'` when omitted. */
+  style?: FrameStyle;
+}
+
 export interface PostProcessConfig {
   filter?: ImageFilter;
   vignette?: VignetteConfig;
   grain?: GrainConfig;
+  /** r2.8 finishing overlays — colour grade + texture + framing. Applied in
+   *  the order: tint → light leak → inner glow → dust → halftone → letterbox
+   *  → frame. See `applySharedOverlays` for the rationale. */
+  tint?: TintConfig;
+  lightLeak?: LightLeakConfig;
+  innerGlow?: InnerGlowConfig;
+  dust?: DustConfig;
+  halftone?: HalftoneConfig;
+  letterbox?: LetterboxConfig;
+  frame?: FrameConfig;
 }
 
 export type TitleBarPosition = 'top' | 'bottom' | 'overlay-top' | 'overlay-bottom';
@@ -417,11 +537,228 @@ export function parsePostProcessConfig(raw: unknown): PostProcessConfig | null {
     }
   }
 
-  // Empty out means none of the three operations would do anything visible.
+  // r2.8: tint / light-leak / inner-glow / dust / halftone / letterbox /
+  // frame. Each parser follows the same tolerant shape: malformed sub-
+  // object → drop the field (rest of postProcess survives); out-of-range
+  // numerics → clamp; zero intensity / dropping a required key → drop.
+  const tint = parseTintField(r.tint);
+  if (tint) out.tint = tint;
+  const lightLeak = parseLightLeakField(r.lightLeak);
+  if (lightLeak) out.lightLeak = lightLeak;
+  const innerGlow = parseInnerGlowField(r.innerGlow);
+  if (innerGlow) out.innerGlow = innerGlow;
+  const dust = parseDustField(r.dust);
+  if (dust) out.dust = dust;
+  const halftone = parseHalftoneField(r.halftone);
+  if (halftone) out.halftone = halftone;
+  const letterbox = parseLetterboxField(r.letterbox);
+  if (letterbox) out.letterbox = letterbox;
+  const frame = parseFrameField(r.frame);
+  if (frame) out.frame = frame;
+
+  // Empty out means none of the operations would do anything visible.
   // Return null so the route layer can pass undefined down to the pipeline
   // and skip the post-process composite entirely.
-  if (!out.filter && !out.vignette && !out.grain) return null;
+  if (
+    !out.filter &&
+    !out.vignette &&
+    !out.grain &&
+    !out.tint &&
+    !out.lightLeak &&
+    !out.innerGlow &&
+    !out.dust &&
+    !out.halftone &&
+    !out.letterbox &&
+    !out.frame
+  ) {
+    return null;
+  }
   return out;
+}
+
+// ─── r2.8 sub-parsers ──────────────────────────────────────────────────────
+
+const TINT_BLEND_MODES: ReadonlySet<ColorGradeBlend> = new Set<ColorGradeBlend>([
+  'multiply',
+  'screen',
+  'overlay',
+  'soft-light',
+]);
+
+const HALFTONE_BLEND_MODES: ReadonlySet<HalftoneBlend> = new Set<HalftoneBlend>([
+  'multiply',
+  'screen',
+  'overlay',
+  'soft-light',
+  'normal',
+]);
+
+const INNER_GLOW_BLEND_MODES: ReadonlySet<'screen' | 'overlay' | 'soft-light'> = new Set<
+  'screen' | 'overlay' | 'soft-light'
+>(['screen', 'overlay', 'soft-light']);
+
+const LIGHT_LEAK_POSITIONS: ReadonlySet<LightLeakPosition> = new Set<LightLeakPosition>([
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right',
+  'top',
+  'bottom',
+  'left',
+  'right',
+]);
+
+const FRAME_STYLES: ReadonlySet<FrameStyle> = new Set<FrameStyle>(['solid', 'double', 'dashed']);
+
+function parseTintField(raw: unknown): TintConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const intensity = clampUnit(typeof o.intensity === 'number' ? o.intensity : 0);
+  if (intensity === 0) return undefined;
+  if (typeof o.blendMode !== 'string' || !TINT_BLEND_MODES.has(o.blendMode as ColorGradeBlend)) {
+    return undefined;
+  }
+  const shadows = typeof o.shadows === 'string' && isHexColor(o.shadows) ? o.shadows : undefined;
+  const highlights =
+    typeof o.highlights === 'string' && isHexColor(o.highlights) ? o.highlights : undefined;
+  const splitToneStrength =
+    typeof o.splitToneStrength === 'number' ? clampUnit(o.splitToneStrength) : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#ffb27a', '#ffb27a'),
+    intensity,
+    blendMode: o.blendMode as ColorGradeBlend,
+    ...(shadows !== undefined ? { shadows } : {}),
+    ...(highlights !== undefined ? { highlights } : {}),
+    ...(splitToneStrength !== undefined ? { splitToneStrength } : {}),
+  };
+}
+
+function parseLightLeakField(raw: unknown): LightLeakConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const intensity = clampUnit(typeof o.intensity === 'number' ? o.intensity : 0);
+  if (intensity === 0) return undefined;
+  if (typeof o.position !== 'string' || !LIGHT_LEAK_POSITIONS.has(o.position as LightLeakPosition)) {
+    return undefined;
+  }
+  const radius = typeof o.radius === 'number' ? clampRange(o.radius, 0.2, 1) : 0.6;
+  const blendMode =
+    typeof o.blendMode === 'string' && TINT_BLEND_MODES.has(o.blendMode as ColorGradeBlend)
+      ? (o.blendMode as ColorGradeBlend)
+      : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#ffd28a', '#ffd28a'),
+    intensity,
+    radius,
+    position: o.position as LightLeakPosition,
+    ...(blendMode !== undefined ? { blendMode } : {}),
+  };
+}
+
+function parseInnerGlowField(raw: unknown): InnerGlowConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const intensity = clampUnit(typeof o.intensity === 'number' ? o.intensity : 0);
+  if (intensity === 0) return undefined;
+  const radius = typeof o.radius === 'number' ? clampRange(o.radius, 0.3, 1.5) : 0.8;
+  const blendMode =
+    typeof o.blendMode === 'string' &&
+    INNER_GLOW_BLEND_MODES.has(o.blendMode as 'screen' | 'overlay' | 'soft-light')
+      ? (o.blendMode as 'screen' | 'overlay' | 'soft-light')
+      : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#ffffff', '#ffffff'),
+    intensity,
+    radius,
+    ...(blendMode !== undefined ? { blendMode } : {}),
+  };
+}
+
+function parseDustField(raw: unknown): DustConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const intensity = clampUnit(typeof o.intensity === 'number' ? o.intensity : 0);
+  const density = clampUnit(typeof o.density === 'number' ? o.density : 0);
+  if (intensity === 0 || density === 0) return undefined;
+  const seed =
+    typeof o.seed === 'number' && Number.isFinite(o.seed) && o.seed >= 0 && o.seed <= 9999
+      ? Math.round(o.seed)
+      : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#ffffff', '#ffffff'),
+    intensity,
+    density,
+    ...(seed !== undefined ? { seed } : {}),
+  };
+}
+
+function parseHalftoneField(raw: unknown): HalftoneConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const opacity = clampUnit(typeof o.opacity === 'number' ? o.opacity : 0);
+  if (opacity === 0) return undefined;
+  const dotSize = typeof o.dotSize === 'number' ? clampRange(o.dotSize, 0.5, 10) : 1.5;
+  const spacing = typeof o.spacing === 'number' ? clampRange(o.spacing, 2, 40) : 6;
+  const blendMode =
+    typeof o.blendMode === 'string' && HALFTONE_BLEND_MODES.has(o.blendMode as HalftoneBlend)
+      ? (o.blendMode as HalftoneBlend)
+      : 'multiply';
+  const angle =
+    typeof o.angle === 'number' && Number.isFinite(o.angle) && o.angle >= 0 && o.angle <= 90
+      ? o.angle
+      : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#000000', '#000000'),
+    opacity,
+    dotSize,
+    spacing,
+    blendMode,
+    ...(angle !== undefined ? { angle } : {}),
+  };
+}
+
+function parseLetterboxField(raw: unknown): LetterboxConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const side = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) ? clampRange(v, 0, 240) : 0;
+  const top = side(o.top);
+  const bottom = side(o.bottom);
+  const left = side(o.left);
+  const right = side(o.right);
+  if (top === 0 && bottom === 0 && left === 0 && right === 0) return undefined;
+  const opacity =
+    typeof o.opacity === 'number' && Number.isFinite(o.opacity) ? clampUnit(o.opacity) : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#000000', '#000000'),
+    top,
+    bottom,
+    left,
+    right,
+    ...(opacity !== undefined ? { opacity } : {}),
+  };
+}
+
+function parseFrameField(raw: unknown): FrameConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const thickness =
+    typeof o.thickness === 'number' && Number.isFinite(o.thickness)
+      ? clampRange(o.thickness, 0, 40)
+      : 0;
+  if (thickness < 1) return undefined;
+  const inset =
+    typeof o.inset === 'number' && Number.isFinite(o.inset) ? clampRange(o.inset, 0, 80) : 0;
+  const style =
+    typeof o.style === 'string' && FRAME_STYLES.has(o.style as FrameStyle)
+      ? (o.style as FrameStyle)
+      : undefined;
+  return {
+    color: safeHexColor(typeof o.color === 'string' ? o.color : '#ffffff', '#ffffff'),
+    thickness,
+    inset,
+    ...(style !== undefined ? { style } : {}),
+  };
 }
 
 // ─── Filter pipeline ────────────────────────────────────────────────────────
@@ -866,6 +1203,275 @@ export async function buildTitleBarOverlay(
   return { buffer: finalOverlay, top: rect.y, left: rect.x };
 }
 
+// ─── r2.8 finishing overlay builders ────────────────────────────────────────
+
+/** Escape the same three XML control chars that would otherwise let a
+ *  user-supplied colour string break out of the SVG attribute context.
+ *  All r2.8 builders inline colour values into SVG attributes, so this
+ *  is load-bearing for the validator's tolerance posture (malformed
+ *  colours fall back via safeHexColor at parse time, but the escape is
+ *  defense-in-depth). */
+function escapeSvgText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/** Luminance check used by the dust overlay to auto-pick its blend mode.
+ *  Light specks layer additively (`screen` lifts the underlying tone);
+ *  dark specks layer subtractively (`multiply` darkens). Mirrors the
+ *  flex-icon-grid implementation. */
+function isLightHex(hex: string): boolean {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex);
+  if (!m) return true;
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
+}
+
+/** Compute the rect stroke positions for the `frame` overlay. `solid` /
+ *  `dashed` return one centred stroke; `double` returns two parallel
+ *  strokes with a gap. Mirrored from `flex-icon-grid.ts`'s
+ *  `computeFrameRects` so the visual is identical across formats. */
+export function computeFrameRects(
+  canvasW: number,
+  canvasH: number,
+  inset: number,
+  thickness: number,
+  style: FrameStyle,
+): { x: number; y: number; w: number; h: number; strokeWidth: number }[] {
+  if (style === 'double') {
+    const gap = Math.max(1, thickness * 0.4);
+    const lineThickness = Math.max(1, (thickness - gap) / 2);
+    const out: { x: number; y: number; w: number; h: number; strokeWidth: number }[] = [];
+    const outerOffset = inset + lineThickness / 2;
+    const outerW = canvasW - 2 * outerOffset;
+    const outerH = canvasH - 2 * outerOffset;
+    if (outerW > 0 && outerH > 0) {
+      out.push({ x: outerOffset, y: outerOffset, w: outerW, h: outerH, strokeWidth: lineThickness });
+    }
+    const innerOffset = inset + lineThickness + gap + lineThickness / 2;
+    const innerW = canvasW - 2 * innerOffset;
+    const innerH = canvasH - 2 * innerOffset;
+    if (innerW > 0 && innerH > 0) {
+      out.push({ x: innerOffset, y: innerOffset, w: innerW, h: innerH, strokeWidth: lineThickness });
+    }
+    return out;
+  }
+  const offset = inset + thickness / 2;
+  const w = canvasW - 2 * offset;
+  const h = canvasH - 2 * offset;
+  if (w <= 0 || h <= 0) return [];
+  return [{ x: offset, y: offset, w, h, strokeWidth: thickness }];
+}
+
+/** Build one or more flat-colour overlays for the tint pass. Returns the
+ *  base wash plus optional split-tone shadows / highlights, each as a
+ *  separate composite step with its own blend mode. The base wash always
+ *  exists; the split-tone layers are gated on the config. */
+export async function buildTintOverlays(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: TintConfig,
+): Promise<sharp.OverlayOptions[]> {
+  const overlays: sharp.OverlayOptions[] = [];
+  const makeFlat = async (color: string, alpha: number): Promise<Buffer> => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}"><rect width="${canvasWidth}" height="${canvasHeight}" fill="${escapeSvgText(color)}" fill-opacity="${alpha}"/></svg>`;
+    return sharp(Buffer.from(svg)).png().toBuffer();
+  };
+  overlays.push({
+    input: await makeFlat(config.color, config.intensity),
+    top: 0,
+    left: 0,
+    blend: config.blendMode,
+  });
+  const splitStrength = config.splitToneStrength ?? 0.5;
+  if (config.shadows) {
+    overlays.push({
+      input: await makeFlat(config.shadows, config.intensity * splitStrength),
+      top: 0,
+      left: 0,
+      blend: 'multiply',
+    });
+  }
+  if (config.highlights) {
+    overlays.push({
+      input: await makeFlat(config.highlights, config.intensity * splitStrength),
+      top: 0,
+      left: 0,
+      blend: 'screen',
+    });
+  }
+  return overlays;
+}
+
+/** Light leak — radial gradient anchored on one canvas edge so half the
+ *  colour bleeds off-canvas, mirroring real lens leaks. Composited with
+ *  the configured blend (default `screen`). */
+export async function buildLightLeakOverlay(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: LightLeakConfig,
+): Promise<sharp.OverlayOptions> {
+  const halfMin = Math.min(canvasWidth, canvasHeight) / 2;
+  const r = config.radius * halfMin;
+  const anchors: Record<LightLeakPosition, { cx: number; cy: number }> = {
+    'top-left': { cx: 0, cy: 0 },
+    'top-right': { cx: canvasWidth, cy: 0 },
+    'bottom-left': { cx: 0, cy: canvasHeight },
+    'bottom-right': { cx: canvasWidth, cy: canvasHeight },
+    top: { cx: canvasWidth / 2, cy: 0 },
+    bottom: { cx: canvasWidth / 2, cy: canvasHeight },
+    left: { cx: 0, cy: canvasHeight / 2 },
+    right: { cx: canvasWidth, cy: canvasHeight / 2 },
+  };
+  const { cx, cy } = anchors[config.position];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}"><defs><radialGradient id="ll" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}"><stop offset="0%" stop-color="${escapeSvgText(config.color)}" stop-opacity="${config.intensity}"/><stop offset="100%" stop-color="${escapeSvgText(config.color)}" stop-opacity="0"/></radialGradient></defs><rect width="${canvasWidth}" height="${canvasHeight}" fill="url(#ll)"/></svg>`;
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0, blend: config.blendMode ?? 'screen' };
+}
+
+/** Inner glow — radial gradient centred on the canvas. Default blend
+ *  `screen` lifts the centre rather than tinting it. */
+export async function buildInnerGlowOverlay(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: InnerGlowConfig,
+): Promise<sharp.OverlayOptions> {
+  const cx = canvasWidth / 2;
+  const cy = canvasHeight / 2;
+  const halfMin = Math.min(canvasWidth, canvasHeight) / 2;
+  const r = config.radius * halfMin;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}"><defs><radialGradient id="ig" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}"><stop offset="0%" stop-color="${escapeSvgText(config.color)}" stop-opacity="${config.intensity}"/><stop offset="100%" stop-color="${escapeSvgText(config.color)}" stop-opacity="0"/></radialGradient></defs><rect width="${canvasWidth}" height="${canvasHeight}" fill="url(#ig)"/></svg>`;
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0, blend: config.blendMode ?? 'screen' };
+}
+
+/** Dust / scratches — feTurbulence + threshold + flood pipeline producing
+ *  sparse, irregular specks. Auto-picks `screen` for light specks and
+ *  `multiply` for dark, so the underlying tone is preserved instead of
+ *  being flatly painted over. */
+export async function buildDustOverlay(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: DustConfig,
+): Promise<sharp.OverlayOptions> {
+  const seed = config.seed ?? 41;
+  const baseFreq = 0.55;
+  const threshold = 0.95 - config.density * 0.45;
+  const intercept = -threshold;
+  const slope = 1 / Math.max(0.05, 1 - threshold);
+  const turbulence = `<feTurbulence type="fractalNoise" baseFrequency="${baseFreq.toFixed(4)}" numOctaves="2" seed="${seed}" stitchTiles="stitch" result="rawNoise"/>`;
+  const seamSoftener = `<feGaussianBlur in="rawNoise" stdDeviation="1.2" result="noise"/>`;
+  const thresholded =
+    `<feComponentTransfer in="noise" result="peaks">` +
+    `<feFuncR type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `<feFuncG type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `<feFuncB type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `<feFuncA type="linear" slope="${slope.toFixed(3)}" intercept="${intercept.toFixed(3)}"/>` +
+    `</feComponentTransfer>`;
+  const flood = `<feFlood flood-color="${escapeSvgText(config.color)}" flood-opacity="1" result="speck-colour"/>`;
+  const composite = `<feComposite in="speck-colour" in2="peaks" operator="in" result="specks"/>`;
+  const alphaMatrix = `<feColorMatrix in="specks" type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 ${config.intensity.toFixed(3)} 0"/>`;
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}">`,
+    `<defs><filter id="dust" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">`,
+    turbulence,
+    seamSoftener,
+    thresholded,
+    flood,
+    composite,
+    alphaMatrix,
+    `</filter></defs>`,
+    `<rect width="${canvasWidth}" height="${canvasHeight}" fill="transparent" filter="url(#dust)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  const blend: 'screen' | 'multiply' = isLightHex(config.color) ? 'screen' : 'multiply';
+  return { input: buf, top: 0, left: 0, blend };
+}
+
+/** Halftone — uniform dot pattern via SVG `<pattern>`. `normal` blend
+ *  paints flat (with the per-dot opacity); the other four blends layer
+ *  with the canvas like the tint overlay does. */
+export async function buildHalftoneOverlay(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: HalftoneConfig,
+): Promise<sharp.OverlayOptions> {
+  const tile = config.spacing;
+  const cx = tile / 2;
+  const cy = tile / 2;
+  const angle = config.angle ?? 0;
+  const transformAttr = angle !== 0 ? ` patternTransform="rotate(${angle.toFixed(2)})"` : '';
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}">`,
+    `<defs><pattern id="ht" patternUnits="userSpaceOnUse" width="${tile}" height="${tile}"${transformAttr}>`,
+    `<circle cx="${cx}" cy="${cy}" r="${config.dotSize}" fill="${escapeSvgText(config.color)}" fill-opacity="${config.opacity}"/>`,
+    `</pattern></defs>`,
+    `<rect width="${canvasWidth}" height="${canvasHeight}" fill="url(#ht)"/>`,
+    `</svg>`,
+  ].join('');
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  const blend: 'multiply' | 'screen' | 'overlay' | 'soft-light' | 'over' =
+    config.blendMode === 'normal' ? 'over' : config.blendMode;
+  return { input: buf, top: 0, left: 0, blend };
+}
+
+/** Letterbox — up to four solid coloured bars on each canvas edge.
+ *  Composited with the default blend so the bars sit ON TOP of
+ *  everything beneath them (hides the underlying pixels). */
+export async function buildLetterboxOverlay(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: LetterboxConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const bars: string[] = [];
+  const fill = escapeSvgText(config.color);
+  const opacity = config.opacity ?? 1;
+  const opacityAttr = opacity < 1 ? ` fill-opacity="${opacity}"` : '';
+  if (config.top > 0)
+    bars.push(`<rect x="0" y="0" width="${canvasWidth}" height="${config.top}" fill="${fill}"${opacityAttr}/>`);
+  if (config.bottom > 0)
+    bars.push(
+      `<rect x="0" y="${canvasHeight - config.bottom}" width="${canvasWidth}" height="${config.bottom}" fill="${fill}"${opacityAttr}/>`,
+    );
+  if (config.left > 0)
+    bars.push(`<rect x="0" y="0" width="${config.left}" height="${canvasHeight}" fill="${fill}"${opacityAttr}/>`);
+  if (config.right > 0)
+    bars.push(
+      `<rect x="${canvasWidth - config.right}" y="0" width="${config.right}" height="${canvasHeight}" fill="${fill}"${opacityAttr}/>`,
+    );
+  if (bars.length === 0) return null;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}">${bars.join('')}</svg>`;
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0 };
+}
+
+/** Frame — single outer stroke (solid/dashed) or double parallel strokes.
+ *  Composited with the default blend so the stroke sits on top. */
+export async function buildFrameOverlay(
+  canvasWidth: number,
+  canvasHeight: number,
+  config: FrameConfig,
+): Promise<sharp.OverlayOptions | null> {
+  const style = config.style ?? 'solid';
+  const rects = computeFrameRects(canvasWidth, canvasHeight, config.inset, config.thickness, style);
+  if (rects.length === 0) return null;
+  const dashAttr =
+    style === 'dashed'
+      ? ` stroke-dasharray="${(config.thickness * 2).toFixed(2)} ${(config.thickness * 1.5).toFixed(2)}"`
+      : '';
+  const rectEls = rects
+    .map(
+      (r) =>
+        `<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="none" stroke="${escapeSvgText(config.color)}" stroke-width="${r.strokeWidth}"${dashAttr}/>`,
+    )
+    .join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}">${rectEls}</svg>`;
+  const buf = await sharp(Buffer.from(svg)).png().toBuffer();
+  return { input: buf, top: 0, left: 0 };
+}
+
 // ─── Pipeline entry ─────────────────────────────────────────────────────────
 
 /**
@@ -914,6 +1520,80 @@ export async function applySharedOverlays(input: SharedOverlayInput): Promise<Bu
     });
   }
 
+  // r2.8 finishing overlays — applied AFTER vignette and BEFORE grain so
+  // the colour-grade layers (tint, light leak, inner glow) react to the
+  // base colour AS IT WAS GRADED, and grain sits visually on top of the
+  // graded image. Order WITHIN the colour-grade group: tint (flat wash)
+  // → light leak (off-canvas radial) → inner glow (centred radial) →
+  // dust (textured specks) → halftone (uniform dot pattern). Letterbox
+  // + frame run LAST so they sit on top of grain too (they're framing,
+  // not grading).
+  if (postProcess?.tint) {
+    const t1 = Date.now();
+    const tintOverlays = await buildTintOverlays(canvas.width, canvas.height, postProcess.tint);
+    for (const o of tintOverlays) postOverlays.push(o);
+    console.info('[shared-overlay tint]', {
+      color: postProcess.tint.color,
+      intensity: postProcess.tint.intensity,
+      blend: postProcess.tint.blendMode,
+      has_shadows: !!postProcess.tint.shadows,
+      has_highlights: !!postProcess.tint.highlights,
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+  if (postProcess?.lightLeak) {
+    const t1 = Date.now();
+    postOverlays.push(
+      await buildLightLeakOverlay(canvas.width, canvas.height, postProcess.lightLeak),
+    );
+    console.info('[shared-overlay light-leak]', {
+      position: postProcess.lightLeak.position,
+      color: postProcess.lightLeak.color,
+      intensity: postProcess.lightLeak.intensity,
+      blend: postProcess.lightLeak.blendMode ?? 'screen',
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+  if (postProcess?.innerGlow) {
+    const t1 = Date.now();
+    postOverlays.push(
+      await buildInnerGlowOverlay(canvas.width, canvas.height, postProcess.innerGlow),
+    );
+    console.info('[shared-overlay inner-glow]', {
+      color: postProcess.innerGlow.color,
+      intensity: postProcess.innerGlow.intensity,
+      radius: postProcess.innerGlow.radius,
+      blend: postProcess.innerGlow.blendMode ?? 'screen',
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+  if (postProcess?.dust) {
+    const t1 = Date.now();
+    postOverlays.push(await buildDustOverlay(canvas.width, canvas.height, postProcess.dust));
+    console.info('[shared-overlay dust]', {
+      color: postProcess.dust.color,
+      intensity: postProcess.dust.intensity,
+      density: postProcess.dust.density,
+      seed: postProcess.dust.seed ?? 41,
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+  if (postProcess?.halftone) {
+    const t1 = Date.now();
+    postOverlays.push(
+      await buildHalftoneOverlay(canvas.width, canvas.height, postProcess.halftone),
+    );
+    console.info('[shared-overlay halftone]', {
+      color: postProcess.halftone.color,
+      opacity: postProcess.halftone.opacity,
+      dot_size: postProcess.halftone.dotSize,
+      spacing: postProcess.halftone.spacing,
+      blend: postProcess.halftone.blendMode,
+      angle: postProcess.halftone.angle ?? 0,
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+
   if (postProcess?.grain && clampUnit(postProcess.grain.intensity) > 0) {
     const t1 = Date.now();
     const grainPng = await buildGrainOverlay(
@@ -928,6 +1608,37 @@ export async function applySharedOverlays(input: SharedOverlayInput): Promise<Bu
       intensity: postProcess.grain.intensity,
       size: postProcess.grain.size,
       monochrome: postProcess.grain.monochrome,
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+
+  if (postProcess?.letterbox) {
+    const t1 = Date.now();
+    const letterbox = await buildLetterboxOverlay(
+      canvas.width,
+      canvas.height,
+      postProcess.letterbox,
+    );
+    if (letterbox) postOverlays.push(letterbox);
+    console.info('[shared-overlay letterbox]', {
+      color: postProcess.letterbox.color,
+      top: postProcess.letterbox.top,
+      bottom: postProcess.letterbox.bottom,
+      left: postProcess.letterbox.left,
+      right: postProcess.letterbox.right,
+      opacity: postProcess.letterbox.opacity ?? 1,
+      elapsed_ms: Date.now() - t1,
+    });
+  }
+  if (postProcess?.frame) {
+    const t1 = Date.now();
+    const frame = await buildFrameOverlay(canvas.width, canvas.height, postProcess.frame);
+    if (frame) postOverlays.push(frame);
+    console.info('[shared-overlay frame]', {
+      color: postProcess.frame.color,
+      thickness: postProcess.frame.thickness,
+      inset: postProcess.frame.inset,
+      style: postProcess.frame.style ?? 'solid',
       elapsed_ms: Date.now() - t1,
     });
   }
@@ -959,7 +1670,14 @@ export async function applySharedOverlays(input: SharedOverlayInput): Promise<Bu
   console.info('[shared-overlay applied]', {
     filter: postProcess?.filter ?? null,
     vignette: !!postProcess?.vignette && clampUnit(postProcess.vignette.intensity) > 0,
+    tint: !!postProcess?.tint,
+    light_leak: !!postProcess?.lightLeak,
+    inner_glow: !!postProcess?.innerGlow,
+    dust: !!postProcess?.dust,
+    halftone: !!postProcess?.halftone,
     grain: !!postProcess?.grain && clampUnit(postProcess.grain.intensity) > 0,
+    letterbox: !!postProcess?.letterbox,
+    frame: !!postProcess?.frame,
     title_bar: !!titleBar,
     total_elapsed_ms: Date.now() - t0,
   });
