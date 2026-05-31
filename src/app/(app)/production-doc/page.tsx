@@ -4753,7 +4753,26 @@ function ProductionDocPage() {
   // are needed, turn collage off in the doc settings.
   const runGenerateEmptyImages = useCallback(async () => {
     if (retryingImages || imagesGenerating) return;
-    if (emptyImagePlan.length === 0) return;
+
+    // motion_collage rows are partitioned off the regular plan because
+    // they don't carry an ai_image_prompt — the existing emptyImagePlan
+    // requires a non-empty prompt and would silently skip them.
+    // Collected here so the batch button STILL generates them; processed
+    // sequentially via the dedicated /motion-collage endpoint after the
+    // confirmation. Plan §9 follow-up.
+    const motionCollageRowsToGenerate: number[] = [];
+    if (doc) {
+      for (let i = 0; i < doc.rows.length; i++) {
+        const r = doc.rows[i];
+        if (r.shot_kind !== 'motion_collage') continue;
+        if (!r.motion_collage_grid || !r.motion_collage_panel_prompts?.length) continue;
+        const s = rowImages[i];
+        if (s?.imageUrl) continue;
+        if (s?.status === 'loading' || s?.status === 'pending') continue;
+        motionCollageRowsToGenerate.push(i);
+      }
+    }
+    if (emptyImagePlan.length === 0 && motionCollageRowsToGenerate.length === 0) return;
 
     // Default: ON. Only an explicit `false` (set via the settings
     // toggle) opts out. Existing docs with no `collage_mode` field
@@ -4761,14 +4780,33 @@ function ProductionDocPage() {
     const collageOn = doc?.collage_mode !== false;
     const chunkCount = collageOn ? Math.floor(emptyImagePlan.length / 4) : 0;
     const tailCount = emptyImagePlan.length - chunkCount * 4;
+    const mcPart = motionCollageRowsToGenerate.length > 0
+      ? ` + ${motionCollageRowsToGenerate.length} motion-collage shot${motionCollageRowsToGenerate.length === 1 ? '' : 's'}`
+      : '';
+    const totalCount = emptyImagePlan.length + motionCollageRowsToGenerate.length;
     const confirmMsg = collageOn
-      ? `Generate stills for ${emptyImagePlan.length} empty row${emptyImagePlan.length === 1 ? '' : 's'}? Collage mode is ON — ${chunkCount} batched group${chunkCount === 1 ? '' : 's'} of 4${tailCount > 0 ? ` + ${tailCount} single shot${tailCount === 1 ? '' : 's'}` : ''}.`
-      : `Generate stills for ${emptyImagePlan.length} empty row${emptyImagePlan.length === 1 ? '' : 's'}? This calls the image model once per row.`;
+      ? `Generate stills for ${totalCount} empty row${totalCount === 1 ? '' : 's'}? Collage mode is ON — ${chunkCount} batched group${chunkCount === 1 ? '' : 's'} of 4${tailCount > 0 ? ` + ${tailCount} single shot${tailCount === 1 ? '' : 's'}` : ''}${mcPart}.`
+      : `Generate stills for ${totalCount} empty row${totalCount === 1 ? '' : 's'}? This calls the image model once per row${mcPart}.`;
     const confirmed = window.confirm(confirmMsg);
     if (!confirmed) return;
 
-    setRetryingImages({ done: 0, total: emptyImagePlan.length });
+    setRetryingImages({ done: 0, total: totalCount });
     let completed = 0;
+
+    // Process motion-collage rows FIRST (sequentially — each is a
+    // single heavy Atlas i2i + Recraft + slice call). The user sees
+    // these populate before the regular shots, which is a sensible
+    // ordering since they're the most distinctive output.
+    for (const rowIdx of motionCollageRowsToGenerate) {
+      await generateMotionCollageForRow(rowIdx);
+      completed += 1;
+      setRetryingImages({ done: completed, total: totalCount });
+    }
+    // Short-circuit when there's nothing else to do.
+    if (emptyImagePlan.length === 0) {
+      setRetryingImages(null);
+      return;
+    }
 
     if (collageOn) {
       // Group eligible shots in chunks of 4 and run 2 chunks in parallel.
@@ -4817,6 +4855,12 @@ function ProductionDocPage() {
                   styleSheetDescription: c.styleSheetDescription,
                 })),
                 model: imageModel,
+                // 2026-05-31 (plan §C) — refs-aware collage. The route
+                // loads the style's refs server-side and routes Atlas
+                // calls through i2i so every cell inherits the style.
+                // Without this field the route falls back to the
+                // historical t2i path (refs dropped, style drifts).
+                stylePreset,
               }),
             }),
           );
@@ -6880,6 +6924,112 @@ function ProductionDocPage() {
       return true;
     } catch (err) {
       setRowImages(prev => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'error', error: err instanceof Error ? err.message : 'Failed' };
+        return next;
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Per-row trigger for the doodle_explainer_2 motion_collage shot kind.
+   * Called when ImageCell's Generate button fires on a row whose
+   * `shot_kind === 'motion_collage'` — the regular generateImageForRow
+   * builds its prompt from ai_image_prompt (empty on these rows), so
+   * we route to the dedicated /api/generate/production-doc/motion-collage
+   * endpoint which wraps generateMotionCollage server-side.
+   *
+   * Mirrors the loading / done / error state machine of
+   * generateImageForRow so the inspector pill, the panels-grid preview
+   * in ImageCell, and the retry affordances all behave consistently
+   * across regular and motion_collage rows.
+   *
+   * See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`
+   * Phase 9 (editor wire-up) — added as a follow-up after smoke-testing
+   * showed the manual path was unwired.
+   */
+  async function generateMotionCollageForRow(rowIndex: number): Promise<boolean> {
+    const row = doc?.rows[rowIndex];
+    if (!row || row.shot_kind !== 'motion_collage') return false;
+    if (!row.motion_collage_grid || !row.motion_collage_panel_prompts?.length) {
+      toast.error('Set a grid + panel prompts before generating.');
+      return false;
+    }
+    setRowImages((prev) => {
+      const next = [...prev];
+      next[rowIndex] = { ...next[rowIndex], status: 'loading' };
+      return next;
+    });
+    console.info('[prodoc motion-collage manual] start', {
+      row_index: rowIndex,
+      grid: row.motion_collage_grid,
+      panel_count: row.motion_collage_panel_prompts.length,
+    });
+    try {
+      const res = await queueImageGen('generate', 'motion-collage', () =>
+        // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
+        fetch('/api/generate/production-doc/motion-collage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grid: row.motion_collage_grid,
+            panelPrompts: row.motion_collage_panel_prompts,
+            stylePreset,
+            motionCollageSettings:
+              doc?.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings,
+            characterDescriptions: doc?.doodle_explainer_2_character_descriptions,
+          }),
+        }),
+      );
+      if (res.status === 429) reportUpstream429('generate', 'motion-collage');
+      const data = (await res.json()) as {
+        imageUrl?: string;
+        panelUrls?: string[];
+        collageImageUrl?: string;
+        error?: string;
+        costUsd?: number;
+      };
+      if (res.ok && data.imageUrl && data.panelUrls?.length) {
+        // Write the per-row image state (panel 0 mirrored into image_url)
+        // AND persist the panel URLs onto the doc so a refresh / save /
+        // re-render of the page picks them up.
+        setRowImages((prev) => {
+          const next = [...prev];
+          next[rowIndex] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
+          return next;
+        });
+        setDoc((prev) => {
+          if (!prev) return prev;
+          const nextRows = [...prev.rows];
+          nextRows[rowIndex] = {
+            ...nextRows[rowIndex],
+            image_url: data.imageUrl,
+            motion_collage_image_url: data.collageImageUrl,
+            motion_collage_panel_urls: data.panelUrls,
+          };
+          return { ...prev, rows: nextRows };
+        });
+        console.info('[prodoc motion-collage manual] success', {
+          row_index: rowIndex,
+          panel_count: data.panelUrls.length,
+          cost_usd: data.costUsd,
+        });
+        return true;
+      }
+      setRowImages((prev) => {
+        const next = [...prev];
+        next[rowIndex] = { status: 'error', error: data.error ?? `HTTP ${res.status}` };
+        return next;
+      });
+      console.warn('[prodoc motion-collage manual] failed', {
+        row_index: rowIndex,
+        status: res.status,
+        error: data.error,
+      });
+      return false;
+    } catch (err) {
+      setRowImages((prev) => {
         const next = [...prev];
         next[rowIndex] = { status: 'error', error: err instanceof Error ? err.message : 'Failed' };
         return next;
@@ -10832,6 +10982,14 @@ function ProductionDocPage() {
                             motionCollagePanelUrls={row.motion_collage_panel_urls}
                             motionCollageGrid={row.motion_collage_grid}
                             onRetry={() => {
+                              // doodle_explainer_2 motion_collage rows
+                              // bypass the regular prompt-based path —
+                              // their content lives on motion_collage_*
+                              // fields and goes through the dedicated
+                              // /motion-collage endpoint. See plan §9.
+                              if (row.shot_kind === 'motion_collage') {
+                                return generateMotionCollageForRow(i);
+                              }
                               const promptSource = row.ai_image_prompt?.trim() || row.visual_description?.trim();
                               if (!promptSource) return;
                               // Persist the visual_description fallback into
@@ -11441,6 +11599,12 @@ function ProductionDocPage() {
                             motionCollagePanelUrls={row.motion_collage_panel_urls}
                             motionCollageGrid={row.motion_collage_grid}
                             onRetry={() => {
+                              // Mirrors the wide-view branch above:
+                              // motion_collage rows route to their own
+                              // endpoint via generateMotionCollageForRow.
+                              if (row.shot_kind === 'motion_collage') {
+                                return generateMotionCollageForRow(i);
+                              }
                               const promptSource = row.ai_image_prompt?.trim() || row.visual_description?.trim();
                               if (!promptSource) return;
                               if (!row.ai_image_prompt?.trim()) {

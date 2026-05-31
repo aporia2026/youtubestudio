@@ -8,7 +8,7 @@ import {
   IMAGE_MODELS,
 } from '@/lib/image-models';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
-import { generateAtlasT2I } from '@/lib/atlas-cloud-images';
+import { generateAtlasT2I, generateAtlasI2I } from '@/lib/atlas-cloud-images';
 import { cropTo16x9AndUpload } from '@/lib/image-gen-dispatch';
 import { upscaleViaRecraft } from '@/lib/upscale';
 import { computeImageSaliency } from '@/lib/image-saliency';
@@ -19,6 +19,12 @@ import { composeCollagePrompt } from '@/lib/collage-prompt';
 import { augmentCellPrompt, COLLAGE_CELL_PROMPT_CAP } from '@/lib/prompt-augmentation';
 import { apiRoute } from '@/lib/route-helpers';
 import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
+import { resolveStyle } from '@/lib/production-doc-styles';
+import {
+  loadStyleReferences,
+  mirrorPublicUrlRefToR2,
+} from '@/lib/production-doc-styles-refs';
+import { getDownloadUrlForBucket } from '@/lib/r2';
 
 export const maxDuration = 300;
 
@@ -95,6 +101,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       prompts?: string[];
       cells?: CollageCellInput[];
       model?: string;
+      /** 2026-05-31 (plan §C) — style preset forwarded from the page so
+       *  the route can load the style's refs server-side and route Atlas
+       *  generation through i2i. When omitted, the route falls back to
+       *  the historical t2i path with no refs. */
+      stylePreset?: string;
     };
     try {
       body = await req.json();
@@ -185,6 +196,65 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: 'KIE_API_KEY is not configured' }, { status: 500 });
     }
 
+    // 2026-05-31 (plan §C) — refs-aware collage. When the page passes
+    // `stylePreset` AND the style ships with refs (e.g. doodle_explainer_2's
+    // 4 built-in doodle anchors), resolve them to URLs and route through
+    // Atlas i2i so every cell of the 2×2 output inherits the style refs
+    // — instead of the historical t2i call that silently dropped them.
+    // Refs-aware mode only fires on Atlas (the only provider in our
+    // codebase that supports i2i with refs); Kie styles + refs return
+    // `fallback_needed` so the page drops to single-shot (which DOES use
+    // refs via the existing i2i dispatcher).
+    const stylePresetParam = typeof body.stylePreset === 'string' ? body.stylePreset.trim() : '';
+    let refImageUrls: string[] = [];
+    if (stylePresetParam) {
+      try {
+        const style = await resolveStyle(stylePresetParam, session.ws, null);
+        if (style) {
+          const refs = await loadStyleReferences(style.id, {
+            excludeRejected: true,
+            excludeUnvalidated: true,
+            workspaceId: session.ws,
+          });
+          if (refs.length > 0) {
+            refImageUrls = await Promise.all(
+              refs.map((r) =>
+                r.public_url
+                  ? mirrorPublicUrlRefToR2(r)
+                  : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
+              ),
+            );
+          }
+        }
+      } catch (err) {
+        logger.warn('[collage refs] resolution failed — falling back to t2i path', {
+          stylePreset: stylePresetParam,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        refImageUrls = [];
+      }
+    }
+    const refsAware = refImageUrls.length > 0 && spec.provider === 'atlas';
+    // Atlas i2i caps at 4 refs — cap defensively here so a saved style
+    // with more refs doesn't blow the model limit. First 4 in declared
+    // order; the style author owns ref priority.
+    const ATLAS_I2I_MAX_REFS = 4;
+    const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
+    if (refImageUrls.length > 0 && spec.provider !== 'atlas') {
+      logger.warn('[collage refs] style has refs but provider is non-Atlas — refs cannot be threaded', {
+        stylePreset: stylePresetParam,
+        provider: spec.provider,
+        ref_count: refImageUrls.length,
+      });
+    }
+    logger.info('[collage refs] eligibility', {
+      stylePreset: stylePresetParam,
+      ref_count_loaded: refImageUrls.length,
+      refs_aware: refsAware,
+      refs_will_send: cappedRefs.length,
+      provider: spec.provider,
+    });
+
     // ─── Try → detect malformed → retry once → fallback ────────────────
     let attemptCount = 0;
     let upscaledUrl: string | null = null;
@@ -236,7 +306,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         workspaceId: session.ws,
         route: '/api/generate/production-doc/collage',
         provider: spec.provider === 'atlas' ? 'atlas' : 'kie',
-        providerModel: `${spec.value}#attempt-${attempt}`,
+        providerModel: `${spec.value}${refsAware ? '#i2i' : ''}#attempt-${attempt}`,
       });
       pendingIntentId = attemptIntent.id;
       let attemptProviderRequestId: string | null = null;
@@ -264,11 +334,24 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
           // takes the upscale hit so each quadrant lands at usable
           // resolution. Quality stays on the spec's default ('low' per
           // the registry) because Recraft will sharpen.
-          const atlasResult = await generateAtlasT2I({
-            prompt: composedPrompt,
-            size: '1536x1024',
-            quality: spec.atlasQuality ?? 'low',
-          });
+          // 2026-05-31 (plan §C) — refs-aware variant. When `refsAware`,
+          // call Atlas i2i with the style refs as inputs so every cell
+          // of the 2×2 inherits the style aesthetic. Otherwise the
+          // original t2i path. Same 1536×1024 source, same downstream
+          // crop + upscale + slice. Costs the same as t2i (Atlas charges
+          // by Edit/I2I model, same SKU as Edit at low quality).
+          const atlasResult = refsAware
+            ? await generateAtlasI2I({
+                prompt: composedPrompt,
+                images: cappedRefs,
+                size: '1536x1024',
+                quality: spec.atlasQuality ?? 'low',
+              })
+            : await generateAtlasT2I({
+                prompt: composedPrompt,
+                size: '1536x1024',
+                quality: spec.atlasQuality ?? 'low',
+              });
           attemptProviderRequestId = atlasResult.predictionId ?? null;
           logger.info('[collage atlas-generate] vendor done', {
             attempt,
@@ -276,6 +359,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
             predict_ms: atlasResult.predictTimeMs,
             forced_size: '1536x1024',
             spec_size: spec.atlasSize,
+            refs_aware: refsAware,
+            refs_sent: cappedRefs.length,
           });
           const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
           const upscaleResult = await upscaleViaRecraft(croppedUrl);
