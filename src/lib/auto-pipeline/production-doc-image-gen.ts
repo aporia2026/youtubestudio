@@ -25,7 +25,7 @@
  * Plan: `_plans/2026-05-27-doodle-explainer-2-foundation.md` (Stage 4).
  */
 import { resolveStyle } from '../production-doc-styles';
-import { loadStyleReferences } from '../production-doc-styles-refs';
+import { loadStyleReferences, mirrorPublicUrlRefToR2 } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
 import { generateAtlasT2I, generateAtlasI2I } from './../atlas-cloud-images';
@@ -1404,14 +1404,45 @@ export async function generateMotionCollage(args: {
     };
   }
 
-  // ─── 4. Compose the collage prompt ──────────────────────────────────
-  // Resolve the style to pull its `ai_image_suffix` — the doodle
-  // aesthetic vocabulary lives there. Same lookup as generateBaseImage.
+  // ─── 4. Resolve style — suffix AND refs ──────────────────────────────
+  // Refs are LOAD-BEARING for styles like doodle_explainer_2 — the
+  // ai_image_suffix description alone won't reproduce the doodle look,
+  // the 4 built-in refs are what teaches Atlas the stick-figure / thin
+  // black ink lines / muted color palette aesthetic. Without refs the
+  // model defaults to a generic illustration style — that's the bug
+  // smoke-tested on the first motion_collage runs.
+  // See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` §C.
   let styleSuffix: string | undefined;
+  let refImageUrls: string[] = [];
   if (doc.style_preset?.trim()) {
     try {
       const style = await resolveStyle(doc.style_preset, workspaceId, ownerId);
       styleSuffix = style?.ai_image_suffix;
+      if (style) {
+        const refs = await loadStyleReferences(style.id, {
+          excludeRejected: true,
+          excludeUnvalidated: true,
+          workspaceId,
+        });
+        if (refs.length > 0) {
+          try {
+            refImageUrls = await Promise.all(
+              refs.map((r) =>
+                r.public_url
+                  ? mirrorPublicUrlRefToR2(r)
+                  : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
+              ),
+            );
+          } catch (refErr) {
+            // Defensive — t2i fallback still produces SOMETHING (just
+            // off-style). Better than a hard fail.
+            logger.warn('[motion-collage pipeline] ref-url resolution failed — falling back to t2i', {
+              error: refErr instanceof Error ? refErr.message : String(refErr),
+            });
+            refImageUrls = [];
+          }
+        }
+      }
     } catch (err) {
       // Style lookup failure is non-fatal — the generation can still
       // run with the panel prompts alone. Logged for debugging.
@@ -1455,22 +1486,45 @@ export async function generateMotionCollage(args: {
   // bounds check catches geometrically-impossible outputs; semantic
   // quality issues (drift between panels) need a vision pass we haven't
   // built yet. Reroll is the user's call from the inspector.
+  //
+  // Refs-aware: when the style has refs (doodle_explainer_2's 4 doodle
+  // anchors), route through Atlas i2i so every cell of the N×M output
+  // inherits the style. Atlas i2i caps at 4 input refs — cap defensively
+  // here. Without refs (or for styles without refs), fall back to t2i
+  // with the suffix-only prompt.
+  const ATLAS_I2I_MAX_REFS = 4;
+  const refsAware = refImageUrls.length > 0;
+  const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
   const intent = await recordIntent({
     userId: ownerId,
     workspaceId,
     route: 'auto-pipeline:generateMotionCollage',
     provider: 'atlas',
-    providerModel: `openai/gpt-image-2/t2i#motion-collage-${grid.cols}x${grid.rows}`,
+    providerModel: refsAware
+      ? `openai/gpt-image-2/i2i#motion-collage-${grid.cols}x${grid.rows}`
+      : `openai/gpt-image-2/t2i#motion-collage-${grid.cols}x${grid.rows}`,
   });
   let providerRequestId: string | null = null;
   let upscaledUrl: string;
   let generationCostUsd: number;
   try {
-    const atlasResult = await generateAtlasT2I({
-      prompt: composedPrompt,
-      size: '1536x1024',
-      quality: 'low',
+    logger.info('[motion-collage pipeline] dispatching', {
+      row_index: lookupRowIndex(row, doc),
+      refs_aware: refsAware,
+      refs_sent: cappedRefs.length,
     });
+    const atlasResult = refsAware
+      ? await generateAtlasI2I({
+          prompt: composedPrompt,
+          images: cappedRefs,
+          size: '1536x1024',
+          quality: 'low',
+        })
+      : await generateAtlasT2I({
+          prompt: composedPrompt,
+          size: '1536x1024',
+          quality: 'low',
+        });
     providerRequestId = atlasResult.predictionId ?? null;
     const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
     const upscale = await upscaleViaRecraft(croppedUrl);
