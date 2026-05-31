@@ -64,6 +64,7 @@ import type { RowOverlayState } from '@/components/production-doc/overlay-types'
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { PaintExplainerV1SettingsPanel } from '@/components/production-doc/PaintExplainerV1SettingsPanel';
 import { DoodleExplainer2MotionCollageSettingsPanel } from '@/components/production-doc/DoodleExplainer2MotionCollageSettingsPanel';
+import { MotionCollageRowEditor } from '@/components/production-doc/MotionCollageRowEditor';
 import type {
   DoodleExplainer2MotionCollageSettings,
   PaintExplainerV1Settings,
@@ -403,6 +404,16 @@ interface ProductionRow {
    *  Atlas Edit call). Mirrors the canonical definition in
    *  src/remotion/utils.ts. */
   scene_id?: string;
+  // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────
+  // Mirrors the canonical ProductionRow fields in src/remotion/utils.ts.
+  // Both interfaces MUST stay in sync — page.tsx renders editor UI
+  // against this shape and the auto-pipeline reads the canonical one.
+  // See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
+  shot_kind?: 'static' | 'motion' | 'hard_cut' | 'motion_collage';
+  motion_collage_grid?: { cols: number; rows: number };
+  motion_collage_panel_prompts?: string[];
+  motion_collage_image_url?: string;
+  motion_collage_panel_urls?: string[];
 }
 
 interface ProductionDoc {
@@ -1634,6 +1645,8 @@ export function ImageCell({
   onUrlImport,
   onEdit,
   canGenerate = true,
+  motionCollagePanelUrls,
+  motionCollageGrid,
 }: {
   state: RowImageState;
   onRetry: () => void;
@@ -1649,6 +1662,15 @@ export function ImageCell({
    *  idle-state Generate button. Defaults to true so unmodified callers
    *  keep their old behaviour (an enabled button). */
   canGenerate?: boolean;
+  /** doodle_explainer_2 motion_collage panels — when present + length
+   *  > 1, replaces the single-image preview with a mini grid showing
+   *  every keyframe. Index 0 first (top-left), row-major. Undefined ⇒
+   *  ImageCell renders the regular single-image preview. */
+  motionCollagePanelUrls?: readonly string[];
+  /** Grid layout for the panels preview. When omitted, ImageCell
+   *  derives cols/rows from the panel count (preferring square layouts).
+   *  See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
+  motionCollageGrid?: { cols: number; rows: number };
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [urlInputOpen, setUrlInputOpen] = useState(false);
@@ -1855,13 +1877,38 @@ export function ImageCell({
   }
 
   if (state.status === 'done' && state.imageUrl) {
+    // Motion collage preview: when the row carries multiple panels,
+    // render a mini grid of every keyframe instead of just the first.
+    // Same 80×50 footprint as the regular preview so table-row heights
+    // don't reflow. Each cell is a thumbnail of one keyframe — click
+    // still opens the lightbox of panel 0 (state.imageUrl). The grid
+    // count + layout come from the row, with a square-ish fallback
+    // when only the panel array is provided.
+    const panels = motionCollagePanelUrls ?? [];
+    const showMotionCollageGrid = panels.length > 1;
+    let collageCols = 2;
+    let collageRows = 2;
+    if (showMotionCollageGrid) {
+      if (motionCollageGrid && motionCollageGrid.cols > 0 && motionCollageGrid.rows > 0) {
+        collageCols = motionCollageGrid.cols;
+        collageRows = motionCollageGrid.rows;
+      } else {
+        // Square-ish default: ceil(sqrt(N)) cols, ceil(N / cols) rows.
+        collageCols = Math.ceil(Math.sqrt(panels.length));
+        collageRows = Math.ceil(panels.length / collageCols);
+      }
+    }
     return (
       <>
         <div style={{ position: 'relative', display: 'inline-block' }}>
           <button
             type="button"
             onClick={() => setPreviewOpen(true)}
-            title="Click to preview full size"
+            title={
+              showMotionCollageGrid
+                ? `Motion collage — ${panels.length} keyframes. Click to preview frame 1 full size.`
+                : 'Click to preview full size'
+            }
             style={{
               padding: 0,
               background: 'transparent',
@@ -1870,19 +1917,52 @@ export function ImageCell({
               display: 'block',
             }}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={state.imageUrl}
-              alt="AI generated"
-              style={{
-                width: 80,
-                height: 50,
-                objectFit: 'cover',
-                borderRadius: 5,
-                border: '1px solid var(--border)',
-                display: 'block',
-              }}
-            />
+            {showMotionCollageGrid ? (
+              <div
+                style={{
+                  width: 80,
+                  height: 50,
+                  borderRadius: 5,
+                  border: '1px solid var(--border)',
+                  display: 'grid',
+                  gridTemplateColumns: `repeat(${collageCols}, 1fr)`,
+                  gridTemplateRows: `repeat(${collageRows}, 1fr)`,
+                  gap: 1,
+                  background: 'var(--border)',
+                  overflow: 'hidden',
+                }}
+                aria-label={`Motion collage with ${panels.length} keyframes`}
+              >
+                {panels.slice(0, collageCols * collageRows).map((url, idx) => (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    key={idx}
+                    src={url}
+                    alt={`Motion collage panel ${idx + 1}`}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      display: 'block',
+                    }}
+                  />
+                ))}
+              </div>
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={state.imageUrl}
+                alt="AI generated"
+                style={{
+                  width: 80,
+                  height: 50,
+                  objectFit: 'cover',
+                  borderRadius: 5,
+                  border: '1px solid var(--border)',
+                  display: 'block',
+                }}
+              />
+            )}
           </button>
           {/* Re-generate + Edit overlay buttons. ↻ re-rolls the row's
               prompt-based generation; only shown for rows whose image
@@ -3190,9 +3270,20 @@ function ProductionDocPage() {
   //    visual_description, and on_screen_text; row passes when the substring
   //    appears in any of those, OR when search is empty.
   // The filter applies to both the desktop table and the mobile cards.
-  const [filters, setFilters] = useState<{ visualTypes: string[]; search: string }>({
+  const [filters, setFilters] = useState<{
+    visualTypes: string[];
+    search: string;
+    /** When true, only rows with `shot_kind === 'motion_collage'` are
+     *  visible. Independent from the visual_type chips because
+     *  motion_collage rows keep `visual_type: 'Animation'` per the
+     *  doodle_explainer_2 mixing_rules — without a separate chip
+     *  they'd be impossible to isolate at a glance.
+     *  See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
+    motionCollageOnly: boolean;
+  }>({
     visualTypes: [],
     search: '',
+    motionCollageOnly: false,
   });
 
   /**
@@ -9797,10 +9888,15 @@ function ProductionDocPage() {
               return acc;
             }, {});
             const distinctTypes = Object.keys(typeCounts).sort();
-            const hasAnyFilter = filters.visualTypes.length > 0 || filters.search.trim().length > 0;
+            const motionCollageCount = rows.filter((r) => r.shot_kind === 'motion_collage').length;
+            const hasAnyFilter =
+              filters.visualTypes.length > 0
+              || filters.search.trim().length > 0
+              || filters.motionCollageOnly;
             const search = filters.search.trim().toLowerCase();
             const visibleCount = rows.filter(r => {
               if (filters.visualTypes.length > 0 && !filters.visualTypes.includes(r.visual_type)) return false;
+              if (filters.motionCollageOnly && r.shot_kind !== 'motion_collage') return false;
               if (search.length > 0) {
                 const hay = `${r.script_text ?? ''}\n${r.visual_description ?? ''}\n${r.on_screen_text ?? ''}`.toLowerCase();
                 if (!hay.includes(search)) return false;
@@ -9858,12 +9954,51 @@ function ProductionDocPage() {
                       </button>
                     );
                   })}
+                  {/* Motion-collage chip — separate from visual_type chips
+                      because motion_collage rows keep `visual_type:
+                      "Animation"`. Without this, motion_collage rows are
+                      invisible against the rest of the Animation cluster.
+                      Mounts only when at least one motion_collage row exists
+                      in the doc, mirroring the visual_type chips' "hide chip
+                      when count = 0" discipline. Purple to match the
+                      doc-level settings panel + the Convert button.
+                      See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */}
+                  {motionCollageCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = {
+                          ...filters,
+                          motionCollageOnly: !filters.motionCollageOnly,
+                        };
+                        setFilters(next);
+                        console.info('[production-doc filter-change]', next);
+                      }}
+                      className="text-[11px] px-2 py-0.5 rounded-full font-medium"
+                      style={{
+                        background: filters.motionCollageOnly ? 'rgba(124,58,237,0.25)' : 'transparent',
+                        color: filters.motionCollageOnly ? '#a78bfa' : 'var(--text-muted)',
+                        border: filters.motionCollageOnly
+                          ? '1px solid rgba(124,58,237,0.55)'
+                          : '1px solid rgba(255,255,255,0.15)',
+                        cursor: 'pointer',
+                        opacity: filters.motionCollageOnly ? 1 : 0.75,
+                      }}
+                      title={
+                        filters.motionCollageOnly
+                          ? 'Click to remove the motion-collage filter'
+                          : 'Click to show only motion-collage rows'
+                      }
+                    >
+                      ↯ Motion Collage · {motionCollageCount}
+                    </button>
+                  )}
                 </div>
                 {hasAnyFilter && (
                   <button
                     type="button"
                     onClick={() => {
-                      const next = { visualTypes: [], search: '' };
+                      const next = { visualTypes: [], search: '', motionCollageOnly: false };
                       setFilters(next);
                       console.info('[production-doc filter-change]', next);
                     }}
@@ -9917,6 +10052,7 @@ function ProductionDocPage() {
                     // Filter check — return null so the row index `i` stays
                     // tied to the doc index for every handler that follows.
                     if (filters.visualTypes.length > 0 && !filters.visualTypes.includes(row.visual_type)) return null;
+                    if (filters.motionCollageOnly && row.shot_kind !== 'motion_collage') return null;
                     if (filters.search.trim().length > 0) {
                       const q = filters.search.trim().toLowerCase();
                       const hay = `${row.script_text ?? ''}\n${row.visual_description ?? ''}\n${row.on_screen_text ?? ''}`.toLowerCase();
@@ -10285,6 +10421,49 @@ function ProductionDocPage() {
                                     </button>
                                   </div>
                                 ) : null}
+                                {/* "Convert to motion collage" affordance —
+                                    only meaningful on doodle_explainer_2,
+                                    only on non-title-card rows, only when
+                                    the row isn't already a motion_collage
+                                    row. One click flips the shot_kind +
+                                    seeds an empty 2×2 grid; the cell's AI
+                                    Prompt column then renders the dedicated
+                                    motion-collage editor. See
+                                    `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */}
+                                {stylePreset === 'doodle_explainer_2'
+                                  && row.visual_type !== 'Title Card'
+                                  && row.shot_kind !== 'motion_collage' && (
+                                  <div className="mt-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        updateRow(i, {
+                                          shot_kind: 'motion_collage',
+                                          motion_collage_grid: { cols: 2, rows: 2 },
+                                          motion_collage_panel_prompts: ['', '', '', ''],
+                                          // Clear the regular prompt and any
+                                          // existing image so the row reads
+                                          // unambiguously as motion_collage
+                                          // and the next gen runs the new path.
+                                          ai_image_prompt: '',
+                                          image_url: undefined,
+                                          motion_collage_image_url: undefined,
+                                          motion_collage_panel_urls: undefined,
+                                        });
+                                      }}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(124,58,237,0.12)',
+                                        color: '#a78bfa',
+                                        border: '1px solid rgba(124,58,237,0.35)',
+                                        cursor: 'pointer',
+                                      }}
+                                      title="Convert this row to a motion collage: one image with N keyframes that play hard-cut over the row's duration. Best for real motion (running, falling, transforming)."
+                                    >
+                                      ↯ Convert to motion collage
+                                    </button>
+                                  </div>
+                                )}
                                 {/* Phase 4 (Editor UI) — per-row character_id
                                     + scene_id chips. Gated on doodle_explainer_2
                                     since the cache mechanisms that consume
@@ -10617,6 +10796,8 @@ function ProductionDocPage() {
                             // having to manually click "+ Add prompt" and retype
                             // the same description (rule 10 — lazy user).
                             canGenerate={Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())}
+                            motionCollagePanelUrls={row.motion_collage_panel_urls}
+                            motionCollageGrid={row.motion_collage_grid}
                             onRetry={() => {
                               const promptSource = row.ai_image_prompt?.trim() || row.visual_description?.trim();
                               if (!promptSource) return;
@@ -10685,9 +10866,43 @@ function ProductionDocPage() {
                         {/* AI prompt — click ✎ to edit inline. The textarea
                             commits to the row on Save; image regeneration
                             uses the new prompt next time the user clicks
-                            the row's Image Retry / re-generate button. */}
+                            the row's Image Retry / re-generate button.
+
+                            Motion-collage rows take over the cell with a
+                            dedicated editor (grid picker + N panel
+                            textareas) instead of the regular prompt textarea.
+                            See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */}
                         <td style={{ padding: '8px 12px', maxWidth: 240, borderRight: '1px solid var(--border)' }}>
-                          {editingPromptRow?.rowIndex === i ? (
+                          {row.shot_kind === 'motion_collage' ? (
+                            <MotionCollageRowEditor
+                              grid={row.motion_collage_grid}
+                              panelPrompts={row.motion_collage_panel_prompts ?? []}
+                              onChange={(next) => {
+                                // Any grid / prompt change invalidates the
+                                // currently-rendered panels — clear image_url
+                                // so the next Generate pass triggers a fresh
+                                // collage run. The motion_collage_* fields
+                                // carry the new state forward.
+                                updateRow(i, {
+                                  motion_collage_grid: next.grid,
+                                  motion_collage_panel_prompts: next.panelPrompts,
+                                  image_url: undefined,
+                                  motion_collage_image_url: undefined,
+                                  motion_collage_panel_urls: undefined,
+                                });
+                              }}
+                              onRevertToRegular={() => {
+                                updateRow(i, {
+                                  shot_kind: undefined,
+                                  motion_collage_grid: undefined,
+                                  motion_collage_panel_prompts: undefined,
+                                  motion_collage_image_url: undefined,
+                                  motion_collage_panel_urls: undefined,
+                                  image_url: undefined,
+                                });
+                              }}
+                            />
+                          ) : editingPromptRow?.rowIndex === i ? (
                             <div className="flex flex-col gap-1">
                               <textarea
                                 autoFocus
@@ -10902,6 +11117,7 @@ function ProductionDocPage() {
             <div className="md:hidden divide-y" style={{ borderColor: 'var(--border)' }}>
               {doc.rows?.map((row, i) => {
                 if (filters.visualTypes.length > 0 && !filters.visualTypes.includes(row.visual_type)) return null;
+                if (filters.motionCollageOnly && row.shot_kind !== 'motion_collage') return null;
                 if (filters.search.trim().length > 0) {
                   const q = filters.search.trim().toLowerCase();
                   const hay = `${row.script_text ?? ''}\n${row.visual_description ?? ''}\n${row.on_screen_text ?? ''}`.toLowerCase();
@@ -11189,6 +11405,8 @@ function ProductionDocPage() {
                             // ai_image_prompt so the user can generate without
                             // re-typing what's already in the doc.
                             canGenerate={Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())}
+                            motionCollagePanelUrls={row.motion_collage_panel_urls}
+                            motionCollageGrid={row.motion_collage_grid}
                             onRetry={() => {
                               const promptSource = row.ai_image_prompt?.trim() || row.visual_description?.trim();
                               if (!promptSource) return;
