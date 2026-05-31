@@ -43,6 +43,11 @@ import {
   ThumbnailRenderer,
   type TitleBarRendererInput,
 } from '@/components/thumbnails/ThumbnailRenderer';
+import {
+  FreeFormPreviewPanel,
+  type FreeFormCellInput,
+  type FreeFormCellState,
+} from '@/components/thumbnails/_FreeFormPreviewPanel';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import type { ThumbnailRegion } from '@/remotion/types';
 
@@ -898,6 +903,43 @@ export function NLevelsPanel({
 }: Props) {
   // Level count
   const [count, setCount] = useState(7);
+
+  // Phase B4: Free-form mode — bypasses the AI entirely. The user picks
+  // per-level content (emoji + bg colour) and the panel renders the
+  // slices client-side via `<ThumbnailRenderer cells={…}>`. Same shape
+  // as TopicCardGridPanel's `renderMode`. Persisted to localStorage.
+  const [renderMode, setRenderMode] = useState<'ai' | 'free-form'>(() => {
+    if (typeof window === 'undefined') return 'ai';
+    const stored = localStorage.getItem('n_levels_render_mode');
+    return stored === 'free-form' ? 'free-form' : 'ai';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem('n_levels_render_mode', renderMode);
+    } catch {
+      /* ignore */
+    }
+  }, [renderMode]);
+  const [freeFormLevels, setFreeFormLevels] = useState<
+    Record<number, FreeFormCellState>
+  >({});
+  function updateFreeFormLevel(levelIndex: number, patch: Partial<FreeFormCellState>) {
+    setFreeFormLevels((prev) => {
+      const existing =
+        prev[levelIndex] ??
+        ({
+          emoji: '',
+          bgColor: '#ffffff',
+          emojiRotation: 0,
+          emojiFlipX: false,
+          emojiFlipY: false,
+          emojiOffsetX: 0,
+          emojiOffsetY: 0,
+        } satisfies FreeFormCellState);
+      return { ...prev, [levelIndex]: { ...existing, ...patch } };
+    });
+  }
   // Bottom title bar — defaults OFF because the most successful "N Levels
   // of" thumbnails on YouTube run without one (just slices filling the
   // canvas). When the user wants the grunge-title style, they flip this
@@ -1459,6 +1501,48 @@ export function NLevelsPanel({
       {/* LEFT PANEL — format controls */}
       <div className="shrink-0" style={{ width: 380 }}>
         <div className="glass p-5 space-y-4" style={{ borderColor: 'rgba(124,58,237,0.2)' }}>
+          {/* Phase B4: AI vs Free-form mode toggle. Free-form bypasses
+              the AI image model entirely and renders the slices
+              client-side from per-level emoji + bg colour. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Render mode
+            </label>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setRenderMode('ai')}
+                className="px-3 py-1 rounded text-xs"
+                style={{
+                  background: renderMode === 'ai' ? 'var(--accent-purple-bright)' : 'var(--bg-secondary)',
+                  color: renderMode === 'ai' ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-pressed={renderMode === 'ai'}
+              >
+                AI mode
+              </button>
+              <button
+                type="button"
+                onClick={() => setRenderMode('free-form')}
+                className="px-3 py-1 rounded text-xs"
+                style={{
+                  background: renderMode === 'free-form' ? 'var(--accent-purple-bright)' : 'var(--bg-secondary)',
+                  color: renderMode === 'free-form' ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-pressed={renderMode === 'free-form'}
+              >
+                Free-form ⚡
+              </button>
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              {renderMode === 'ai'
+                ? 'AI generates illustrations from your level concepts (default).'
+                : 'You pick an emoji + colour per level. Renders instantly, no AI.'}
+            </p>
+          </div>
+
           {/* Count */}
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
@@ -3219,6 +3303,67 @@ export function NLevelsPanel({
             onRegenerate={() => { setLevels(null); runStep1(); }}
           />
         )}
+
+        {/* Phase B4: free-form preview. Mounts when free-form mode is
+            active AND the user has a level list to map onto. N Levels
+            is a vertical stack of horizontal slices — each slice has
+            its own y-band. */}
+        {levels && renderMode === 'free-form' && (() => {
+          const freeFormCanvasW = 2048;
+          const freeFormCanvasH = 1152;
+          // Equal-height horizontal slices. The "Bottom title bar"
+          // toggle isn't honoured in free-form mode — the title bar
+          // overlay handles its own painting via the post-process
+          // pipeline if the user wants one.
+          const sliceH = Math.floor(freeFormCanvasH / count);
+          const inputs: FreeFormCellInput[] = levels.slice(0, count).map((level, i) => ({
+            index: level.level,
+            label: level.label || `LEVEL ${level.level}`,
+            bounds: { x: 0, y: i * sliceH, w: freeFormCanvasW, h: sliceH },
+          }));
+          return (
+            <FreeFormPreviewPanel
+              inputs={inputs}
+              canvasWidth={freeFormCanvasW}
+              canvasHeight={freeFormCanvasH}
+              freeFormCells={freeFormLevels}
+              onUpdateCell={updateFreeFormLevel}
+              postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
+              titleBarRendererInput={
+                titleBar.enabled
+                  ? {
+                      text: titleBar.text,
+                      subtitle: titleBar.subtitle || undefined,
+                      position: titleBar.position,
+                      heightFraction: titleBar.heightFraction,
+                      align: titleBar.align,
+                      subtitleAlign: titleBar.subtitleAlign,
+                      backgroundColor: titleBar.backgroundColor,
+                      backgroundOpacity: titleBar.backgroundOpacity,
+                      textColor: titleBar.textColor,
+                      subtitleColor: titleBar.subtitleColor,
+                      fontFamily:
+                        findFontById(titleBar.fontId)?.family ?? 'Patrick Hand',
+                      subtitleFontFamily: titleBar.subtitleFontId
+                        ? findFontById(titleBar.subtitleFontId)?.family
+                        : undefined,
+                      shadow: titleBar.shadowEnabled
+                        ? {
+                            offsetPx: titleBar.shadowOffsetPx,
+                            blurPx: titleBar.shadowBlurPx,
+                            opacity: titleBar.shadowOpacity,
+                            color: titleBar.shadowColor,
+                          }
+                        : undefined,
+                    }
+                  : undefined
+              }
+              labelFontFamily="Patrick Hand"
+              cellNoun="level"
+              downloadFilename="n-levels-free-form.png"
+            />
+          );
+        })()}
 
         {result && (
           <ResultState

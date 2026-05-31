@@ -112,6 +112,18 @@ export interface FreeFormCell {
   /** Font family for the label. Caller resolves the SIL family via the
    *  font registry. */
   labelFontFamily?: string;
+  // ─── Phase B5: per-emoji transforms ──────────────────────────────────────
+  /** Rotation in degrees applied to the emoji glyph (NOT the cell
+   *  background or border). -180..180. Defaults to 0. */
+  emojiRotation?: number;
+  /** Mirror the emoji horizontally. */
+  emojiFlipX?: boolean;
+  /** Mirror the emoji vertically. */
+  emojiFlipY?: boolean;
+  /** Nudge the emoji from the cell's illustration centre. Expressed as
+   *  fractions of the cell extent, -0.5..0.5. Defaults to 0. */
+  emojiOffsetX?: number;
+  emojiOffsetY?: number;
 }
 
 export interface ThumbnailRendererProps {
@@ -759,19 +771,45 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
     <g>
       {/* Cell background. */}
       <rect x={x} y={y} width={w} height={h} fill={bg} />
-      {/* Emoji illustration — centered in the top 80 %. */}
-      {cell.emoji && cell.emoji.trim() && (
-        <text
-          x={x + w / 2}
-          y={y + illustrationH / 2 + emojiSize / 3}
-          fontSize={emojiSize}
-          textAnchor="middle"
-          // Emoji rendering uses the platform's emoji font.
-          fontFamily="'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif"
-        >
-          {cell.emoji}
-        </text>
-      )}
+      {/* Emoji illustration — centred in the top 80 % with optional
+          per-cell offset / rotation / flip. The transform is applied
+          ONLY to the emoji glyph (not the background or border) so the
+          cell frame stays axis-aligned regardless of the rotation. */}
+      {cell.emoji && cell.emoji.trim() && (() => {
+        const cx = x + w / 2;
+        const cy = y + illustrationH / 2;
+        const offsetX = (cell.emojiOffsetX ?? 0) * w;
+        const offsetY = (cell.emojiOffsetY ?? 0) * illustrationH;
+        const rotation = cell.emojiRotation ?? 0;
+        const flipX = cell.emojiFlipX ? -1 : 1;
+        const flipY = cell.emojiFlipY ? -1 : 1;
+        // Order: translate to centre → apply user offset → rotate →
+        // flip → translate origin back. Equivalent to "rotate/flip
+        // around the (offset) cell centre". The y position of the
+        // <text> element is the BASELINE, so we offset by emojiSize/3
+        // to roughly visually centre the glyph in the illustration box.
+        const transform = [
+          `translate(${cx + offsetX}, ${cy + offsetY})`,
+          rotation !== 0 ? `rotate(${rotation})` : null,
+          flipX !== 1 || flipY !== 1 ? `scale(${flipX}, ${flipY})` : null,
+          `translate(${-cx}, ${-cy})`,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return (
+          <g transform={transform}>
+            <text
+              x={cx}
+              y={cy + emojiSize / 3}
+              fontSize={emojiSize}
+              textAnchor="middle"
+              fontFamily="'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif"
+            >
+              {cell.emoji}
+            </text>
+          </g>
+        );
+      })()}
       {/* Hairline divider between illustration and label band. */}
       <line
         x1={x}
