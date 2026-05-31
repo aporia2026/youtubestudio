@@ -250,19 +250,46 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     }
   }
 
-  // 2026-05-31 — Mistagged Title Card normalizer. The LLM has been
-  // emitting Title Card rows whose script_text is actually substantial
-  // narration prose (10+ words). Real title cards are short labels
-  // ("Knight Capital", "Intel Pentium") — at most ~6 words. When the
-  // LLM ships a Title Card row carrying a full sentence/paragraph, the
-  // editor renders it as a stark text card (wrong) AND the narration
-  // it stole from the surrounding flow goes unrendered as a proper
-  // Animation shot. Coerce: any Title Card row whose trimmed
-  // script_text exceeds 6 words gets demoted to "Animation". The LLM's
-  // visual_description / ai_image_prompt stay intact so the resulting
-  // Animation row renders the scene the LLM had in mind.
+  // 2026-05-31 — Row-shape normalizer. Two distinct LLM mistag bugs
+  // handled here, both surface as bad rows in the editor:
+  //
+  //   A. Production-note row drop. The LLM sometimes emits a row
+  //      whose script_text is JUST a whole-line bracket-wrapped
+  //      production note: "[SFX: Sharp Keyboard Clack / Glitch]",
+  //      "[VISUAL CUE: ON-SCREEN TEXT - INTEL PENTIUM]", etc. These
+  //      should never have become rows in the first place — they're
+  //      stage directions, not narration. Drop them entirely.
+  //
+  //   B. Title Card length cap. The LLM also emits Title Card rows
+  //      whose script_text is a full sentence/paragraph (e.g. "Intel
+  //      releases its flagship Pentium processor, heavily marketed to
+  //      revolutionize personal computing..."). Real title cards are
+  //      short labels — "Knight Capital", "Intel Pentium". Demote any
+  //      Title Card row whose word count > 5 to Animation.
   if (Array.isArray(result.rows)) {
-    const TITLE_CARD_WORD_CAP = 6;
+    const productionNotePattern = /^\s*\[[^\]]*\]\s*$/;
+    const TITLE_CARD_WORD_CAP = 5;
+    const beforeCount = result.rows.length;
+    const droppedScriptTexts: string[] = [];
+    result.rows = result.rows.filter((r) => {
+      const script = (r.script_text ?? '').trim();
+      if (script && productionNotePattern.test(script)) {
+        droppedScriptTexts.push(script);
+        return false;
+      }
+      return true;
+    });
+    const droppedCount = beforeCount - result.rows.length;
+    if (droppedCount > 0) {
+      logger.info('[production-doc production-notes-dropped]', {
+        dropped_count: droppedCount,
+        samples: droppedScriptTexts.slice(0, 4),
+      });
+      generation_warnings.push(
+        `${droppedCount} row${droppedCount === 1 ? '' : 's'} that were just [SFX:] / [VISUAL CUE:] production notes have been removed (they should not have been rows).`,
+      );
+    }
+
     let normalizedCount = 0;
     for (const r of result.rows) {
       if (r.visual_type !== 'Title Card') continue;
