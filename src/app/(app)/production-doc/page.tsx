@@ -1106,12 +1106,40 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () => void }) {
+function ImageLightbox({
+  imageUrl,
+  panelUrls,
+  onClose,
+}: {
+  imageUrl: string;
+  /** When set + length > 1, the lightbox shows a panel-by-panel slider
+   *  with ← → arrows (mouse + keyboard) and a "N/total" counter. The
+   *  current panel's URL drives the displayed image + download. Used
+   *  for doodle_explainer_2 motion_collage rows so the user can step
+   *  through the 4 keyframes one by one at full size. */
+  panelUrls?: readonly string[];
+  onClose: () => void;
+}) {
   const [downloading, setDownloading] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const hasPanels = Array.isArray(panelUrls) && panelUrls.length > 1;
+  const totalPanels = hasPanels ? panelUrls!.length : 1;
+  const displayUrl = hasPanels ? panelUrls![currentIndex] ?? imageUrl : imageUrl;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      if (!hasPanels) return;
+      if (e.key === 'ArrowRight' || e.key === ' ') {
+        e.preventDefault();
+        setCurrentIndex((i) => (i + 1) % totalPanels);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentIndex((i) => (i - 1 + totalPanels) % totalPanels);
+      } else if (/^[1-9]$/.test(e.key)) {
+        const idx = parseInt(e.key, 10) - 1;
+        if (idx < totalPanels) setCurrentIndex(idx);
+      }
     };
     window.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
@@ -1120,7 +1148,7 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [onClose]);
+  }, [onClose, hasPanels, totalPanels]);
 
   async function handleDownload() {
     if (downloading) return;
@@ -1130,18 +1158,19 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
       // The browser ignores `download` on cross-origin anchors without
       // matching CORS headers, so a fetch-then-objectURL is the reliable path.
       // eslint-disable-next-line no-restricted-syntax -- CORS image-blob download, not a mutation
-      const res = await fetch(imageUrl, { mode: 'cors' });
+      const res = await fetch(displayUrl, { mode: 'cors' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);
       const filename = (() => {
         try {
-          const u = new URL(imageUrl);
+          const u = new URL(displayUrl);
           const tail = u.pathname.split('/').filter(Boolean).pop();
           if (tail && /\.[a-z0-9]{2,5}$/i.test(tail)) return tail;
         } catch { /* fall through */ }
         const ext = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
-        return `image-${Date.now()}.${ext}`;
+        const panelSuffix = hasPanels ? `-panel${currentIndex + 1}of${totalPanels}` : '';
+        return `image${panelSuffix}-${Date.now()}.${ext}`;
       })();
       const a = document.createElement('a');
       a.href = objectUrl;
@@ -1153,7 +1182,7 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
     } catch {
       // CORS-blocked or offline — open the raw URL in a new tab as a fallback
       // so the user can right-click → Save As. Better than a silent failure.
-      window.open(imageUrl, '_blank', 'noopener,noreferrer');
+      window.open(displayUrl, '_blank', 'noopener,noreferrer');
       toast.message('Download blocked by browser. Opened in a new tab instead.');
     } finally {
       setDownloading(false);
@@ -1242,8 +1271,8 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
       </div>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={imageUrl}
-        alt="Full preview"
+        src={displayUrl}
+        alt={hasPanels ? `Frame ${currentIndex + 1} of ${totalPanels}` : 'Full preview'}
         onClick={e => e.stopPropagation()}
         style={{
           maxWidth: '92vw',
@@ -1254,6 +1283,119 @@ function ImageLightbox({ imageUrl, onClose }: { imageUrl: string; onClose: () =>
           cursor: 'default',
         }}
       />
+      {hasPanels && (
+        <>
+          {/* Left arrow — previous frame */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setCurrentIndex((i) => (i - 1 + totalPanels) % totalPanels);
+            }}
+            aria-label="Previous frame"
+            title="Previous frame (←)"
+            style={{
+              position: 'absolute',
+              left: 16,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+              background: 'rgba(255,255,255,0.10)',
+              border: '1px solid rgba(255,255,255,0.20)',
+              color: '#fff',
+              fontSize: 24,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            ‹
+          </button>
+          {/* Right arrow — next frame */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setCurrentIndex((i) => (i + 1) % totalPanels);
+            }}
+            aria-label="Next frame"
+            title="Next frame (→ or Space)"
+            style={{
+              position: 'absolute',
+              right: 16,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+              background: 'rgba(255,255,255,0.10)',
+              border: '1px solid rgba(255,255,255,0.20)',
+              color: '#fff',
+              fontSize: 24,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            ›
+          </button>
+          {/* Frame counter + clickable dots — bottom centered */}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'absolute',
+              bottom: 24,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 8,
+              color: '#fff',
+            }}
+          >
+            <div style={{ display: 'flex', gap: 6 }}>
+              {panelUrls!.map((_, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => setCurrentIndex(i)}
+                  aria-label={`Jump to frame ${i + 1}`}
+                  title={`Frame ${i + 1}${i < 9 ? ` (press ${i + 1})` : ''}`}
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 5,
+                    border: 'none',
+                    background:
+                      i === currentIndex
+                        ? '#a78bfa'
+                        : 'rgba(255,255,255,0.30)',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                />
+              ))}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                background: 'rgba(0,0,0,0.55)',
+                padding: '4px 10px',
+                borderRadius: 12,
+                border: '1px solid rgba(255,255,255,0.15)',
+              }}
+            >
+              ↯ Frame {currentIndex + 1} / {totalPanels}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2056,7 +2198,11 @@ export function ImageCell({
           )}
         </div>
         {previewOpen && (
-          <ImageLightbox imageUrl={state.imageUrl} onClose={() => setPreviewOpen(false)} />
+          <ImageLightbox
+            imageUrl={state.imageUrl}
+            panelUrls={motionCollagePanelUrls}
+            onClose={() => setPreviewOpen(false)}
+          />
         )}
       </>
     );
