@@ -34,7 +34,11 @@ import { getUserSettings } from '../user-settings';
 import { composeCollagePrompt } from '../collage-prompt';
 import { detectMalformedCollage } from '../collage-detect';
 import { sliceCollage, sliceCollageGrid, MAX_COLLAGE_CELLS } from '../collage-slicer';
-import { composeMotionCollagePrompt, composePerPanelPrompt } from '../motion-collage-prompt';
+import {
+  buildCharacterBibleBlock,
+  composeMotionCollagePrompt,
+  composePerPanelPrompt,
+} from '../motion-collage-prompt';
 import { generateMouthRemovedBase } from '../atlas-mouth-removal';
 import { cropTo16x9AndUpload } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
@@ -1271,9 +1275,19 @@ export async function generateMotionCollage(args: {
   doc: PipelineImageDoc;
   workspaceId: string;
   ownerId?: string | null;
+  /** When set, panel 0 is generated via Atlas Edit on this URL instead
+   *  of a fresh Atlas i2i call. Used by the stage handler when the
+   *  row carries a `character_id` or `scene_id` whose doc-level cache
+   *  is populated — the cached base anchors identity across recurring
+   *  rows, and the chained Edit propagation through panels 1..N
+   *  preserves that anchor through the entire motion arc. Same
+   *  ~$0.0135 cost as a fresh i2i. Caller is responsible for
+   *  resolving precedence (character_cache wins over scene_cache,
+   *  same rule as the regular single-shot dispatcher). */
+  panel0SourceUrl?: string;
 }): Promise<PipelineMotionCollageResult> {
   const t0 = Date.now();
-  const { row, doc, workspaceId, ownerId = null } = args;
+  const { row, doc, workspaceId, ownerId = null, panel0SourceUrl } = args;
 
   // ─── 1. Env kill switch ─────────────────────────────────────────────
   // Lets us disable motion_collage globally without a redeploy if a
@@ -1505,7 +1519,15 @@ export async function generateMotionCollage(args: {
     new Array(N);
   for (let i = 0; i < N; i++) panelResults[i] = { costUsd: 0, durationMs: 0 };
 
-  // ─── Panel 0 — Atlas i2i with refs ─────────────────────────────────
+  // ─── Panel 0 — Atlas i2i with refs OR Atlas Edit on cache hit ──────
+  // Three routing modes:
+  //   1. panel0SourceUrl set → Atlas Edit on the cached base. Used
+  //      when stage handler resolved a character_cache or scene_cache
+  //      hit, preserving identity across non-consecutive rows.
+  //   2. refsAware → Atlas i2i with the 4 style refs. Default for
+  //      doodle_explainer_2 fresh shots.
+  //   3. Neither → Atlas t2i with suffix only (refs-less styles).
+  const panel0FromCache = typeof panel0SourceUrl === 'string' && panel0SourceUrl.length > 0;
   let previousPanelUrl: string | undefined;
   {
     const panelStart = Date.now();
@@ -1514,26 +1536,51 @@ export async function generateMotionCollage(args: {
       workspaceId,
       route: 'auto-pipeline:generateMotionCollage#panel-0-base',
       provider: 'atlas',
-      providerModel: refsAware
+      providerModel: panel0FromCache
+        ? `openai/gpt-image-2/edit#motion-collage-base-cached-${grid.cols}x${grid.rows}`
+        : refsAware
         ? `openai/gpt-image-2/i2i#motion-collage-base-${grid.cols}x${grid.rows}`
         : `openai/gpt-image-2/t2i#motion-collage-base-${grid.cols}x${grid.rows}`,
     });
     let providerRequestId: string | null = null;
     try {
-      const atlasResult = refsAware
-        ? await generateAtlasI2I({
-            prompt: panel0Prompt,
-            images: cappedRefs,
-            size: '1536x1024',
-            quality: 'low',
-          })
-        : await generateAtlasT2I({
-            prompt: panel0Prompt,
-            size: '1536x1024',
-            quality: 'low',
-          });
-      providerRequestId = atlasResult.predictionId ?? null;
-      const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
+      let atlasUrl: string;
+      let atlasPredictionId: string | null = null;
+      if (panel0FromCache) {
+        // Atlas Edit on the cached base — same vendor, same downstream
+        // (crop + Recraft) path. The cache base IS the identity anchor,
+        // so we skip refs (Atlas Edit + refs is not the supported shape
+        // anyway — refs are an i2i-only feature).
+        const edit = await generateGptImage2Edit({
+          prompt: panel0Prompt,
+          sourceImageUrl: panel0SourceUrl!,
+          primary: 'atlas',
+        });
+        atlasUrl = edit.url;
+        atlasPredictionId = edit.providerRequestId;
+      } else if (refsAware) {
+        const atlasResult = await generateAtlasI2I({
+          prompt: panel0Prompt,
+          images: cappedRefs,
+          size: '1536x1024',
+          quality: 'low',
+        });
+        atlasUrl = atlasResult.url;
+        atlasPredictionId = atlasResult.predictionId ?? null;
+      } else {
+        const atlasResult = await generateAtlasT2I({
+          prompt: panel0Prompt,
+          size: '1536x1024',
+          quality: 'low',
+        });
+        atlasUrl = atlasResult.url;
+        atlasPredictionId = atlasResult.predictionId ?? null;
+      }
+      providerRequestId = atlasPredictionId;
+      const croppedUrl = panel0FromCache
+        // Edit already returns 16:9 cropped — skip the redundant crop.
+        ? atlasUrl
+        : await cropTo16x9AndUpload(atlasUrl, 'prodoc-images-atlas-crop');
       const upscale = await upscaleViaRecraft(croppedUrl);
       const panelDurationMs = Date.now() - panelStart;
       const panelCostUsd = 0.0135;
@@ -1550,7 +1597,7 @@ export async function generateMotionCollage(args: {
         row_index: lookupRowIndex(row, doc),
         panel_index: 0,
         of_total: N,
-        kind: 'base-i2i',
+        kind: panel0FromCache ? 'base-edit-on-cache' : refsAware ? 'base-i2i' : 'base-t2i',
         url: upscale.url,
         ms: panelDurationMs,
         cost_usd: panelCostUsd,
@@ -1573,7 +1620,7 @@ export async function generateMotionCollage(args: {
         row_index: lookupRowIndex(row, doc),
         panel_index: 0,
         of_total: N,
-        kind: 'base-i2i',
+        kind: panel0FromCache ? 'base-edit-on-cache' : refsAware ? 'base-i2i' : 'base-t2i',
         detail: msg.slice(0, 200),
       });
     }
@@ -1592,6 +1639,14 @@ export async function generateMotionCollage(args: {
   // so a static top-level import isn't safe in this server-only
   // module).
   const { CHAINED_VARIANT_IDENTITY_ANCHOR } = await import('../../remotion/utils');
+  // Character bible block — built once, reused across every chained
+  // edit prompt. Without this, panels 1..N rely solely on whatever
+  // appearance the previous image already carries; if the LLM panel
+  // prompt mentions a character by slug ("George raises his arm"),
+  // Atlas Edit needs the bible context to keep George visually
+  // consistent. Empty string when the doc has no bible. (Plan
+  // "character_descriptions must apply to motion_collage too" follow-up.)
+  const chainBibleBlock = buildCharacterBibleBlock(characterDescriptions);
   for (let panelIdx = 1; panelIdx < N; panelIdx++) {
     if (!previousPanelUrl) {
       // Panel 0 failed — propagate the failure through every later
@@ -1604,12 +1659,14 @@ export async function generateMotionCollage(args: {
       continue;
     }
     const panelStart = Date.now();
-    // Compose Atlas Edit prompt: raw panel prompt (which carries the
+    // Compose Atlas Edit prompt: character bible (so recurring
+    // characters by slug stay consistent) + raw panel prompt (the
     // LLM's "Same X; only Y changes" delta) + identity anchor for
     // chains depth >= 2 + light style guard.
     const baseDelta = panelPrompts[panelIdx];
     const isDeepChain = panelIdx >= 2;
     const editPrompt = [
+      chainBibleBlock,
       baseDelta,
       isDeepChain
         ? CHAINED_VARIANT_IDENTITY_ANCHOR

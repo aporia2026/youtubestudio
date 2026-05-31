@@ -169,8 +169,10 @@ function cornerLabel(i: number, cols: number, rows: number): string {
 
 /** Build a compact character-bible block from the doc-level map.
  *  Returns an empty string when no entries are supplied — the caller
- *  filters empty sections so the prompt stays tight. */
-function buildCharacterBibleBlock(descriptions: Record<string, string> | undefined): string {
+ *  filters empty sections so the prompt stays tight. Exported so the
+ *  chained-Atlas-Edit panel-prompt composer in
+ *  `auto-pipeline/production-doc-image-gen.ts` can reuse it. */
+export function buildCharacterBibleBlock(descriptions: Record<string, string> | undefined): string {
   if (!descriptions) return '';
   const entries = Object.entries(descriptions).filter(([slug, desc]) => slug.trim() && desc.trim());
   if (entries.length === 0) return '';

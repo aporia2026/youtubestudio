@@ -566,19 +566,20 @@ export async function handleGenerateProductionDocImages(
   }
 
   for (const item of plan) {
-    const row = doc.rows[item.index];
+    const row: PipelineImageRow = doc.rows[item.index];
 
     // ─── doodle_explainer_2 motion_collage routing ────────────────────
-    // Runs BEFORE the character / scene cache paths. motion_collage
-    // shots produce real motion via N×M keyframes in one generation;
-    // they intentionally bypass the cache paths because:
-    //   - The cache paths preserve a SINGLE character identity via
-    //     Atlas Edit on a cached base. Motion collage's panels are all
-    //     drawn together in one t2i call, so identity is preserved
-    //     within the shot regardless of any cache hit.
-    //   - The cache paths assume `ai_image_prompt` is the input;
-    //     motion_collage rows leave that empty and carry per-panel
-    //     prompts in `motion_collage_panel_prompts`.
+    // Runs BEFORE the character / scene cache paths because motion_collage
+    // shots have their own routing logic: panel 0 chooses among
+    // (a) Atlas Edit on a cached character/scene base, (b) Atlas i2i
+    // with style refs, or (c) Atlas t2i fallback. Panels 1..N always
+    // chain Atlas Edit on the previous panel.
+    //
+    // Cache precedence matches the regular row dispatcher: character_cache
+    // wins over scene_cache when both hit. The cached base anchors
+    // identity across non-consecutive rows; the chained Edit propagation
+    // preserves that anchor through the motion arc.
+    //
     // Per-tick cap: MAX_MOTION_COLLAGE_PER_TICK. Deferred rows return
     // next tick (image_url still empty triggers the partition re-pick).
     // Plan: _plans/2026-05-31-doodle-explainer-2-motion-collage.md.
@@ -593,10 +594,46 @@ export async function handleGenerateProductionDocImages(
         continue;
       }
       motionCollageThisTick += 1;
+
+      // Resolve a cache hit for panel 0. Character wins over scene
+      // (same rule the regular dispatcher applies — Atlas Edit can
+      // anchor only one source per call, character identity is the
+      // higher-stakes anchor).
+      let panel0SourceUrl: string | undefined;
+      let cacheKind: 'character' | 'scene' | 'none' = 'none';
+      if (isDoodleExplainer2) {
+        const cid = row.character_id?.trim();
+        const sid = row.scene_id?.trim();
+        if (cid) {
+          const cached = doc.doodle_explainer_2_character_cache?.[cid];
+          if (cached?.base_url) {
+            panel0SourceUrl = cached.base_url;
+            cacheKind = 'character';
+          }
+        }
+        if (!panel0SourceUrl && sid) {
+          const cached = doc.doodle_explainer_2_scene_cache?.[sid];
+          if (cached?.base_url) {
+            panel0SourceUrl = cached.base_url;
+            cacheKind = 'scene';
+          }
+        }
+        if (panel0SourceUrl) {
+          logger.info('[motion-collage pipeline] base-cache hit', {
+            pipeline_video_id: video.id,
+            row_index: item.index,
+            cache_kind: cacheKind,
+            character_id: cid,
+            scene_id: sid,
+          });
+        }
+      }
+
       const mc = await generateMotionCollage({
         row,
         doc,
         workspaceId: video.workspace_id,
+        panel0SourceUrl,
       });
       tickCostUsd += mc.costUsd;
       if (mc.panelUrls && mc.panelUrls.length > 0) {
@@ -608,6 +645,52 @@ export async function handleGenerateProductionDocImages(
         doc.rows[item.index].motion_collage_image_url = mc.collageImageUrl;
         doc.rows[item.index].motion_collage_panel_urls = mc.panelUrls;
         doc.rows[item.index].image_url = mc.panelUrls[0];
+        // Cache write-back: when this row introduced a recurring
+        // character / scene (had character_id or scene_id with NO
+        // pre-existing cache entry), seed the cache from panel 0 so
+        // subsequent rows using the same slug can hit the cache and
+        // anchor on the same identity. Matches the regular dispatcher's
+        // miss-and-store pattern.
+        if (isDoodleExplainer2 && cacheKind === 'none') {
+          const cid = row.character_id?.trim();
+          const sid = row.scene_id?.trim();
+          if (cid) {
+            const charCache = doc.doodle_explainer_2_character_cache ?? {};
+            if (!charCache[cid]?.base_url) {
+              charCache[cid] = {
+                base_url: mc.panelUrls[0],
+                first_seen_row_index: item.index,
+              };
+              doc.doodle_explainer_2_character_cache = charCache;
+              charCacheMisses += 1;
+              logger.info('[motion-collage pipeline] character-cache miss-and-store', {
+                pipeline_video_id: video.id,
+                row_index: item.index,
+                character_id: cid,
+              });
+            }
+          }
+          if (sid) {
+            const sceneCache = doc.doodle_explainer_2_scene_cache ?? {};
+            if (!sceneCache[sid]?.base_url) {
+              sceneCache[sid] = {
+                base_url: mc.panelUrls[0],
+                first_seen_row_index: item.index,
+              };
+              doc.doodle_explainer_2_scene_cache = sceneCache;
+              sceneCacheMisses += 1;
+              logger.info('[motion-collage pipeline] scene-cache miss-and-store', {
+                pipeline_video_id: video.id,
+                row_index: item.index,
+                scene_id: sid,
+              });
+            }
+          }
+        } else if (isDoodleExplainer2 && cacheKind === 'character') {
+          charCacheHits += 1;
+        } else if (isDoodleExplainer2 && cacheKind === 'scene') {
+          sceneCacheHits += 1;
+        }
         motionCollageSucceeded += 1;
         succeeded += 1;
       } else {
