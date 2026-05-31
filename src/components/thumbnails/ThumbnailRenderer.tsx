@@ -89,9 +89,42 @@ export interface TitleBarRendererInput {
   };
 }
 
+/** One cell of a free-form grid. The renderer draws a coloured
+ *  rectangle at `bounds`, an optional emoji glyph centered inside it,
+ *  and an optional label band below the illustration area. Mirrors
+ *  the layout the server's `applyCellUploads` produces for square-card
+ *  Topic Card Grids, so the on-screen preview can stay pixel-close to
+ *  the eventual Sharp-rendered PNG. */
+export interface FreeFormCell {
+  bounds: { x: number; y: number; w: number; h: number };
+  /** Cell background colour. Defaults to white when omitted. */
+  bgColor?: string;
+  /** Single emoji or short string painted in the illustration area
+   *  (top 80 % of the cell). Renders as SVG `<text>`. */
+  emoji?: string;
+  /** Label band text. Renders in the bottom 20 % of the cell. */
+  label?: string;
+  /** Cell border colour. Defaults to black when omitted. */
+  borderColor?: string;
+  /** Cell border thickness in canvas px. Defaults to a value derived
+   *  from `bounds.w` (matches the server composite's `squareBorderPx`). */
+  borderPx?: number;
+  /** Font family for the label. Caller resolves the SIL family via the
+   *  font registry. */
+  labelFontFamily?: string;
+}
+
 export interface ThumbnailRendererProps {
-  /** Base image to overlay on top of. Typically the AI-rendered URL. */
-  baseImageUrl: string;
+  /** Base image to overlay on top of. Mutually exclusive with `cells`. */
+  baseImageUrl?: string;
+  /** Free-form cell descriptors. When provided (and `baseImageUrl` is
+   *  not), the renderer paints each cell client-side from these values
+   *  instead of loading an AI image. Mutually exclusive with `baseImageUrl`.
+   *  Pass an empty array to render a blank canvas. */
+  cells?: FreeFormCell[];
+  /** Free-form canvas background colour. Defaults to white. Only used
+   *  when `cells` is set. */
+  canvasBackground?: string;
   /** Canvas dimensions — must match what the SERVER would compute, so
    *  the SVG overlays land at the same percentages as they will at
    *  final-bake time. */
@@ -700,6 +733,84 @@ function svgTextX(width: number, padX: number, align: 'left' | 'center' | 'right
 type _FrameStyleUsed = FrameStyle;
 void (null as unknown as _FrameStyleUsed);
 
+// ─── Free-form cell renderer ───────────────────────────────────────────────
+
+/** Draw one free-form cell: a coloured rectangle with a black border,
+ *  an emoji glyph centered in the illustration area (top 80 %), and a
+ *  label band (bottom 20 %) with the cell's label text. Mirrors the
+ *  square-card layout the server's `applyCellUploads` produces, so the
+ *  client preview reads as a direct preview of the eventual PNG. */
+function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
+  const { x, y, w, h } = cell.bounds;
+  const bg = cell.bgColor ?? '#ffffff';
+  const borderColor = cell.borderColor ?? '#000000';
+  // Match server's `squareBorderPx`: max(3, round(w * 0.006)).
+  const borderPx = cell.borderPx ?? Math.max(3, Math.round(w * 0.006));
+  // Match server's SQUARE_ILLUSTRATION_FRAC = 0.8.
+  const illustrationH = Math.round(h * 0.8);
+  const labelH = h - illustrationH;
+  // Emoji sizes to ~60 % of the illustration area's shorter side — big
+  // enough to read, small enough to leave breathing room.
+  const emojiSize = Math.round(Math.min(w, illustrationH) * 0.55);
+  // Label font sizes to ~0.55 of the label band height (matches the
+  // server's renderLabelPng calibration).
+  const labelFontSize = Math.max(8, Math.round(labelH * 0.55));
+  return (
+    <g>
+      {/* Cell background. */}
+      <rect x={x} y={y} width={w} height={h} fill={bg} />
+      {/* Emoji illustration — centered in the top 80 %. */}
+      {cell.emoji && cell.emoji.trim() && (
+        <text
+          x={x + w / 2}
+          y={y + illustrationH / 2 + emojiSize / 3}
+          fontSize={emojiSize}
+          textAnchor="middle"
+          // Emoji rendering uses the platform's emoji font.
+          fontFamily="'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif"
+        >
+          {cell.emoji}
+        </text>
+      )}
+      {/* Hairline divider between illustration and label band. */}
+      <line
+        x1={x}
+        y1={y + illustrationH}
+        x2={x + w}
+        y2={y + illustrationH}
+        stroke={borderColor}
+        strokeWidth={Math.max(1, Math.round(borderPx / 3))}
+      />
+      {/* Label band background (white) — explicit rect even though it
+          equals `bg` so a coloured bg + black label band reads clearly. */}
+      <rect x={x} y={y + illustrationH} width={w} height={labelH} fill="#ffffff" />
+      {/* Label text — centered in the band. */}
+      {cell.label && cell.label.trim() && (
+        <text
+          x={x + w / 2}
+          y={y + illustrationH + labelH / 2 + labelFontSize / 3}
+          fontSize={labelFontSize}
+          textAnchor="middle"
+          fill="#000000"
+          fontFamily={cell.labelFontFamily ?? 'Patrick Hand'}
+        >
+          {cell.label}
+        </text>
+      )}
+      {/* Outer border. */}
+      <rect
+        x={x + borderPx / 2}
+        y={y + borderPx / 2}
+        width={w - borderPx}
+        height={h - borderPx}
+        fill="none"
+        stroke={borderColor}
+        strokeWidth={borderPx}
+      />
+    </g>
+  );
+}
+
 // ─── Main component ────────────────────────────────────────────────────────
 
 /**
@@ -716,6 +827,8 @@ void (null as unknown as _FrameStyleUsed);
  */
 export function ThumbnailRenderer({
   baseImageUrl,
+  cells,
+  canvasBackground,
   canvasWidth,
   canvasHeight,
   postProcess,
@@ -728,6 +841,9 @@ export function ThumbnailRenderer({
   const filterCss = cssFilterFor(postProcess?.filter);
   const w = Math.max(1, canvasWidth);
   const h = Math.max(1, canvasHeight);
+  // Mode dispatch: `cells` wins over `baseImageUrl` when both are set
+  // (avoids a hidden ambiguity if the caller forgot to clear one).
+  const useFreeForm = Array.isArray(cells);
   return (
     <div
       style={{
@@ -738,19 +854,42 @@ export function ThumbnailRenderer({
         ...style,
       }}
     >
-      {/* Base image. The CSS `filter` covers grayscale / sepia /
-          contrast / invert without a Sharp roundtrip. */}
-      <img
-        src={baseImageUrl}
-        alt={alt}
-        style={{
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          display: 'block',
-          filter: filterCss,
-        }}
-      />
+      {useFreeForm ? (
+        // Free-form mode: draw the cells as SVG primitives. CSS `filter`
+        // applies on the container so grayscale / sepia / etc. land on
+        // the cells too — same posture as the AI-image branch.
+        <svg
+          viewBox={`0 0 ${w} ${h}`}
+          preserveAspectRatio="none"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            filter: filterCss,
+            background: canvasBackground ?? '#ffffff',
+          }}
+        >
+          {(cells ?? []).map((cell, i) => (
+            <FreeFormCellGroup key={i} cell={cell} />
+          ))}
+        </svg>
+      ) : (
+        /* Base image. The CSS `filter` covers grayscale / sepia /
+           contrast / invert without a Sharp roundtrip. */
+        <img
+          src={baseImageUrl}
+          alt={alt}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            display: 'block',
+            filter: filterCss,
+          }}
+        />
+      )}
       <svg
         viewBox={`0 0 ${w} ${h}`}
         preserveAspectRatio="none"

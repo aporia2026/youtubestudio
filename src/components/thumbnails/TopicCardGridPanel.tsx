@@ -40,9 +40,14 @@ import {
 } from '@/components/thumbnails/_overlay-controls';
 import {
   ThumbnailRenderer,
+  type FreeFormCell,
   type TitleBarRendererInput,
 } from '@/components/thumbnails/ThumbnailRenderer';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
+import {
+  computeRegions,
+  makeDefaultLayout,
+} from '@/lib/thumbnail-formats/topic-card-grid';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -1107,6 +1112,43 @@ export function TopicCardGridPanel({
   const [formatMode, setFormatMode] = useState<'review' | 'pre-fill' | 'one-shot'>('review');
   const [prefilledLabels, setPrefilledLabels] = useState('');
 
+  // Phase B4: Free-form mode — bypasses the AI entirely. The user picks
+  // per-cell content (emoji + background colour + label) and the panel
+  // renders the grid client-side via `<ThumbnailRenderer cells={…}>`.
+  // The AI render path stays in place for `mode === 'ai'` (default).
+  // Persisted to localStorage so the user's choice survives a reload.
+  const [renderMode, setRenderMode] = useState<'ai' | 'free-form'>(() => {
+    if (typeof window === 'undefined') return 'ai';
+    const stored = localStorage.getItem('topic_card_grid_render_mode');
+    return stored === 'free-form' ? 'free-form' : 'ai';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem('topic_card_grid_render_mode', renderMode);
+    } catch {
+      /* ignore */
+    }
+  }, [renderMode]);
+  // Per-cell free-form content. Keyed by 1-based card index so it
+  // round-trips cleanly with the card list. Cells without an entry
+  // render with sensible defaults (white bg, no emoji).
+  const [freeFormCells, setFreeFormCells] = useState<
+    Record<number, { emoji: string; bgColor: string }>
+  >({});
+  function updateFreeFormCell(
+    cardIndex: number,
+    patch: Partial<{ emoji: string; bgColor: string }>,
+  ) {
+    setFreeFormCells((prev) => {
+      const existing = prev[cardIndex] ?? { emoji: '', bgColor: '#ffffff' };
+      return {
+        ...prev,
+        [cardIndex]: { ...existing, ...patch },
+      };
+    });
+  }
+
   // Image model — defaults to the recommended gpt-image-2-i2i, but
   // auto-remembers the user's last choice in localStorage so whatever they
   // picked last time becomes their personal default on the next page load.
@@ -1990,6 +2032,48 @@ export function TopicCardGridPanel({
       {/* LEFT PANEL — format controls */}
       <div className="shrink-0" style={{ width: 380 }}>
         <div className="glass p-5 space-y-4" style={{ borderColor: 'rgba(236,72,153,0.15)' }}>
+          {/* Phase B4: AI vs Free-form mode toggle. Free-form bypasses
+              the AI image model entirely and renders the grid
+              client-side from per-cell emoji + bg colour. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Render mode
+            </label>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setRenderMode('ai')}
+                className="px-3 py-1 rounded text-xs"
+                style={{
+                  background: renderMode === 'ai' ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                  color: renderMode === 'ai' ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-pressed={renderMode === 'ai'}
+              >
+                AI mode
+              </button>
+              <button
+                type="button"
+                onClick={() => setRenderMode('free-form')}
+                className="px-3 py-1 rounded text-xs"
+                style={{
+                  background: renderMode === 'free-form' ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                  color: renderMode === 'free-form' ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-pressed={renderMode === 'free-form'}
+              >
+                Free-form ⚡
+              </button>
+            </div>
+            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+              {renderMode === 'ai'
+                ? 'AI generates illustrations from your card concepts (default).'
+                : 'You pick an emoji + colour per card. Renders instantly, no AI.'}
+            </p>
+          </div>
+
           {/* Grid size */}
           <div>
             <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
@@ -3922,6 +4006,50 @@ export function TopicCardGridPanel({
           />
         )}
 
+        {/* Phase B4: free-form preview. Renders the grid client-side
+            from per-cell emoji + bg colour. Mounts ONLY when free-form
+            mode is active AND the user has a card list to map onto. */}
+        {cards && renderMode === 'free-form' && (
+          <FreeFormPreviewPanel
+            cards={cards}
+            gridRows={gridRows}
+            gridCols={gridCols}
+            freeFormCells={freeFormCells}
+            onUpdateCell={updateFreeFormCell}
+            postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
+            titleBarRendererInput={
+              titleBar.enabled
+                ? {
+                    text: titleBar.text,
+                    subtitle: titleBar.subtitle || undefined,
+                    position: titleBar.position,
+                    heightFraction: titleBar.heightFraction,
+                    align: titleBar.align,
+                    subtitleAlign: titleBar.subtitleAlign,
+                    backgroundColor: titleBar.backgroundColor,
+                    backgroundOpacity: titleBar.backgroundOpacity,
+                    textColor: titleBar.textColor,
+                    subtitleColor: titleBar.subtitleColor,
+                    fontFamily:
+                      findFontById(titleBar.fontId)?.family ?? 'Patrick Hand',
+                    subtitleFontFamily: titleBar.subtitleFontId
+                      ? findFontById(titleBar.subtitleFontId)?.family
+                      : undefined,
+                    shadow: titleBar.shadowEnabled
+                      ? {
+                          offsetPx: titleBar.shadowOffsetPx,
+                          blurPx: titleBar.shadowBlurPx,
+                          opacity: titleBar.shadowOpacity,
+                          color: titleBar.shadowColor,
+                        }
+                      : undefined,
+                  }
+                : undefined
+            }
+            labelFontFamily={findFontById(fontId)?.family ?? 'Patrick Hand'}
+          />
+        )}
+
         {result && (
           <ResultState
             result={result}
@@ -4007,6 +4135,226 @@ interface CardTableProps {
   onUploadFilterChange: (cardIndex: number, filter: PanelImageFilter | null) => void;
   onRender: () => void;
   onRegenerate: () => void;
+}
+
+// ─── Free-form preview panel (Phase B4) ────────────────────────────────────
+// Renders the grid client-side from per-cell emoji + bg colour, plus a
+// per-cell content picker UI. Save-as-PNG via the browser's <canvas>
+// rasterization of the SVG output — no server roundtrip needed for the
+// final image.
+
+interface FreeFormPreviewPanelProps {
+  cards: FormatCard[];
+  gridRows: number;
+  gridCols: number;
+  freeFormCells: Record<number, { emoji: string; bgColor: string }>;
+  onUpdateCell: (cardIndex: number, patch: Partial<{ emoji: string; bgColor: string }>) => void;
+  postProcessPayload?: PostProcessConfig;
+  titleBarRendererInput?: TitleBarRendererInput;
+  labelFontFamily: string;
+}
+
+/** A small curated emoji palette so a lazy user has one-tap options
+ *  without leaving the panel. The text input next to it lets them paste
+ *  any other emoji. */
+const FREE_FORM_EMOJI_PRESETS = [
+  '⭐', '🔥', '⚡', '💡', '🚀', '🎯', '✅', '❌',
+  '⚠️', '🛡️', '🎨', '📊', '💰', '🔒', '🧠', '👀',
+];
+
+function FreeFormPreviewPanel({
+  cards,
+  gridRows,
+  gridCols,
+  freeFormCells,
+  onUpdateCell,
+  postProcessPayload,
+  titleBarRendererInput,
+  labelFontFamily,
+}: FreeFormPreviewPanelProps) {
+  // Render at a fixed 2048×1152 canvas — matches the OpenAI direct path
+  // size and gives a usable resolution for download. The renderer scales
+  // via CSS so the on-screen display can be smaller.
+  const canvasW = 2048;
+  const canvasH = 1152;
+  const layout = makeDefaultLayout(gridRows, gridCols, canvasW, canvasH, 'square');
+  const regions = computeRegions(
+    layout,
+    cards.map((c) => c.label),
+    () => Math.random().toString(36).slice(2),
+  );
+  const rendererCells: FreeFormCell[] = cards.map((card, i) => {
+    const region = regions[i];
+    const content = freeFormCells[card.index] ?? { emoji: '', bgColor: '#ffffff' };
+    return {
+      bounds: { x: region.x, y: region.y, w: region.w, h: region.h },
+      bgColor: content.bgColor,
+      emoji: content.emoji,
+      label: card.label,
+      labelFontFamily,
+    };
+  });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [saving, setSaving] = useState(false);
+  async function downloadAsPng() {
+    const container = containerRef.current;
+    if (!container) return;
+    setSaving(true);
+    try {
+      // Rasterize the rendered SVG via <canvas>. We find the outer
+      // <svg> the renderer mounted, serialise it to a data URL, draw
+      // it into an offscreen canvas at canvas-size, and download the
+      // result as PNG. Avoids a server roundtrip entirely.
+      const svg = container.querySelector('svg');
+      if (!svg) {
+        toast.error('Preview not ready');
+        return;
+      }
+      // Clone so we can inline width/height attributes without
+      // mutating the live DOM.
+      const cloned = svg.cloneNode(true) as SVGSVGElement;
+      cloned.setAttribute('width', String(canvasW));
+      cloned.setAttribute('height', String(canvasH));
+      const xml = new XMLSerializer().serializeToString(cloned);
+      const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('SVG load failed'));
+        img.src = dataUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        toast.error('Canvas unavailable');
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvasW, canvasH);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          toast.error('PNG encode failed');
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'thumbnail-free-form.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast.success('Downloaded');
+      }, 'image/png');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(236,72,153,0.2)' }}>
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+          Free-form preview
+        </h3>
+        <button
+          type="button"
+          onClick={() => void downloadAsPng()}
+          disabled={saving}
+          className="btn-secondary text-xs px-3 py-1"
+        >
+          {saving ? 'Saving…' : 'Save PNG'}
+        </button>
+      </div>
+      <div ref={containerRef} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+        <ThumbnailRenderer
+          cells={rendererCells}
+          canvasBackground="#ffffff"
+          canvasWidth={canvasW}
+          canvasHeight={canvasH}
+          postProcess={postProcessPayload}
+          titleBar={titleBarRendererInput}
+          alt="Free-form thumbnail preview"
+        />
+      </div>
+      <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        Pick an emoji + colour for each card. Live preview — no AI calls, no server roundtrip.
+      </p>
+      {/* Per-card content picker. One row per card. Compact layout. */}
+      <div className="space-y-1.5">
+        {cards.map((card) => {
+          const content = freeFormCells[card.index] ?? { emoji: '', bgColor: '#ffffff' };
+          return (
+            <div
+              key={card.index}
+              className="flex items-center gap-2 px-2 py-1 rounded"
+              style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+            >
+              <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)', width: 18 }}>
+                {card.index}
+              </span>
+              <span className="text-[11px] flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+                {card.label || '(no label)'}
+              </span>
+              <input
+                type="text"
+                value={content.emoji}
+                onChange={(e) => onUpdateCell(card.index, { emoji: e.target.value.slice(0, 4) })}
+                placeholder="🎯"
+                className="w-10 px-1 py-0.5 rounded text-center text-sm"
+                style={{
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-primary)',
+                  border: '1px solid var(--border)',
+                }}
+                aria-label={`Emoji for card ${card.index}`}
+              />
+              <input
+                type="color"
+                value={content.bgColor}
+                onChange={(e) => onUpdateCell(card.index, { bgColor: e.target.value })}
+                className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
+                aria-label={`Background colour for card ${card.index}`}
+              />
+            </div>
+          );
+        })}
+      </div>
+      {/* Quick emoji palette — click to fill the LAST-edited card or the
+          first card with an empty emoji. */}
+      <div>
+        <span className="text-[10px] block mb-1" style={{ color: 'var(--text-muted)' }}>
+          Quick emoji palette
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {FREE_FORM_EMOJI_PRESETS.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => {
+                const target = cards.find(
+                  (c) => !(freeFormCells[c.index]?.emoji ?? '').trim(),
+                );
+                if (target) onUpdateCell(target.index, { emoji });
+              }}
+              className="text-base px-1.5 py-0.5 rounded"
+              style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              title={`Fill next empty card with ${emoji}`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </div>
+      {/* svgRef is wired so future enhancements (e.g. measuring the
+          rendered output) have a handle without re-walking the DOM. */}
+      <svg ref={svgRef} style={{ display: 'none' }} />
+    </div>
+  );
 }
 
 function CardTableState(props: CardTableProps) {

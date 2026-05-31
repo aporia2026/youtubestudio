@@ -219,6 +219,60 @@ describe('ThumbnailRenderer — finishing overlays', () => {
   });
 });
 
+describe('ThumbnailRenderer — free-form cells (Phase B4)', () => {
+  it('renders an <svg> base with cell rects when `cells` is provided (no <img>)', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          { bounds: { x: 10, y: 10, w: 180, h: 200 }, bgColor: '#ff0000', emoji: '🔥', label: 'A' },
+          { bounds: { x: 210, y: 10, w: 180, h: 200 }, bgColor: '#00ff00', emoji: '⚡', label: 'B' },
+        ]}
+      />,
+    );
+    // No <img> tag in free-form mode.
+    expect(html).not.toContain('<img');
+    // Both cells' background colours land.
+    expect(html).toContain('fill="#ff0000"');
+    expect(html).toContain('fill="#00ff00"');
+    // Both emojis render as text.
+    expect(html).toContain('🔥');
+    expect(html).toContain('⚡');
+    // Both labels render too.
+    expect(html).toContain('>A<');
+    expect(html).toContain('>B<');
+  });
+
+  it('falls back to white background when bgColor is omitted', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[{ bounds: { x: 0, y: 0, w: 200, h: 200 }, label: 'X' }]}
+      />,
+    );
+    expect(html).toContain('fill="#ffffff"');
+  });
+
+  it('cells path still applies the post-process overlays on top', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[{ bounds: { x: 0, y: 0, w: 200, h: 200 }, bgColor: '#abcdef' }]}
+        postProcess={{
+          frame: { color: '#ff00ff', thickness: 4, inset: 8, style: 'solid' },
+        }}
+      />,
+    );
+    // Cell bg.
+    expect(html).toContain('fill="#abcdef"');
+    // Frame overlay stroke.
+    expect(html).toContain('stroke="#ff00ff"');
+  });
+});
+
 describe('ThumbnailRenderer — title bar', () => {
   it('renders title text + subtitle when titleBar is provided', () => {
     const html = renderToStaticMarkup(
