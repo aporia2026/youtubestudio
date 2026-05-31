@@ -120,33 +120,15 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       sectionCount: ssmlPre.sections.length,
     });
   }
-  const scriptForPipelinePreStrip = ssmlPre.wasSsml ? ssmlPre.cleanScript : script;
+  const scriptForPipeline = ssmlPre.wasSsml ? ssmlPre.cleanScript : script;
 
-  // Strip production-note lines BEFORE the LLM sees them. Lines that
-  // are entirely a bracket-wrapped production note (`[SFX: ...]`,
-  // `[VISUAL CUE: ...]`, `[ON-SCREEN TEXT - ...]`, etc.) are stage
-  // directions for the editor, not narration — and yet across multiple
-  // production runs the LLM kept emitting Title Card rows for them
-  // even with explicit mixing_rules saying "ignore these". The LLM is
-  // unreliable here, so we just remove the lines server-side. The
-  // narrative prose between them carries the meaning fine.
-  //
-  // What gets stripped: lines whose TRIMMED content starts with `[`
-  // and ends with `]`. We don't strip lines that contain brackets
-  // mid-sentence ("the value '[1]' was zero") — only whole-line
-  // bracket-notes.
-  const productionNoteLineRegex = /^\s*\[[^\]]*\]\s*$/;
-  const beforeLines = scriptForPipelinePreStrip.split('\n');
-  const strippedLines = beforeLines.filter((line) => !productionNoteLineRegex.test(line));
-  const stripCount = beforeLines.length - strippedLines.length;
-  const scriptForPipeline = strippedLines.join('\n');
-  if (stripCount > 0) {
-    logger.info('[production-doc production-notes-stripped]', {
-      stripped_lines: stripCount,
-      before_chars: scriptForPipelinePreStrip.length,
-      after_chars: scriptForPipeline.length,
-    });
-  }
+  // Production-note lines `[SFX: ...]`, `[VISUAL CUE: ...]`,
+  // `[ON-SCREEN TEXT - ...]` etc. are KEPT in the LLM input — user
+  // confirmed they carry useful visual-direction context that improves
+  // ai_image_prompt quality on the surrounding narration rows. An
+  // earlier commit stripped them server-side; that was over-eager and
+  // got reverted on 2026-05-31. The LLM-mistag-as-title-card issue is
+  // handled by a post-LLM normalizer below instead.
 
   // Deterministic title pre-pass. The LLM used to detect `##Heading` markers
   // itself, which was unreliable: a 6-title script could come back missing
@@ -265,6 +247,39 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       });
       result.rows = split.rows;
       generation_warnings = split.warnings;
+    }
+  }
+
+  // 2026-05-31 — Mistagged Title Card normalizer. The LLM has been
+  // emitting Title Card rows whose script_text is actually substantial
+  // narration prose (10+ words). Real title cards are short labels
+  // ("Knight Capital", "Intel Pentium") — at most ~6 words. When the
+  // LLM ships a Title Card row carrying a full sentence/paragraph, the
+  // editor renders it as a stark text card (wrong) AND the narration
+  // it stole from the surrounding flow goes unrendered as a proper
+  // Animation shot. Coerce: any Title Card row whose trimmed
+  // script_text exceeds 6 words gets demoted to "Animation". The LLM's
+  // visual_description / ai_image_prompt stay intact so the resulting
+  // Animation row renders the scene the LLM had in mind.
+  if (Array.isArray(result.rows)) {
+    const TITLE_CARD_WORD_CAP = 6;
+    let normalizedCount = 0;
+    for (const r of result.rows) {
+      if (r.visual_type !== 'Title Card') continue;
+      const wordCount = (r.script_text ?? '').trim().split(/\s+/).filter(Boolean).length;
+      if (wordCount > TITLE_CARD_WORD_CAP) {
+        r.visual_type = 'Animation';
+        normalizedCount += 1;
+      }
+    }
+    if (normalizedCount > 0) {
+      logger.info('[production-doc title-card-normalized]', {
+        normalized_count: normalizedCount,
+        word_cap: TITLE_CARD_WORD_CAP,
+      });
+      generation_warnings.push(
+        `${normalizedCount} row${normalizedCount === 1 ? '' : 's'} the AI mistakenly tagged as Title Card had full sentences — re-tagged as Animation.`,
+      );
     }
   }
 
