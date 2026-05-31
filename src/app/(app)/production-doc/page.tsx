@@ -4909,7 +4909,15 @@ function ProductionDocPage() {
       if (s?.imageUrl) continue;
       if (s?.status === 'loading' || s?.status === 'pending' || s?.status === 'search') continue;
       const row = doc.rows[i];
-      const prompt = row?.ai_image_prompt?.trim();
+      // Fall back to visual_description when ai_image_prompt is empty.
+      // The LLM sometimes leaves ai_image_prompt blank on rows that
+      // share a scene_id / character_id with a prior row, assuming the
+      // cache will carry the content forward — but the
+      // generateSceneContinuationImage path still needs a prompt to use
+      // as the edit instruction. Per-shot Generate already does this
+      // fallback (ImageCell onRetry inline); mirror it here so batch
+      // generation doesn't silently skip these rows.
+      const prompt = (row?.ai_image_prompt?.trim() || row?.visual_description?.trim()) ?? '';
       if (!prompt) continue;
       const skipOverlay = typeof row?.skip_overlay === 'boolean' ? row.skip_overlay : docDisabled;
       const sheetRef = row ? resolveSheetReference(row, doc) : { referenceImageUrl: undefined, styleSheetDescription: undefined };
