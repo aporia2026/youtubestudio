@@ -58,7 +58,8 @@ import {
 import { extractCharacterAnchors } from '../../anchor-vision-pass';
 import { generatePropImage } from '../../prop-generation';
 import { resolveStyle } from '../../production-doc-styles';
-import { loadStyleReferences } from '../../production-doc-styles-refs';
+import { loadStyleReferences, mirrorPublicUrlRefToR2 } from '../../production-doc-styles-refs';
+import { getDownloadUrlForBucket } from '../../r2';
 
 /** Max rows to attempt per tick. Sized so the worst-case Atlas i2i
  *  latency (~30 s) × 8 rows = ~240 s stays under the Vercel 300 s
@@ -272,12 +273,16 @@ export async function handleGenerateProductionDocImages(
   //   confusing the user watching rows populate top-to-bottom.
   const collageOn = doc.collage_mode !== false;
   // Load style refs ONCE for the whole tick — every row in the same
-  // doc has the same style. If refs are present, every base row is
-  // ineligible for collage (route is t2i-only). For paint_explainer_v1
-  // we also skip collage entirely — the motion-beat / mouth-removed
-  // chain depends on a single coherent base frame per character, which
-  // a sliced collage quadrant can't reliably provide.
+  // doc has the same style. Refs-bearing styles route through the
+  // refs-aware collage path (Atlas i2i, see
+  // `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` §C);
+  // refs-less styles take the original t2i collage path. For
+  // paint_explainer_v1 we skip collage entirely either way — the
+  // motion-beat / mouth-removed chain depends on a single coherent
+  // base frame per character, which a sliced collage quadrant can't
+  // reliably provide.
   let styleHasRefs = false;
+  let refImageUrls: string[] = [];
   if (collageOn && !isPaintExplainerV1) {
     const styleId = doc.style_preset?.trim();
     if (styleId) {
@@ -289,6 +294,31 @@ export async function handleGenerateProductionDocImages(
           workspaceId: video.workspace_id,
         });
         styleHasRefs = refs.length > 0;
+        if (styleHasRefs) {
+          // Resolve every ref to a fetchable URL. Built-in refs (e.g.
+          // doodle_explainer_2) go through `mirrorPublicUrlRefToR2`
+          // which mirrors the bundled file into R2 once and returns a
+          // presigned URL; DB-backed saved-style refs presign directly.
+          // Capped to the Atlas i2i 4-ref limit inside
+          // `generateCollageGroup` — we resolve all of them here so the
+          // function can pick the first 4 by declaration order.
+          try {
+            refImageUrls = await Promise.all(
+              refs.map((r) =>
+                r.public_url
+                  ? mirrorPublicUrlRefToR2(r)
+                  : getDownloadUrlForBucket(r.r2_bucket, r.r2_key, undefined),
+              ),
+            );
+          } catch (err) {
+            logger.warn('[pipeline image-gen collage] ref-url resolution failed — falling back to t2i', {
+              pipeline_video_id: video.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            // Defensive — t2i still works, just without style anchoring.
+            refImageUrls = [];
+          }
+        }
       }
     }
   }
@@ -487,6 +517,11 @@ export async function handleGenerateProductionDocImages(
       cells,
       characterDescriptions: doc.doodle_explainer_2_character_descriptions,
       workspaceId: video.workspace_id,
+      // Refs-aware mode: when the style ships with refs (e.g.
+      // doodle_explainer_2's 4 built-in doodle anchors), every cell of
+      // the 2×2 output inherits the style consistently via Atlas i2i.
+      // Otherwise the call defaults to the original t2i path. Plan §C.
+      refImageUrls: refImageUrls.length > 0 ? refImageUrls : undefined,
     });
     tickCostUsd += groupResult.totalCostUsd;
     if (!groupResult.fallbackNeeded) {

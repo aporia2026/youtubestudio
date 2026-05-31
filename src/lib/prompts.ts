@@ -2106,6 +2106,7 @@ export function productionDocPrompt({
   overlaysDisabled = false,
   titles = [],
   ssmlSections,
+  motionCollageSettings,
 }: {
   script: string;
   niche: string;
@@ -2134,6 +2135,18 @@ export function productionDocPrompt({
    *  beats from the prose itself. Undefined when the input was plain
    *  text. */
   ssmlSections?: string[];
+  /** doodle_explainer_2 motion-collage settings — pre-generation tuning
+   *  the user did on the editor's settings panel. When present AND the
+   *  style is doodle_explainer_2, the prompt appends a concrete-numbers
+   *  block so the LLM emits motion_collage rows that match the
+   *  constraints. Skipped for other styles. See
+   *  `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` (B). */
+  motionCollageSettings?: {
+    allow_motion_collage?: boolean;
+    max_grid_panels?: number;
+    min_per_frame_ms?: number;
+    max_per_frame_ms?: number;
+  };
 }): { system: string; user: string } {
   const wordCount = script.trim().split(/\s+/).length;
   const chunkDurationSeconds = Math.round((wordCount / speakingPaceWpm) * 60);
@@ -2164,8 +2177,35 @@ export function productionDocPrompt({
   // from producing data the page would immediately ignore.
   const allowOverlay = style?.allow_overlay_stock === true && !overlaysDisabled;
 
+  // doodle_explainer_2 motion-collage constraints — rendered as a
+  // concrete-numbers block the LLM can act on. Only when the style is
+  // doodle_explainer_2 AND the user supplied settings (otherwise we let
+  // the canonical defaults in the mixing_rules carry the cadence).
+  // The block is BELOW mixing_rules so it acts as a per-doc override,
+  // not a replacement.
+  const isDoodle2 = style?.id === 'doodle_explainer_2';
+  const mcAllow = motionCollageSettings?.allow_motion_collage;
+  const mcMaxPanels = motionCollageSettings?.max_grid_panels;
+  const mcMinFrameMs = motionCollageSettings?.min_per_frame_ms;
+  const mcMaxFrameMs = motionCollageSettings?.max_per_frame_ms;
+  const motionCollageOverrideBlock = isDoodle2 && motionCollageSettings ? (
+    mcAllow === false
+      ? `### Motion Collage — DISABLED FOR THIS DOC
+The doc author has turned motion_collage OFF in the editor settings. Do NOT emit any \`shot_kind: "motion_collage"\` rows. When the script contains a motion verb that would normally trigger motion_collage, fall back to either a variant group (additive deltas on a held composition) or a regular Animation row that describes the motion outcome (the end state, e.g. "the ship is heeled sharply to port") instead of the motion arc.`
+      : [
+          '### Motion Collage — Doc-level Constraints',
+          mcMaxPanels !== undefined && mcMaxPanels < 16
+            ? `- HARD CAP on \`motion_collage_grid.cols × motion_collage_grid.rows\`: ${mcMaxPanels} panels. NEVER emit a grid above this. Examples that fit: ${mcMaxPanels >= 12 ? '4×3 (12)' : mcMaxPanels >= 9 ? '3×3 (9)' : mcMaxPanels >= 6 ? '3×2 (6)' : '2×2 (4)'}.`
+            : null,
+          mcMinFrameMs !== undefined && mcMaxFrameMs !== undefined
+            ? `- Per-frame duration window: ${mcMinFrameMs}–${mcMaxFrameMs} ms. Pick a grid where the row's narration window divided by N panels lands in this band. At 135 wpm, a 5-word row is ~2.2 s = 2200 ms; ${mcMaxFrameMs >= 800 ? `a 2×2 (4 panels) → ${Math.round(2200 / 4)} ms/panel which fits.` : `even a 2×2 may exceed ${mcMaxFrameMs} ms/panel — use motion_collage only on longer rows.`}`
+            : null,
+          '- The pipeline rejects rows whose computed per-frame duration falls outside the window above. Pick the grid responsibly so generation succeeds.',
+        ].filter(Boolean).join('\n')
+  ) : '';
+
   // Build the mandatory style block — controls HOW images look, not which shot types appear
-  const mandatoryStyleBlock = (styleSuffix || creativeBrief || mixingRules) ? `
+  const mandatoryStyleBlock = (styleSuffix || creativeBrief || mixingRules || motionCollageOverrideBlock) ? `
 ## MANDATORY IMAGE STYLE — APPLIES TO ALL ai_image_prompt FIELDS
 
 ${styleSuffix ? `### Chosen Style: ${style!.label}
@@ -2180,6 +2220,8 @@ ${mixingRules ? `### Mixing Rules — When to Combine AI Visuals With Real Stock
 These rules tell you when a row should ALSO carry an \`overlay_stock_terms\` value so the editor can composite a real-world asset (logo, screenshot, photograph) on top of the AI-generated visual in post.
 
 ${mixingRules}` : ''}
+
+${motionCollageOverrideBlock}
 
 ${creativeBrief ? `### Creative Brief — Hard Requirements for Every Shot
 These requirements must be reflected in every visual description and ai_image_prompt:

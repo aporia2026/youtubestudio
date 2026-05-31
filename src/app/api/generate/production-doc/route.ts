@@ -49,6 +49,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     startTimecodeSeconds,
     isChunk,
     overlaysDisabled,
+    motionCollageSettings,
   } = body as {
     modelId?: string; script?: string; niche?: string; topic?: string;
     speakingPaceWpm?: number;
@@ -62,6 +63,20 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
      *  `overlay_stock_terms` empty on every row and bake brand
      *  identity into ai_image_prompt instead. */
     overlaysDisabled?: boolean;
+    /** doodle_explainer_2 motion-collage settings forwarded from the
+     *  page's pre-generation panel. When the user has tuned them BEFORE
+     *  generation, the values flow into `productionDocPrompt` so the
+     *  LLM emits motion_collage rows that match the constraints
+     *  (max_grid_panels, per-frame duration window, kill switch).
+     *  Undefined ⇒ the prompt uses canonical defaults from
+     *  DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS. See
+     *  `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` (B). */
+    motionCollageSettings?: {
+      allow_motion_collage?: boolean;
+      max_grid_panels?: number;
+      min_per_frame_ms?: number;
+      max_per_frame_ms?: number;
+    };
   };
 
   if (!script || !niche) {
@@ -131,6 +146,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     niche, topic, speakingPaceWpm, style, creativeBrief,
     startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
     overlaysDisabled: overlaysDisabled === true,
+    motionCollageSettings,
   });
 
   const effectiveModelId = modelId || (await getEffectiveModelId(session.ws, 'production-doc'));

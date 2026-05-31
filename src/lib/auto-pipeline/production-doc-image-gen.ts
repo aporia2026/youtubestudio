@@ -28,7 +28,7 @@ import { resolveStyle } from '../production-doc-styles';
 import { loadStyleReferences } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
-import { generateAtlasT2I } from './../atlas-cloud-images';
+import { generateAtlasT2I, generateAtlasI2I } from './../atlas-cloud-images';
 import { generateGptImage2Edit } from '../gpt-image-2-edit';
 import { getUserSettings } from '../user-settings';
 import { composeCollagePrompt } from '../collage-prompt';
@@ -978,9 +978,28 @@ export async function generateCollageGroup(args: {
    *  always pass workspaceId so reconciliation can group by workspace. */
   workspaceId?: string | null;
   ownerId?: string | null;
+  /** Refs-aware mode (2026-05-31, plan §C). When supplied, this collage
+   *  is generated via Atlas i2i with the URLs as style anchors instead
+   *  of the default Atlas t2i. The model treats every cell of the 2×2
+   *  output as a child of the same style refs, preserving aesthetic
+   *  consistency across cells. Used for styles whose `built_in_refs` /
+   *  saved-style refs are load-bearing (doodle_explainer_2's hand-drawn
+   *  doodle aesthetic depends on them). Pass an empty array or omit to
+   *  use the original t2i path. Length capped at the Atlas i2i model's
+   *  4-input limit; the caller is responsible for picking the most
+   *  load-bearing refs when more are available.
+   *  See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` (C). */
+  refImageUrls?: readonly string[];
 }): Promise<PipelineCollageGroupResult> {
   const t0 = Date.now();
-  const { cells, characterDescriptions, workspaceId = null, ownerId = null } = args;
+  const { cells, characterDescriptions, workspaceId = null, ownerId = null, refImageUrls } = args;
+  const refsAware = Array.isArray(refImageUrls) && refImageUrls.length > 0;
+  // Atlas i2i caps at 4 input images; cap defensively here so a caller
+  // passing more (a saved-style with many refs) doesn't blow past the
+  // model limit. First 4 in declared order — the caller decides the
+  // priority order at load time.
+  const ATLAS_I2I_MAX_REFS = 4;
+  const cappedRefs = refsAware ? refImageUrls!.slice(0, ATLAS_I2I_MAX_REFS) : [];
 
   // ─── Augment each cell (mirrors /collage/route.ts:192-204) ────────────
   // augmentCellPrompt runs once; the directives are stable across the
@@ -1025,20 +1044,35 @@ export async function generateCollageGroup(args: {
       workspaceId,
       route: 'auto-pipeline:generateCollageGroup',
       provider: 'atlas',
-      providerModel: `openai/gpt-image-2/t2i#attempt-${attempt}`,
+      providerModel: refsAware
+        ? `openai/gpt-image-2/i2i#attempt-${attempt}`
+        : `openai/gpt-image-2/t2i#attempt-${attempt}`,
     });
     let attemptProviderRequestId: string | null = null;
     try {
       logger.info('[pipeline image-gen collage] start', {
         attempt,
         prompt_chars: composedPrompt.length,
+        refs_aware: refsAware,
+        refs_sent: cappedRefs.length,
       });
       // 1536x1024 → cropTo16x9AndUpload → Recraft 4× upscale → ~6144×3456.
-      const atlasResult = await generateAtlasT2I({
-        prompt: composedPrompt,
-        size: '1536x1024',
-        quality: 'low',
-      });
+      // Refs-aware variant (2026-05-31, plan §C): Atlas i2i with the
+      // style's refs as inputs. The model treats every cell of the 2×2
+      // output as a child of the same style refs, preserving aesthetic
+      // consistency. Otherwise falls back to the original t2i path.
+      const atlasResult = refsAware
+        ? await generateAtlasI2I({
+            prompt: composedPrompt,
+            images: cappedRefs,
+            size: '1536x1024',
+            quality: 'low',
+          })
+        : await generateAtlasT2I({
+            prompt: composedPrompt,
+            size: '1536x1024',
+            quality: 'low',
+          });
       attemptProviderRequestId = atlasResult.predictionId ?? null;
       const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
       const upscale = await upscaleViaRecraft(croppedUrl);
@@ -1599,8 +1633,13 @@ export function isCollageEligibleRow(
   if (row.motion_beats && row.motion_beats.length > 0) {
     return { eligible: false, reason: 'motion_beats' };
   }
-  if (styleHasRefs) {
-    return { eligible: false, reason: 'style_refs' };
-  }
+  // 2026-05-31 (plan §C, refs-aware collage): styles with refs are no
+  // longer excluded. The stage handler now branches on `styleHasRefs`
+  // at the collage call site — refs-bearing styles route to
+  // generateCollageGroup with `refImageUrls` populated (Atlas i2i),
+  // refs-less styles route to the original t2i path. The
+  // `styleHasRefs` argument stays in the signature so older
+  // callers / tests don't break; it's now informational only.
+  void styleHasRefs;
   return { eligible: true };
 }

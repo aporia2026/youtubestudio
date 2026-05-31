@@ -177,15 +177,23 @@ describe('isCollageEligibleRow — paint_explainer_v1 exclusions', () => {
   });
 });
 
-describe('isCollageEligibleRow — style refs exclusion', () => {
-  it('excludes when the doc has loaded style refs (i2i path required)', () => {
-    // styleHasRefs is computed once per tick by the stage handler via
-    // resolveStyle + loadStyleReferences. If refs are present, every
-    // base row must go through i2i with the refs attached — the collage
-    // route is t2i-only and would silently drop them.
+describe('isCollageEligibleRow — refs-aware collage (2026-05-31)', () => {
+  it('admits rows even when the doc has loaded style refs', () => {
+    // Per plan §C of `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`:
+    // refs-bearing styles are no longer collage-excluded. The stage
+    // handler routes them to `generateCollageGroup` with
+    // `refImageUrls` populated, which switches the underlying call
+    // from Atlas t2i to Atlas i2i so every cell inherits the style
+    // refs. The `styleHasRefs` argument is preserved on the signature
+    // for back-compat; today it's informational only.
     const verdict = isCollageEligibleRow(baseRow(), EMPTY_DOC, true);
-    expect(verdict.eligible).toBe(false);
-    expect(verdict.reason).toBe('style_refs');
+    expect(verdict.eligible).toBe(true);
+    expect(verdict.reason).toBeUndefined();
+  });
+
+  it('still admits rows when the doc has NO refs', () => {
+    const verdict = isCollageEligibleRow(baseRow(), EMPTY_DOC, false);
+    expect(verdict.eligible).toBe(true);
   });
 });
 

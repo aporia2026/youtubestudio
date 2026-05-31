@@ -2272,6 +2272,18 @@ function ProductionDocPage() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const [doc, setDoc] = useState<ProductionDoc | null>(null);
+  // Pre-generation motion-collage settings — the doc-level panel
+  // (DoodleExplainer2MotionCollageSettingsPanel) writes here when
+  // `doc === null` so the user can tune cadence / panel cap / per-frame
+  // duration BEFORE clicking Generate. The settings flow into the
+  // doc-gen API body so the LLM emits motion_collage rows that match
+  // the constraints, and are stamped onto the new doc on first
+  // generation so the panel stays in sync. After a doc exists, the
+  // panel writes directly to doc.doodle_explainer_2_motion_collage_settings
+  // and this state becomes a no-op fallback.
+  const [pendingMotionCollageSettings, setPendingMotionCollageSettings] = useState<
+    DoodleExplainer2MotionCollageSettings | undefined
+  >(undefined);
   // v2 (2026-05-22) — keep doc.style_preset in sync with the page-level
   // `stylePreset` state. Persists on the user_history payload through
   // the existing auto-save pipeline so downstream surfaces (the
@@ -7603,6 +7615,13 @@ function ProductionDocPage() {
             startTimecodeSeconds: timecodeOffsetSeconds,
             isChunk: isMultiChunk && chunkIdx > 0,
             overlaysDisabled: overlaysDisabledPref,
+            // doodle_explainer_2 motion-collage pre-generation tuning.
+            // Doc-level value wins when an existing doc is being
+            // regenerated; falls back to the pre-doc pending state when
+            // generating fresh. The route ignores the field for any
+            // style other than doodle_explainer_2.
+            motionCollageSettings:
+              doc?.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings,
           }),
         });
         let attempts = 0;
@@ -7681,6 +7700,13 @@ function ProductionDocPage() {
         // so the doc carries the user's intent forward. The post-doc
         // toggle near the rows table can override per-doc afterwards.
         ...(overlaysDisabledPref ? { overlays_disabled: true as const } : {}),
+        // doodle_explainer_2 motion-collage settings the user dialed in
+        // pre-generation flow into the new doc so the post-doc panel
+        // mounts with the same values. Skipped for any other style and
+        // when the user never touched the panel (state stays undefined).
+        ...(stylePreset === 'doodle_explainer_2' && pendingMotionCollageSettings
+          ? { doodle_explainer_2_motion_collage_settings: pendingMotionCollageSettings }
+          : {}),
       };
 
       appendLog(`Response received — parsing production doc...`);
@@ -8821,19 +8847,26 @@ function ProductionDocPage() {
           )}
 
           {/* doodle_explainer_2 motion-collage settings panel — mounts
-              only when the active style is doodle_explainer_2 AND a doc
-              exists. Same mount discipline as the paint_explainer_v1
-              panel above: pre-doc, the renderer hasn't run; post-Generate
-              the user can flip the four motion-collage knobs and watch
-              the next regen pick them up. See
-              `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */}
-          {doc && stylePreset === 'doodle_explainer_2' && (
+              whenever the active style is doodle_explainer_2, regardless
+              of whether a doc has been generated yet. Pre-generation
+              edits land in `pendingMotionCollageSettings` and flow into
+              the doc-gen API body so the LLM honours them on the first
+              run; post-generation edits land directly in
+              `doc.doodle_explainer_2_motion_collage_settings`. See
+              `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` (A). */}
+          {stylePreset === 'doodle_explainer_2' && (
             <DoodleExplainer2MotionCollageSettingsPanel
-              value={doc.doodle_explainer_2_motion_collage_settings}
+              value={
+                doc?.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings
+              }
               onChange={(next) => {
-                setDoc((prev) =>
-                  prev ? { ...prev, doodle_explainer_2_motion_collage_settings: next } : prev,
-                );
+                if (doc) {
+                  setDoc((prev) =>
+                    prev ? { ...prev, doodle_explainer_2_motion_collage_settings: next } : prev,
+                  );
+                } else {
+                  setPendingMotionCollageSettings(next);
+                }
               }}
             />
           )}
