@@ -166,31 +166,35 @@ describe('detectAiCellRect', () => {
 // ─── computeScanBounds (r2.7) ───────────────────────────────────────────────
 
 describe('computeScanBounds', () => {
-  it('outer-edge cell: leftMin=0, topMin=0, fallback points to canvas edge', () => {
+  it('outer-edge cell: scan reaches canvas edge but fallback stays at expected', () => {
     // Top-left cell (row 0, col 0) of a 2x3 grid on a 2048x1152 canvas.
     // Layout: outerMargin = round(2048 * 0.011) = 23, gutter = 23.
     const expected = { x: 23, y: 23, w: 660, h: 530 };
     const bounds = computeScanBounds(expected, 0, 0, 2, 3, 2048, 1152, 23);
     expect(bounds.leftMin).toBe(0);
     expect(bounds.topMin).toBe(0);
-    expect(bounds.fallback.left).toBe(0);
-    expect(bounds.fallback.top).toBe(0);
-    // Right & bottom of an interior-side cell: interior bounds + expected fallbacks.
+    // r2.7.2: fallback always points at `expected`, never the canvas
+    // edge. The wider scan range still catches AI-bled-to-edge renders
+    // via a real transition; the fallback only fires when no
+    // transition exists, where `expected` is the correct answer (an
+    // AI that drew proper outer margin without a border line would
+    // otherwise lose its margin to a canvas-edge snap).
+    expect(bounds.fallback.left).toBe(expected.x);
+    expect(bounds.fallback.top).toBe(expected.y);
     expect(bounds.fallback.right).toBe(expected.x + expected.w);
     expect(bounds.fallback.bottom).toBe(expected.y + expected.h);
   });
 
-  it('last-row last-col cell: bottomMax/rightMax reach canvas edge, fallback to canvas edge', () => {
+  it('last-row last-col cell: scan reaches canvas edge but fallback stays at expected', () => {
     const canvasW = 2048;
     const canvasH = 1152;
     const expected = { x: 1365, y: 599, w: 660, h: 530 };
     const bounds = computeScanBounds(expected, 1, 2, 2, 3, canvasW, canvasH, 23);
     expect(bounds.rightMax).toBe(canvasW - 1);
     expect(bounds.bottomMax).toBe(canvasH - 1);
-    expect(bounds.fallback.right).toBe(canvasW);
-    expect(bounds.fallback.bottom).toBe(canvasH);
-    // The OPPOSITE edges (left/top) are interior — they don't get
-    // canvas-edge bounds, and their fallback is expected.
+    // Same as above — r2.7.2 fallback is `expected`, never canvas.
+    expect(bounds.fallback.right).toBe(expected.x + expected.w);
+    expect(bounds.fallback.bottom).toBe(expected.y + expected.h);
     expect(bounds.fallback.left).toBe(expected.x);
     expect(bounds.fallback.top).toBe(expected.y);
   });

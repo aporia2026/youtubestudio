@@ -551,12 +551,17 @@ export function computeScanBounds(
     topMax: Math.min(canvasH - 1, expected.y + inward),
     bottomMin: Math.max(0, expBottom - inward),
     bottomMax: isLastRow ? canvasH - 1 : Math.min(canvasH - 1, expBottom + interCellReach),
-    fallback: {
-      left: isFirstCol ? 0 : expected.x,
-      right: isLastCol ? canvasW : expRight,
-      top: isFirstRow ? 0 : expected.y,
-      bottom: isLastRow ? canvasH : expBottom,
-    },
+    // Fallbacks always point at `expected`. The OUTER scan range
+    // already reaches the canvas edge for outer-edge cells, so a real
+    // AI render that bled past the layout's outer margin will be
+    // FOUND via a transition (and used). The fallback only kicks in
+    // when no transition was found — typically because the AI
+    // rendered with proper outer margin and no clean border line
+    // (illustration → white-margin gradient). In that case
+    // `expected` is the right answer, NOT the canvas edge — snapping
+    // to the canvas edge there would erase the AI's outer-margin
+    // whitespace and the user sees "no margin below the bottom row".
+    fallback: { left: expected.x, right: expRight, top: expected.y, bottom: expBottom },
   };
 }
 
