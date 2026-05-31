@@ -4925,7 +4925,7 @@ function ProductionDocPage() {
           }
         }
         completed += chunk.length;
-        setRetryingImages({ done: completed, total: emptyImagePlan.length });
+        setRetryingImages({ done: completed, total: totalCount });
       }
 
       // Shared cursor — each worker pulls the next available chunk
@@ -4958,7 +4958,7 @@ function ProductionDocPage() {
           skipOverlay: item.skipOverlay,
         });
         completed++;
-        setRetryingImages({ done: completed, total: emptyImagePlan.length });
+        setRetryingImages({ done: completed, total: totalCount });
       }
     } else {
       // Legacy per-shot path — collage mode off.
@@ -4974,7 +4974,8 @@ function ProductionDocPage() {
           overlayStockTerms: item.overlayStockTerms,
           skipOverlay: item.skipOverlay,
         });
-        setRetryingImages({ done: n + 1, total: emptyImagePlan.length });
+        completed++;
+        setRetryingImages({ done: completed, total: totalCount });
       }
     }
 
@@ -10978,7 +10979,14 @@ function ProductionDocPage() {
                             // user can still click "Generate AI image" instead of
                             // having to manually click "+ Add prompt" and retype
                             // the same description (rule 10 — lazy user).
-                            canGenerate={Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())}
+                            canGenerate={
+                              // motion_collage rows can be generated as
+                              // long as they carry panel_prompts — they
+                              // intentionally leave ai_image_prompt empty.
+                              row.shot_kind === 'motion_collage'
+                                ? Boolean(row.motion_collage_panel_prompts?.length)
+                                : Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())
+                            }
                             motionCollagePanelUrls={row.motion_collage_panel_urls}
                             motionCollageGrid={row.motion_collage_grid}
                             onRetry={() => {
@@ -11595,7 +11603,14 @@ function ProductionDocPage() {
                             // visual_description backstops a missing
                             // ai_image_prompt so the user can generate without
                             // re-typing what's already in the doc.
-                            canGenerate={Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())}
+                            canGenerate={
+                              // motion_collage rows can be generated as
+                              // long as they carry panel_prompts — they
+                              // intentionally leave ai_image_prompt empty.
+                              row.shot_kind === 'motion_collage'
+                                ? Boolean(row.motion_collage_panel_prompts?.length)
+                                : Boolean(row.ai_image_prompt?.trim() || row.visual_description?.trim())
+                            }
                             motionCollagePanelUrls={row.motion_collage_panel_urls}
                             motionCollageGrid={row.motion_collage_grid}
                             onRetry={() => {

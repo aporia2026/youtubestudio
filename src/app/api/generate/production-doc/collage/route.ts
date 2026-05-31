@@ -140,16 +140,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         { status: 400 },
       );
     }
-    // Raw per-cell cap is 400 chars on the input prompt. augmentCellPrompt
-    // is allowed to push the final augmented cell up to
-    // COLLAGE_CELL_PROMPT_CAP (600), accommodating directive overhead.
-    // The input cap stays at 400 because that's what the historical
-    // contract has been; bumping it would let a single misbehaving
-    // caller push the composed prompt past 2000 chars and into Kie's
-    // hard limit.
-    if (cells.some((c) => c.prompt.trim().length > 400)) {
+    // Raw per-cell cap is 1500 chars on the input prompt
+    // (bumped 2026-05-31 from 400 → 1500). augmentCellPrompt pushes the
+    // final augmented cell up to COLLAGE_CELL_PROMPT_CAP (600), and
+    // composed-with-scaffolding stays under the model's ~12000-char
+    // limit at 4×1500 + overhead. The 400-char cap was too tight for
+    // styles whose `ai_image_suffix` is verbose (doodle_explainer_2's
+    // emitted prompts run 700-900 chars per cell). Below 1500 the route
+    // would reject doodle_explainer_2 calls with 400, sending the page
+    // to the per-row single-shot fallback — killing the cost savings
+    // the collage path exists for.
+    if (cells.some((c) => c.prompt.trim().length > 1500)) {
       return NextResponse.json(
-        { error: 'Each cell prompt must be at most 400 characters' },
+        { error: 'Each cell prompt must be at most 1500 characters' },
         { status: 400 },
       );
     }
