@@ -52,6 +52,12 @@ export interface FreeFormCellState {
   shape?: CellShape;
   /** Per-cell label colour override. Defaults to '#000000' downstream. */
   labelColor?: string;
+  /** Per-cell label font-size multiplier. 1.0 = default. */
+  labelSizeMultiplier?: number;
+  /** Per-cell custom image URL. Takes precedence over icon/emoji. */
+  imageUrl?: string;
+  /** Image fit strategy. Defaults to 'cover'. */
+  imageFit?: 'cover' | 'contain' | 'fill';
 }
 
 export const DEFAULT_FREE_FORM_CELL_STATE: FreeFormCellState = {
@@ -160,6 +166,9 @@ export function FreeFormPreviewPanel({
       iconColor: content.iconColor ?? '#000000',
       shape: content.shape ?? canvasOptions?.defaultShape ?? 'square',
       labelColor: content.labelColor,
+      labelSizeMultiplier: content.labelSizeMultiplier,
+      imageUrl: content.imageUrl,
+      imageFit: content.imageFit,
     };
   });
   // Icon picker UI state — search query + per-cell open dropdown id +
@@ -781,8 +790,19 @@ export function FreeFormPreviewPanel({
                   </div>
                 </div>
               )}
-              {(content.emoji.trim() !== '' || content.iconSlug || content.labelColor) && (
-                <details open={hasTransform || !!content.labelColor}>
+              {(content.emoji.trim() !== '' ||
+                content.iconSlug ||
+                content.labelColor ||
+                content.imageUrl ||
+                content.labelSizeMultiplier) && (
+                <details
+                  open={
+                    hasTransform ||
+                    !!content.labelColor ||
+                    !!content.imageUrl ||
+                    !!content.labelSizeMultiplier
+                  }
+                >
                   <summary
                     className="text-[10px] cursor-pointer select-none"
                     style={{ color: 'var(--text-muted)' }}
@@ -847,6 +867,84 @@ export function FreeFormPreviewPanel({
                         style={{ accentColor: 'var(--accent-pink)' }}
                         title="Y offset"
                       />
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <span style={{ color: 'var(--text-muted)' }}>Image URL</span>
+                      <input
+                        type="url"
+                        value={content.imageUrl ?? ''}
+                        onChange={(e) =>
+                          onUpdateCell(input.index, {
+                            imageUrl: e.target.value || undefined,
+                          })
+                        }
+                        placeholder="https://… or data:image/…"
+                        className="flex-1 px-1 py-0.5 rounded text-[10px]"
+                        style={{
+                          background: 'var(--bg-card)',
+                          color: 'var(--text-primary)',
+                          border: '1px solid var(--border)',
+                        }}
+                      />
+                      {content.imageUrl && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateCell(input.index, {
+                                imageFit:
+                                  content.imageFit === 'cover'
+                                    ? 'contain'
+                                    : content.imageFit === 'contain'
+                                      ? 'fill'
+                                      : 'cover',
+                              })
+                            }
+                            className="px-1.5 py-0.5 rounded"
+                            style={{
+                              background: 'var(--bg-card)',
+                              color: 'var(--text-secondary)',
+                              border: '1px solid var(--border)',
+                            }}
+                            title="Cycle fit mode"
+                          >
+                            {content.imageFit ?? 'cover'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onUpdateCell(input.index, {
+                                imageUrl: undefined,
+                                imageFit: undefined,
+                              })
+                            }
+                            className="hover:opacity-60"
+                            title="Clear image"
+                          >
+                            ×
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <span style={{ color: 'var(--text-muted)', width: 60 }}>Label size</span>
+                      <input
+                        type="range"
+                        min={0.5}
+                        max={2}
+                        step={0.05}
+                        value={content.labelSizeMultiplier ?? 1}
+                        onChange={(e) =>
+                          onUpdateCell(input.index, {
+                            labelSizeMultiplier: Number.parseFloat(e.target.value) || 1,
+                          })
+                        }
+                        className="flex-1"
+                        style={{ accentColor: 'var(--accent-pink)' }}
+                      />
+                      <span style={{ color: 'var(--text-muted)', width: 36, textAlign: 'right' }}>
+                        {Math.round((content.labelSizeMultiplier ?? 1) * 100)}%
+                      </span>
                     </div>
                     <div className="flex items-center gap-1.5 text-[10px]">
                       <span style={{ color: 'var(--text-muted)' }}>Label colour</span>

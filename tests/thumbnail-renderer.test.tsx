@@ -298,6 +298,54 @@ describe('ThumbnailRenderer — free-form cells (Phase B4)', () => {
     expect(html).toContain('🚀');
   });
 
+  it('renders a custom image when cell.imageUrl is set (takes precedence over icon + emoji)', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            imageUrl: 'https://example.com/cover.png',
+            iconSlug: 'star',
+            emoji: '🔥',
+          },
+        ]}
+      />,
+    );
+    // The image must be rendered (xlink:href attr OR href attr — JSX
+    // emits `href` for SVG image; React serializer normalises it).
+    expect(html).toContain('cover.png');
+    // Neither the icon nor the emoji should be rendered.
+    expect(html).not.toContain('🔥');
+    expect(html).not.toMatch(/<g[^>]*stroke="#000000"/);
+  });
+
+  it('honours labelSizeMultiplier when computing label font size', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            label: 'BIG',
+            labelSizeMultiplier: 1.5,
+          },
+        ]}
+      />,
+    );
+    // labelH = 200 * 0.2 = 40; baseline font = 40 * 0.55 = 22; with
+    // multiplier 1.5 → 33. The exact number depends on Math.round
+    // chaining but 30+ is the right ballpark.
+    const fontMatch = html.match(/font-size="(\d+)"/);
+    expect(fontMatch).not.toBeNull();
+    if (fontMatch) {
+      const size = parseInt(fontMatch[1], 10);
+      expect(size).toBeGreaterThan(25);
+    }
+  });
+
   it('renders a circle cell with a stroked <circle> instead of a rect border', () => {
     const html = renderToStaticMarkup(
       <ThumbnailRenderer

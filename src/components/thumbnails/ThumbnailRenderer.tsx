@@ -147,6 +147,21 @@ export interface FreeFormCell {
    *  BELOW the shape for `'circle'` (mirrors Flex Icon Grid's circle
    *  cell layout). */
   shape?: 'square' | 'rounded' | 'circle';
+  /** Custom image URL or data URL. When set, the renderer draws the
+   *  image as an SVG `<image>` element inside the illustration area
+   *  (top 80 % of the cell). Takes PRECEDENCE over `iconSlug` and
+   *  `emoji` — the image is the primary content slot. Per-cell
+   *  transforms (rotation / flip / offset) apply. */
+  imageUrl?: string;
+  /** Image fit strategy inside the illustration area. `'cover'`
+   *  (default) crops to fill via `preserveAspectRatio='xMidYMid slice'`.
+   *  `'contain'` letterboxes via `xMidYMid meet`. `'fill'` stretches
+   *  via `none`. */
+  imageFit?: 'cover' | 'contain' | 'fill';
+  /** Label font-size multiplier. Defaults to 1.0. Multiplies the
+   *  band-height-derived font size, so 1.5× makes the label 50 %
+   *  larger than the default. Range typically 0.5..2.0. */
+  labelSizeMultiplier?: number;
 }
 
 export interface ThumbnailRendererProps {
@@ -903,8 +918,11 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   // enough to read, small enough to leave breathing room.
   const emojiSize = Math.round(Math.min(w, illustrationH) * 0.55);
   // Label font sizes to ~0.55 of the label band height (matches the
-  // server's renderLabelPng calibration).
-  const labelFontSize = Math.max(8, Math.round(labelH * 0.55));
+  // server's renderLabelPng calibration). Per-cell override scales
+  // this baseline so a user can punch up a key label or shrink a
+  // long one.
+  const labelMultiplier = cell.labelSizeMultiplier ?? 1;
+  const labelFontSize = Math.max(8, Math.round(labelH * 0.55 * labelMultiplier));
   return (
     <g>
       {/* Cell background.
@@ -922,13 +940,59 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
       ) : (
         <rect x={x} y={y} width={w} height={h} fill={bg} rx={cornerRadius} ry={cornerRadius} />
       )}
+      {/* Custom image (per-cell upload / URL). Takes PRECEDENCE over
+          both Lucide icons and emojis when set. The image fills the
+          illustration area (top 80 % of the cell, or the disc in
+          circle mode). Same transform pipeline applies. */}
+      {cell.imageUrl && (() => {
+        const cx = x + w / 2;
+        const cy = y + illustrationH / 2;
+        const offsetX = (cell.emojiOffsetX ?? 0) * w;
+        const offsetY = (cell.emojiOffsetY ?? 0) * illustrationH;
+        const rotation = cell.emojiRotation ?? 0;
+        const flipX = cell.emojiFlipX ? -1 : 1;
+        const flipY = cell.emojiFlipY ? -1 : 1;
+        const transform = [
+          `translate(${cx + offsetX}, ${cy + offsetY})`,
+          rotation !== 0 ? `rotate(${rotation})` : null,
+          flipX !== 1 || flipY !== 1 ? `scale(${flipX}, ${flipY})` : null,
+          `translate(${-cx}, ${-cy})`,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        // For circle mode, fit the image to the disc bounding box;
+        // otherwise fit to the illustration area.
+        const useDisc = shape === 'circle';
+        const imgX = useDisc ? discCx - discDiameter / 2 : x;
+        const imgY = useDisc ? discCy - discDiameter / 2 : y;
+        const imgW = useDisc ? discDiameter : w;
+        const imgH = useDisc ? discDiameter : illustrationH;
+        const par =
+          cell.imageFit === 'contain'
+            ? 'xMidYMid meet'
+            : cell.imageFit === 'fill'
+              ? 'none'
+              : 'xMidYMid slice';
+        return (
+          <g transform={transform}>
+            <image
+              href={cell.imageUrl}
+              x={imgX}
+              y={imgY}
+              width={imgW}
+              height={imgH}
+              preserveAspectRatio={par}
+            />
+          </g>
+        );
+      })()}
       {/* Lucide icon path — takes precedence over emoji when both are
           set. Same transform pipeline as the emoji branch (rotation
           / flip / offset around the cell centre). The icon is
           imported as an SVG string from `flex-icon-grid-icons.ts` and
           embedded via `dangerouslySetInnerHTML` on a wrapping `<g>`
           (React doesn't natively parse raw SVG markup into elements). */}
-      {cell.iconSlug && getIconEntry(cell.iconSlug) && (() => {
+      {!cell.imageUrl && cell.iconSlug && getIconEntry(cell.iconSlug) && (() => {
         const cx = x + w / 2;
         const cy = y + illustrationH / 2;
         const offsetX = (cell.emojiOffsetX ?? 0) * w;
@@ -981,10 +1045,9 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           per-cell offset / rotation / flip. The transform is applied
           ONLY to the emoji glyph (not the background or border) so the
           cell frame stays axis-aligned regardless of the rotation.
-          Skipped when an iconSlug is set AND resolves to a known entry
-          (icon takes precedence). Unknown slugs fall through to emoji
-          so the user always sees SOMETHING in the cell. */}
-      {!(cell.iconSlug && getIconEntry(cell.iconSlug)) && cell.emoji && cell.emoji.trim() && (() => {
+          Skipped when an imageUrl OR known iconSlug is set (image
+          and icon both take precedence over emoji). */}
+      {!cell.imageUrl && !(cell.iconSlug && getIconEntry(cell.iconSlug)) && cell.emoji && cell.emoji.trim() && (() => {
         const cx = x + w / 2;
         const cy = y + illustrationH / 2;
         const offsetX = (cell.emojiOffsetX ?? 0) * w;
