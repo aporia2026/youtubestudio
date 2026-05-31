@@ -47,6 +47,7 @@ import {
   type FreeFormCanvasOptions,
   type FreeFormCellInput,
   type FreeFormCellState,
+  type FreeFormPreset,
 } from '@/components/thumbnails/_FreeFormPreviewPanel';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import {
@@ -1145,6 +1146,29 @@ export function TopicCardGridPanel({
   const [freeFormCanvasOptions, setFreeFormCanvasOptions] = useState<FreeFormCanvasOptions>({});
   function updateFreeFormCanvasOptions(patch: Partial<FreeFormCanvasOptions>): void {
     setFreeFormCanvasOptions((prev) => ({ ...prev, ...patch }));
+  }
+  /** Drag-to-reorder for free-form cards. Moves the source card from
+   *  `fromIndex` (1-based) to `toIndex` and remaps the `freeFormCells`
+   *  state map so each card's content follows it. Re-indexes the cards
+   *  array so `card.index` stays the row position. */
+  function reorderFreeFormCells(fromIndex: number, toIndex: number): void {
+    if (!cards) return;
+    if (fromIndex === toIndex) return;
+    const newCards = [...cards];
+    if (fromIndex < 1 || fromIndex > newCards.length) return;
+    if (toIndex < 1 || toIndex > newCards.length) return;
+    const [moved] = newCards.splice(fromIndex - 1, 1);
+    newCards.splice(toIndex - 1, 0, moved);
+    // Build new freeFormCells based on each card's OLD index (the card
+    // still carries its OLD index here — we re-assign after the remap).
+    const newCells: Record<number, FreeFormCellState> = {};
+    newCards.forEach((card, i) => {
+      const newIdx = i + 1;
+      const oldContent = freeFormCells[card.index];
+      if (oldContent) newCells[newIdx] = oldContent;
+    });
+    setCards(newCards.map((c, i) => ({ ...c, index: i + 1 })));
+    setFreeFormCells(newCells);
   }
   const [freeFormCells, setFreeFormCells] = useState<
     Record<
@@ -4150,6 +4174,12 @@ export function TopicCardGridPanel({
             onUpdateCell={updateFreeFormCell}
             canvasOptions={freeFormCanvasOptions}
             onUpdateCanvasOptions={updateFreeFormCanvasOptions}
+            onReorderCells={reorderFreeFormCells}
+            presetsStorageKey="tcg_free_form_presets"
+            onApplyPreset={(preset: FreeFormPreset) => {
+              setFreeFormCells(preset.freeFormCells);
+              setFreeFormCanvasOptions(preset.canvasOptions);
+            }}
             postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
             titleBarRendererInput={
               titleBar.enabled

@@ -108,6 +108,41 @@ export interface FreeFormCellInput {
   bounds: { x: number; y: number; w: number; h: number };
 }
 
+/** Persisted free-form snapshot. Round-trips through localStorage so
+ *  the user can save the per-cell state + canvas options under a name
+ *  and reapply them later. Cards / levels themselves aren't persisted
+ *  here — they live in the panel's main state. */
+export interface FreeFormPreset {
+  /** ISO timestamp the preset was first created. Used for sorting. */
+  createdAt: string;
+  freeFormCells: Record<number, FreeFormCellState>;
+  canvasOptions: FreeFormCanvasOptions;
+}
+
+/** Helpers around the localStorage namespace for a given panel. Keyed
+ *  by `storageKey` so TCG and N Levels don't share presets. */
+function readPresets(storageKey: string): Record<string, FreeFormPreset> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as Record<string, FreeFormPreset>;
+  } catch {
+    return {};
+  }
+}
+
+function writePresets(storageKey: string, presets: Record<string, FreeFormPreset>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(presets));
+  } catch {
+    /* ignore quota / serialisation errors — preset is transient anyway */
+  }
+}
+
 const FREE_FORM_EMOJI_PRESETS = [
   '⭐', '🔥', '⚡', '💡', '🚀', '🎯', '✅', '❌',
   '⚠️', '🛡️', '🎨', '📊', '💰', '🔒', '🧠', '👀',
@@ -119,6 +154,7 @@ export function FreeFormPreviewPanel({
   canvasHeight,
   freeFormCells,
   onUpdateCell,
+  onReorderCells,
   canvasOptions,
   onUpdateCanvasOptions,
   postProcessPayload,
@@ -127,12 +163,17 @@ export function FreeFormPreviewPanel({
   title = 'Free-form preview',
   downloadFilename = 'thumbnail-free-form.png',
   cellNoun = 'card',
+  presetsStorageKey,
+  onApplyPreset,
 }: {
   inputs: FreeFormCellInput[];
   canvasWidth: number;
   canvasHeight: number;
   freeFormCells: Record<number, FreeFormCellState>;
   onUpdateCell: (cellIndex: number, patch: Partial<FreeFormCellState>) => void;
+  /** Move a picker row + its associated card from one position to
+   *  another. When absent, drag-to-reorder is disabled. */
+  onReorderCells?: (fromIndex: number, toIndex: number) => void;
   /** Canvas-level options (background / gradient). Optional — when
    *  omitted the renderer uses a white background. */
   canvasOptions?: FreeFormCanvasOptions;
@@ -148,6 +189,15 @@ export function FreeFormPreviewPanel({
   downloadFilename?: string;
   /** Singular noun for the per-cell rows ("card" / "level"). */
   cellNoun?: string;
+  /** Optional localStorage key for the named presets section. When
+   *  omitted, the presets UI is hidden. Pass a stable per-panel key
+   *  (e.g. `'tcg_free_form_presets'` / `'n_levels_free_form_presets'`)
+   *  so TCG and N Levels presets don't collide. */
+  presetsStorageKey?: string;
+  /** Called when the user clicks "Load" on a stored preset. The panel
+   *  applies the preset's freeFormCells + canvasOptions via setters
+   *  passed from the host. Required when `presetsStorageKey` is set. */
+  onApplyPreset?: (preset: FreeFormPreset) => void;
 }): ReactElement {
   const rendererCells: FreeFormCell[] = inputs.map((input) => {
     const content = freeFormCells[input.index] ?? DEFAULT_FREE_FORM_CELL_STATE;
@@ -212,6 +262,53 @@ export function FreeFormPreviewPanel({
    *  preview sets this; the matching picker row gains a highlight
    *  border + auto-scrolls into view. `null` = nothing selected. */
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  /** Index of the row currently being hovered as a drag target. Drives
+   *  the visual "drop here" indicator (a top-edge magenta bar). Reset
+   *  to `null` whenever a drag ends. */
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  /** Presets state — read from localStorage on mount via lazy
+   *  useState, then mutated via the save / delete buttons. */
+  const [presets, setPresets] = useState<Record<string, FreeFormPreset>>(() =>
+    presetsStorageKey ? readPresets(presetsStorageKey) : {},
+  );
+  const [presetName, setPresetName] = useState('');
+  function savePreset(): void {
+    if (!presetsStorageKey) return;
+    const name = presetName.trim();
+    if (!name) {
+      toast.error('Preset name required');
+      return;
+    }
+    const next: Record<string, FreeFormPreset> = {
+      ...presets,
+      [name]: {
+        createdAt: presets[name]?.createdAt ?? new Date().toISOString(),
+        freeFormCells,
+        canvasOptions: canvasOptions ?? {},
+      },
+    };
+    setPresets(next);
+    writePresets(presetsStorageKey, next);
+    setPresetName('');
+    toast.success(`Saved “${name}”`);
+  }
+  function deletePreset(name: string): void {
+    if (!presetsStorageKey) return;
+    const next = { ...presets };
+    delete next[name];
+    setPresets(next);
+    writePresets(presetsStorageKey, next);
+    toast.success(`Deleted “${name}”`);
+  }
+  function applyPreset(name: string): void {
+    const preset = presets[name];
+    if (!preset || !onApplyPreset) return;
+    onApplyPreset(preset);
+    toast.success(`Loaded “${name}”`);
+  }
+  const presetEntries = Object.entries(presets).sort(([, a], [, b]) =>
+    b.createdAt.localeCompare(a.createdAt),
+  );
   function selectCell(index: number): void {
     setSelectedIndex(index);
     const row = pickerRowsRef.current[index];
@@ -300,7 +397,7 @@ export function FreeFormPreviewPanel({
         }
       }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
           {title}
         </h3>
@@ -313,6 +410,80 @@ export function FreeFormPreviewPanel({
           {saving ? 'Saving…' : 'Save PNG'}
         </button>
       </div>
+      {/* Named presets — saved to localStorage. Hidden when the host
+          panel doesn't pass a storage key (older entrypoints opt in
+          incrementally). */}
+      {presetsStorageKey && onApplyPreset && (
+        <div
+          className="rounded p-2 space-y-1.5"
+          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Presets
+            </span>
+            <input
+              type="text"
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value.slice(0, 40))}
+              placeholder="My preset name…"
+              className="flex-1 px-1.5 py-0.5 rounded text-[11px]"
+              style={{
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border)',
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  savePreset();
+                }
+              }}
+            />
+            <button
+              type="button"
+              onClick={savePreset}
+              className="btn-secondary text-[10px] px-2 py-0.5"
+            >
+              Save
+            </button>
+          </div>
+          {presetEntries.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {presetEntries.map(([name]) => (
+                <div
+                  key={name}
+                  className="flex items-center gap-0.5 px-1.5 py-0.5 rounded"
+                  style={{
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => applyPreset(name)}
+                    className="text-[10px]"
+                    style={{ color: 'var(--text-primary)' }}
+                    title={`Apply “${name}”`}
+                  >
+                    {name}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deletePreset(name)}
+                    className="text-[10px] opacity-50 hover:opacity-100"
+                    style={{ color: 'var(--text-muted)' }}
+                    title={`Delete “${name}”`}
+                    aria-label={`Delete ${name}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div
         ref={containerRef}
         className="rounded-lg overflow-hidden relative"
@@ -600,23 +771,104 @@ export function FreeFormPreviewPanel({
             content.emojiOffsetX !== 0 ||
             content.emojiOffsetY !== 0;
           const isSelected = selectedIndex === input.index;
+          const isDragTarget = dragOverIndex === input.index;
+          const dragEnabled = !!onReorderCells;
           return (
             <div
               key={input.index}
               ref={(el) => {
                 pickerRowsRef.current[input.index] = el;
               }}
+              draggable={dragEnabled}
+              onDragStart={(e) => {
+                if (!dragEnabled) return;
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', String(input.index));
+              }}
+              onDragOver={(e) => {
+                if (!dragEnabled) return;
+                // Only allow drops from another picker row in this panel.
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverIndex !== input.index) setDragOverIndex(input.index);
+              }}
+              onDragLeave={() => {
+                if (dragOverIndex === input.index) setDragOverIndex(null);
+              }}
+              onDrop={(e) => {
+                if (!dragEnabled || !onReorderCells) return;
+                e.preventDefault();
+                setDragOverIndex(null);
+                const raw = e.dataTransfer.getData('text/plain');
+                const from = Number.parseInt(raw, 10);
+                if (Number.isFinite(from) && from !== input.index) {
+                  onReorderCells(from, input.index);
+                }
+              }}
+              onDragEnd={() => setDragOverIndex(null)}
               className="px-2 py-1 rounded space-y-1"
               style={{
                 background: 'var(--bg-secondary)',
                 border: isSelected
                   ? '1px solid rgba(236,72,153,0.85)'
-                  : '1px solid var(--border)',
+                  : isDragTarget
+                    ? '1px dashed rgba(236,72,153,0.85)'
+                    : '1px solid var(--border)',
                 outline: isSelected ? '2px solid rgba(236,72,153,0.25)' : undefined,
+                cursor: dragEnabled ? 'grab' : undefined,
+                opacity: isDragTarget ? 0.85 : 1,
+                transition: 'border-color 80ms ease-out',
               }}
               onClick={() => setSelectedIndex(input.index)}
             >
               <div className="flex items-center gap-2">
+                {dragEnabled && (
+                  <>
+                    <span
+                      className="text-[12px] cursor-grab select-none"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Drag to reorder"
+                      aria-hidden
+                    >
+                      ⋮⋮
+                    </span>
+                    {/* Up / down arrows — keyboard-friendly alternative
+                        to drag for users on tablets / accessibility
+                        tools that don't fire HTML5 drag events. */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (input.index > 1 && onReorderCells) {
+                          onReorderCells(input.index, input.index - 1);
+                        }
+                      }}
+                      disabled={input.index <= 1}
+                      className="text-[10px] px-0.5 disabled:opacity-30"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Move up"
+                      aria-label="Move up"
+                    >
+                      ▲
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (input.index < inputs.length && onReorderCells) {
+                          onReorderCells(input.index, input.index + 1);
+                        }
+                      }}
+                      disabled={input.index >= inputs.length}
+                      className="text-[10px] px-0.5 disabled:opacity-30"
+                      style={{ color: 'var(--text-muted)' }}
+                      title="Move down"
+                      aria-label="Move down"
+                    >
+                      ▼
+                    </button>
+                  </>
+                )}
                 <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)', width: 18 }}>
                   {input.index}
                 </span>

@@ -48,6 +48,7 @@ import {
   type FreeFormCanvasOptions,
   type FreeFormCellInput,
   type FreeFormCellState,
+  type FreeFormPreset,
 } from '@/components/thumbnails/_FreeFormPreviewPanel';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import type { ThumbnailRegion } from '@/remotion/types';
@@ -925,6 +926,27 @@ export function NLevelsPanel({
   const [freeFormCanvasOptions, setFreeFormCanvasOptions] = useState<FreeFormCanvasOptions>({});
   function updateFreeFormCanvasOptions(patch: Partial<FreeFormCanvasOptions>): void {
     setFreeFormCanvasOptions((prev) => ({ ...prev, ...patch }));
+  }
+  /** Drag-to-reorder for free-form levels. Same pattern as the TCG
+   *  panel — moves the source level + remaps `freeFormLevels` so each
+   *  level's content follows it. Re-indexes the levels array so
+   *  `level.level` stays the row position. */
+  function reorderFreeFormLevels(fromIndex: number, toIndex: number): void {
+    if (!levels) return;
+    if (fromIndex === toIndex) return;
+    const newLevels = [...levels];
+    if (fromIndex < 1 || fromIndex > newLevels.length) return;
+    if (toIndex < 1 || toIndex > newLevels.length) return;
+    const [moved] = newLevels.splice(fromIndex - 1, 1);
+    newLevels.splice(toIndex - 1, 0, moved);
+    const newCells: Record<number, FreeFormCellState> = {};
+    newLevels.forEach((lvl, i) => {
+      const newIdx = i + 1;
+      const oldContent = freeFormLevels[lvl.level];
+      if (oldContent) newCells[newIdx] = oldContent;
+    });
+    setLevels(newLevels.map((l, i) => ({ ...l, level: i + 1 })));
+    setFreeFormLevels(newCells);
   }
   const [freeFormLevels, setFreeFormLevels] = useState<
     Record<number, FreeFormCellState>
@@ -3386,6 +3408,12 @@ export function NLevelsPanel({
               onUpdateCell={updateFreeFormLevel}
               canvasOptions={freeFormCanvasOptions}
               onUpdateCanvasOptions={updateFreeFormCanvasOptions}
+              onReorderCells={reorderFreeFormLevels}
+              presetsStorageKey="n_levels_free_form_presets"
+              onApplyPreset={(preset: FreeFormPreset) => {
+                setFreeFormLevels(preset.freeFormCells);
+                setFreeFormCanvasOptions(preset.canvasOptions);
+              }}
               postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
               titleBarRendererInput={
                 titleBar.enabled
