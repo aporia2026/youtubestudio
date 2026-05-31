@@ -52,26 +52,46 @@ describe('THUMBNAIL_FONTS registry', () => {
     }
   });
 
-  it('every entry has a corresponding bundled file on disk', () => {
+  it('every entry has both bundled files on disk (TTF + WOFF2)', () => {
     // The integration safety net for the download script. If the
-    // script wasn't run after a registry add, this fires.
+    // script wasn't run after a registry add — OR if a future change
+    // accidentally drops one format — this fires.
+    const bundledDir = path.join(process.cwd(), 'public/fonts/thumbnail-grid');
     for (const f of THUMBNAIL_FONTS) {
-      const onDisk = fontFilePath(f);
-      expect(fs.existsSync(onDisk), `${f.id}: ${onDisk}`).toBe(true);
-      const stats = fs.statSync(onDisk);
-      expect(stats.size, `${f.id} file size`).toBeGreaterThan(1024);
+      const ttfPath = fontFilePath(f);
+      expect(fs.existsSync(ttfPath), `${f.id} TTF: ${ttfPath}`).toBe(true);
+      const ttfStats = fs.statSync(ttfPath);
+      expect(ttfStats.size, `${f.id} TTF size`).toBeGreaterThan(1024);
+
+      const webPath = path.join(bundledDir, f.webFile);
+      expect(fs.existsSync(webPath), `${f.id} WOFF2: ${webPath}`).toBe(true);
+      const webStats = fs.statSync(webPath);
+      expect(webStats.size, `${f.id} WOFF2 size`).toBeGreaterThan(1024);
     }
   });
 
-  it('fontBrowserUrl serves files from /public/fonts/thumbnail-grid/', () => {
-    const sample = THUMBNAIL_FONTS[0];
-    expect(fontBrowserUrl(sample)).toBe(`/fonts/thumbnail-grid/${sample.file}`);
+  it('file extension contract: file is .ttf, webFile is .woff2', () => {
+    // Server-side Pango on Vercel's prebuilt sharp cannot decode WOFF2
+    // (FreeType wasn't built with brotli). The TTF / WOFF2 split is
+    // load-bearing — pin the contract so a future renamer can't
+    // accidentally point `file` back at a WOFF2.
+    for (const f of THUMBNAIL_FONTS) {
+      expect(f.file.endsWith('.ttf'), `${f.id} file must end in .ttf`).toBe(true);
+      expect(f.webFile.endsWith('.woff2'), `${f.id} webFile must end in .woff2`).toBe(true);
+    }
   });
 
-  it('fontFilePath resolves absolute paths under process.cwd()', () => {
+  it('fontBrowserUrl serves the WOFF2 variant under /public/fonts/thumbnail-grid/', () => {
+    const sample = THUMBNAIL_FONTS[0];
+    expect(fontBrowserUrl(sample)).toBe(`/fonts/thumbnail-grid/${sample.webFile}`);
+    expect(fontBrowserUrl(sample).endsWith('.woff2')).toBe(true);
+  });
+
+  it('fontFilePath resolves to the TTF absolute path under process.cwd()', () => {
     const sample = THUMBNAIL_FONTS[0];
     const expected = path.join(process.cwd(), 'public/fonts/thumbnail-grid', sample.file);
     expect(fontFilePath(sample)).toBe(expected);
+    expect(fontFilePath(sample).endsWith('.ttf')).toBe(true);
   });
 });
 

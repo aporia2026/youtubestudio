@@ -8,16 +8,25 @@
  * exist in the browser. Server-only path helpers live in
  * `topic-card-grid-fonts-server.ts`.
  *
+ * Each font ships in TWO formats:
+ *  - `file` (TTF) — Sharp/Pango on Vercel's prebuilt binary cannot
+ *    decode WOFF2 (FreeType wasn't built with brotli). The server-side
+ *    label render reads the TTF via the `fontfile` parameter.
+ *  - `webFile` (WOFF2) — modern browsers prefer the brotli-compressed
+ *    format for `@font-face` (~5x smaller in transit). The panel's
+ *    live-preview CSS loads this file.
+ *
  * Adding a new font:
  *  1. Re-run `scripts/download-thumbnail-fonts.ts` with the new entry
- *     so its WOFF2 lands in `public/fonts/thumbnail-grid/`.
+ *     so BOTH a `.ttf` and a `.woff2` land in
+ *     `public/fonts/thumbnail-grid/`.
  *  2. Append a `ThumbnailFont` entry below. The `id` is the
  *     canonical kebab-case key the API + localStorage round-trip;
  *     `family` is the SIL family name Pango expects; `file` is the
- *     filename under the bundled directory.
+ *     TTF filename; `webFile` is the WOFF2 filename.
  *  3. Tests in `tests/topic-card-grid-fonts.test.ts` enforce id
- *     uniqueness and category-membership; new entries get caught
- *     automatically.
+ *     uniqueness, the dual-format extension contract, and category
+ *     membership; new entries get caught automatically.
  */
 
 /** Categories used to group fonts in the panel's dropdown. The order
@@ -40,10 +49,16 @@ export interface ThumbnailFont {
   name: string;
   /** SIL family name as Pango / fontconfig expects it (used in the
    *  composite's `font` Pango string AND in the panel's CSS
-   *  `font-family`). Matches the name inside the bundled WOFF2. */
+   *  `font-family`). Matches the name inside both bundled files. */
   family: string;
-  /** Filename under `public/fonts/thumbnail-grid/`. */
+  /** TTF filename under `public/fonts/thumbnail-grid/`. Read by the
+   *  server-side label render via sharp's `fontfile` parameter. MUST
+   *  be `.ttf` — WOFF2 doesn't decode on the prebuilt sharp binary's
+   *  Pango/FreeType (no brotli). */
   file: string;
+  /** WOFF2 filename under `public/fonts/thumbnail-grid/`. Loaded by
+   *  the panel's `@font-face` declaration for the live preview. */
+  webFile: string;
   /** Group the font sits under in the picker dropdown. */
   category: ThumbnailFontCategory;
 }
@@ -52,36 +67,36 @@ export interface ThumbnailFont {
  *  the default, and the format's bundled-reference typography. */
 export const THUMBNAIL_FONTS: readonly ThumbnailFont[] = [
   // Hand-drawn (5)
-  { id: 'patrick-hand', name: 'Patrick Hand', family: 'Patrick Hand', file: 'PatrickHand-Regular.woff2', category: 'hand-drawn' },
-  { id: 'caveat', name: 'Caveat', family: 'Caveat', file: 'Caveat-Regular.woff2', category: 'hand-drawn' },
-  { id: 'permanent-marker', name: 'Permanent Marker', family: 'Permanent Marker', file: 'PermanentMarker-Regular.woff2', category: 'hand-drawn' },
-  { id: 'architects-daughter', name: 'Architects Daughter', family: 'Architects Daughter', file: 'ArchitectsDaughter-Regular.woff2', category: 'hand-drawn' },
-  { id: 'kalam', name: 'Kalam', family: 'Kalam', file: 'Kalam-Regular.woff2', category: 'hand-drawn' },
+  { id: 'patrick-hand', name: 'Patrick Hand', family: 'Patrick Hand', file: 'PatrickHand-Regular.ttf', webFile: 'PatrickHand-Regular.woff2', category: 'hand-drawn' },
+  { id: 'caveat', name: 'Caveat', family: 'Caveat', file: 'Caveat-Regular.ttf', webFile: 'Caveat-Regular.woff2', category: 'hand-drawn' },
+  { id: 'permanent-marker', name: 'Permanent Marker', family: 'Permanent Marker', file: 'PermanentMarker-Regular.ttf', webFile: 'PermanentMarker-Regular.woff2', category: 'hand-drawn' },
+  { id: 'architects-daughter', name: 'Architects Daughter', family: 'Architects Daughter', file: 'ArchitectsDaughter-Regular.ttf', webFile: 'ArchitectsDaughter-Regular.woff2', category: 'hand-drawn' },
+  { id: 'kalam', name: 'Kalam', family: 'Kalam', file: 'Kalam-Regular.ttf', webFile: 'Kalam-Regular.woff2', category: 'hand-drawn' },
 
   // Bold display (6)
-  { id: 'bebas-neue', name: 'Bebas Neue', family: 'Bebas Neue', file: 'BebasNeue-Regular.woff2', category: 'bold-display' },
-  { id: 'anton', name: 'Anton', family: 'Anton', file: 'Anton-Regular.woff2', category: 'bold-display' },
-  { id: 'bowlby-one', name: 'Bowlby One', family: 'Bowlby One', file: 'BowlbyOne-Regular.woff2', category: 'bold-display' },
-  { id: 'bungee', name: 'Bungee', family: 'Bungee', file: 'Bungee-Regular.woff2', category: 'bold-display' },
-  { id: 'black-ops-one', name: 'Black Ops One', family: 'Black Ops One', file: 'BlackOpsOne-Regular.woff2', category: 'bold-display' },
-  { id: 'bangers', name: 'Bangers', family: 'Bangers', file: 'Bangers-Regular.woff2', category: 'bold-display' },
+  { id: 'bebas-neue', name: 'Bebas Neue', family: 'Bebas Neue', file: 'BebasNeue-Regular.ttf', webFile: 'BebasNeue-Regular.woff2', category: 'bold-display' },
+  { id: 'anton', name: 'Anton', family: 'Anton', file: 'Anton-Regular.ttf', webFile: 'Anton-Regular.woff2', category: 'bold-display' },
+  { id: 'bowlby-one', name: 'Bowlby One', family: 'Bowlby One', file: 'BowlbyOne-Regular.ttf', webFile: 'BowlbyOne-Regular.woff2', category: 'bold-display' },
+  { id: 'bungee', name: 'Bungee', family: 'Bungee', file: 'Bungee-Regular.ttf', webFile: 'Bungee-Regular.woff2', category: 'bold-display' },
+  { id: 'black-ops-one', name: 'Black Ops One', family: 'Black Ops One', file: 'BlackOpsOne-Regular.ttf', webFile: 'BlackOpsOne-Regular.woff2', category: 'bold-display' },
+  { id: 'bangers', name: 'Bangers', family: 'Bangers', file: 'Bangers-Regular.ttf', webFile: 'Bangers-Regular.woff2', category: 'bold-display' },
 
   // Editorial serif (3)
-  { id: 'playfair-display', name: 'Playfair Display', family: 'Playfair Display', file: 'PlayfairDisplay-Regular.woff2', category: 'editorial-serif' },
-  { id: 'dm-serif-display', name: 'DM Serif Display', family: 'DM Serif Display', file: 'DMSerifDisplay-Regular.woff2', category: 'editorial-serif' },
-  { id: 'merriweather', name: 'Merriweather', family: 'Merriweather', file: 'Merriweather-Regular.woff2', category: 'editorial-serif' },
+  { id: 'playfair-display', name: 'Playfair Display', family: 'Playfair Display', file: 'PlayfairDisplay-Regular.ttf', webFile: 'PlayfairDisplay-Regular.woff2', category: 'editorial-serif' },
+  { id: 'dm-serif-display', name: 'DM Serif Display', family: 'DM Serif Display', file: 'DMSerifDisplay-Regular.ttf', webFile: 'DMSerifDisplay-Regular.woff2', category: 'editorial-serif' },
+  { id: 'merriweather', name: 'Merriweather', family: 'Merriweather', file: 'Merriweather-Regular.ttf', webFile: 'Merriweather-Regular.woff2', category: 'editorial-serif' },
 
   // Modern sans (4)
-  { id: 'inter', name: 'Inter', family: 'Inter', file: 'Inter-Regular.woff2', category: 'modern-sans' },
-  { id: 'poppins', name: 'Poppins', family: 'Poppins', file: 'Poppins-Regular.woff2', category: 'modern-sans' },
-  { id: 'montserrat', name: 'Montserrat', family: 'Montserrat', file: 'Montserrat-Regular.woff2', category: 'modern-sans' },
-  { id: 'roboto', name: 'Roboto', family: 'Roboto', file: 'Roboto-Regular.woff2', category: 'modern-sans' },
+  { id: 'inter', name: 'Inter', family: 'Inter', file: 'Inter-Regular.ttf', webFile: 'Inter-Regular.woff2', category: 'modern-sans' },
+  { id: 'poppins', name: 'Poppins', family: 'Poppins', file: 'Poppins-Regular.ttf', webFile: 'Poppins-Regular.woff2', category: 'modern-sans' },
+  { id: 'montserrat', name: 'Montserrat', family: 'Montserrat', file: 'Montserrat-Regular.ttf', webFile: 'Montserrat-Regular.woff2', category: 'modern-sans' },
+  { id: 'roboto', name: 'Roboto', family: 'Roboto', file: 'Roboto-Regular.ttf', webFile: 'Roboto-Regular.woff2', category: 'modern-sans' },
 
   // Retro / Stylized (4)
-  { id: 'pacifico', name: 'Pacifico', family: 'Pacifico', file: 'Pacifico-Regular.woff2', category: 'retro-stylized' },
-  { id: 'press-start-2p', name: 'Press Start 2P', family: 'Press Start 2P', file: 'PressStart2P-Regular.woff2', category: 'retro-stylized' },
-  { id: 'monoton', name: 'Monoton', family: 'Monoton', file: 'Monoton-Regular.woff2', category: 'retro-stylized' },
-  { id: 'russo-one', name: 'Russo One', family: 'Russo One', file: 'RussoOne-Regular.woff2', category: 'retro-stylized' },
+  { id: 'pacifico', name: 'Pacifico', family: 'Pacifico', file: 'Pacifico-Regular.ttf', webFile: 'Pacifico-Regular.woff2', category: 'retro-stylized' },
+  { id: 'press-start-2p', name: 'Press Start 2P', family: 'Press Start 2P', file: 'PressStart2P-Regular.ttf', webFile: 'PressStart2P-Regular.woff2', category: 'retro-stylized' },
+  { id: 'monoton', name: 'Monoton', family: 'Monoton', file: 'Monoton-Regular.ttf', webFile: 'Monoton-Regular.woff2', category: 'retro-stylized' },
+  { id: 'russo-one', name: 'Russo One', family: 'Russo One', file: 'RussoOne-Regular.ttf', webFile: 'RussoOne-Regular.woff2', category: 'retro-stylized' },
 ];
 
 /** Default font id. Patrick Hand matches the bundled curated reference
@@ -107,9 +122,10 @@ export function findFontById(id: string | undefined | null): ThumbnailFont | nul
 }
 
 /** Browser-side font URL for a given font entry. Used by the panel's
- *  `@font-face` declarations. The TTF/WOFF2 files in
- *  `public/fonts/thumbnail-grid/` are served as static assets at this
- *  path by Next.js automatically. */
+ *  `@font-face` declarations. Returns the WOFF2 path because modern
+ *  browsers prefer brotli-compressed fonts (~5x smaller than TTF in
+ *  transit). The files in `public/fonts/thumbnail-grid/` are served
+ *  as static assets at this path by Next.js automatically. */
 export function fontBrowserUrl(font: ThumbnailFont): string {
-  return `/fonts/thumbnail-grid/${font.file}`;
+  return `/fonts/thumbnail-grid/${font.webFile}`;
 }
