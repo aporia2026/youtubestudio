@@ -7866,6 +7866,129 @@ function ProductionDocPage() {
       }
 
       setDoc(result);
+
+      // 2026-05-31 (plan §C follow-up) — Auto-fire motion_collage
+      // generation for every row the LLM emitted with motion_collage_*
+      // fields. The user explicitly asked for the LLM to "decide which
+      // collage it needs and just generate without me clicking" — this
+      // closes the loop. Fire-and-forget: doesn't block the rest of the
+      // doc-gen completion path (history save, OST seeding, etc.) — the
+      // motion_collage calls run on a microtask after the rest of this
+      // function settles, and individual generations are sequential
+      // because each is heavy (~60-90s Atlas i2i + Recraft + slice).
+      //
+      // Gated by `allow_motion_collage` setting and stylePreset so this
+      // is a no-op for non-doodle_explainer_2 docs or when the user
+      // turned the feature off in the panel.
+      const mcSettings =
+        result.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings;
+      const autoMcAllowed =
+        stylePreset === 'doodle_explainer_2'
+        && (mcSettings?.allow_motion_collage !== false);
+      if (autoMcAllowed) {
+        type McRow = { idx: number; grid: { cols: number; rows: number }; panelPrompts: string[] };
+        const motionCollageRows: McRow[] = [];
+        for (let i = 0; i < result.rows.length; i++) {
+          const r = result.rows[i];
+          if (r.shot_kind !== 'motion_collage') continue;
+          if (!r.motion_collage_grid || !r.motion_collage_panel_prompts?.length) continue;
+          motionCollageRows.push({
+            idx: i,
+            grid: r.motion_collage_grid,
+            panelPrompts: r.motion_collage_panel_prompts,
+          });
+        }
+        if (motionCollageRows.length > 0) {
+          appendLog(
+            `↯ Auto-generating ${motionCollageRows.length} motion-collage shot${motionCollageRows.length === 1 ? '' : 's'} in the background...`,
+          );
+          // Sequential queue runs on a microtask so the rest of doc-gen
+          // completion finishes first. We DON'T go through
+          // generateMotionCollageForRow here because it reads from React
+          // state (`doc?.rows[idx]`), which is stale at this point —
+          // setDoc(result) was just dispatched but React hasn't flushed
+          // yet. Instead the inline POST writes back into both
+          // rowImages and the doc directly.
+          const characterDescriptions = result.doodle_explainer_2_character_descriptions;
+          void (async () => {
+            for (const mc of motionCollageRows) {
+              setRowImages((prev) => {
+                const next = [...prev];
+                next[mc.idx] = { ...next[mc.idx], status: 'loading' };
+                return next;
+              });
+              try {
+                const res = await queueImageGen('generate', 'motion-collage-auto', () =>
+                  // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC
+                  fetch('/api/generate/production-doc/motion-collage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      grid: mc.grid,
+                      panelPrompts: mc.panelPrompts,
+                      stylePreset,
+                      motionCollageSettings: mcSettings,
+                      characterDescriptions,
+                    }),
+                  }),
+                );
+                const data = (await res.json()) as {
+                  imageUrl?: string;
+                  panelUrls?: string[];
+                  collageImageUrl?: string;
+                  error?: string;
+                };
+                if (res.ok && data.imageUrl && data.panelUrls?.length) {
+                  setRowImages((prev) => {
+                    const next = [...prev];
+                    next[mc.idx] = { status: 'done', imageUrl: data.imageUrl!, source: 'generated' };
+                    return next;
+                  });
+                  setDoc((prev) => {
+                    if (!prev) return prev;
+                    const nextRows = [...prev.rows];
+                    nextRows[mc.idx] = {
+                      ...nextRows[mc.idx],
+                      image_url: data.imageUrl,
+                      motion_collage_image_url: data.collageImageUrl,
+                      motion_collage_panel_urls: data.panelUrls,
+                    };
+                    return { ...prev, rows: nextRows };
+                  });
+                  console.info('[prodoc auto motion-collage] row done', {
+                    row_index: mc.idx,
+                    panel_count: data.panelUrls.length,
+                  });
+                } else {
+                  setRowImages((prev) => {
+                    const next = [...prev];
+                    next[mc.idx] = { status: 'error', error: data.error ?? `HTTP ${res.status}` };
+                    return next;
+                  });
+                  console.warn('[prodoc auto motion-collage] row failed', {
+                    row_index: mc.idx,
+                    status: res.status,
+                    error: data.error,
+                  });
+                }
+              } catch (err) {
+                setRowImages((prev) => {
+                  const next = [...prev];
+                  next[mc.idx] = {
+                    status: 'error',
+                    error: err instanceof Error ? err.message : 'Failed',
+                  };
+                  return next;
+                });
+              }
+            }
+            console.info('[prodoc auto motion-collage] all done', {
+              count: motionCollageRows.length,
+            });
+          })();
+        }
+      }
+
       const savedEntry = await saveProductionDocEntry({
         title: result.title || topic || niche,
         niche: result.niche || niche,
