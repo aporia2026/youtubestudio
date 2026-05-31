@@ -1109,6 +1109,7 @@ function CopyButton({ text }: { text: string }) {
 function ImageLightbox({
   imageUrl,
   panelUrls,
+  panelGrid,
   onClose,
 }: {
   imageUrl: string;
@@ -1118,18 +1119,37 @@ function ImageLightbox({
    *  for doodle_explainer_2 motion_collage rows so the user can step
    *  through the 4 keyframes one by one at full size. */
   panelUrls?: readonly string[];
+  /** Optional cols / rows. When supplied + panelUrls is present, the
+   *  lightbox offers a Grid view toggle that arranges all panels in
+   *  the original N×M grid — showing what the "collage" would look
+   *  like if we'd generated it as a single image (we don't anymore;
+   *  per plan §D each panel is its own Atlas call). Without grid the
+   *  toggle is hidden and only the slider view renders. */
+  panelGrid?: { cols: number; rows: number };
   onClose: () => void;
 }) {
   const [downloading, setDownloading] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [viewMode, setViewMode] = useState<'slider' | 'grid'>('slider');
   const hasPanels = Array.isArray(panelUrls) && panelUrls.length > 1;
   const totalPanels = hasPanels ? panelUrls!.length : 1;
   const displayUrl = hasPanels ? panelUrls![currentIndex] ?? imageUrl : imageUrl;
+  const canShowGrid =
+    hasPanels && panelGrid && panelGrid.cols > 0 && panelGrid.rows > 0
+    && panelGrid.cols * panelGrid.rows === panelUrls!.length;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       if (!hasPanels) return;
+      // 'g' toggles between slider and grid view when grid is available.
+      if (e.key === 'g' && canShowGrid) {
+        e.preventDefault();
+        setViewMode((m) => (m === 'slider' ? 'grid' : 'slider'));
+        return;
+      }
+      // Arrow / number navigation is meaningful only in slider mode.
+      if (viewMode !== 'slider') return;
       if (e.key === 'ArrowRight' || e.key === ' ') {
         e.preventDefault();
         setCurrentIndex((i) => (i + 1) % totalPanels);
@@ -1148,7 +1168,7 @@ function ImageLightbox({
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [onClose, hasPanels, totalPanels]);
+  }, [onClose, hasPanels, totalPanels, viewMode, canShowGrid]);
 
   async function handleDownload() {
     if (downloading) return;
@@ -1217,6 +1237,34 @@ function ImageLightbox({
           gap: 8,
         }}
       >
+        {canShowGrid && (
+          <button
+            type="button"
+            onClick={() => setViewMode((m) => (m === 'slider' ? 'grid' : 'slider'))}
+            aria-label={viewMode === 'slider' ? 'Switch to grid (collage) view' : 'Switch to slider (frame-by-frame) view'}
+            title={
+              viewMode === 'slider'
+                ? `Show all ${totalPanels} panels as a ${panelGrid!.cols}×${panelGrid!.rows} collage (g)`
+                : 'Back to frame-by-frame slider (g)'
+            }
+            style={{
+              height: 36,
+              padding: '0 14px',
+              borderRadius: 18,
+              background: viewMode === 'grid' ? 'rgba(167,139,250,0.25)' : 'rgba(255,255,255,0.10)',
+              border: viewMode === 'grid' ? '1px solid rgba(167,139,250,0.45)' : '1px solid rgba(255,255,255,0.20)',
+              color: viewMode === 'grid' ? '#c4b5fd' : '#fff',
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            {viewMode === 'slider' ? '▦ Collage' : '↯ Frames'}
+          </button>
+        )}
         <button
           type="button"
           onClick={handleDownload}
@@ -1269,21 +1317,100 @@ function ImageLightbox({
           ✕
         </button>
       </div>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={displayUrl}
-        alt={hasPanels ? `Frame ${currentIndex + 1} of ${totalPanels}` : 'Full preview'}
-        onClick={e => e.stopPropagation()}
-        style={{
-          maxWidth: '92vw',
-          maxHeight: '92vh',
-          objectFit: 'contain',
-          borderRadius: 8,
-          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-          cursor: 'default',
-        }}
-      />
-      {hasPanels && (
+      {viewMode === 'grid' && canShowGrid ? (
+        // Collage view — every panel arranged in the original cols×rows
+        // grid, sized to fill the available viewport. Thin gap between
+        // cells echoes the gutter the LLM's panel prompts implied. The
+        // ↯ Frame N badges in the corner of each cell let the user
+        // map cell → slider index quickly.
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            maxWidth: '92vw',
+            maxHeight: '92vh',
+            // Pick the dimension that fits the source aspect so neither
+            // axis overflows. Each cell is 16:9 (matches the per-shot
+            // render canvas), so total grid aspect = cols/rows * 16/9.
+            aspectRatio: `${panelGrid!.cols * 16}/${panelGrid!.rows * 9}`,
+            display: 'grid',
+            gridTemplateColumns: `repeat(${panelGrid!.cols}, 1fr)`,
+            gridTemplateRows: `repeat(${panelGrid!.rows}, 1fr)`,
+            gap: 6,
+            background: 'rgba(255,255,255,0.08)',
+            padding: 6,
+            borderRadius: 10,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+          }}
+        >
+          {panelUrls!.map((url, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCurrentIndex(idx);
+                setViewMode('slider');
+              }}
+              aria-label={`Open frame ${idx + 1} in slider view`}
+              title={`Frame ${idx + 1} — click to open in slider view`}
+              style={{
+                position: 'relative',
+                background: 'transparent',
+                padding: 0,
+                border: 'none',
+                cursor: 'pointer',
+                overflow: 'hidden',
+                borderRadius: 4,
+              }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={url}
+                alt={`Panel ${idx + 1}`}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  display: 'block',
+                }}
+              />
+              <span
+                style={{
+                  position: 'absolute',
+                  top: 4,
+                  left: 4,
+                  fontSize: 11,
+                  fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                  background: 'rgba(0,0,0,0.65)',
+                  color: '#fff',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  pointerEvents: 'none',
+                }}
+              >
+                ↯ {idx + 1}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : (
+        // Slider view (default) — current panel only, full size.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={displayUrl}
+          alt={hasPanels ? `Frame ${currentIndex + 1} of ${totalPanels}` : 'Full preview'}
+          onClick={e => e.stopPropagation()}
+          style={{
+            maxWidth: '92vw',
+            maxHeight: '92vh',
+            objectFit: 'contain',
+            borderRadius: 8,
+            boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            cursor: 'default',
+          }}
+        />
+      )}
+      {hasPanels && viewMode === 'slider' && (
         <>
           {/* Left arrow — previous frame */}
           <button
@@ -2201,6 +2328,7 @@ export function ImageCell({
           <ImageLightbox
             imageUrl={state.imageUrl}
             panelUrls={motionCollagePanelUrls}
+            panelGrid={motionCollageGrid}
             onClose={() => setPreviewOpen(false)}
           />
         )}
