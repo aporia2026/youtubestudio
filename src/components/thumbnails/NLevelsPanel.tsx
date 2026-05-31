@@ -3276,13 +3276,42 @@ export function NLevelsPanel({
       {/* RIGHT PANEL — State A (editable levels) OR State B (result) */}
       <div className="flex-1 min-w-0">
         {!levels && !result && (
-          <div className="glass p-12 text-center">
+          <div className="glass p-12 text-center space-y-3">
             <p className="font-medium" style={{ color: 'var(--text-secondary)' }}>
               N Levels Explained
             </p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-              Upload a reference image, set the level count and topic, and click <strong>Generate thumbnail</strong>.
-            </p>
+            {renderMode === 'ai' ? (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Upload a reference image, set the level count and topic, and click <strong>Generate thumbnail</strong>.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  Free-form mode bypasses the AI. Click below to start with{' '}
+                  <strong>{count}</strong> empty levels — then pick an emoji / icon / colour
+                  per slice. The live preview updates instantly.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Placeholder levels — one per slice — so the
+                    // free-form preview can mount immediately without
+                    // going through the LLM. Labels start blank; the
+                    // user fills them via the picker.
+                    setLevels(
+                      Array.from({ length: count }, (_, i) => ({
+                        level: i + 1,
+                        label: '',
+                        illustration_concept: '',
+                      })),
+                    );
+                  }}
+                  className="btn-secondary text-xs px-3 py-1.5"
+                >
+                  Start free-form ⚡
+                </button>
+              </>
+            )}
           </div>
         )}
 

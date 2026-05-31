@@ -4002,13 +4002,43 @@ export function TopicCardGridPanel({
       {/* RIGHT PANEL — State A (editable cards) OR State B (result) */}
       <div className="flex-1 min-w-0">
         {!cards && !result && (
-          <div className="glass p-12 text-center">
+          <div className="glass p-12 text-center space-y-3">
             <p className="font-medium" style={{ color: 'var(--text-secondary)' }}>
               Topic Card Grid
             </p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-              Upload a reference image, set the grid size, and click <strong>Generate thumbnail</strong>.
-            </p>
+            {renderMode === 'ai' ? (
+              <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Upload a reference image, set the grid size, and click <strong>Generate thumbnail</strong>.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  Free-form mode bypasses the AI. Click below to start with{' '}
+                  <strong>{totalCards}</strong> empty cards — then pick an emoji / icon / colour
+                  per cell. The live preview updates instantly.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Synthesize placeholder cards — one per cell — so the
+                    // free-form preview can mount immediately without the
+                    // LLM round-trip the AI mode needs. Labels are blank
+                    // by default; the user fills them via the picker.
+                    setCards(
+                      Array.from({ length: totalCards }, (_, i) => ({
+                        index: i + 1,
+                        label: '',
+                        icon_concept: '',
+                        accent_color: '#ffffff',
+                      })),
+                    );
+                  }}
+                  className="btn-secondary text-xs px-3 py-1.5"
+                >
+                  Start free-form ⚡
+                </button>
+              </>
+            )}
           </div>
         )}
 
