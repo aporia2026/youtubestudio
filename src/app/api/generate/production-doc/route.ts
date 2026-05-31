@@ -120,7 +120,33 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       sectionCount: ssmlPre.sections.length,
     });
   }
-  const scriptForPipeline = ssmlPre.wasSsml ? ssmlPre.cleanScript : script;
+  const scriptForPipelinePreStrip = ssmlPre.wasSsml ? ssmlPre.cleanScript : script;
+
+  // Strip production-note lines BEFORE the LLM sees them. Lines that
+  // are entirely a bracket-wrapped production note (`[SFX: ...]`,
+  // `[VISUAL CUE: ...]`, `[ON-SCREEN TEXT - ...]`, etc.) are stage
+  // directions for the editor, not narration — and yet across multiple
+  // production runs the LLM kept emitting Title Card rows for them
+  // even with explicit mixing_rules saying "ignore these". The LLM is
+  // unreliable here, so we just remove the lines server-side. The
+  // narrative prose between them carries the meaning fine.
+  //
+  // What gets stripped: lines whose TRIMMED content starts with `[`
+  // and ends with `]`. We don't strip lines that contain brackets
+  // mid-sentence ("the value '[1]' was zero") — only whole-line
+  // bracket-notes.
+  const productionNoteLineRegex = /^\s*\[[^\]]*\]\s*$/;
+  const beforeLines = scriptForPipelinePreStrip.split('\n');
+  const strippedLines = beforeLines.filter((line) => !productionNoteLineRegex.test(line));
+  const stripCount = beforeLines.length - strippedLines.length;
+  const scriptForPipeline = strippedLines.join('\n');
+  if (stripCount > 0) {
+    logger.info('[production-doc production-notes-stripped]', {
+      stripped_lines: stripCount,
+      before_chars: scriptForPipelinePreStrip.length,
+      after_chars: scriptForPipeline.length,
+    });
+  }
 
   // Deterministic title pre-pass. The LLM used to detect `##Heading` markers
   // itself, which was unreliable: a 6-title script could come back missing
