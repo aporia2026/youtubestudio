@@ -44,6 +44,7 @@ import {
 } from '@/components/thumbnails/ThumbnailRenderer';
 import {
   FreeFormPreviewPanel,
+  type FreeFormCanvasOptions,
   type FreeFormCellInput,
   type FreeFormCellState,
 } from '@/components/thumbnails/_FreeFormPreviewPanel';
@@ -1138,6 +1139,13 @@ export function TopicCardGridPanel({
   // round-trips cleanly with the card list. Cells without an entry
   // render with sensible defaults (white bg, no emoji, no transforms).
   // Phase B5 added emojiRotation / flipX / flipY / offsetX / offsetY.
+  // Canvas-level options for free-form mode (default cell shape, bg
+  // colour, gradient, pattern). Single object per panel so the picker
+  // can update any field via one callback.
+  const [freeFormCanvasOptions, setFreeFormCanvasOptions] = useState<FreeFormCanvasOptions>({});
+  function updateFreeFormCanvasOptions(patch: Partial<FreeFormCanvasOptions>): void {
+    setFreeFormCanvasOptions((prev) => ({ ...prev, ...patch }));
+  }
   const [freeFormCells, setFreeFormCells] = useState<
     Record<
       number,
@@ -4140,6 +4148,8 @@ export function TopicCardGridPanel({
             canvasHeight={freeFormCanvasH}
             freeFormCells={freeFormCells}
             onUpdateCell={updateFreeFormCell}
+            canvasOptions={freeFormCanvasOptions}
+            onUpdateCanvasOptions={updateFreeFormCanvasOptions}
             postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
             titleBarRendererInput={
               titleBar.enabled

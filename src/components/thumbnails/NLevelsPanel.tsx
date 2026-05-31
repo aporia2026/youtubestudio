@@ -45,6 +45,7 @@ import {
 } from '@/components/thumbnails/ThumbnailRenderer';
 import {
   FreeFormPreviewPanel,
+  type FreeFormCanvasOptions,
   type FreeFormCellInput,
   type FreeFormCellState,
 } from '@/components/thumbnails/_FreeFormPreviewPanel';
@@ -921,6 +922,10 @@ export function NLevelsPanel({
       /* ignore */
     }
   }, [renderMode]);
+  const [freeFormCanvasOptions, setFreeFormCanvasOptions] = useState<FreeFormCanvasOptions>({});
+  function updateFreeFormCanvasOptions(patch: Partial<FreeFormCanvasOptions>): void {
+    setFreeFormCanvasOptions((prev) => ({ ...prev, ...patch }));
+  }
   const [freeFormLevels, setFreeFormLevels] = useState<
     Record<number, FreeFormCellState>
   >({});
@@ -3379,6 +3384,8 @@ export function NLevelsPanel({
               canvasHeight={freeFormCanvasH}
               freeFormCells={freeFormLevels}
               onUpdateCell={updateFreeFormLevel}
+              canvasOptions={freeFormCanvasOptions}
+              onUpdateCanvasOptions={updateFreeFormCanvasOptions}
               postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
               titleBarRendererInput={
                 titleBar.enabled

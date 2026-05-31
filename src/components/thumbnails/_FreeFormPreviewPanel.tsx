@@ -17,7 +17,7 @@
  * a pure UI primitive driven entirely by props.
  */
 
-import { useMemo, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { toast } from 'sonner';
 import {
   ThumbnailRenderer,
@@ -25,8 +25,11 @@ import {
   type TitleBarRendererInput,
 } from '@/components/thumbnails/ThumbnailRenderer';
 import {
+  CATEGORY_LABELS,
+  CATEGORY_ORDER,
   ICON_REGISTRY,
   getIconEntry,
+  type IconCategory,
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 
@@ -47,6 +50,8 @@ export interface FreeFormCellState {
   iconColor?: string;
   /** Cell shape variant. Defaults to 'square'. */
   shape?: CellShape;
+  /** Per-cell label colour override. Defaults to '#000000' downstream. */
+  labelColor?: string;
 }
 
 export const DEFAULT_FREE_FORM_CELL_STATE: FreeFormCellState = {
@@ -62,6 +67,8 @@ export const DEFAULT_FREE_FORM_CELL_STATE: FreeFormCellState = {
 /** Canvas-level options that live above any single cell — currently
  *  the optional gradient background. Kept separate from `FreeFormCellState`
  *  because it's a single shared value, not per-cell. */
+export type CanvasPatternKind = 'stripes' | 'dots' | 'checker' | 'grid';
+
 export interface FreeFormCanvasOptions {
   /** Optional background colour override. Defaults to white. */
   background?: string;
@@ -71,6 +78,15 @@ export interface FreeFormCanvasOptions {
     to: string;
     /** 0..360, where 0 is top→bottom and 90 is left→right. */
     angle: number;
+  };
+  /** Optional pattern overlay drawn BETWEEN the background and the
+   *  cells. Adds texture (newsprint dots, paper grid, etc.) without
+   *  needing the post-process halftone pipeline. */
+  pattern?: {
+    kind: CanvasPatternKind;
+    color: string;
+    opacity: number;
+    size: number;
   };
   /** Default cell shape used when a fresh cell is created. */
   defaultShape?: CellShape;
@@ -143,18 +159,27 @@ export function FreeFormPreviewPanel({
       iconSlug: content.iconSlug,
       iconColor: content.iconColor ?? '#000000',
       shape: content.shape ?? canvasOptions?.defaultShape ?? 'square',
+      labelColor: content.labelColor,
     };
   });
-  // Icon picker UI state — search query + per-cell open dropdown id.
+  // Icon picker UI state — search query + per-cell open dropdown id +
+  // active category tab. The tab filter is bypassed when a search is
+  // active (so "shield" shows results regardless of which tab is
+  // selected). When the search is empty, the tab dictates which
+  // category to show; `null` = "All" tab (all icons, flat list).
   const [iconQuery, setIconQuery] = useState('');
   const [iconPickerForIndex, setIconPickerForIndex] = useState<number | null>(null);
+  const [iconCategoryTab, setIconCategoryTab] = useState<IconCategory | null>(null);
   const filteredIcons = useMemo(() => {
     const q = iconQuery.trim().toLowerCase();
-    if (!q) return ICON_REGISTRY;
-    return ICON_REGISTRY.filter(
-      (entry) => entry.slug.includes(q) || entry.label.toLowerCase().includes(q),
-    );
-  }, [iconQuery]);
+    if (q) {
+      return ICON_REGISTRY.filter(
+        (entry) => entry.slug.includes(q) || entry.label.toLowerCase().includes(q),
+      );
+    }
+    if (iconCategoryTab === null) return ICON_REGISTRY;
+    return ICON_REGISTRY.filter((entry) => entry.category === iconCategoryTab);
+  }, [iconQuery, iconCategoryTab]);
   // Quick-pick popular icons rendered as a small palette row above the
   // per-cell picker — matches the 16-emoji palette pattern.
   const POPULAR_ICON_SLUGS = [
@@ -185,6 +210,17 @@ export function FreeFormPreviewPanel({
       row.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }
+  // Escape key clears the selection. Mounts ONLY when something is
+  // selected so we're not adding a listener for the common no-op
+  // path.
+  useEffect(() => {
+    if (selectedIndex === null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setSelectedIndex(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selectedIndex]);
 
   async function downloadAsPng(): Promise<void> {
     const container = containerRef.current;
@@ -240,7 +276,21 @@ export function FreeFormPreviewPanel({
   }
 
   return (
-    <div className="glass p-5 space-y-3" style={{ borderColor: 'rgba(236,72,153,0.2)' }}>
+    <div
+      className="glass p-5 space-y-3"
+      style={{ borderColor: 'rgba(236,72,153,0.2)' }}
+      onClick={(e) => {
+        // Click-anywhere-to-deselect: clear the selected cell when the
+        // user clicks the panel background (NOT a control inside it).
+        // The `e.target === e.currentTarget` check ensures we only
+        // catch background clicks; bubble-up clicks from buttons /
+        // inputs / picker rows don't deselect (those have their own
+        // handlers that set the selection).
+        if (e.target === e.currentTarget && selectedIndex !== null) {
+          setSelectedIndex(null);
+        }
+      }}
+    >
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
           {title}
@@ -263,6 +313,7 @@ export function FreeFormPreviewPanel({
           cells={rendererCells}
           canvasBackground={canvasOptions?.background ?? '#ffffff'}
           canvasBackgroundGradient={canvasOptions?.gradient}
+          canvasBackgroundPattern={canvasOptions?.pattern}
           canvasWidth={canvasWidth}
           canvasHeight={canvasHeight}
           postProcess={postProcessPayload}
@@ -436,6 +487,98 @@ export function FreeFormPreviewPanel({
               </>
             )}
           </div>
+          {/* Pattern overlay row — texture between the bg and the
+              cells (without going through the post-process pipeline). */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Pattern
+            </span>
+            <div className="flex gap-1">
+              {(['stripes', 'dots', 'checker', 'grid'] as CanvasPatternKind[]).map((kind) => {
+                const active = canvasOptions?.pattern?.kind === kind;
+                return (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => {
+                      if (active) {
+                        onUpdateCanvasOptions({ pattern: undefined });
+                      } else {
+                        onUpdateCanvasOptions({
+                          pattern: {
+                            kind,
+                            color: canvasOptions?.pattern?.color ?? '#000000',
+                            opacity: canvasOptions?.pattern?.opacity ?? 0.12,
+                            size: canvasOptions?.pattern?.size ?? 20,
+                          },
+                        });
+                      }
+                    }}
+                    className="px-2 py-0.5 rounded text-[10px]"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-card)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    aria-pressed={active}
+                  >
+                    {kind}
+                  </button>
+                );
+              })}
+            </div>
+            {canvasOptions?.pattern && (
+              <>
+                <input
+                  type="color"
+                  value={canvasOptions.pattern.color}
+                  onChange={(e) =>
+                    onUpdateCanvasOptions({
+                      pattern: { ...canvasOptions.pattern!, color: e.target.value },
+                    })
+                  }
+                  className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
+                  aria-label="Pattern colour"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={canvasOptions.pattern.opacity}
+                  onChange={(e) => {
+                    const opacity = Number.parseFloat(e.target.value);
+                    if (Number.isFinite(opacity)) {
+                      onUpdateCanvasOptions({
+                        pattern: { ...canvasOptions.pattern!, opacity },
+                      });
+                    }
+                  }}
+                  className="flex-1"
+                  style={{ accentColor: 'var(--accent-pink)' }}
+                  title={`${Math.round(canvasOptions.pattern.opacity * 100)}%`}
+                />
+                <input
+                  type="range"
+                  min={4}
+                  max={80}
+                  step={2}
+                  value={canvasOptions.pattern.size}
+                  onChange={(e) => {
+                    const size = Number.parseFloat(e.target.value);
+                    if (Number.isFinite(size)) {
+                      onUpdateCanvasOptions({
+                        pattern: { ...canvasOptions.pattern!, size },
+                      });
+                    }
+                  }}
+                  className="flex-1"
+                  style={{ accentColor: 'var(--accent-pink)' }}
+                  title={`${Math.round(canvasOptions.pattern.size)}px tile`}
+                />
+              </>
+            )}
+          </div>
         </div>
       )}
       <div className="space-y-1.5">
@@ -564,6 +707,44 @@ export function FreeFormPreviewPanel({
                       border: '1px solid var(--border)',
                     }}
                   />
+                  {/* Category tabs. Hidden when a search query is
+                      active (search wins over category filter). */}
+                  {!iconQuery.trim() && (
+                    <div className="flex flex-wrap gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setIconCategoryTab(null)}
+                        className="px-1.5 py-0.5 rounded text-[10px]"
+                        style={{
+                          background: iconCategoryTab === null ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                          color: iconCategoryTab === null ? '#fff' : 'var(--text-secondary)',
+                          border: '1px solid var(--border)',
+                        }}
+                        aria-pressed={iconCategoryTab === null}
+                      >
+                        All
+                      </button>
+                      {CATEGORY_ORDER.map((cat) => {
+                        const active = iconCategoryTab === cat;
+                        return (
+                          <button
+                            key={cat}
+                            type="button"
+                            onClick={() => setIconCategoryTab(cat)}
+                            className="px-1.5 py-0.5 rounded text-[10px]"
+                            style={{
+                              background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                              color: active ? '#fff' : 'var(--text-secondary)',
+                              border: '1px solid var(--border)',
+                            }}
+                            aria-pressed={active}
+                          >
+                            {CATEGORY_LABELS[cat]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div
                     className="grid gap-1 overflow-auto"
                     style={{
@@ -600,8 +781,8 @@ export function FreeFormPreviewPanel({
                   </div>
                 </div>
               )}
-              {content.emoji.trim() !== '' && (
-                <details open={hasTransform}>
+              {(content.emoji.trim() !== '' || content.iconSlug || content.labelColor) && (
+                <details open={hasTransform || !!content.labelColor}>
                   <summary
                     className="text-[10px] cursor-pointer select-none"
                     style={{ color: 'var(--text-muted)' }}
@@ -666,6 +847,28 @@ export function FreeFormPreviewPanel({
                         style={{ accentColor: 'var(--accent-pink)' }}
                         title="Y offset"
                       />
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <span style={{ color: 'var(--text-muted)' }}>Label colour</span>
+                      <input
+                        type="color"
+                        value={content.labelColor ?? '#000000'}
+                        onChange={(e) =>
+                          onUpdateCell(input.index, { labelColor: e.target.value })
+                        }
+                        className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
+                        aria-label={`Label colour for ${cellNoun} ${input.index}`}
+                      />
+                      {content.labelColor && content.labelColor !== '#000000' && (
+                        <button
+                          type="button"
+                          onClick={() => onUpdateCell(input.index, { labelColor: undefined })}
+                          className="ml-1 underline"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          Reset
+                        </button>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 text-[10px]">
                       <span style={{ color: 'var(--text-muted)' }}>Shape</span>

@@ -116,6 +116,8 @@ export interface FreeFormCell {
   /** Font family for the label. Caller resolves the SIL family via the
    *  font registry. */
   labelFontFamily?: string;
+  /** Label text colour. Defaults to `#000000`. */
+  labelColor?: string;
   // ─── Phase B5: per-emoji transforms ──────────────────────────────────────
   /** Rotation in degrees applied to the emoji glyph (NOT the cell
    *  background or border). -180..180. Defaults to 0. */
@@ -166,6 +168,17 @@ export interface ThumbnailRendererProps {
     from: string;
     to: string;
     angle: number;
+  };
+  /** Optional canvas background pattern overlay — sits ABOVE the
+   *  solid/gradient background and BELOW the cells. Four pattern
+   *  styles inspired by CSS print-stock looks. Free-form only. */
+  canvasBackgroundPattern?: {
+    kind: 'stripes' | 'dots' | 'checker' | 'grid';
+    color: string;
+    /** Pattern opacity 0-1. */
+    opacity: number;
+    /** Tile size in canvas pixels. Smaller = denser. 4-80. */
+    size: number;
   };
   /** Canvas dimensions — must match what the SERVER would compute, so
    *  the SVG overlays land at the same percentages as they will at
@@ -775,6 +788,88 @@ function svgTextX(width: number, padX: number, align: 'left' | 'center' | 'right
 type _FrameStyleUsed = FrameStyle;
 void (null as unknown as _FrameStyleUsed);
 
+// ─── Free-form canvas pattern overlay ──────────────────────────────────────
+
+/** Render a tiled SVG pattern across the entire canvas. Four pattern
+ *  kinds:
+ *   - `stripes`: 45° diagonal stripes (one stripe per tile).
+ *   - `dots`: small circle centred in each tile.
+ *   - `checker`: filled top-left + bottom-right squares per 2×2 tile
+ *     group (classic checkerboard).
+ *   - `grid`: thin lines on the top + left edges of each tile (creates
+ *     a continuous grid when tiled).
+ *  Each tile is `pattern.size × pattern.size` canvas pixels. */
+function FreeFormCanvasPattern({
+  width,
+  height,
+  pattern,
+  idBase,
+}: {
+  width: number;
+  height: number;
+  pattern: NonNullable<ThumbnailRendererProps['canvasBackgroundPattern']>;
+  idBase: string;
+}): ReactElement {
+  const tile = Math.max(2, Math.round(pattern.size));
+  let inner: ReactElement;
+  switch (pattern.kind) {
+    case 'dots':
+      inner = (
+        <circle cx={tile / 2} cy={tile / 2} r={Math.max(1, tile * 0.15)} fill={pattern.color} />
+      );
+      break;
+    case 'stripes':
+      // 45° diagonal line from (0, tile) to (tile, 0). Stroke width
+      // ~15 % of tile for a balanced bands-vs-gaps look.
+      inner = (
+        <line
+          x1={0}
+          y1={tile}
+          x2={tile}
+          y2={0}
+          stroke={pattern.color}
+          strokeWidth={Math.max(1, tile * 0.15)}
+        />
+      );
+      break;
+    case 'checker':
+      inner = (
+        <>
+          <rect x={0} y={0} width={tile / 2} height={tile / 2} fill={pattern.color} />
+          <rect
+            x={tile / 2}
+            y={tile / 2}
+            width={tile / 2}
+            height={tile / 2}
+            fill={pattern.color}
+          />
+        </>
+      );
+      break;
+    case 'grid':
+    default: {
+      const strokeW = Math.max(1, tile * 0.05);
+      inner = (
+        <>
+          <line x1={0} y1={0} x2={tile} y2={0} stroke={pattern.color} strokeWidth={strokeW} />
+          <line x1={0} y1={0} x2={0} y2={tile} stroke={pattern.color} strokeWidth={strokeW} />
+        </>
+      );
+      break;
+    }
+  }
+  return (
+    <g opacity={Math.max(0, Math.min(1, pattern.opacity))}>
+      <defs>
+        <pattern id={idBase} patternUnits="userSpaceOnUse" width={tile} height={tile}>
+          {inner}
+        </pattern>
+      </defs>
+      <rect width={width} height={height} fill={`url(#${idBase})`} />
+    </g>
+  );
+}
+
 // ─── Free-form cell renderer ───────────────────────────────────────────────
 
 /** Draw one free-form cell: a coloured rectangle with a black border,
@@ -949,7 +1044,7 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           y={y + illustrationH + labelH / 2 + labelFontSize / 3}
           fontSize={labelFontSize}
           textAnchor="middle"
-          fill="#000000"
+          fill={cell.labelColor ?? '#000000'}
           fontFamily={cell.labelFontFamily ?? 'Patrick Hand'}
         >
           {cell.label}
@@ -1003,6 +1098,7 @@ export function ThumbnailRenderer({
   cells,
   canvasBackground,
   canvasBackgroundGradient,
+  canvasBackgroundPattern,
   canvasWidth,
   canvasHeight,
   postProcess,
@@ -1049,6 +1145,20 @@ export function ThumbnailRenderer({
               : (canvasBackground ?? '#ffffff'),
           }}
         >
+          {/* Optional pattern overlay drawn BEFORE the cells so it
+              sits between the solid/gradient background and the cell
+              shapes. Each pattern is a small SVG `<pattern>` tile
+              repeating across the canvas. `opacity` is on the wrapper
+              `<g>` so the pattern's strength can be adjusted without
+              re-baking the colour. */}
+          {canvasBackgroundPattern && (
+            <FreeFormCanvasPattern
+              width={w}
+              height={h}
+              pattern={canvasBackgroundPattern}
+              idBase={`${idBase}-pat`}
+            />
+          )}
           {(cells ?? []).map((cell, i) => (
             <FreeFormCellGroup key={i} cell={cell} />
           ))}
