@@ -2558,6 +2558,37 @@ function ProductionDocPage() {
   const [pendingMotionCollageSettings, setPendingMotionCollageSettings] = useState<
     DoodleExplainer2MotionCollageSettings | undefined
   >(undefined);
+
+  // motion_collage rows MUST have visual_type === 'Animation'
+  // regardless of what the LLM emitted. Some runs land them on
+  // 'Title Card' (visible to the user as the wrong type chip and
+  // confusing the filter chips at the top of the table). The renderer
+  // routes on shot_kind so playback is fine either way, but the UI
+  // surfaces visual_type heavily and showing "Title Card" on a
+  // motion_collage row is misleading. Normalises silently whenever a
+  // doc loads (fresh gen, history restore, regenerate). Skips when
+  // the row is already correct so the useEffect doesn't loop.
+  // 2026-05-31 follow-up to the SFX/[VISUAL CUE] mistag round.
+  useEffect(() => {
+    if (!doc) return;
+    let mistagged = 0;
+    for (const r of doc.rows) {
+      if (r.shot_kind === 'motion_collage' && r.visual_type !== 'Animation') {
+        mistagged += 1;
+      }
+    }
+    if (mistagged === 0) return;
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const nextRows = prev.rows.map((r) =>
+        r.shot_kind === 'motion_collage' && r.visual_type !== 'Animation'
+          ? { ...r, visual_type: 'Animation' }
+          : r,
+      );
+      return { ...prev, rows: nextRows };
+    });
+    console.info('[prodoc motion-collage] normalized visual_type', { mistagged });
+  }, [doc]);
   // v2 (2026-05-22) — keep doc.style_preset in sync with the page-level
   // `stylePreset` state. Persists on the user_history payload through
   // the existing auto-save pipeline so downstream surfaces (the
