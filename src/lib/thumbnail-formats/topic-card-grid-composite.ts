@@ -495,14 +495,24 @@ export interface CellScanBounds {
  * position in the grid. Outer-edge cells (row-0 top, last-row bottom,
  * col-0 left, last-col right) get a scan envelope that reaches the
  * canvas edge — handling the "AI ignored the outer margin" case.
- * Interior cells get a half-cell envelope on each inward direction —
- * handling the "AI ignored the inter-cell gutter" case.
+ * Interior cells get a TIGHT envelope that stops at the mid-gutter
+ * between this cell and its neighbour — far enough to catch a
+ * "no inter-cell gutter" render (shared border lives at the mid-gutter
+ * y/x) but NOT far enough to wander into the next cell's content.
+ *
+ * The first iteration of r2.7 used `cell_extent / 2` as the inter-cell
+ * reach, which sent the scan ~330 px past the expected edge on a
+ * production canvas — well INSIDE the neighbouring cell. The scan
+ * latched onto the neighbour's border and detected aiRect collapsed
+ * to nonsense, painting overlapping borders and double labels. The
+ * fix is to clamp the reach at `gutter/2 + buffer`: the shared-border
+ * y/x lives at `gutter/2` past expected (the midpoint), and a few
+ * extra pixels of buffer let us catch it without crossing into the
+ * next cell.
  *
  * The `buffer` parameter (default 5% of the cell's smaller side) is
- * the OUTWARD slack the scan accepts — i.e. how far the AI could have
- * drawn the border PAST the expected position. We keep this small
- * (~5% of cellW) because the AI rarely overshoots; most drift is in
- * the opposite direction (cells smaller than expected).
+ * the INWARD slack the scan accepts — i.e. how far the AI could have
+ * drawn the border INSIDE the expected position.
  */
 export function computeScanBounds(
   expected: { x: number; y: number; w: number; h: number },
@@ -512,6 +522,7 @@ export function computeScanBounds(
   cols: number,
   canvasW: number,
   canvasH: number,
+  gutter: number,
   bufferOverride?: number,
 ): CellScanBounds {
   const isFirstRow = rowIdx === 0;
@@ -520,25 +531,26 @@ export function computeScanBounds(
   const isLastCol = colIdx === cols - 1;
   const expRight = expected.x + expected.w;
   const expBottom = expected.y + expected.h;
-  // Buffer: how far INWARD into the expected cell the scan starts (so
-  // we can find borders the AI drew slightly INSIDE our expected
-  // position). Larger than the legacy 8-px floor so AI shrinkage of
-  // ~5-10% is covered.
-  const buffer = bufferOverride ?? Math.max(8, Math.round(Math.min(expected.w, expected.h) * 0.05));
-  // Inward reach: for outer edges, reach the canvas edge. For interior
-  // edges, reach half a cell extent inward (catches no-gutter renders
-  // where the AI's border is at the midpoint between expected cells).
-  const halfW = Math.round(expected.w * 0.5);
-  const halfH = Math.round(expected.h * 0.5);
+  // Inter-cell reach: half the gutter is exactly the midpoint between
+  // expected positions, which is where a "no gutter" AI render places
+  // the shared border. Add a 4-px safety margin so anti-aliased
+  // boundaries register as transitions; do NOT add more or the scan
+  // crosses into the neighbouring cell's expected position and the
+  // detection latches onto the neighbour's border instead.
+  const interCellReach = bufferOverride ?? Math.max(8, Math.round(gutter / 2) + 4);
+  // Inward reach is identical (symmetric scan around expected) so a
+  // cell-shrunk AI render and a cell-expanded AI render get the same
+  // detection precision.
+  const inward = interCellReach;
   return {
-    leftMin: isFirstCol ? 0 : Math.max(0, expected.x - halfW),
-    leftMax: Math.min(canvasW - 1, expected.x + buffer),
-    rightMin: Math.max(0, expRight - buffer),
-    rightMax: isLastCol ? canvasW - 1 : Math.min(canvasW - 1, expRight + halfW),
-    topMin: isFirstRow ? 0 : Math.max(0, expected.y - halfH),
-    topMax: Math.min(canvasH - 1, expected.y + buffer),
-    bottomMin: Math.max(0, expBottom - buffer),
-    bottomMax: isLastRow ? canvasH - 1 : Math.min(canvasH - 1, expBottom + halfH),
+    leftMin: isFirstCol ? 0 : Math.max(0, expected.x - interCellReach),
+    leftMax: Math.min(canvasW - 1, expected.x + inward),
+    rightMin: Math.max(0, expRight - inward),
+    rightMax: isLastCol ? canvasW - 1 : Math.min(canvasW - 1, expRight + interCellReach),
+    topMin: isFirstRow ? 0 : Math.max(0, expected.y - interCellReach),
+    topMax: Math.min(canvasH - 1, expected.y + inward),
+    bottomMin: Math.max(0, expBottom - inward),
+    bottomMax: isLastRow ? canvasH - 1 : Math.min(canvasH - 1, expBottom + interCellReach),
     fallback: {
       left: isFirstCol ? 0 : expected.x,
       right: isLastCol ? canvasW : expRight,
@@ -1122,6 +1134,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
         layout.cols,
         rawInfo.width,
         rawInfo.height,
+        layout.gutter,
       );
       const detected = detectAiCellRect(
         rawPixels,

@@ -168,9 +168,9 @@ describe('detectAiCellRect', () => {
 describe('computeScanBounds', () => {
   it('outer-edge cell: leftMin=0, topMin=0, fallback points to canvas edge', () => {
     // Top-left cell (row 0, col 0) of a 2x3 grid on a 2048x1152 canvas.
-    // Layout: outerMargin = round(2048 * 0.011) = 23.
+    // Layout: outerMargin = round(2048 * 0.011) = 23, gutter = 23.
     const expected = { x: 23, y: 23, w: 660, h: 530 };
-    const bounds = computeScanBounds(expected, 0, 0, 2, 3, 2048, 1152);
+    const bounds = computeScanBounds(expected, 0, 0, 2, 3, 2048, 1152, 23);
     expect(bounds.leftMin).toBe(0);
     expect(bounds.topMin).toBe(0);
     expect(bounds.fallback.left).toBe(0);
@@ -184,7 +184,7 @@ describe('computeScanBounds', () => {
     const canvasW = 2048;
     const canvasH = 1152;
     const expected = { x: 1365, y: 599, w: 660, h: 530 };
-    const bounds = computeScanBounds(expected, 1, 2, 2, 3, canvasW, canvasH);
+    const bounds = computeScanBounds(expected, 1, 2, 2, 3, canvasW, canvasH, 23);
     expect(bounds.rightMax).toBe(canvasW - 1);
     expect(bounds.bottomMax).toBe(canvasH - 1);
     expect(bounds.fallback.right).toBe(canvasW);
@@ -195,30 +195,38 @@ describe('computeScanBounds', () => {
     expect(bounds.fallback.top).toBe(expected.y);
   });
 
-  it('interior edges reach half a cell inward (catches no-gutter renders)', () => {
-    // A center cell would only exist on a 3x3+ grid. On a 2x3 grid the
-    // center column has no col-neighbours that aren't outer. Use a 3x3
-    // grid where the middle cell (row 1, col 1) is fully interior.
+  it('interior edges reach mid-gutter only — never crosses into the neighbour cell', () => {
+    // 3x3 grid, middle cell fully interior. With gutter=23, reach =
+    // max(8, ceil(23/2) + 4) = max(8, 16) = 16. The critical property
+    // (this is the PRODUCTION bug r2.7.1 fixed): rightMax must stay
+    // BELOW the next column's expected.x = expected.x + w + gutter =
+    // 1323, otherwise the scan latches onto the neighbour's border and
+    // detection collapses to garbage.
     const expected = { x: 700, y: 400, w: 600, h: 350 };
-    const bounds = computeScanBounds(expected, 1, 1, 3, 3, 2000, 1100);
-    // Half-cell reach inward from each interior edge.
-    expect(bounds.leftMin).toBe(700 - 300); // x - w/2
-    expect(bounds.rightMax).toBe(700 + 600 + 300); // x + w + w/2 (clamped to canvasW-1 if needed)
-    expect(bounds.topMin).toBe(400 - 175);
-    expect(bounds.bottomMax).toBe(400 + 350 + 175);
+    const gutter = 23;
+    const bounds = computeScanBounds(expected, 1, 1, 3, 3, 2000, 1100, gutter);
+    const reach = Math.max(8, Math.round(gutter / 2) + 4);
+    expect(bounds.leftMin).toBe(expected.x - reach);
+    expect(bounds.rightMax).toBe(expected.x + expected.w + reach);
+    expect(bounds.topMin).toBe(expected.y - reach);
+    expect(bounds.bottomMax).toBe(expected.y + expected.h + reach);
+    // No crossing into the next cell.
+    expect(bounds.rightMax).toBeLessThan(expected.x + expected.w + gutter);
+    expect(bounds.leftMin).toBeGreaterThan(expected.x - gutter);
     // Interior cells fall back to expected, not canvas edge.
     expect(bounds.fallback.left).toBe(expected.x);
-    expect(bounds.fallback.right).toBe(expected.x + expected.w);
     expect(bounds.fallback.top).toBe(expected.y);
-    expect(bounds.fallback.bottom).toBe(expected.y + expected.h);
   });
 
-  it('inward buffer is 5% of the cell\'s smaller side', () => {
-    const expected = { x: 100, y: 100, w: 1000, h: 500 };
-    const bounds = computeScanBounds(expected, 0, 0, 1, 1, 2000, 1000);
-    // min(w, h) = 500, 5% = 25, floor at 8.
-    expect(bounds.leftMax).toBe(125);
-    expect(bounds.topMax).toBe(125);
+  it('reach scales with gutter — a 60-px gutter yields a larger reach than a 8-px gutter', () => {
+    const expected = { x: 200, y: 200, w: 400, h: 400 };
+    const smallGutter = computeScanBounds(expected, 1, 1, 3, 3, 2000, 2000, 8);
+    const largeGutter = computeScanBounds(expected, 1, 1, 3, 3, 2000, 2000, 60);
+    // Reach for gutter=8: max(8, 4+4) = 8.
+    // Reach for gutter=60: max(8, 30+4) = 34.
+    expect(largeGutter.rightMax - expected.x - expected.w).toBeGreaterThan(
+      smallGutter.rightMax - expected.x - expected.w,
+    );
   });
 });
 
