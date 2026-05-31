@@ -39,6 +39,11 @@ import {
   type PanelInnerGlowBlend,
   type PanelLightLeakPosition,
 } from '@/components/thumbnails/_overlay-controls';
+import {
+  ThumbnailRenderer,
+  type TitleBarRendererInput,
+} from '@/components/thumbnails/ThumbnailRenderer';
+import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import type { ThumbnailRegion } from '@/remotion/types';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
@@ -3225,6 +3230,36 @@ export function NLevelsPanel({
             busy={busyStep === 'image'}
             previewImageUrl={previewImageUrl}
             previewLoading={previewLoading}
+            postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
+            titleBarRendererInput={
+              titleBar.enabled
+                ? {
+                    text: titleBar.text,
+                    subtitle: titleBar.subtitle || undefined,
+                    position: titleBar.position,
+                    heightFraction: titleBar.heightFraction,
+                    align: titleBar.align,
+                    subtitleAlign: titleBar.subtitleAlign,
+                    backgroundColor: titleBar.backgroundColor,
+                    backgroundOpacity: titleBar.backgroundOpacity,
+                    textColor: titleBar.textColor,
+                    subtitleColor: titleBar.subtitleColor,
+                    fontFamily:
+                      findFontById(titleBar.fontId)?.family ?? 'Patrick Hand',
+                    subtitleFontFamily: titleBar.subtitleFontId
+                      ? findFontById(titleBar.subtitleFontId)?.family
+                      : undefined,
+                    shadow: titleBar.shadowEnabled
+                      ? {
+                          offsetPx: titleBar.shadowOffsetPx,
+                          blurPx: titleBar.shadowBlurPx,
+                          opacity: titleBar.shadowOpacity,
+                          color: titleBar.shadowColor,
+                        }
+                      : undefined,
+                  }
+                : undefined
+            }
           />
         )}
       </div>
@@ -3461,18 +3496,27 @@ interface ResultProps {
   onEditList: () => void;
   onRegenerateImage: () => void;
   busy: boolean;
-  /** r2.8+ live-preview data URL. Same wiring as TopicCardGridPanel —
-   *  the image display swaps to this URL when set so post-process /
-   *  title-bar tweaks land in ~500 ms without a new AI render. */
+  /** r2.8+ live-preview data URL (Phase A fallback). Phase B1 uses
+   *  the SVG renderer for live updates; this URL is retained for a
+   *  future "preview at server fidelity" button. */
   previewImageUrl: string | null;
   previewLoading: boolean;
+  /** Phase B1: client-side SVG-overlay payloads. The renderer applies
+   *  them on top of `result.imageUrl` in the browser — instant updates,
+   *  no server roundtrip. */
+  postProcessPayload?: PostProcessConfig;
+  titleBarRendererInput?: TitleBarRendererInput;
 }
 
 /** Preview zoom presets (mirrors TopicCardGridPanel's PREVIEW_ZOOM_PRESETS
  *  and the Flex Icon Grid convention). */
 const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
 
-function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy, previewImageUrl, previewLoading }: ResultProps) {
+function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy, previewImageUrl, previewLoading, postProcessPayload, titleBarRendererInput }: ResultProps) {
+  // Phase A fallback fields — retained for a future "preview at server
+  // fidelity" button. The Phase B1 SVG renderer doesn't use them.
+  void previewImageUrl;
+  void previewLoading;
   // Preview zoom on the rendered image. Same shape as TopicCardGridPanel:
   // 1.0 = fits viewport width, above 1.0 scrolls horizontally, below 1.0
   // centres the image at reduced size. Ephemeral per ResultState mount.
@@ -3554,18 +3598,15 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onR
             margin: previewZoom < 1 ? '0 auto' : undefined,
           }}
         >
-          <img
-            src={previewImageUrl ?? result.imageUrl}
+          <ThumbnailRenderer
+            baseImageUrl={result.imageUrl}
+            canvasWidth={result.outputWidth}
+            canvasHeight={result.outputHeight}
+            postProcess={postProcessPayload}
+            titleBar={titleBarRendererInput}
             alt="Generated thumbnail"
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'cover',
-              display: 'block',
-              opacity: previewLoading ? 0.75 : 1,
-              transition: 'opacity 120ms ease-out',
-            }}
-          />
+            style={{ width: '100%', height: '100%' }}
+          >
           {regionOverlayOn && (
             <svg
               viewBox={`0 0 ${result.outputWidth} ${result.outputHeight}`}
@@ -3597,6 +3638,7 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onR
               ))}
             </svg>
           )}
+          </ThumbnailRenderer>
         </div>
       </div>
       <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
