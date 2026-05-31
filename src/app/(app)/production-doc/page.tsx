@@ -11053,6 +11053,56 @@ function ProductionDocPage() {
                                     </button>
                                   </div>
                                 )}
+                                {/* Delete-row button — confirms before
+                                    removing the row from the doc. Always
+                                    available so the user can clean up
+                                    LLM mis-tags (e.g. SFX/VISUAL CUE
+                                    notes that got promoted to Title
+                                    Card by mistake). The handler also
+                                    removes the matching rowImages entry
+                                    so the state machine stays aligned
+                                    with the doc shape. Variant rows
+                                    have their own per-group delete
+                                    button elsewhere; this is for the
+                                    base-row case only — variant rows
+                                    would corrupt their group's
+                                    indexing if deleted via this path,
+                                    so the button hides when variant_index > 0. */}
+                                {(row.variant_index ?? 0) === 0 && (
+                                  <div className="mt-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const preview = (row.script_text ?? '').trim().slice(0, 50);
+                                        const confirmed = window.confirm(
+                                          `Delete row ${i + 1}${preview ? ` ("${preview}${preview.length === 50 ? '…' : ''}")` : ''}?\n\nThis cannot be undone.`,
+                                        );
+                                        if (!confirmed) return;
+                                        setDoc((prev) =>
+                                          prev
+                                            ? { ...prev, rows: prev.rows.filter((_, idx) => idx !== i) }
+                                            : prev,
+                                        );
+                                        setRowImages((prev) => {
+                                          const next = [...prev];
+                                          next.splice(i, 1);
+                                          return next;
+                                        });
+                                        toast.success(`Row ${i + 1} deleted.`);
+                                      }}
+                                      className="text-[10px] px-2 py-0.5 rounded"
+                                      style={{
+                                        background: 'rgba(239,68,68,0.10)',
+                                        color: '#fca5a5',
+                                        border: '1px solid rgba(239,68,68,0.35)',
+                                        cursor: 'pointer',
+                                      }}
+                                      title="Delete this row from the doc. Cannot be undone."
+                                    >
+                                      🗑 Delete row
+                                    </button>
+                                  </div>
+                                )}
                                 {/* Phase 4 (Editor UI) — per-row character_id
                                     + scene_id chips. Gated on doodle_explainer_2
                                     since the cache mechanisms that consume
