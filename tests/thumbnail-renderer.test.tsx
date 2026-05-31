@@ -298,6 +298,66 @@ describe('ThumbnailRenderer — free-form cells (Phase B4)', () => {
     expect(html).toContain('🚀');
   });
 
+  it('renders a circle cell with a stroked <circle> instead of a rect border', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={400}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 400, h: 400 },
+            bgColor: '#ff8800',
+            shape: 'circle',
+            label: 'X',
+          },
+        ]}
+      />,
+    );
+    // Circle mode renders a <circle> for the disc + a stroked outer
+    // <circle> for the border. Verify both are present.
+    const circleCount = (html.match(/<circle/g) ?? []).length;
+    expect(circleCount).toBeGreaterThanOrEqual(2);
+    // Cell bg colour applied to the disc.
+    expect(html).toContain('fill="#ff8800"');
+  });
+
+  it('rounded shape adds non-zero rx on the cell background', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'rounded',
+            bgColor: '#ff0000',
+          },
+        ]}
+      />,
+    );
+    // 8 % of min(w, h) = 16. The cell rect should have rx="16".
+    expect(html).toMatch(/rx="16"/);
+  });
+
+  it('applies a canvasBackgroundGradient via inline CSS on the cells SVG', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={200}
+        canvasHeight={200}
+        cells={[]}
+        canvasBackgroundGradient={{ from: '#ff0000', to: '#0000ff', angle: 45 }}
+      />,
+    );
+    // The free-form SVG carries the gradient via inline style. We don't
+    // assert on the exact serialisation (React varies between
+    // `background:linear-gradient(...)` and `background:linear-gradient(...);` —
+    // just verify the gradient identifier + colours are present.
+    expect(html).toContain('linear-gradient');
+    expect(html).toContain('#ff0000');
+    expect(html).toContain('#0000ff');
+    expect(html).toContain('45deg');
+  });
+
   it('cells path still applies the post-process overlays on top', () => {
     const html = renderToStaticMarkup(
       <ThumbnailRenderer

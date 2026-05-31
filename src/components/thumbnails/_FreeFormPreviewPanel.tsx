@@ -30,6 +30,8 @@ import {
 } from '@/lib/thumbnail-formats/flex-icon-grid-icons';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 
+export type CellShape = 'square' | 'rounded' | 'circle';
+
 export interface FreeFormCellState {
   emoji: string;
   bgColor: string;
@@ -43,6 +45,8 @@ export interface FreeFormCellState {
   iconSlug?: string;
   /** Icon stroke / fill colour. Defaults to '#000000' downstream. */
   iconColor?: string;
+  /** Cell shape variant. Defaults to 'square'. */
+  shape?: CellShape;
 }
 
 export const DEFAULT_FREE_FORM_CELL_STATE: FreeFormCellState = {
@@ -54,6 +58,23 @@ export const DEFAULT_FREE_FORM_CELL_STATE: FreeFormCellState = {
   emojiOffsetX: 0,
   emojiOffsetY: 0,
 };
+
+/** Canvas-level options that live above any single cell — currently
+ *  the optional gradient background. Kept separate from `FreeFormCellState`
+ *  because it's a single shared value, not per-cell. */
+export interface FreeFormCanvasOptions {
+  /** Optional background colour override. Defaults to white. */
+  background?: string;
+  /** Optional gradient — overrides `background` when set. */
+  gradient?: {
+    from: string;
+    to: string;
+    /** 0..360, where 0 is top→bottom and 90 is left→right. */
+    angle: number;
+  };
+  /** Default cell shape used when a fresh cell is created. */
+  defaultShape?: CellShape;
+}
 
 /** Single source-of-truth for a row in the picker. Caller provides:
  *  - `index`: 1-based id used to key the per-cell state map.
@@ -76,6 +97,8 @@ export function FreeFormPreviewPanel({
   canvasHeight,
   freeFormCells,
   onUpdateCell,
+  canvasOptions,
+  onUpdateCanvasOptions,
   postProcessPayload,
   titleBarRendererInput,
   labelFontFamily,
@@ -88,6 +111,12 @@ export function FreeFormPreviewPanel({
   canvasHeight: number;
   freeFormCells: Record<number, FreeFormCellState>;
   onUpdateCell: (cellIndex: number, patch: Partial<FreeFormCellState>) => void;
+  /** Canvas-level options (background / gradient). Optional — when
+   *  omitted the renderer uses a white background. */
+  canvasOptions?: FreeFormCanvasOptions;
+  /** Patch the canvas options. Called for every nudge of the bg colour /
+   *  gradient sliders. */
+  onUpdateCanvasOptions?: (patch: Partial<FreeFormCanvasOptions>) => void;
   postProcessPayload?: PostProcessConfig;
   titleBarRendererInput?: TitleBarRendererInput;
   labelFontFamily: string;
@@ -113,6 +142,7 @@ export function FreeFormPreviewPanel({
       emojiOffsetY: content.emojiOffsetY,
       iconSlug: content.iconSlug,
       iconColor: content.iconColor ?? '#000000',
+      shape: content.shape ?? canvasOptions?.defaultShape ?? 'square',
     };
   });
   // Icon picker UI state — search query + per-cell open dropdown id.
@@ -142,7 +172,19 @@ export function FreeFormPreviewPanel({
     'heart',
   ];
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const pickerRowsRef = useRef<Record<number, HTMLDivElement | null>>({});
   const [saving, setSaving] = useState(false);
+  /** Index of the currently-selected cell. Clicking a cell on the
+   *  preview sets this; the matching picker row gains a highlight
+   *  border + auto-scrolls into view. `null` = nothing selected. */
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  function selectCell(index: number): void {
+    setSelectedIndex(index);
+    const row = pickerRowsRef.current[index];
+    if (row && typeof row.scrollIntoView === 'function') {
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
 
   async function downloadAsPng(): Promise<void> {
     const container = containerRef.current;
@@ -212,20 +254,190 @@ export function FreeFormPreviewPanel({
           {saving ? 'Saving…' : 'Save PNG'}
         </button>
       </div>
-      <div ref={containerRef} className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+      <div
+        ref={containerRef}
+        className="rounded-lg overflow-hidden relative"
+        style={{ border: '1px solid var(--border)' }}
+      >
         <ThumbnailRenderer
           cells={rendererCells}
-          canvasBackground="#ffffff"
+          canvasBackground={canvasOptions?.background ?? '#ffffff'}
+          canvasBackgroundGradient={canvasOptions?.gradient}
           canvasWidth={canvasWidth}
           canvasHeight={canvasHeight}
           postProcess={postProcessPayload}
           titleBar={titleBarRendererInput}
           alt="Free-form thumbnail preview"
-        />
+        >
+          {/* Click overlay — transparent rects per cell that focus
+              the matching picker row when clicked. The selected cell
+              also gets a magenta outline so the user can see WHICH
+              cell their picker edits are about to affect. */}
+          <svg
+            viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
+            preserveAspectRatio="none"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              cursor: 'pointer',
+            }}
+          >
+            {inputs.map((input) => {
+              const active = selectedIndex === input.index;
+              return (
+                <rect
+                  key={input.index}
+                  x={input.bounds.x}
+                  y={input.bounds.y}
+                  width={input.bounds.w}
+                  height={input.bounds.h}
+                  fill="transparent"
+                  stroke={active ? 'rgba(236,72,153,0.85)' : 'transparent'}
+                  strokeWidth={Math.max(4, canvasWidth * 0.006)}
+                  strokeDasharray={`${Math.max(8, canvasWidth * 0.012)} ${Math.max(6, canvasWidth * 0.008)}`}
+                  onClick={() => selectCell(input.index)}
+                  style={{ pointerEvents: 'auto' }}
+                >
+                  <title>{input.label || `${cellNoun} ${input.index}`}</title>
+                </rect>
+              );
+            })}
+          </svg>
+        </ThumbnailRenderer>
       </div>
       <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
         Pick an emoji + colour for each {cellNoun}. Live preview — no AI calls, no server roundtrip.
       </p>
+      {/* Canvas-level options: cell shape default, background colour /
+          gradient. Only shown when the host panel supplies the update
+          callback (so the older N Levels / TCG entrypoints stay
+          unchanged until they opt in). */}
+      {onUpdateCanvasOptions && (
+        <div
+          className="rounded p-2 space-y-2"
+          style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Default cell shape
+            </span>
+            <div className="flex gap-1">
+              {(['square', 'rounded', 'circle'] as CellShape[]).map((shape) => {
+                const active = (canvasOptions?.defaultShape ?? 'square') === shape;
+                return (
+                  <button
+                    key={shape}
+                    type="button"
+                    onClick={() => onUpdateCanvasOptions({ defaultShape: shape })}
+                    className="px-2 py-0.5 rounded text-[10px]"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-card)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    aria-pressed={active}
+                  >
+                    {shape === 'square' ? '▢' : shape === 'rounded' ? '▣' : '◯'} {shape}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Canvas bg
+            </span>
+            <input
+              type="color"
+              value={canvasOptions?.background ?? '#ffffff'}
+              onChange={(e) =>
+                onUpdateCanvasOptions({ background: e.target.value })
+              }
+              className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
+              aria-label="Canvas background colour"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (canvasOptions?.gradient) {
+                  // Toggle gradient OFF — drop the field entirely.
+                  onUpdateCanvasOptions({ gradient: undefined });
+                } else {
+                  // Toggle gradient ON with sensible defaults — bg
+                  // colour to white, 135° (top-left → bottom-right).
+                  onUpdateCanvasOptions({
+                    gradient: {
+                      from: canvasOptions?.background ?? '#ec4899',
+                      to: '#ffffff',
+                      angle: 135,
+                    },
+                  });
+                }
+              }}
+              className="px-2 py-0.5 rounded text-[10px]"
+              style={{
+                background: canvasOptions?.gradient ? 'var(--accent-pink)' : 'var(--bg-card)',
+                color: canvasOptions?.gradient ? '#fff' : 'var(--text-secondary)',
+                border: '1px solid var(--border)',
+              }}
+              aria-pressed={!!canvasOptions?.gradient}
+            >
+              Gradient
+            </button>
+            {canvasOptions?.gradient && (
+              <>
+                <input
+                  type="color"
+                  value={canvasOptions.gradient.from}
+                  onChange={(e) =>
+                    onUpdateCanvasOptions({
+                      gradient: { ...canvasOptions.gradient!, from: e.target.value },
+                    })
+                  }
+                  className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
+                  aria-label="Gradient from colour"
+                  title="From"
+                />
+                <input
+                  type="color"
+                  value={canvasOptions.gradient.to}
+                  onChange={(e) =>
+                    onUpdateCanvasOptions({
+                      gradient: { ...canvasOptions.gradient!, to: e.target.value },
+                    })
+                  }
+                  className="w-7 h-5 rounded border-0 p-0 cursor-pointer"
+                  aria-label="Gradient to colour"
+                  title="To"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={360}
+                  step={5}
+                  value={canvasOptions.gradient.angle}
+                  onChange={(e) => {
+                    const angle = Number.parseFloat(e.target.value);
+                    if (Number.isFinite(angle)) {
+                      onUpdateCanvasOptions({
+                        gradient: { ...canvasOptions.gradient!, angle },
+                      });
+                    }
+                  }}
+                  className="flex-1"
+                  style={{ accentColor: 'var(--accent-pink)' }}
+                  title={`${Math.round(canvasOptions.gradient.angle)}°`}
+                />
+                <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {Math.round(canvasOptions.gradient.angle)}°
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       <div className="space-y-1.5">
         {inputs.map((input) => {
           const content = freeFormCells[input.index] ?? DEFAULT_FREE_FORM_CELL_STATE;
@@ -235,11 +447,22 @@ export function FreeFormPreviewPanel({
             content.emojiFlipY ||
             content.emojiOffsetX !== 0 ||
             content.emojiOffsetY !== 0;
+          const isSelected = selectedIndex === input.index;
           return (
             <div
               key={input.index}
+              ref={(el) => {
+                pickerRowsRef.current[input.index] = el;
+              }}
               className="px-2 py-1 rounded space-y-1"
-              style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}
+              style={{
+                background: 'var(--bg-secondary)',
+                border: isSelected
+                  ? '1px solid rgba(236,72,153,0.85)'
+                  : '1px solid var(--border)',
+                outline: isSelected ? '2px solid rgba(236,72,153,0.25)' : undefined,
+              }}
+              onClick={() => setSelectedIndex(input.index)}
             >
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)', width: 18 }}>
@@ -443,6 +666,29 @@ export function FreeFormPreviewPanel({
                         style={{ accentColor: 'var(--accent-pink)' }}
                         title="Y offset"
                       />
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <span style={{ color: 'var(--text-muted)' }}>Shape</span>
+                      {(['square', 'rounded', 'circle'] as CellShape[]).map((shape) => {
+                        const active = (content.shape ?? canvasOptions?.defaultShape ?? 'square') === shape;
+                        return (
+                          <button
+                            key={shape}
+                            type="button"
+                            onClick={() => onUpdateCell(input.index, { shape })}
+                            className="px-1.5 py-0.5 rounded"
+                            style={{
+                              background: active ? 'var(--accent-pink)' : 'var(--bg-card)',
+                              color: active ? '#fff' : 'var(--text-secondary)',
+                              border: '1px solid var(--border)',
+                            }}
+                            aria-pressed={active}
+                            title={shape}
+                          >
+                            {shape === 'square' ? '▢' : shape === 'rounded' ? '▣' : '◯'}
+                          </button>
+                        );
+                      })}
                     </div>
                     <div className="flex items-center gap-1.5 text-[10px]">
                       <button

@@ -138,6 +138,13 @@ export interface FreeFormCell {
   iconColor?: string;
   /** Stroke width for outline icons. Defaults to 2 (Lucide convention). */
   iconStrokeWidth?: number;
+  /** Cell shape variant. `'square'` (default) draws a rectangular cell
+   *  with optional rounded corners. `'rounded'` draws a square cell with
+   *  a baked-in corner radius. `'circle'` clips the cell content to a
+   *  centred disc that fits inside the cell bounds. The label band sits
+   *  BELOW the shape for `'circle'` (mirrors Flex Icon Grid's circle
+   *  cell layout). */
+  shape?: 'square' | 'rounded' | 'circle';
 }
 
 export interface ThumbnailRendererProps {
@@ -151,6 +158,15 @@ export interface ThumbnailRendererProps {
   /** Free-form canvas background colour. Defaults to white. Only used
    *  when `cells` is set. */
   canvasBackground?: string;
+  /** Optional canvas background gradient — overrides `canvasBackground`
+   *  when provided. Two-stop linear gradient defined by `from` / `to`
+   *  hex colours and an `angle` in degrees (0 = top→bottom, 90 = left
+   *  →right). Free-form only. */
+  canvasBackgroundGradient?: {
+    from: string;
+    to: string;
+    angle: number;
+  };
   /** Canvas dimensions — must match what the SERVER would compute, so
    *  the SVG overlays land at the same percentages as they will at
    *  final-bake time. */
@@ -775,6 +791,19 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   // Match server's SQUARE_ILLUSTRATION_FRAC = 0.8.
   const illustrationH = Math.round(h * 0.8);
   const labelH = h - illustrationH;
+  // r2.9: cell shape. Square / rounded / circle render with different
+  // background + border + clip behaviour. Defaults to square (the
+  // existing behaviour pre-r2.9, so configs without `shape` round-trip
+  // pixel-identical).
+  const shape = cell.shape ?? 'square';
+  const cornerRadius = shape === 'rounded' ? Math.round(Math.min(w, h) * 0.08) : 0;
+  // Circle mode: a centred disc fits inside the illustration area
+  // (top 80 % of the cell). Disc diameter is the LESSER of the cell
+  // width and the illustration height so the disc never overflows
+  // either axis. Label band stays in the bottom 20 % beneath the disc.
+  const discDiameter = Math.min(w, illustrationH);
+  const discCx = x + w / 2;
+  const discCy = y + illustrationH / 2;
   // Emoji sizes to ~60 % of the illustration area's shorter side — big
   // enough to read, small enough to leave breathing room.
   const emojiSize = Math.round(Math.min(w, illustrationH) * 0.55);
@@ -783,8 +812,21 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   const labelFontSize = Math.max(8, Math.round(labelH * 0.55));
   return (
     <g>
-      {/* Cell background. */}
-      <rect x={x} y={y} width={w} height={h} fill={bg} />
+      {/* Cell background.
+          - `square` / `rounded`: standard rect spanning the full cell.
+          - `circle`: a white rect for the label band area first, then a
+            coloured disc inside the illustration region. The disc is
+            painted in `bg` so the user's chosen colour drives the
+            circle's tone; the cell rect outside the disc shows white
+            (matching the gutter / canvas background). */}
+      {shape === 'circle' ? (
+        <>
+          <rect x={x} y={y} width={w} height={h} fill="#ffffff" />
+          <circle cx={discCx} cy={discCy} r={discDiameter / 2} fill={bg} />
+        </>
+      ) : (
+        <rect x={x} y={y} width={w} height={h} fill={bg} rx={cornerRadius} ry={cornerRadius} />
+      )}
       {/* Lucide icon path — takes precedence over emoji when both are
           set. Same transform pipeline as the emoji branch (rotation
           / flip / offset around the cell centre). The icon is
@@ -882,18 +924,24 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           </g>
         );
       })()}
-      {/* Hairline divider between illustration and label band. */}
-      <line
-        x1={x}
-        y1={y + illustrationH}
-        x2={x + w}
-        y2={y + illustrationH}
-        stroke={borderColor}
-        strokeWidth={Math.max(1, Math.round(borderPx / 3))}
-      />
-      {/* Label band background (white) — explicit rect even though it
-          equals `bg` so a coloured bg + black label band reads clearly. */}
-      <rect x={x} y={y + illustrationH} width={w} height={labelH} fill="#ffffff" />
+      {/* Hairline divider between illustration and label band — only
+          for square/rounded shapes (circle has no divider; the disc
+          floats above the label band). */}
+      {shape !== 'circle' && (
+        <line
+          x1={x}
+          y1={y + illustrationH}
+          x2={x + w}
+          y2={y + illustrationH}
+          stroke={borderColor}
+          strokeWidth={Math.max(1, Math.round(borderPx / 3))}
+        />
+      )}
+      {/* Label band background (white) — square / rounded only. Circle
+          mode's label sits directly on the cell rect (already white). */}
+      {shape !== 'circle' && (
+        <rect x={x} y={y + illustrationH} width={w} height={labelH} fill="#ffffff" />
+      )}
       {/* Label text — centered in the band. */}
       {cell.label && cell.label.trim() && (
         <text
@@ -907,16 +955,31 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           {cell.label}
         </text>
       )}
-      {/* Outer border. */}
-      <rect
-        x={x + borderPx / 2}
-        y={y + borderPx / 2}
-        width={w - borderPx}
-        height={h - borderPx}
-        fill="none"
-        stroke={borderColor}
-        strokeWidth={borderPx}
-      />
+      {/* Outer border. Square / rounded use a rect with optional
+          corner radius; circle draws a stroked disc around the
+          illustration area (label band has no border). */}
+      {shape === 'circle' ? (
+        <circle
+          cx={discCx}
+          cy={discCy}
+          r={discDiameter / 2 - borderPx / 2}
+          fill="none"
+          stroke={borderColor}
+          strokeWidth={borderPx}
+        />
+      ) : (
+        <rect
+          x={x + borderPx / 2}
+          y={y + borderPx / 2}
+          width={w - borderPx}
+          height={h - borderPx}
+          fill="none"
+          stroke={borderColor}
+          strokeWidth={borderPx}
+          rx={cornerRadius}
+          ry={cornerRadius}
+        />
+      )}
     </g>
   );
 }
@@ -939,6 +1002,7 @@ export function ThumbnailRenderer({
   baseImageUrl,
   cells,
   canvasBackground,
+  canvasBackgroundGradient,
   canvasWidth,
   canvasHeight,
   postProcess,
@@ -968,6 +1032,8 @@ export function ThumbnailRenderer({
         // Free-form mode: draw the cells as SVG primitives. CSS `filter`
         // applies on the container so grayscale / sepia / etc. land on
         // the cells too — same posture as the AI-image branch.
+        // Background: CSS `background` honours either a solid colour or
+        // a linear-gradient(deg, …) for the gradient prop.
         <svg
           viewBox={`0 0 ${w} ${h}`}
           preserveAspectRatio="none"
@@ -978,7 +1044,9 @@ export function ThumbnailRenderer({
             height: '100%',
             display: 'block',
             filter: filterCss,
-            background: canvasBackground ?? '#ffffff',
+            background: canvasBackgroundGradient
+              ? `linear-gradient(${canvasBackgroundGradient.angle}deg, ${canvasBackgroundGradient.from}, ${canvasBackgroundGradient.to})`
+              : (canvasBackground ?? '#ffffff'),
           }}
         >
           {(cells ?? []).map((cell, i) => (
