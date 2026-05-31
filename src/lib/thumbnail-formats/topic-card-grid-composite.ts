@@ -455,6 +455,100 @@ const BORDER_COVERAGE_RATIO = 0.5;
 const DEFAULT_BORDER_SEARCH_RANGE = 20;
 
 /**
+ * Scan-envelope for one cell's four edges. The composite passes one
+ * of these per cell to {@link detectAiCellRect} when it needs the
+ * detection to handle AI renders where the cell extends MUCH FURTHER
+ * from the layout-computed `expected` rect than the legacy
+ * `searchRange` window allows. Two common cases:
+ *
+ *  - **AI drew flush against the canvas edge** (no outer margin). The
+ *    expected position has a `~outerMargin` worth of buffer to the
+ *    canvas edge; the AI's real top/left is at `0`. The legacy
+ *    `±gutter/2` window misses it entirely.
+ *  - **AI drew adjacent cells with shared borders** (no inter-cell
+ *    gutter). The expected positions are `gutter` apart, but the
+ *    AI's shared border sits exactly halfway between them.
+ *
+ * `*Min`/`*Max` define the inclusive scan range for that edge. The
+ * scan finds the strongest light→dark transition in that range; if
+ * the range is entirely dark (AI drew through it) it returns the
+ * range's nearer end; if entirely light it returns `fallback`.
+ *
+ * `fallback` is the position to use when the scan finds nothing
+ * useful — canvas edge for outer cells, expected position for
+ * interior cells.
+ */
+export interface CellScanBounds {
+  leftMin: number;
+  leftMax: number;
+  rightMin: number;
+  rightMax: number;
+  topMin: number;
+  topMax: number;
+  bottomMin: number;
+  bottomMax: number;
+  fallback: { left: number; right: number; top: number; bottom: number };
+}
+
+/**
+ * Build a {@link CellScanBounds} envelope for a card based on its
+ * position in the grid. Outer-edge cells (row-0 top, last-row bottom,
+ * col-0 left, last-col right) get a scan envelope that reaches the
+ * canvas edge — handling the "AI ignored the outer margin" case.
+ * Interior cells get a half-cell envelope on each inward direction —
+ * handling the "AI ignored the inter-cell gutter" case.
+ *
+ * The `buffer` parameter (default 5% of the cell's smaller side) is
+ * the OUTWARD slack the scan accepts — i.e. how far the AI could have
+ * drawn the border PAST the expected position. We keep this small
+ * (~5% of cellW) because the AI rarely overshoots; most drift is in
+ * the opposite direction (cells smaller than expected).
+ */
+export function computeScanBounds(
+  expected: { x: number; y: number; w: number; h: number },
+  rowIdx: number,
+  colIdx: number,
+  rows: number,
+  cols: number,
+  canvasW: number,
+  canvasH: number,
+  bufferOverride?: number,
+): CellScanBounds {
+  const isFirstRow = rowIdx === 0;
+  const isLastRow = rowIdx === rows - 1;
+  const isFirstCol = colIdx === 0;
+  const isLastCol = colIdx === cols - 1;
+  const expRight = expected.x + expected.w;
+  const expBottom = expected.y + expected.h;
+  // Buffer: how far INWARD into the expected cell the scan starts (so
+  // we can find borders the AI drew slightly INSIDE our expected
+  // position). Larger than the legacy 8-px floor so AI shrinkage of
+  // ~5-10% is covered.
+  const buffer = bufferOverride ?? Math.max(8, Math.round(Math.min(expected.w, expected.h) * 0.05));
+  // Inward reach: for outer edges, reach the canvas edge. For interior
+  // edges, reach half a cell extent inward (catches no-gutter renders
+  // where the AI's border is at the midpoint between expected cells).
+  const halfW = Math.round(expected.w * 0.5);
+  const halfH = Math.round(expected.h * 0.5);
+  return {
+    leftMin: isFirstCol ? 0 : Math.max(0, expected.x - halfW),
+    leftMax: Math.min(canvasW - 1, expected.x + buffer),
+    rightMin: Math.max(0, expRight - buffer),
+    rightMax: isLastCol ? canvasW - 1 : Math.min(canvasW - 1, expRight + halfW),
+    topMin: isFirstRow ? 0 : Math.max(0, expected.y - halfH),
+    topMax: Math.min(canvasH - 1, expected.y + buffer),
+    bottomMin: Math.max(0, expBottom - buffer),
+    bottomMax: isLastRow ? canvasH - 1 : Math.min(canvasH - 1, expBottom + halfH),
+    fallback: {
+      left: isFirstCol ? 0 : expected.x,
+      right: isLastCol ? canvasW : expRight,
+      top: isFirstRow ? 0 : expected.y,
+      bottom: isLastRow ? canvasH : expBottom,
+    },
+  };
+}
+
+/**
  * Detect the AI's actual cell rectangle by scanning the rendered base
  * image's pixels for the four border lines (top / bottom / left /
  * right) around the expected `cellRect` position.
@@ -472,12 +566,22 @@ const DEFAULT_BORDER_SEARCH_RANGE = 20;
  * hundred microseconds per cell), pure (no AI calls), and adapts to
  * whatever GPT Image 2's current gutter-width habit is.
  *
- * Returns the detected `{x, y, w, h}`. If the scan can't find a
- * border on any edge it falls back to that edge's expected value, so
- * the function never returns a wildly-off rect. Edges where the AI
- * rendered as TWO STACKED RECTANGLES (illustration panel + narrower
- * label box) snap to the illustration panel's left/right because the
- * inward scan hits the panel's border first.
+ * The last parameter has two shapes:
+ *  - `number` (legacy): symmetric `±searchRange` window around each
+ *    expected edge. Used by older callers and the existing unit
+ *    tests. Fine when the AI's drift is small (a few pixels) but
+ *    fails when the AI ignores the outer margin or inter-cell gutter
+ *    entirely.
+ *  - `CellScanBounds` (preferred since r2.7): per-edge `[min, max]`
+ *    ranges + canvas-edge fallback. Used by the composite path so
+ *    detection can reach the canvas edge for outer cells and
+ *    half-a-cell inward for interior cells. Fixes the post-tofu
+ *    alignment bugs where AI-no-margin / AI-no-gutter renders caused
+ *    composite overlays to land in stale `expected` coords.
+ *
+ * Returns the detected `{x, y, w, h}`. If a scan can't find a useful
+ * border on any edge it falls back to that edge's expected/canvas-edge
+ * value, so the function never returns a wildly-off rect.
  */
 export function detectAiCellRect(
   rawData: Uint8Array | Buffer,
@@ -485,10 +589,33 @@ export function detectAiCellRect(
   canvasH: number,
   channels: number,
   expected: { x: number; y: number; w: number; h: number },
-  searchRange = DEFAULT_BORDER_SEARCH_RANGE,
+  searchRangeOrBounds: number | CellScanBounds = DEFAULT_BORDER_SEARCH_RANGE,
 ): { x: number; y: number; w: number; h: number } {
   const expRight = expected.x + expected.w;
   const expBottom = expected.y + expected.h;
+  // Normalise the last parameter into a per-edge `{outer, inner,
+  // fallback}` shape. The number form (`searchRange`, legacy) maps to
+  // symmetric ±range windows with `expected`-edge fallbacks. The
+  // bounds form (`CellScanBounds`, r2.7) uses the per-edge ranges +
+  // per-edge fallbacks verbatim, so outer-edge cells can scan to the
+  // canvas edge and fall back to `0` / `canvasW` / `canvasH` when no
+  // transition is found.
+  const bounds: CellScanBounds = typeof searchRangeOrBounds === 'number'
+    ? (() => {
+        const sr = searchRangeOrBounds;
+        return {
+          leftMin: Math.max(0, expected.x - sr),
+          leftMax: Math.min(canvasW - 1, expected.x + sr),
+          rightMin: Math.max(0, expRight - sr),
+          rightMax: Math.min(canvasW - 1, expRight + sr),
+          topMin: Math.max(0, expected.y - sr),
+          topMax: Math.min(canvasH - 1, expected.y + sr),
+          bottomMin: Math.max(0, expBottom - sr),
+          bottomMax: Math.min(canvasH - 1, expBottom + sr),
+          fallback: { left: expected.x, right: expRight, top: expected.y, bottom: expBottom },
+        };
+      })()
+    : searchRangeOrBounds;
 
   const isDark = (x: number, y: number): boolean => {
     if (x < 0 || x >= canvasW || y < 0 || y >= canvasH) return false;
@@ -505,8 +632,16 @@ export function detectAiCellRect(
   //   2. Test scenarios (and real AI renders with dark-themed
   //      illustrations) can have dark pixels everywhere. A simple
   //      "first dark column" scan would snap to the canvas edge of
-  //      such an image; transition scanning falls back to expected
-  //      because there's no light→dark transition to find.
+  //      such an image; transition scanning prefers transitions.
+  //
+  // When `usingBounds` is true (r2.7) and the entire scan range turned
+  // out to be dark (AI drew through it — no light→dark transition
+  // possible), we return the BOUND'S OUTER END as the border position.
+  // For outer-edge cells with `boundMin = 0`, that's the canvas edge —
+  // exactly what we want when the AI rendered flush against the edge.
+  // The legacy `searchRange` callers (and the tests pinning that
+  // behaviour) keep falling back to `expected.*` because their bounds
+  // are derived symmetrically around expected.
   //
   // Helper: column darkness ratio over a given y-range.
   const columnDarkRatio = (x: number, yStart: number, yEnd: number): number => {
@@ -527,80 +662,88 @@ export function detectAiCellRect(
     return darkCount / totalX;
   };
 
-  // Left border: walk from gutter inward. Return the FIRST x where
-  // the column's dark-ratio crosses upward through the coverage
-  // threshold (was below, now at-or-above). `prev = null` skips the
-  // transition check on the very first iteration so we don't
-  // false-positive when the search window starts already inside a
-  // dark region.
-  const findLeftBorder = (): number => {
-    const yStart = Math.max(0, expected.y + 2);
-    const yEnd = Math.min(canvasH, expBottom - 2);
-    const scanStart = Math.max(0, expected.x - searchRange);
-    const scanEnd = Math.min(canvasW - 1, expected.x + searchRange);
+  // Walk the scan range from `outer` toward `inner` looking for a
+  // light→dark transition. The OUTER end is where the canvas edge or
+  // the inter-cell gutter would be; the INNER end is inside the cell.
+  // Returns `null` if no transition is found.
+  const findTransition = (
+    outer: number,
+    inner: number,
+    ratioAt: (i: number) => number,
+  ): number | null => {
+    const step = inner >= outer ? 1 : -1;
     let prev: number | null = null;
-    for (let x = scanStart; x <= scanEnd; x++) {
-      const dr = columnDarkRatio(x, yStart, yEnd);
-      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
-        return x;
+    for (let i = outer; step > 0 ? i <= inner : i >= inner; i += step) {
+      const dr = ratioAt(i);
+      const isDarkRow = dr >= BORDER_COVERAGE_RATIO;
+      if (
+        prev !== null &&
+        prev < BORDER_COVERAGE_RATIO &&
+        isDarkRow
+      ) {
+        return i;
       }
       prev = dr;
     }
-    return expected.x;
+    return null;
   };
 
-  const findRightBorder = (): number => {
-    const yStart = Math.max(0, expected.y + 2);
-    const yEnd = Math.min(canvasH, expBottom - 2);
-    const scanStart = Math.max(0, expRight - searchRange);
-    const scanEnd = Math.min(canvasW - 1, expRight + searchRange);
-    let prev: number | null = null;
-    for (let x = scanEnd; x >= scanStart; x--) {
-      const dr = columnDarkRatio(x, yStart, yEnd);
-      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
-        return x;
-      }
-      prev = dr;
-    }
-    return expRight;
-  };
+  // Per-edge scan. `outer` is the bound nearer the canvas edge/gutter,
+  // `inner` the bound deeper into the cell. Returns the FIRST
+  // light→dark transition found in the scan range; falls back to the
+  // edge's `fallback` value if no transition exists. The fallback is
+  // the canvas edge for outer-cell bounds, expected position for
+  // interior bounds (set by `computeScanBounds`).
+  //
+  // Caller responsibility (r2.7): even when this falls back, the
+  // composite force-paints clean borders at the detected aiRect, so
+  // a fallback-induced misalignment is bounded — the worst case is
+  // the composite paints a border at expected.x instead of AI's true
+  // position, which still produces a clean visible frame.
+  const yInteriorStart = Math.max(0, expected.y + 2);
+  const yInteriorEnd = Math.min(canvasH, expBottom - 2);
+  const xInteriorStart = Math.max(0, expected.x + 2);
+  const xInteriorEnd = Math.min(canvasW, expRight - 2);
 
-  const findTopBorder = (): number => {
-    const xStart = Math.max(0, expected.x + 2);
-    const xEnd = Math.min(canvasW, expRight - 2);
-    const scanStart = Math.max(0, expected.y - searchRange);
-    const scanEnd = Math.min(canvasH - 1, expected.y + searchRange);
-    let prev: number | null = null;
-    for (let y = scanStart; y <= scanEnd; y++) {
-      const dr = rowDarkRatio(y, xStart, xEnd);
-      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
-        return y;
-      }
-      prev = dr;
-    }
-    return expected.y;
-  };
+  // Run all four edge scans. Track which ones found a real transition;
+  // if NONE did, the image has no structural evidence of cell borders
+  // at all (a uniform-coloured synthetic test image, or a base painted
+  // before the AI step touches it). In that case the canvas-edge
+  // fallbacks for outer-edge cells would balloon the detected rect to
+  // the full canvas — visually nonsensical — so we step back and
+  // return `expected` as a single coherent unit instead.
+  const leftTransition = findTransition(
+    bounds.leftMin,
+    bounds.leftMax,
+    (x) => columnDarkRatio(x, yInteriorStart, yInteriorEnd),
+  );
+  const rightTransition = findTransition(
+    bounds.rightMax,
+    bounds.rightMin,
+    (x) => columnDarkRatio(x, yInteriorStart, yInteriorEnd),
+  );
+  const topTransition = findTransition(
+    bounds.topMin,
+    bounds.topMax,
+    (y) => rowDarkRatio(y, xInteriorStart, xInteriorEnd),
+  );
+  const bottomTransition = findTransition(
+    bounds.bottomMax,
+    bounds.bottomMin,
+    (y) => rowDarkRatio(y, xInteriorStart, xInteriorEnd),
+  );
 
-  const findBottomBorder = (): number => {
-    const xStart = Math.max(0, expected.x + 2);
-    const xEnd = Math.min(canvasW, expRight - 2);
-    const scanStart = Math.max(0, expBottom - searchRange);
-    const scanEnd = Math.min(canvasH - 1, expBottom + searchRange);
-    let prev: number | null = null;
-    for (let y = scanEnd; y >= scanStart; y--) {
-      const dr = rowDarkRatio(y, xStart, xEnd);
-      if (prev !== null && prev < BORDER_COVERAGE_RATIO && dr >= BORDER_COVERAGE_RATIO) {
-        return y;
-      }
-      prev = dr;
-    }
-    return expBottom;
-  };
+  const anyTransitionFound =
+    leftTransition !== null ||
+    rightTransition !== null ||
+    topTransition !== null ||
+    bottomTransition !== null;
+  if (!anyTransitionFound) return expected;
 
-  const left = findLeftBorder();
-  const right = findRightBorder();
-  const top = findTopBorder();
-  const bottom = findBottomBorder();
+  const left = leftTransition ?? bounds.fallback.left;
+  const right = rightTransition ?? bounds.fallback.right;
+  const top = topTransition ?? bounds.fallback.top;
+  const bottom = bottomTransition ?? bounds.fallback.bottom;
 
   // Guard against degenerate results (e.g. right scan latches onto the
   // illustration's leftmost dark pixel because the rendering is highly
@@ -952,21 +1095,62 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       height: rawInfo.height,
       channels: rawInfo.channels,
     };
-    // Search range is half the inter-cell gutter so the scan can't
-    // wander onto a neighbouring cell's border. Floor at 8 px so very
-    // small test canvases still get a usable window.
-    const searchRange = Math.max(8, Math.round(layout.gutter / 2));
+    // r2.7: switched from a symmetric ±gutter/2 search range to
+    // per-cell `CellScanBounds`. The legacy window was ~11-25 px at
+    // production canvas sizes (1.1% of canvas width), and GPT Image 2
+    // consistently renders cells with MUCH wider drift than that:
+    //   - Outer-edge cells often rendered flush against the canvas
+    //     edge (no outer margin at all → ~22-45 px from expected).
+    //   - Adjacent cells in the same row often share borders (no
+    //     inter-cell gutter → ~22-45 px from expected).
+    // Both put the AI's real border outside the legacy ±window, so
+    // detection silently fell back to `expected` coords and the
+    // composite painted overlays in the wrong place. See the visible
+    // bugs (no row-1 top border; black border lines cutting INTO
+    // row-2 illustrations; band-vs-illustration x mismatch) in
+    // `_plans/2026-05-31-topic-card-grid-detection-bounds-fix.md`.
     detectedRects = new Map();
     for (const card of cards) {
       const expected = cellRect(layout, card.index);
+      const rowIdx = Math.floor((card.index - 1) / layout.cols);
+      const colIdx = (card.index - 1) % layout.cols;
+      const bounds = computeScanBounds(
+        expected,
+        rowIdx,
+        colIdx,
+        layout.rows,
+        layout.cols,
+        rawInfo.width,
+        rawInfo.height,
+      );
       const detected = detectAiCellRect(
         rawPixels,
         rawInfo.width,
         rawInfo.height,
         rawInfo.channels,
         expected,
-        searchRange,
+        bounds,
       );
+      console.info('[topic-card-grid composite cell-rect]', {
+        card_index: card.index,
+        row_idx: rowIdx,
+        col_idx: colIdx,
+        expected_x: expected.x,
+        expected_y: expected.y,
+        expected_w: expected.w,
+        expected_h: expected.h,
+        detected_x: detected.x,
+        detected_y: detected.y,
+        detected_w: detected.w,
+        detected_h: detected.h,
+        // Bounds give future-debuggers a complete picture of why the
+        // detection landed where it did.
+        bounds_top: [bounds.topMin, bounds.topMax],
+        bounds_bottom: [bounds.bottomMin, bounds.bottomMax],
+        bounds_left: [bounds.leftMin, bounds.leftMax],
+        bounds_right: [bounds.rightMin, bounds.rightMax],
+        fallback: bounds.fallback,
+      });
       detectedRects.set(card.index, detected);
     }
   }
@@ -1148,18 +1332,46 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       // Re-painting unconditionally at aiRect.y guarantees every cell
       // has a top border: cells that already had one get the same y
       // re-stroked (no visible change); cells that didn't get the
-      // missing line. Width = squareBorderPx, so the stroke matches
-      // the rest of our composite borders.
-      const topBorderH = squareBorderPx(aiRect.w);
-      const topBorderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${aiRect.w}" height="${topBorderH}"><rect x="0" y="0" width="${aiRect.w}" height="${topBorderH}" fill="${BLACK}"/></svg>`;
-      const topBorderPng = await sharp(Buffer.from(topBorderSvg)).png().toBuffer();
-      overlays.push({ input: topBorderPng, top: aiRect.y, left: aiRect.x });
-      console.info('[topic-card-grid composite top-border]', {
+      // missing line.
+      //
+      // r2.7: extended the force-paint to ALL FOUR sides. The same
+      // class of failure happens on the left/right/bottom edges too
+      // when the AI rendered cells edge-to-edge with the canvas (no
+      // outer margin) or with shared inter-cell borders (no gutter).
+      // After the r2.7 bounds-based detection lands aiRect on the AI's
+      // actual cell boundary, painting a stroke at each of the four
+      // edges guarantees a clean frame regardless of which borders
+      // the AI drew. Width = squareBorderPx, matching the rest of our
+      // composite borders.
+      const borderThickness = squareBorderPx(aiRect.w);
+      const horizBorderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${aiRect.w}" height="${borderThickness}"><rect x="0" y="0" width="${aiRect.w}" height="${borderThickness}" fill="${BLACK}"/></svg>`;
+      const horizBorderPng = await sharp(Buffer.from(horizBorderSvg)).png().toBuffer();
+      const vertBorderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${borderThickness}" height="${aiRect.h}"><rect x="0" y="0" width="${borderThickness}" height="${aiRect.h}" fill="${BLACK}"/></svg>`;
+      const vertBorderPng = await sharp(Buffer.from(vertBorderSvg)).png().toBuffer();
+      // Position the bottom + right strokes so their OUTER edge lands
+      // exactly on the cell's outer boundary (not one pixel past it).
+      // For a cell at aiRect.y .. aiRect.y + aiRect.h, the bottom
+      // stroke's TOP-LEFT corner sits at y = aiRect.y + aiRect.h -
+      // borderThickness so the stroke ends at the cell's bottom.
+      overlays.push({ input: horizBorderPng, top: aiRect.y, left: aiRect.x });
+      overlays.push({
+        input: horizBorderPng,
+        top: Math.max(0, aiRect.y + aiRect.h - borderThickness),
+        left: aiRect.x,
+      });
+      overlays.push({ input: vertBorderPng, top: aiRect.y, left: aiRect.x });
+      overlays.push({
+        input: vertBorderPng,
+        top: aiRect.y,
+        left: Math.max(0, aiRect.x + aiRect.w - borderThickness),
+      });
+      console.info('[topic-card-grid composite cell-borders]', {
         card_index: card.index,
-        ai_rect_y: aiRect.y,
         ai_rect_x: aiRect.x,
-        width: aiRect.w,
-        thickness: topBorderH,
+        ai_rect_y: aiRect.y,
+        ai_rect_w: aiRect.w,
+        ai_rect_h: aiRect.h,
+        thickness: borderThickness,
       });
     }
   }

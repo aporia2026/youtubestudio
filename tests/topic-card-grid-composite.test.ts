@@ -5,12 +5,14 @@ import {
   applyCellUploads,
   cellRect,
   circularMaskSvg,
+  computeScanBounds,
   detectAiCellRect,
   detectAiDividerLine,
   detectAiLabelTop,
   escapePangoText,
   fitCover,
   renderLabelPng,
+  type CellScanBounds,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
 import { makeDefaultLayout, type TopicCard } from '@/lib/thumbnail-formats/topic-card-grid';
 
@@ -158,6 +160,173 @@ describe('detectAiCellRect', () => {
     // not the gap to the right cell.
     expect(detected.x).toBeLessThan(20);
     expect(detected.x + detected.w).toBeLessThan(50);
+  });
+});
+
+// ─── computeScanBounds (r2.7) ───────────────────────────────────────────────
+
+describe('computeScanBounds', () => {
+  it('outer-edge cell: leftMin=0, topMin=0, fallback points to canvas edge', () => {
+    // Top-left cell (row 0, col 0) of a 2x3 grid on a 2048x1152 canvas.
+    // Layout: outerMargin = round(2048 * 0.011) = 23.
+    const expected = { x: 23, y: 23, w: 660, h: 530 };
+    const bounds = computeScanBounds(expected, 0, 0, 2, 3, 2048, 1152);
+    expect(bounds.leftMin).toBe(0);
+    expect(bounds.topMin).toBe(0);
+    expect(bounds.fallback.left).toBe(0);
+    expect(bounds.fallback.top).toBe(0);
+    // Right & bottom of an interior-side cell: interior bounds + expected fallbacks.
+    expect(bounds.fallback.right).toBe(expected.x + expected.w);
+    expect(bounds.fallback.bottom).toBe(expected.y + expected.h);
+  });
+
+  it('last-row last-col cell: bottomMax/rightMax reach canvas edge, fallback to canvas edge', () => {
+    const canvasW = 2048;
+    const canvasH = 1152;
+    const expected = { x: 1365, y: 599, w: 660, h: 530 };
+    const bounds = computeScanBounds(expected, 1, 2, 2, 3, canvasW, canvasH);
+    expect(bounds.rightMax).toBe(canvasW - 1);
+    expect(bounds.bottomMax).toBe(canvasH - 1);
+    expect(bounds.fallback.right).toBe(canvasW);
+    expect(bounds.fallback.bottom).toBe(canvasH);
+    // The OPPOSITE edges (left/top) are interior — they don't get
+    // canvas-edge bounds, and their fallback is expected.
+    expect(bounds.fallback.left).toBe(expected.x);
+    expect(bounds.fallback.top).toBe(expected.y);
+  });
+
+  it('interior edges reach half a cell inward (catches no-gutter renders)', () => {
+    // A center cell would only exist on a 3x3+ grid. On a 2x3 grid the
+    // center column has no col-neighbours that aren't outer. Use a 3x3
+    // grid where the middle cell (row 1, col 1) is fully interior.
+    const expected = { x: 700, y: 400, w: 600, h: 350 };
+    const bounds = computeScanBounds(expected, 1, 1, 3, 3, 2000, 1100);
+    // Half-cell reach inward from each interior edge.
+    expect(bounds.leftMin).toBe(700 - 300); // x - w/2
+    expect(bounds.rightMax).toBe(700 + 600 + 300); // x + w + w/2 (clamped to canvasW-1 if needed)
+    expect(bounds.topMin).toBe(400 - 175);
+    expect(bounds.bottomMax).toBe(400 + 350 + 175);
+    // Interior cells fall back to expected, not canvas edge.
+    expect(bounds.fallback.left).toBe(expected.x);
+    expect(bounds.fallback.right).toBe(expected.x + expected.w);
+    expect(bounds.fallback.top).toBe(expected.y);
+    expect(bounds.fallback.bottom).toBe(expected.y + expected.h);
+  });
+
+  it('inward buffer is 5% of the cell\'s smaller side', () => {
+    const expected = { x: 100, y: 100, w: 1000, h: 500 };
+    const bounds = computeScanBounds(expected, 0, 0, 1, 1, 2000, 1000);
+    // min(w, h) = 500, 5% = 25, floor at 8.
+    expect(bounds.leftMax).toBe(125);
+    expect(bounds.topMax).toBe(125);
+  });
+});
+
+// ─── detectAiCellRect with bounds (r2.7) ────────────────────────────────────
+
+describe('detectAiCellRect with CellScanBounds', () => {
+  it('snaps to canvas edge when AI rendered at the edge with a visible border', async () => {
+    // AI rendered a cell starting AT (5, 5) with a black border — only
+    // 5 px of margin instead of the layout's expected 23 px. The legacy
+    // ±gutter/2 window (~11 px) centred on expected.x=23 covers x=[12,34],
+    // missing the actual left border at x=5. Bounds-based detection with
+    // leftMin=0 reaches the border and snaps to it.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+      <rect x="0" y="0" width="200" height="200" fill="white"/>
+      <rect x="5" y="5" width="190" height="190" fill="none" stroke="black" stroke-width="3"/>
+    </svg>`;
+    const png = await sharp(Buffer.from(svg)).png().toBuffer();
+    const raw = await decodeRaw(png);
+    const expected = { x: 23, y: 23, w: 130, h: 130 };
+    const bounds: CellScanBounds = {
+      leftMin: 0,
+      leftMax: expected.x + 10,
+      rightMin: expected.x + expected.w - 10,
+      rightMax: 199,
+      topMin: 0,
+      topMax: expected.y + 10,
+      bottomMin: expected.y + expected.h - 10,
+      bottomMax: 199,
+      fallback: { left: 0, right: 200, top: 0, bottom: 200 },
+    };
+    const detected = detectAiCellRect(raw.data, raw.width, raw.height, raw.channels, expected, bounds);
+    // ±2 px tolerance for stroke anti-aliasing.
+    expect(detected.x).toBeGreaterThanOrEqual(3);
+    expect(detected.x).toBeLessThanOrEqual(7);
+    expect(detected.y).toBeGreaterThanOrEqual(3);
+    expect(detected.y).toBeLessThanOrEqual(7);
+  });
+
+  it('falls back to expected (not canvas edge) when the image is uniform and no transitions exist', async () => {
+    // Uniformly-coloured image — no AI structure to detect. With the
+    // legacy `searchRange` API this fell back to expected; the
+    // bounds-based path must keep that behaviour, otherwise outer-edge
+    // cells balloon to the canvas extent and synthetic tests / pre-AI
+    // base painting break.
+    const png = await makeSolidPng(200, 200, { r: 0, g: 0, b: 0 });
+    const raw = await decodeRaw(png);
+    const expected = { x: 23, y: 23, w: 130, h: 130 };
+    const bounds: CellScanBounds = {
+      leftMin: 0,
+      leftMax: expected.x + 10,
+      rightMin: expected.x + expected.w - 10,
+      rightMax: 199,
+      topMin: 0,
+      topMax: expected.y + 10,
+      bottomMin: expected.y + expected.h - 10,
+      bottomMax: 199,
+      fallback: { left: 0, right: 200, top: 0, bottom: 200 },
+    };
+    const detected = detectAiCellRect(raw.data, raw.width, raw.height, raw.channels, expected, bounds);
+    // No transitions anywhere → returns expected as a single unit
+    // (NOT the per-edge canvas-edge fallbacks, which would balloon the
+    // cell to cover the whole canvas).
+    expect(detected).toEqual(expected);
+  });
+
+  it('snaps to expected when scan range is fully light (no AI border anywhere near expected)', async () => {
+    const png = await makeSolidPng(200, 200, { r: 255, g: 255, b: 255 });
+    const raw = await decodeRaw(png);
+    const expected = { x: 50, y: 50, w: 100, h: 100 };
+    const bounds: CellScanBounds = {
+      leftMin: 30,
+      leftMax: 55,
+      rightMin: 145,
+      rightMax: 170,
+      topMin: 30,
+      topMax: 55,
+      bottomMin: 145,
+      bottomMax: 170,
+      fallback: { left: expected.x, right: expected.x + expected.w, top: expected.y, bottom: expected.y + expected.h },
+    };
+    const detected = detectAiCellRect(raw.data, raw.width, raw.height, raw.channels, expected, bounds);
+    // No transition found, never saw dark — falls back to expected.
+    expect(detected).toEqual(expected);
+  });
+
+  it('finds the transition when AI rendered with a small offset from expected', async () => {
+    // AI cell at (30, 30) to (170, 170); expected (50, 50) to (150, 150).
+    // Bounds let detection scan outward by 50 px.
+    const png = await makePngWithBorder(200, 200, { x: 30, y: 30, w: 140, h: 140 }, 3);
+    const raw = await decodeRaw(png);
+    const expected = { x: 50, y: 50, w: 100, h: 100 };
+    const bounds: CellScanBounds = {
+      leftMin: 0,
+      leftMax: 55,
+      rightMin: 145,
+      rightMax: 200,
+      topMin: 0,
+      topMax: 55,
+      bottomMin: 145,
+      bottomMax: 200,
+      fallback: { left: expected.x, right: expected.x + expected.w, top: expected.y, bottom: expected.y + expected.h },
+    };
+    const detected = detectAiCellRect(raw.data, raw.width, raw.height, raw.channels, expected, bounds);
+    // ±2 for stroke anti-aliasing.
+    expect(detected.x).toBeGreaterThanOrEqual(28);
+    expect(detected.x).toBeLessThanOrEqual(32);
+    expect(detected.y).toBeGreaterThanOrEqual(28);
+    expect(detected.y).toBeLessThanOrEqual(32);
   });
 });
 
