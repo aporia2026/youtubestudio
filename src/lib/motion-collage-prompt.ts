@@ -85,6 +85,49 @@ export function composeMotionCollagePrompt(args: ComposeMotionCollagePromptArgs)
   );
 }
 
+/**
+ * Per-panel prompt composer — used when generateMotionCollage calls
+ * Atlas i2i ONCE PER PANEL (plan §D, the quality fix) instead of one
+ * call producing an N×M grid. Each panel call gets the full Atlas
+ * resolution + refs budget, matching single-shot output quality.
+ *
+ * The trick is keeping subject continuity between sibling panels — each
+ * call is independent, so the prompt has to be self-contained but ALSO
+ * communicate that this is one frame of a motion sequence. Three layers:
+ *   1. CHARACTER bible — recurring character appearance rules
+ *   2. SCENE context — "frame N of TOTAL in a continuous motion sequence;
+ *      same composition / camera / background as every other frame"
+ *   3. THIS FRAME — the LLM-emitted panel prompt (which the LLM ALSO
+ *      seeds with "same scene, only X advances" language)
+ * Plus a STYLE suffix appended at the end.
+ *
+ * Independent calls + refs + "same scene" prompt language are enough to
+ * keep the panels visually consistent (verified by the single-shot
+ * outputs that look beautiful with the same exact infrastructure).
+ */
+export interface ComposePerPanelPromptArgs {
+  panelPrompt: string;
+  panelIndex: number; // 0-based
+  totalPanels: number;
+  /** Optional doc-level character bible. Prepended for every panel. */
+  characterDescriptions?: Record<string, string>;
+  /** Optional style suffix — the doodle_explainer_2 ai_image_suffix. */
+  styleSuffix?: string;
+}
+
+export function composePerPanelPrompt(args: ComposePerPanelPromptArgs): string {
+  const { panelPrompt, panelIndex, totalPanels, characterDescriptions, styleSuffix } = args;
+  const bibleBlock = buildCharacterBibleBlock(characterDescriptions);
+  const sceneContext =
+    `This is frame ${panelIndex + 1} of ${totalPanels} in a continuous motion sequence. `
+    + `The composition, character, camera angle, background, and lighting MUST stay IDENTICAL `
+    + `to every other frame of this sequence — only the moving element advances frame-by-frame. `
+    + `Render the SAME scene exactly as described.`;
+  const frameBlock = `THIS FRAME:\n${panelPrompt}`;
+  const suffixBlock = styleSuffix ? `\n\nSTYLE: ${styleSuffix}` : '';
+  return [bibleBlock, sceneContext, frameBlock].filter(Boolean).join('\n\n') + suffixBlock;
+}
+
 /** Short corner annotation for the four corner panels of a grid; empty
  *  string for interior panels. Helps the model orient the layout
  *  beyond the bare cell number. */

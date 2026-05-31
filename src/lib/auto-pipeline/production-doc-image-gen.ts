@@ -34,7 +34,7 @@ import { getUserSettings } from '../user-settings';
 import { composeCollagePrompt } from '../collage-prompt';
 import { detectMalformedCollage } from '../collage-detect';
 import { sliceCollage, sliceCollageGrid, MAX_COLLAGE_CELLS } from '../collage-slicer';
-import { composeMotionCollagePrompt } from '../motion-collage-prompt';
+import { composeMotionCollagePrompt, composePerPanelPrompt } from '../motion-collage-prompt';
 import { generateMouthRemovedBase } from '../atlas-mouth-removal';
 import { cropTo16x9AndUpload } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
@@ -1452,171 +1452,194 @@ export async function generateMotionCollage(args: {
     }
   }
 
-  let composedPrompt: string;
-  try {
-    composedPrompt = composeMotionCollagePrompt({
-      panelPrompts,
-      cols: grid.cols,
-      rows: grid.rows,
-      characterDescriptions: doc.doodle_explainer_2_character_descriptions,
-      styleSuffix,
-      reinforced: false,
-    });
-  } catch (err) {
-    // composeMotionCollagePrompt only throws on length mismatch, which
-    // we just validated. Defensive catch — bubble as classified error.
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('[motion-collage pipeline] prompt composition failed', { detail: msg.slice(0, 200) });
-    return {
-      costUsd: 0,
-      durationMs: Date.now() - t0,
-      error: `validation_failed:compose_threw:${msg.slice(0, 100)}`,
-    };
-  }
+  // ─── 5. Per-panel generation (plan §D, 2026-05-31 quality fix) ─────
+  //
+  // Earlier iteration ran ONE Atlas i2i call producing an N×M grid in a
+  // single output, then sliced. That approach split Atlas's render
+  // budget (resolution + detail tokens) across N cells, so each panel
+  // came out muddy compared to single-shot outputs at the same quality
+  // level — the user's smoke test showed the dramatic difference
+  // (the polished Stockholm scene single-shots vs. the artefacted ship
+  // collage).
+  //
+  // The fix: call Atlas i2i ONCE PER PANEL. Each panel gets the full
+  // Atlas resolution + refs budget, matching single-shot quality. Cost
+  // scales linearly with panel count (~$0.014 per panel) but the output
+  // is dramatically cleaner. Consistency between panels comes from
+  // (a) shared style refs locking the aesthetic, (b) the LLM emitting
+  // "same scene, only X advances" language in every panel prompt, and
+  // (c) the per-panel composer's explicit "frame N of TOTAL in a
+  // continuous motion sequence" scene-context block.
+  const ATLAS_I2I_MAX_REFS = 4;
+  const refsAware = refImageUrls.length > 0;
+  const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
 
   logger.info('[motion-collage pipeline] start', {
     row_index: lookupRowIndex(row, doc),
     grid: `${grid.cols}x${grid.rows}`,
     panel_count: N,
-    prompt_chars: composedPrompt.length,
+    mode: 'per-panel',
+    refs_aware: refsAware,
+    refs_sent: cappedRefs.length,
   });
 
-  // ─── 5. Generate ────────────────────────────────────────────────────
-  // Single attempt — no malformed-detection retry in v1. The slicer's
-  // bounds check catches geometrically-impossible outputs; semantic
-  // quality issues (drift between panels) need a vision pass we haven't
-  // built yet. Reroll is the user's call from the inspector.
-  //
-  // Refs-aware: when the style has refs (doodle_explainer_2's 4 doodle
-  // anchors), route through Atlas i2i so every cell of the N×M output
-  // inherits the style. Atlas i2i caps at 4 input refs — cap defensively
-  // here. Without refs (or for styles without refs), fall back to t2i
-  // with the suffix-only prompt.
-  const ATLAS_I2I_MAX_REFS = 4;
-  const refsAware = refImageUrls.length > 0;
-  const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
-  const intent = await recordIntent({
-    userId: ownerId,
-    workspaceId,
-    route: 'auto-pipeline:generateMotionCollage',
-    provider: 'atlas',
-    providerModel: refsAware
-      ? `openai/gpt-image-2/i2i#motion-collage-${grid.cols}x${grid.rows}`
-      : `openai/gpt-image-2/t2i#motion-collage-${grid.cols}x${grid.rows}`,
-  });
-  let providerRequestId: string | null = null;
-  let upscaledUrl: string;
-  let generationCostUsd: number;
-  try {
-    logger.info('[motion-collage pipeline] dispatching', {
+  // Compose every panel's prompt up-front so the parallel generations
+  // don't pay the composition cost per call.
+  const characterDescriptions = doc.doodle_explainer_2_character_descriptions;
+  const panelComposedPrompts: string[] = panelPrompts.map((p, i) =>
+    composePerPanelPrompt({
+      panelPrompt: p,
+      panelIndex: i,
+      totalPanels: N,
+      characterDescriptions,
+      styleSuffix,
+    }),
+  );
+
+  // Concurrency cap. 4 simultaneous Atlas i2i calls is the practical
+  // ceiling — Atlas tolerates burst but pinning to 4 leaves Recraft
+  // upscale slots free for other in-flight rows. For a 2×2 grid (4
+  // panels) this just runs all 4 at once. For 3×3 (9 panels) it runs
+  // in waves of 4 → ~3× the per-panel wall-clock.
+  const CONCURRENCY = 4;
+  const panelResults: Array<{ url?: string; error?: string; costUsd: number; durationMs: number }> = new Array(N);
+  // Initialize so TypeScript sees every slot defined.
+  for (let i = 0; i < N; i++) panelResults[i] = { costUsd: 0, durationMs: 0 };
+
+  async function generateOnePanel(panelIdx: number): Promise<void> {
+    const panelStart = Date.now();
+    const composedPrompt = panelComposedPrompts[panelIdx];
+    const intent = await recordIntent({
+      userId: ownerId,
+      workspaceId,
+      route: 'auto-pipeline:generateMotionCollage#panel',
+      provider: 'atlas',
+      providerModel: refsAware
+        ? `openai/gpt-image-2/i2i#motion-collage-panel-${panelIdx + 1}-of-${N}`
+        : `openai/gpt-image-2/t2i#motion-collage-panel-${panelIdx + 1}-of-${N}`,
+    });
+    let providerRequestId: string | null = null;
+    try {
+      const atlasResult = refsAware
+        ? await generateAtlasI2I({
+            prompt: composedPrompt,
+            images: cappedRefs,
+            size: '1536x1024',
+            quality: 'low',
+          })
+        : await generateAtlasT2I({
+            prompt: composedPrompt,
+            size: '1536x1024',
+            quality: 'low',
+          });
+      providerRequestId = atlasResult.predictionId ?? null;
+      // Same downstream as the single-shot path: crop to 16:9, then
+      // Recraft 4× upscale → ~6144×3456 per panel. Final per-panel
+      // resolution matches single-shot quality.
+      const croppedUrl = await cropTo16x9AndUpload(
+        atlasResult.url,
+        'prodoc-images-atlas-crop',
+      );
+      const upscale = await upscaleViaRecraft(croppedUrl);
+      const panelDurationMs = Date.now() - panelStart;
+      // Atlas i2i low (~$0.011) + Recraft Crisp Upscale (~$0.0025) ≈ $0.0135.
+      const panelCostUsd = 0.0135;
+      void markDelivered({
+        id: intent.id,
+        providerRequestId,
+        responseUrl: upscale.url,
+        costUsd: panelCostUsd,
+        durationMs: panelDurationMs,
+      });
+      panelResults[panelIdx] = {
+        url: upscale.url,
+        costUsd: panelCostUsd,
+        durationMs: panelDurationMs,
+      };
+      logger.info('[motion-collage pipeline] panel done', {
+        row_index: lookupRowIndex(row, doc),
+        panel_index: panelIdx,
+        of_total: N,
+        url: upscale.url,
+        ms: panelDurationMs,
+        cost_usd: panelCostUsd,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const panelDurationMs = Date.now() - panelStart;
+      void markFailed({
+        id: intent.id,
+        failureReason: msg,
+        providerRequestId,
+        durationMs: panelDurationMs,
+      });
+      panelResults[panelIdx] = {
+        error: `panel_${panelIdx}_threw:${msg.slice(0, 80)}`,
+        costUsd: 0,
+        durationMs: panelDurationMs,
+      };
+      logger.error('[motion-collage pipeline] panel failed', {
+        row_index: lookupRowIndex(row, doc),
+        panel_index: panelIdx,
+        of_total: N,
+        detail: msg.slice(0, 200),
+      });
+    }
+  }
+
+  // Concurrency-limited launcher — shared cursor across `CONCURRENCY`
+  // workers. Each worker pulls the next pending index until the queue
+  // is drained.
+  let cursor = 0;
+  async function panelWorker(): Promise<void> {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= N) return;
+      await generateOnePanel(idx);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, N) }, () => panelWorker()),
+  );
+
+  // Aggregate results. If ANY panel failed, fail the whole row — the
+  // renderer needs the full set of N panels to play the keyframe
+  // sequence, and partial sets are visually broken (gap in the
+  // animation). User can retry from the inspector.
+  const totalCostUsd = panelResults.reduce((sum, p) => sum + p.costUsd, 0);
+  const failedPanels = panelResults
+    .map((p, i) => (p.error ? { i, err: p.error } : null))
+    .filter((x): x is { i: number; err: string } => x !== null);
+  if (failedPanels.length > 0) {
+    logger.error('[motion-collage pipeline] one or more panels failed', {
       row_index: lookupRowIndex(row, doc),
-      refs_aware: refsAware,
-      refs_sent: cappedRefs.length,
-    });
-    const atlasResult = refsAware
-      ? await generateAtlasI2I({
-          prompt: composedPrompt,
-          images: cappedRefs,
-          size: '1536x1024',
-          quality: 'low',
-        })
-      : await generateAtlasT2I({
-          prompt: composedPrompt,
-          size: '1536x1024',
-          quality: 'low',
-        });
-    providerRequestId = atlasResult.predictionId ?? null;
-    const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
-    const upscale = await upscaleViaRecraft(croppedUrl);
-    upscaledUrl = upscale.url;
-    // Atlas T2I low (~$0.011) + Recraft Crisp Upscale (~$0.0025) ≈ $0.014.
-    // Pinned here as a constant — the exact number is the source of
-    // truth for the stage handler's cost cap rollup. Live pricing
-    // verification is the implementer's responsibility per rule 8.
-    generationCostUsd = 0.014;
-    void markDelivered({
-      id: intent.id,
-      providerRequestId,
-      responseUrl: upscaledUrl,
-      costUsd: generationCostUsd,
-      durationMs: Date.now() - t0,
-    });
-    logger.info('[motion-collage pipeline] generated', {
-      row_index: lookupRowIndex(row, doc),
-      grid: `${grid.cols}x${grid.rows}`,
-      collage_url: upscaledUrl,
-      ms: Date.now() - t0,
-      cost_usd: generationCostUsd,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    void markFailed({
-      id: intent.id,
-      failureReason: msg,
-      providerRequestId,
-      durationMs: Date.now() - t0,
-    });
-    logger.error('[motion-collage pipeline] failed', {
-      stage: 'atlas_generation',
-      detail: msg.slice(0, 200),
+      failed_panel_indices: failedPanels.map((f) => f.i),
+      total_cost_usd: totalCostUsd,
     });
     return {
-      costUsd: 0, // not charged on a throw; provider audit covers attribution
+      costUsd: totalCostUsd,
       durationMs: Date.now() - t0,
-      error: `atlas_threw:${msg.slice(0, 100)}`,
+      error: `panels_failed:${failedPanels.map((f) => f.i).join(',')}`,
     };
   }
 
-  // ─── 6. Slice into per-panel JPEGs + upload ─────────────────────────
-  let sliceResult;
-  try {
-    sliceResult = await sliceCollageGrid(
-      upscaledUrl,
-      { cols: grid.cols, rows: grid.rows },
-      { r2KeyPrefix: 'prodoc-images-motion-collage' },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error('[motion-collage pipeline] failed', {
-      stage: 'slice',
-      detail: msg.slice(0, 200),
-    });
-    return {
-      collageImageUrl: upscaledUrl,
-      costUsd: generationCostUsd,
-      durationMs: Date.now() - t0,
-      error: `slice_failed:${msg.slice(0, 100)}`,
-    };
-  }
+  const panelUrls = panelResults.map((p) => p.url!);
 
-  // Defensive — the slicer guarantees length = cols × rows on success,
-  // but a future refactor could regress it silently. Bail loudly.
-  if (sliceResult.panelUrls.length !== N) {
-    logger.error('[motion-collage pipeline] slice count mismatch', {
-      expected: N,
-      actual: sliceResult.panelUrls.length,
-    });
-    return {
-      collageImageUrl: upscaledUrl,
-      costUsd: generationCostUsd,
-      durationMs: Date.now() - t0,
-      error: 'slice_count_mismatch',
-    };
-  }
-
-  logger.info('[motion-collage pipeline] sliced', {
+  logger.info('[motion-collage pipeline] all panels done', {
     row_index: lookupRowIndex(row, doc),
     grid: `${grid.cols}x${grid.rows}`,
-    panel_count: sliceResult.panelUrls.length,
-    panel_w: sliceResult.panelWidth,
-    panel_h: sliceResult.panelHeight,
-    ms: sliceResult.totalMs,
+    panel_count: panelUrls.length,
+    total_ms: Date.now() - t0,
+    total_cost_usd: totalCostUsd,
   });
 
   return {
-    collageImageUrl: upscaledUrl,
-    panelUrls: sliceResult.panelUrls,
-    costUsd: generationCostUsd,
+    // Pre-§D this carried the raw N×M collage. Per-panel generation
+    // doesn't produce one — set to panel[0] so legacy callers reading
+    // this field for a thumbnail get the first frame.
+    collageImageUrl: panelUrls[0],
+    panelUrls,
+    costUsd: totalCostUsd,
     durationMs: Date.now() - t0,
   };
 }
