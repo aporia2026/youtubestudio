@@ -118,14 +118,36 @@ export interface ComposePerPanelPromptArgs {
 export function composePerPanelPrompt(args: ComposePerPanelPromptArgs): string {
   const { panelPrompt, panelIndex, totalPanels, characterDescriptions, styleSuffix } = args;
   const bibleBlock = buildCharacterBibleBlock(characterDescriptions);
-  const sceneContext =
-    `This is frame ${panelIndex + 1} of ${totalPanels} in a continuous motion sequence. `
-    + `The composition, character, camera angle, background, and lighting MUST stay IDENTICAL `
-    + `to every other frame of this sequence — only the moving element advances frame-by-frame. `
-    + `Render the SAME scene exactly as described.`;
-  const frameBlock = `THIS FRAME:\n${panelPrompt}`;
+  // Scene context is intentionally TIGHT. The previous version's
+  // "continuous motion sequence" framing primed Atlas to render
+  // visually dense, illustrative output instead of the sparse doodle
+  // aesthetic the refs anchor. Now the context just says "same scene
+  // as the other frames" — the WORK of matching the refs' sparseness
+  // is done by the density directive at the end.
+  const sceneContext = totalPanels > 1
+    ? `Frame ${panelIndex + 1} of ${totalPanels} — same scene as every other frame in this sequence, only the moving element advances.`
+    : '';
+  const frameBlock = panelPrompt;
+  // Sparseness directive — CRITICAL counter-weight to the LLM's
+  // tendency to write verbose, detail-rich panel prompts. Atlas faithfully
+  // renders every described element, so a 200-char panel prompt with
+  // "Wide Stockholm harbor view with the Vasa upright on calm water,
+  // sails full, docks and shoreline in the distance, dramatic sky..."
+  // produces a fully filled-frame illustration — visually beautiful but
+  // OFF the doodle aesthetic that lives on plain white backgrounds with
+  // generous empty space. The directive below tells Atlas to match the
+  // sparseness of the STYLE REFERENCE IMAGES (the 4 doodle anchors)
+  // regardless of how verbose the panel description was.
+  const sparsenessDirective =
+    'CRITICAL DENSITY RULE — Render this as a SPARSE hand-drawn doodle that matches the style reference images\' density exactly: '
+    + 'large areas of PLAIN WHITE BACKGROUND, minimal scene clutter, simple silhouettes, generous empty space around every figure. '
+    + 'DO NOT fill the frame edge-to-edge with detail. '
+    + 'DO NOT add busy crowds, intricate ornamental carvings, dense rigging webs, heavy cross-hatching, or photorealistic shading. '
+    + 'When the panel description mentions background elements (docks, shoreline, buildings, clouds), sketch them MINIMALLY — '
+    + 'a few thin black lines suggesting presence, NOT a fully rendered scene. '
+    + 'The style reference images are the ground truth for "how much detail to draw" — match their sparseness, not the panel description\'s wordiness.';
   const suffixBlock = styleSuffix ? `\n\nSTYLE: ${styleSuffix}` : '';
-  return [bibleBlock, sceneContext, frameBlock].filter(Boolean).join('\n\n') + suffixBlock;
+  return [bibleBlock, sceneContext, frameBlock, sparsenessDirective].filter(Boolean).join('\n\n') + suffixBlock;
 }
 
 /** Short corner annotation for the four corner panels of a grid; empty
