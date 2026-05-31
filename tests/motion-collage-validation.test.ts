@@ -42,6 +42,19 @@ vi.mock('@/lib/production-doc-styles-refs', () => ({
   loadStyleReferences: vi.fn(async () => []),
   mirrorPublicUrlRefToR2: vi.fn(async () => 'mock-mirror-url'),
 }));
+vi.mock('@/lib/gpt-image-2-edit', () => ({
+  // Atlas Edit returns the same shape as i2i: { url, costUsd,
+  // vendorUsed, fallbackUsed, providerRequestId, durationMs }. The
+  // chained motion_collage path calls this once per panel 1..N.
+  generateGptImage2Edit: vi.fn(async () => ({
+    url: `mock-edit-${Math.random().toString(36).slice(2, 8)}`,
+    vendorUsed: 'atlas',
+    fallbackUsed: false,
+    costUsd: 0.011,
+    durationMs: 1,
+    providerRequestId: 'mock-edit-pred',
+  })),
+}));
 
 import {
   generateMotionCollage,
@@ -82,8 +95,8 @@ afterEach(() => {
   delete process.env.MOTION_COLLAGE_ENABLED;
 });
 
-describe('generateMotionCollage — happy path (per-panel generation, plan §D)', () => {
-  it('makes ONE Atlas call per panel and returns N panel URLs', async () => {
+describe('generateMotionCollage — happy path (chained Atlas Edit, plan §E)', () => {
+  it('panel 0 = Atlas i2i, panels 1..N-1 = chained Atlas Edit', async () => {
     const row = validRow();
     const doc = docWithRow(row);
 
@@ -91,14 +104,14 @@ describe('generateMotionCollage — happy path (per-panel generation, plan §D)'
 
     expect(result.error).toBeUndefined();
     expect(result.panelUrls).toHaveLength(4);
-    // Per-panel mode: 4 Atlas calls for a 2×2 grid, NOT 1 call + slice.
-    expect(mockedAtlas).toHaveBeenCalledTimes(4);
+    // Panel 0 ONLY uses Atlas i2i/t2i. Panels 1-3 use Atlas Edit
+    // (mocked separately). Total Atlas i2i calls: 1.
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
     expect(result.costUsd).toBeGreaterThan(0);
-    // collageImageUrl mirrors panel 0 (no combined-collage image any more).
     expect(result.collageImageUrl).toBe(result.panelUrls![0]);
   });
 
-  it('handles a 3×3 grid (9 panels) end-to-end with 9 Atlas calls', async () => {
+  it('handles a 3×3 grid (9 panels): 1 i2i + 8 Edits', async () => {
     const row = validRow({
       motion_collage_grid: { cols: 3, rows: 3 },
       motion_collage_panel_prompts: Array.from({ length: 9 }, (_, i) => `Frame ${i + 1}`),
@@ -108,7 +121,8 @@ describe('generateMotionCollage — happy path (per-panel generation, plan §D)'
     const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
 
     expect(result.panelUrls).toHaveLength(9);
-    expect(mockedAtlas).toHaveBeenCalledTimes(9);
+    // Always exactly ONE i2i call regardless of grid (panel 0 only).
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -133,8 +147,9 @@ describe('generateMotionCollage — kill switch + settings gates', () => {
     const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
 
     expect(result.error).toBeUndefined();
-    // 2×2 grid = 4 per-panel Atlas calls (plan §D).
-    expect(mockedAtlas).toHaveBeenCalledTimes(4);
+    // Plan §E: 1 Atlas i2i (panel 0) + N-1 Atlas Edits. Atlas mock
+    // counts the i2i call only.
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
   });
 
   it('refuses when doc-level allow_motion_collage is false', async () => {
@@ -266,52 +281,36 @@ describe('generateMotionCollage — panel_prompts validation', () => {
   });
 });
 
-describe('generateMotionCollage — failure modes (per-panel generation, plan §D)', () => {
-  it('reports `panels_failed:<indices>` when any panel errors', async () => {
-    // First Atlas call throws — panel 0 fails. Remaining 3 calls
-    // succeed but the whole row fails because the renderer needs ALL
-    // N panels (partial sets are visually broken: gap in motion arc).
+describe('generateMotionCollage — failure modes (chained Atlas Edit, plan §E)', () => {
+  it('panel 0 failure cascades: every subsequent panel is skipped without an AI call', async () => {
+    // Panel 0 throws — remaining panels skip because the chain has no
+    // base URL to edit on. The row fails as a whole.
     mockedAtlas.mockRejectedValueOnce(new Error('atlas rate limit'));
     const row = validRow();
     const doc = docWithRow(row);
 
     const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
 
-    expect(result.error).toMatch(/^panels_failed:/);
+    expect(result.error).toMatch(/^panels_failed:0/);
     expect(result.panelUrls).toBeUndefined();
   });
 
-  it('reports failed indices in the error string', async () => {
-    // Reject the first TWO Atlas calls; succeed for the rest. We don't
-    // assert on EXACT indices because the concurrency-limited launcher
-    // may consume rejections out of strict input order, but the error
-    // shape MUST include the colon-prefix and at least one index.
-    mockedAtlas
-      .mockRejectedValueOnce(new Error('rate limit'))
-      .mockRejectedValueOnce(new Error('rate limit'));
-    const row = validRow();
-    const doc = docWithRow(row);
-
-    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
-
-    expect(result.error).toMatch(/^panels_failed:\d/);
-  });
-
-  it('still charges (totalCostUsd > 0) for the panels that succeeded before the failure', async () => {
-    // First call fails, remaining 3 succeed. Successful panels paid for
-    // their atlas + recraft (~$0.0135 each) and the audit row marks
-    // them delivered. The row fails as a whole but the cost reflects
-    // what was actually charged.
-    mockedAtlas.mockRejectedValueOnce(new Error('atlas glitch'));
+  it('mid-chain failure: later panels skip, earlier panels keep their charges', async () => {
+    // Panel 0 (i2i) succeeds → panel 1 (Edit) throws → panels 2, 3
+    // skip with `skipped:base_panel_failed`-style error. Panel 0's
+    // cost stands.
+    const { generateGptImage2Edit } = await import('@/lib/gpt-image-2-edit');
+    const mockedEdit = vi.mocked(generateGptImage2Edit);
+    mockedEdit.mockRejectedValueOnce(new Error('edit timeout'));
     const row = validRow();
     const doc = docWithRow(row);
 
     const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
 
     expect(result.error).toMatch(/^panels_failed:/);
-    expect(result.costUsd).toBeGreaterThan(0);
-    // ~3 panels × $0.0135 ≈ $0.04. Bound loose to allow per-panel
-    // rounding without making the test brittle.
-    expect(result.costUsd).toBeLessThan(0.05);
+    // Panel 0 ($0.0135) charged but row failed. Bound loose so per-call
+    // rounding doesn't make this brittle.
+    expect(result.costUsd).toBeGreaterThan(0.005);
+    expect(result.costUsd).toBeLessThan(0.02);
   });
 });

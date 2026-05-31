@@ -1452,24 +1452,28 @@ export async function generateMotionCollage(args: {
     }
   }
 
-  // ─── 5. Per-panel generation (plan §D, 2026-05-31 quality fix) ─────
+  // ─── 5. Chained Atlas Edit generation (plan §E, 2026-05-31) ─────────
   //
-  // Earlier iteration ran ONE Atlas i2i call producing an N×M grid in a
-  // single output, then sliced. That approach split Atlas's render
-  // budget (resolution + detail tokens) across N cells, so each panel
-  // came out muddy compared to single-shot outputs at the same quality
-  // level — the user's smoke test showed the dramatic difference
-  // (the polished Stockholm scene single-shots vs. the artefacted ship
-  // collage).
+  // Earlier iteration (plan §D, parallel per-panel) fixed the muddy
+  // output but BROKE continuity — 4 independent Atlas i2i calls
+  // produced 4 unrelated scenes (different ships, different characters,
+  // different camera angles). Refs + "same scene" prompt language were
+  // not enough to lock visual continuity across independent generations.
   //
-  // The fix: call Atlas i2i ONCE PER PANEL. Each panel gets the full
-  // Atlas resolution + refs budget, matching single-shot quality. Cost
-  // scales linearly with panel count (~$0.014 per panel) but the output
-  // is dramatically cleaner. Consistency between panels comes from
-  // (a) shared style refs locking the aesthetic, (b) the LLM emitting
-  // "same scene, only X advances" language in every panel prompt, and
-  // (c) the per-panel composer's explicit "frame N of TOTAL in a
-  // continuous motion sequence" scene-context block.
+  // The fix: generate panel 0 with Atlas i2i + refs (creates the base
+  // composition), then chain Atlas Edit for panels 1..N — each panel
+  // takes the PREVIOUS panel's URL as input and applies a delta. Atlas
+  // Edit preserves the input image's identity (ship, characters, camera,
+  // background) while modifying only what the panel prompt requests.
+  // Result: every panel literally builds on the prior one, giving real
+  // motion-arc continuity.
+  //
+  // Cost stays ~$0.054 per 4-panel shot (Atlas Edit ~$0.011 same as
+  // i2i). Trade-off: chained, so 4 panels run sequentially — total
+  // wall-clock ~2 min instead of parallel §D's ~30s. Acceptable.
+  // Drift: ~5% per chained step compounds; mitigated by the
+  // CHAINED_VARIANT_IDENTITY_ANCHOR appended on panels 2+ that
+  // explicitly references the ORIGINAL base.
   const ATLAS_I2I_MAX_REFS = 4;
   const refsAware = refImageUrls.length > 0;
   const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
@@ -1478,72 +1482,158 @@ export async function generateMotionCollage(args: {
     row_index: lookupRowIndex(row, doc),
     grid: `${grid.cols}x${grid.rows}`,
     panel_count: N,
-    mode: 'per-panel',
+    mode: 'chained-edit',
     refs_aware: refsAware,
     refs_sent: cappedRefs.length,
   });
 
-  // Compose every panel's prompt up-front so the parallel generations
-  // don't pay the composition cost per call.
+  // Compose panel 0's prompt with full style directives + sparseness
+  // rules; the base sets the scene. Panels 1..N use the raw panel
+  // prompts (the LLM's "Same scene; only X advances" wording is exactly
+  // what Atlas Edit needs — describes what changes, lets the input image
+  // carry the rest).
   const characterDescriptions = doc.doodle_explainer_2_character_descriptions;
-  const panelComposedPrompts: string[] = panelPrompts.map((p, i) =>
-    composePerPanelPrompt({
-      panelPrompt: p,
-      panelIndex: i,
-      totalPanels: N,
-      characterDescriptions,
-      styleSuffix,
-    }),
-  );
+  const panel0Prompt = composePerPanelPrompt({
+    panelPrompt: panelPrompts[0],
+    panelIndex: 0,
+    totalPanels: N,
+    characterDescriptions,
+    styleSuffix,
+  });
 
-  // Concurrency cap. 4 simultaneous Atlas i2i calls is the practical
-  // ceiling — Atlas tolerates burst but pinning to 4 leaves Recraft
-  // upscale slots free for other in-flight rows. For a 2×2 grid (4
-  // panels) this just runs all 4 at once. For 3×3 (9 panels) it runs
-  // in waves of 4 → ~3× the per-panel wall-clock.
-  const CONCURRENCY = 4;
-  const panelResults: Array<{ url?: string; error?: string; costUsd: number; durationMs: number }> = new Array(N);
-  // Initialize so TypeScript sees every slot defined.
+  const panelResults: Array<{ url?: string; error?: string; costUsd: number; durationMs: number }> =
+    new Array(N);
   for (let i = 0; i < N; i++) panelResults[i] = { costUsd: 0, durationMs: 0 };
 
-  async function generateOnePanel(panelIdx: number): Promise<void> {
+  // ─── Panel 0 — Atlas i2i with refs ─────────────────────────────────
+  let previousPanelUrl: string | undefined;
+  {
     const panelStart = Date.now();
-    const composedPrompt = panelComposedPrompts[panelIdx];
     const intent = await recordIntent({
       userId: ownerId,
       workspaceId,
-      route: 'auto-pipeline:generateMotionCollage#panel',
+      route: 'auto-pipeline:generateMotionCollage#panel-0-base',
       provider: 'atlas',
       providerModel: refsAware
-        ? `openai/gpt-image-2/i2i#motion-collage-panel-${panelIdx + 1}-of-${N}`
-        : `openai/gpt-image-2/t2i#motion-collage-panel-${panelIdx + 1}-of-${N}`,
+        ? `openai/gpt-image-2/i2i#motion-collage-base-${grid.cols}x${grid.rows}`
+        : `openai/gpt-image-2/t2i#motion-collage-base-${grid.cols}x${grid.rows}`,
     });
     let providerRequestId: string | null = null;
     try {
       const atlasResult = refsAware
         ? await generateAtlasI2I({
-            prompt: composedPrompt,
+            prompt: panel0Prompt,
             images: cappedRefs,
             size: '1536x1024',
             quality: 'low',
           })
         : await generateAtlasT2I({
-            prompt: composedPrompt,
+            prompt: panel0Prompt,
             size: '1536x1024',
             quality: 'low',
           });
       providerRequestId = atlasResult.predictionId ?? null;
-      // Same downstream as the single-shot path: crop to 16:9, then
-      // Recraft 4× upscale → ~6144×3456 per panel. Final per-panel
-      // resolution matches single-shot quality.
-      const croppedUrl = await cropTo16x9AndUpload(
-        atlasResult.url,
-        'prodoc-images-atlas-crop',
-      );
+      const croppedUrl = await cropTo16x9AndUpload(atlasResult.url, 'prodoc-images-atlas-crop');
       const upscale = await upscaleViaRecraft(croppedUrl);
       const panelDurationMs = Date.now() - panelStart;
-      // Atlas i2i low (~$0.011) + Recraft Crisp Upscale (~$0.0025) ≈ $0.0135.
       const panelCostUsd = 0.0135;
+      void markDelivered({
+        id: intent.id,
+        providerRequestId,
+        responseUrl: upscale.url,
+        costUsd: panelCostUsd,
+        durationMs: panelDurationMs,
+      });
+      panelResults[0] = { url: upscale.url, costUsd: panelCostUsd, durationMs: panelDurationMs };
+      previousPanelUrl = upscale.url;
+      logger.info('[motion-collage pipeline] panel done', {
+        row_index: lookupRowIndex(row, doc),
+        panel_index: 0,
+        of_total: N,
+        kind: 'base-i2i',
+        url: upscale.url,
+        ms: panelDurationMs,
+        cost_usd: panelCostUsd,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const panelDurationMs = Date.now() - panelStart;
+      void markFailed({
+        id: intent.id,
+        failureReason: msg,
+        providerRequestId,
+        durationMs: panelDurationMs,
+      });
+      panelResults[0] = {
+        error: `panel_0_threw:${msg.slice(0, 80)}`,
+        costUsd: 0,
+        durationMs: panelDurationMs,
+      };
+      logger.error('[motion-collage pipeline] panel failed', {
+        row_index: lookupRowIndex(row, doc),
+        panel_index: 0,
+        of_total: N,
+        kind: 'base-i2i',
+        detail: msg.slice(0, 200),
+      });
+    }
+  }
+
+  // ─── Panels 1..N — chained Atlas Edit on previous panel ────────────
+  // Each call takes the prior panel's URL as input + the next panel's
+  // prompt as the delta. Atlas Edit preserves identity (ship, scene,
+  // characters, camera) while applying the change. Identity anchor
+  // appended from panel 2 onwards so chained drift across 3+ steps
+  // doesn't compound away from the ORIGINAL base.
+  // Sequential because each step depends on the previous URL.
+  // Dynamic import for the identity anchor — same pattern as the
+  // existing chained-variant dispatcher at line ~416 (the canonical
+  // anchor string lives in `remotion/utils` which pulls React deps,
+  // so a static top-level import isn't safe in this server-only
+  // module).
+  const { CHAINED_VARIANT_IDENTITY_ANCHOR } = await import('../../remotion/utils');
+  for (let panelIdx = 1; panelIdx < N; panelIdx++) {
+    if (!previousPanelUrl) {
+      // Panel 0 failed — propagate the failure through every later
+      // panel without making any AI calls.
+      panelResults[panelIdx] = {
+        error: 'skipped:base_panel_failed',
+        costUsd: 0,
+        durationMs: 0,
+      };
+      continue;
+    }
+    const panelStart = Date.now();
+    // Compose Atlas Edit prompt: raw panel prompt (which carries the
+    // LLM's "Same X; only Y changes" delta) + identity anchor for
+    // chains depth >= 2 + light style guard.
+    const baseDelta = panelPrompts[panelIdx];
+    const isDeepChain = panelIdx >= 2;
+    const editPrompt = [
+      baseDelta,
+      isDeepChain
+        ? CHAINED_VARIANT_IDENTITY_ANCHOR
+        : 'Preserve the input image\'s composition, character identity, camera angle, and background exactly. Only modify the moving element to match the description above.',
+      'Keep the hand-drawn doodle aesthetic: thin black ink lines, sparse composition, generous white space. Do NOT add details or shading not present in the input image.',
+    ].filter(Boolean).join('\n\n');
+    const intent = await recordIntent({
+      userId: ownerId,
+      workspaceId,
+      route: `auto-pipeline:generateMotionCollage#panel-${panelIdx}-edit`,
+      provider: 'atlas',
+      providerModel: `openai/gpt-image-2/edit#motion-collage-panel-${panelIdx + 1}-of-${N}`,
+    });
+    let providerRequestId: string | null = null;
+    try {
+      const edit = await generateGptImage2Edit({
+        prompt: editPrompt,
+        sourceImageUrl: previousPanelUrl,
+        primary: 'atlas',
+      });
+      providerRequestId = edit.providerRequestId;
+      const upscale = await upscaleViaRecraft(edit.url);
+      const panelDurationMs = Date.now() - panelStart;
+      const panelCostUsd = edit.costUsd + 0.0025; // Atlas Edit + Recraft
       void markDelivered({
         id: intent.id,
         providerRequestId,
@@ -1556,10 +1646,14 @@ export async function generateMotionCollage(args: {
         costUsd: panelCostUsd,
         durationMs: panelDurationMs,
       };
+      previousPanelUrl = upscale.url;
       logger.info('[motion-collage pipeline] panel done', {
         row_index: lookupRowIndex(row, doc),
         panel_index: panelIdx,
         of_total: N,
+        kind: 'chained-edit',
+        vendor_used: edit.vendorUsed,
+        fallback_used: edit.fallbackUsed,
         url: upscale.url,
         ms: panelDurationMs,
         cost_usd: panelCostUsd,
@@ -1582,25 +1676,14 @@ export async function generateMotionCollage(args: {
         row_index: lookupRowIndex(row, doc),
         panel_index: panelIdx,
         of_total: N,
+        kind: 'chained-edit',
         detail: msg.slice(0, 200),
       });
+      // Don't continue chain on failure — the next panel would need
+      // a non-existent prior URL.
+      previousPanelUrl = undefined;
     }
   }
-
-  // Concurrency-limited launcher — shared cursor across `CONCURRENCY`
-  // workers. Each worker pulls the next pending index until the queue
-  // is drained.
-  let cursor = 0;
-  async function panelWorker(): Promise<void> {
-    while (true) {
-      const idx = cursor++;
-      if (idx >= N) return;
-      await generateOnePanel(idx);
-    }
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(CONCURRENCY, N) }, () => panelWorker()),
-  );
 
   // Aggregate results. If ANY panel failed, fail the whole row — the
   // renderer needs the full set of N panels to play the keyframe
