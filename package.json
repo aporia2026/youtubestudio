@@ -22,6 +22,7 @@
     "render:local": "tsx --env-file-if-exists=.env.local scripts/render-local.ts",
     "smoke:lambda": "tsx --env-file-if-exists=.env.local scripts/lambda-smoke.ts",
     "smoke:align": "tsx --env-file-if-exists=.env.local scripts/align-smoke.ts",
+    "smoke:pronunciation": "tsx --env-file-if-exists=.env.local scripts/pronunciation-review-smoke.ts",
     "eval:deep-analyzer": "tsx --env-file-if-exists=.env.local scripts/eval-deep-analyzer.ts",
     "remotion": "dotenv -e .env.local -- remotion",
     "remotion:lambda": "dotenv -e .env.local -- remotion lambda"
