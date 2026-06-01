@@ -143,6 +143,41 @@ async function main() {
 
   process.stdout.write('\nfull transcript (first 500 chars):\n');
   process.stdout.write(`  ${whisper.text.slice(0, 500)}${whisper.text.length > 500 ? '…' : ''}\n`);
+
+  // ── Phase 2 — flags produced by the diff + Gemini judge ──────────────
+  const flagRows = await sql<{
+    id: string;
+    category: string;
+    confidence: string | number;
+    start_sec: string | number;
+    end_sec: string | number;
+    word_index: string | number;
+    ai_explanation: string;
+    suggested_comment: string;
+    user_status: string;
+  }>`
+    SELECT f.id, f.category, f.confidence, f.start_sec, f.end_sec,
+           f.word_index, f.ai_explanation, f.suggested_comment, f.user_status
+    FROM pronunciation_flags f
+    JOIN narrator_takes t ON t.id = f.take_id
+    JOIN narrator_assignments a ON a.full_audio_take_id = t.id
+    WHERE a.id = ${assignmentId}
+    ORDER BY f.start_sec ASC
+  `;
+
+  process.stdout.write(`\nflags persisted   : ${flagRows.rows.length}\n`);
+  if (flagRows.rows.length > 0) {
+    process.stdout.write('  time     | conf | category          | explanation\n');
+    process.stdout.write('  ---------+------+-------------------+----------------------------------\n');
+    for (const f of flagRows.rows) {
+      const t = Number(f.start_sec);
+      const tStr = `${fmtSec(t)}`;
+      const cat = String(f.category).padEnd(17);
+      const conf = Number(f.confidence).toFixed(2);
+      process.stdout.write(`  ${tStr} | ${conf} | ${cat} | ${f.ai_explanation}\n`);
+      process.stdout.write(`           |      |                   | → ${f.suggested_comment}\n`);
+    }
+  }
 }
 
 main().catch((err) => {

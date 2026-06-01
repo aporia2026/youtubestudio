@@ -190,6 +190,61 @@ export async function setPronunciationReviewWhisperReady(args: {
 }
 
 /**
+ * Phase 2 — just persists the Whisper transcription without flipping
+ * to 'ready'. Called between the Whisper step and the judge step so
+ * a downstream failure still preserves the transcription (re-runs
+ * skip re-paying Whisper).
+ *
+ * Status stays at 'running' on success; the orchestrator's
+ * `setPronunciationReviewReady` call flips it after the judge
+ * completes. Guarded by status='running' so a cancel sticks.
+ */
+export async function setPronunciationReviewWhisperCache(args: {
+  takeId: string;
+  whisperJson: WhisperTranscriptionCache;
+  costUsd: number;
+}): Promise<boolean> {
+  const { rows } = await sql`
+    UPDATE narrator_takes
+    SET pronunciation_review_whisper_json = ${JSON.stringify(args.whisperJson)}::jsonb,
+        pronunciation_review_cost_usd = ${args.costUsd}
+    WHERE id = ${args.takeId}
+      AND pronunciation_review_status = 'running'
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Phase 2 terminal state. Flips status to 'ready' and rolls the
+ * judge-step cost into `pronunciation_review_cost_usd` (which already
+ * includes the Whisper cost from `setPronunciationReviewWhisperCache`).
+ *
+ * Guarded by status='running' so a cancellation that landed mid-judge
+ * isn't overwritten. Returns false in that case; the caller should
+ * leave the flag rows in place (the next re-run's DELETE pass will
+ * clear them).
+ */
+export async function setPronunciationReviewReady(args: {
+  takeId: string;
+  /** Cost of the judge step only — added to the existing
+   *  `pronunciation_review_cost_usd` value (Whisper cost). */
+  judgeCostUsd: number;
+}): Promise<boolean> {
+  const { rows } = await sql`
+    UPDATE narrator_takes
+    SET pronunciation_review_status = 'ready',
+        pronunciation_review_cost_usd =
+          COALESCE(pronunciation_review_cost_usd, 0) + ${args.judgeCostUsd},
+        pronunciation_review_error = NULL
+    WHERE id = ${args.takeId}
+      AND pronunciation_review_status = 'running'
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Record a user-facing failure reason. Truncated to keep error messages
  * compact in the DB and the UI. Guarded on running/pending so a stale
  * orchestrator error doesn't overwrite a cancel ('cancelled') or success
@@ -245,6 +300,148 @@ export async function resetPronunciationReview(takeId: string): Promise<void> {
         pronunciation_review_started_at = NULL
     WHERE id = ${takeId}
   `;
+}
+
+// ─── Flag rows ────────────────────────────────────────────────────────────────
+
+export type FlagCategory =
+  | 'script_deviation'
+  | 'mispronunciation'
+  | 'omission'
+  | 'insertion';
+
+export type FlagUserStatus = 'pending' | 'accepted' | 'dismissed';
+
+export interface PronunciationFlagInsert {
+  word_index: number;
+  start_sec: number;
+  end_sec: number;
+  category: FlagCategory;
+  confidence: number;
+  ai_explanation: string;
+  suggested_comment: string;
+}
+
+export interface PronunciationFlagRow extends PronunciationFlagInsert {
+  id: string;
+  take_id: string;
+  workspace_id: string;
+  user_status: FlagUserStatus;
+  user_comment: string | null;
+  comment_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Drop the take's `user_status='pending'` flags so a re-run can write
+ * fresh judgements without duplicating rows. Preserves `accepted` and
+ * `dismissed` flags — those carry decisions the reviewer already made
+ * and re-surfacing them would force them to re-decide.
+ *
+ * Returns the count of deleted rows so the orchestrator can log how
+ * much state churned.
+ */
+export async function deletePendingPronunciationFlags(
+  takeId: string,
+): Promise<number> {
+  const { rowCount } = await sql`
+    DELETE FROM pronunciation_flags
+    WHERE take_id = ${takeId}
+      AND user_status = 'pending'
+  `;
+  return rowCount ?? 0;
+}
+
+/**
+ * Insert a batch of pronunciation flags for a single take. Workspace
+ * id is required for tenancy enforcement (`pronunciation_flags` has
+ * `workspace_id NOT NULL`); the caller looks it up from the take's
+ * assignment once and passes it through.
+ *
+ * Inserts are performed sequentially in a loop rather than via a
+ * multi-row INSERT — keeps the SQL simple and the per-row cost is
+ * negligible against the Gemini-judge latency that just preceded
+ * this. If row counts ever grow past ~100 per take we can switch to
+ * `INSERT ... VALUES (..), (..), ...` for a one-trip insert.
+ *
+ * Returns the inserted ids in input order so the route can echo them
+ * to the client without an additional read.
+ */
+export async function insertPronunciationFlags(args: {
+  takeId: string;
+  workspaceId: string;
+  flags: ReadonlyArray<PronunciationFlagInsert>;
+}): Promise<string[]> {
+  const ids: string[] = [];
+  for (const f of args.flags) {
+    const { rows } = await sql<{ id: string }>`
+      INSERT INTO pronunciation_flags (
+        take_id, workspace_id,
+        word_index, start_sec, end_sec,
+        category, confidence,
+        ai_explanation, suggested_comment
+      ) VALUES (
+        ${args.takeId}, ${args.workspaceId},
+        ${f.word_index}, ${f.start_sec}, ${f.end_sec},
+        ${f.category}, ${f.confidence},
+        ${f.ai_explanation}, ${f.suggested_comment}
+      )
+      RETURNING id
+    `;
+    if (rows[0]?.id) ids.push(rows[0].id);
+  }
+  return ids;
+}
+
+/**
+ * Read all flags for a take in chronological audio order. The UI
+ * renders flags top-to-bottom by `start_sec`, and the inline
+ * underlines snap to the same order. Returns an empty array when the
+ * review hasn't run yet — callers branch on the take's
+ * `pronunciation_review_status` for that signal.
+ */
+export async function listPronunciationFlagsForTake(
+  takeId: string,
+): Promise<PronunciationFlagRow[]> {
+  const { rows } = await sql<PronunciationFlagRow>`
+    SELECT id, take_id, workspace_id,
+           word_index, start_sec, end_sec,
+           category, confidence,
+           ai_explanation, suggested_comment,
+           user_status, user_comment, comment_id,
+           created_at, updated_at
+    FROM pronunciation_flags
+    WHERE take_id = ${takeId}
+    ORDER BY start_sec ASC
+  `;
+  return rows.map((r) => ({
+    ...r,
+    // sql returns numerics as strings — coerce so the UI doesn't have
+    // to.
+    start_sec: Number(r.start_sec),
+    end_sec: Number(r.end_sec),
+    confidence: Number(r.confidence),
+    word_index: Number(r.word_index),
+  }));
+}
+
+/**
+ * Look up the workspace id for a take via its assignment. Needed when
+ * the orchestrator inserts flag rows (`workspace_id NOT NULL`) — the
+ * take itself doesn't carry workspace_id directly but the assignment
+ * does (post-migration-0013).
+ */
+export async function getWorkspaceIdForAssignment(
+  assignmentId: string,
+): Promise<string | null> {
+  const { rows } = await sql<{ workspace_id: string }>`
+    SELECT workspace_id
+    FROM narrator_assignments
+    WHERE id = ${assignmentId}
+    LIMIT 1
+  `;
+  return rows[0]?.workspace_id ?? null;
 }
 
 // ─── Budget ───────────────────────────────────────────────────────────────────
