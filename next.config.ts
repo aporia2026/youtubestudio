@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
     '@remotion/renderer',
     '@remotion/bundler',
     '@remotion/cli',
+    // ffmpeg binary for the FFmpeg-native renderer + pronunciation-review
+    // audio slicing. Its index.js does a dynamic require() of the
+    // per-platform binary subpackage (@ffmpeg-installer/linux-x64 on
+    // Vercel), which Turbopack can't statically resolve at build time —
+    // externalizing leaves the require to run via native Node at runtime.
+    '@ffmpeg-installer/ffmpeg',
   ],
   images: {
     remotePatterns: [
