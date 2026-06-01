@@ -444,6 +444,98 @@ export async function getWorkspaceIdForAssignment(
   return rows[0]?.workspace_id ?? null;
 }
 
+/**
+ * Read one flag by id. Returns null when missing. Used by the
+ * accept/dismiss/edit route to verify the flag exists before applying
+ * the mutation. The route is responsible for tenancy — the join to
+ * narrator_assignments is left to that layer so we don't double-fetch
+ * here.
+ */
+export async function getPronunciationFlag(
+  flagId: string,
+): Promise<PronunciationFlagRow | null> {
+  const { rows } = await sql<PronunciationFlagRow>`
+    SELECT id, take_id, workspace_id,
+           word_index, start_sec, end_sec,
+           category, confidence,
+           ai_explanation, suggested_comment,
+           user_status, user_comment, comment_id,
+           created_at, updated_at
+    FROM pronunciation_flags
+    WHERE id = ${flagId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    start_sec: Number(row.start_sec),
+    end_sec: Number(row.end_sec),
+    confidence: Number(row.confidence),
+    word_index: Number(row.word_index),
+  };
+}
+
+/**
+ * Update a flag's user-driven fields: status (accepted / dismissed /
+ * back to pending) and the editable comment text. Either field can be
+ * omitted to leave it unchanged. Returns the updated row, or null when
+ * the flag doesn't exist.
+ *
+ * The `comment_id` link is updated by `setPronunciationFlagCommentId`
+ * separately — the route layer creates the take comment first, then
+ * stamps the resulting id back onto the flag.
+ */
+export async function updatePronunciationFlag(args: {
+  flagId: string;
+  userStatus?: FlagUserStatus;
+  userComment?: string | null;
+}): Promise<PronunciationFlagRow | null> {
+  const { rows } = await sql<PronunciationFlagRow>`
+    UPDATE pronunciation_flags
+    SET user_status = COALESCE(${args.userStatus ?? null}, user_status),
+        user_comment = CASE
+          WHEN ${args.userComment === undefined}::boolean THEN user_comment
+          ELSE ${args.userComment ?? null}
+        END,
+        updated_at = NOW()
+    WHERE id = ${args.flagId}
+    RETURNING id, take_id, workspace_id,
+              word_index, start_sec, end_sec,
+              category, confidence,
+              ai_explanation, suggested_comment,
+              user_status, user_comment, comment_id,
+              created_at, updated_at
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    start_sec: Number(row.start_sec),
+    end_sec: Number(row.end_sec),
+    confidence: Number(row.confidence),
+    word_index: Number(row.word_index),
+  };
+}
+
+/**
+ * Link a flag to the take-comment row that was created when the
+ * reviewer hit "Send to narrator." Used by the route layer in a
+ * sequence: create comment → setPronunciationFlagCommentId. Idempotent
+ * — re-linking the same comment is a no-op.
+ */
+export async function setPronunciationFlagCommentId(
+  flagId: string,
+  commentId: string,
+): Promise<void> {
+  await sql`
+    UPDATE pronunciation_flags
+    SET comment_id = ${commentId},
+        updated_at = NOW()
+    WHERE id = ${flagId}
+  `;
+}
+
 // ─── Budget ───────────────────────────────────────────────────────────────────
 
 /**
