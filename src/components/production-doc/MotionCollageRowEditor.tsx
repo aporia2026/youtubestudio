@@ -45,12 +45,23 @@ export interface MotionCollageRowEditorProps {
    *  pipeline rejects them at generate time with a clear error). */
   panelPrompts: readonly string[];
   /** Called with the next grid + panel_prompts when either changes.
-   *  The parent merges into the row via `updateRow`. */
-  onChange: (next: { grid: { cols: number; rows: number }; panelPrompts: string[] }) => void;
+   *  `reason` tells the parent WHAT changed: a grid preset tap (`'grid'`)
+   *  vs a panel textarea edit (`'prompt'`). The parent uses this to
+   *  auto-fill only the newly-added blank panels on a grid expansion
+   *  without re-firing on every keystroke. The parent merges into the
+   *  row via `updateRow`. */
+  onChange: (next: { grid: { cols: number; rows: number }; panelPrompts: string[]; reason: 'grid' | 'prompt' }) => void;
   /** Revert the row to a regular Animation row. Clears motion_collage_*
    *  fields and (in the parent) the row's image_url so the next gen
    *  picks up the new shot kind. */
   onRevertToRegular: () => void;
+  /** Auto-fill the EMPTY panels from the row's narration beat (one LLM
+   *  call, parent-owned). Non-destructive: panels the user already wrote
+   *  are kept — clear a panel to regenerate just that one. */
+  onAutoFill: () => void;
+  /** True while an auto-fill request is in flight for this row — disables
+   *  the button + shows a spinner so the user can't double-fire. */
+  autoFilling: boolean;
 }
 
 export const MotionCollageRowEditor: React.FC<MotionCollageRowEditorProps> = ({
@@ -58,6 +69,8 @@ export const MotionCollageRowEditor: React.FC<MotionCollageRowEditorProps> = ({
   panelPrompts,
   onChange,
   onRevertToRegular,
+  onAutoFill,
+  autoFilling,
 }) => {
   const safeGrid = grid && grid.cols > 0 && grid.rows > 0 ? grid : { cols: 2, rows: 2 };
   const N = safeGrid.cols * safeGrid.rows;
@@ -71,13 +84,13 @@ export const MotionCollageRowEditor: React.FC<MotionCollageRowEditorProps> = ({
   function applyGrid(nextGrid: { cols: number; rows: number }): void {
     const nextN = nextGrid.cols * nextGrid.rows;
     const nextPrompts: string[] = Array.from({ length: nextN }, (_, i) => normalizedPrompts[i] ?? '');
-    onChange({ grid: nextGrid, panelPrompts: nextPrompts });
+    onChange({ grid: nextGrid, panelPrompts: nextPrompts, reason: 'grid' });
   }
 
   function applyPrompt(idx: number, text: string): void {
     const next = normalizedPrompts.slice();
     next[idx] = text;
-    onChange({ grid: safeGrid, panelPrompts: next });
+    onChange({ grid: safeGrid, panelPrompts: next, reason: 'prompt' });
   }
 
   // Layout coords for the per-panel label. "Top-left", "Bottom-right",
@@ -115,20 +128,39 @@ export const MotionCollageRowEditor: React.FC<MotionCollageRowEditorProps> = ({
         >
           ↯ Motion Collage · {N} panel{N === 1 ? '' : 's'}
         </span>
-        <button
-          type="button"
-          onClick={onRevertToRegular}
-          className="text-[9px] px-1.5 py-0.5 rounded"
-          style={{
-            background: 'transparent',
-            color: 'var(--text-muted)',
-            border: '1px solid rgba(255,255,255,0.15)',
-            cursor: 'pointer',
-          }}
-          title="Revert this row to a regular Animation row (clears motion_collage_* fields and image_url)"
-        >
-          ← Regular row
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            type="button"
+            onClick={onAutoFill}
+            disabled={autoFilling}
+            className="text-[9px] px-1.5 py-0.5 rounded"
+            style={{
+              background: autoFilling ? 'rgba(124,58,237,0.12)' : 'rgba(124,58,237,0.20)',
+              color: '#a78bfa',
+              border: '1px solid rgba(124,58,237,0.45)',
+              cursor: autoFilling ? 'wait' : 'pointer',
+              opacity: autoFilling ? 0.7 : 1,
+              whiteSpace: 'nowrap',
+            }}
+            title="Auto-fill the empty panels from this row's narration. Panels you've already written are kept — clear a panel and re-run to regenerate just that one."
+          >
+            {autoFilling ? '✨ Filling…' : '✨ Auto-fill panels'}
+          </button>
+          <button
+            type="button"
+            onClick={onRevertToRegular}
+            className="text-[9px] px-1.5 py-0.5 rounded"
+            style={{
+              background: 'transparent',
+              color: 'var(--text-muted)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              cursor: 'pointer',
+            }}
+            title="Revert this row to a regular Animation row (clears motion_collage_* fields and image_url)"
+          >
+            ← Regular row
+          </button>
+        </div>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
@@ -199,8 +231,9 @@ export const MotionCollageRowEditor: React.FC<MotionCollageRowEditorProps> = ({
       </div>
 
       <div className="text-[9px]" style={{ color: 'var(--text-muted)' }}>
-        Same scene across every panel — only the moving element advances. Leave ai_image_prompt empty;
-        the pipeline composes the full collage prompt from these. The next regen runs
+        Same scene across every panel — only the moving element advances. Panels are auto-filled from the
+        row narration on convert; edit any of them, or hit <strong>✨ Auto-fill panels</strong> to fill
+        the blanks again (e.g. after enlarging the grid). The next regen runs
         <code style={{ padding: '0 3px', fontFamily: 'ui-monospace, SFMono-Regular, monospace' }}>generateMotionCollage</code>.
       </div>
     </div>

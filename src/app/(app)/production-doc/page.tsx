@@ -2567,6 +2567,12 @@ function ProductionDocPage() {
     DoodleExplainer2MotionCollageSettings | undefined
   >(undefined);
 
+  // Row indices whose motion_collage panel prompts are currently being
+  // auto-filled (one LLM call via /motion-collage/panels). Drives the
+  // editor's "✨ Filling…" spinner and the in-flight guard that drops
+  // overlapping triggers (convert + grid-change + button) for the same row.
+  const [autoFillingRows, setAutoFillingRows] = useState<ReadonlySet<number>>(new Set());
+
   // motion_collage rows MUST have visual_type === 'Animation'
   // regardless of what the LLM emitted. Some runs land them on
   // 'Title Card' (visible to the user as the wrong type chip and
@@ -7274,6 +7280,112 @@ function ProductionDocPage() {
   }
 
   /**
+   * Auto-fill a motion_collage row's per-panel keyframe prompts from its
+   * narration beat — the fix for "Convert to motion collage just hands me
+   * empty boxes." Hits /api/generate/production-doc/motion-collage/panels
+   * (one cheap LLM call, no image gen).
+   *
+   * Race-free by design: the caller passes the grid + content + existing
+   * panels EXPLICITLY (no stale `doc` reads), so it works the same whether
+   * invoked from the convert handler (content captured before the row is
+   * cleared), the editor's grid-expand branch (onChange payload), or the
+   * "✨ Auto-fill panels" button (current row state).
+   *
+   * Merge policy = "keep existing, fill blanks": a panel the user already
+   * wrote is never overwritten, even if the model returns text for it.
+   * Changing the panels invalidates any rendered collage, so we clear
+   * image_url + motion_collage_*url so the next Generate re-runs.
+   *
+   * See `_plans/2026-06-01-motion-collage-panel-autofill.md`.
+   */
+  async function autoFillMotionCollagePanels(
+    rowIndex: number,
+    payload: {
+      grid: { cols: number; rows: number };
+      scriptText: string;
+      visualDescription?: string;
+      baseImagePrompt?: string;
+      existingPanels: readonly string[];
+    },
+  ): Promise<void> {
+    // In-flight guard — drop overlapping triggers for the same row.
+    if (autoFillingRows.has(rowIndex)) return;
+
+    const hasContent = [payload.scriptText, payload.visualDescription, payload.baseImagePrompt]
+      .some((s) => typeof s === 'string' && s.trim().length > 0);
+    if (!hasContent) {
+      toast.error('Add some narration or a visual description to this row first.');
+      return;
+    }
+
+    // Nothing to fill — every panel already has text. Skip the (wasted)
+    // LLM call and point the user at the regenerate path. Convert +
+    // grid-expand always pass at least one blank, so this only guards a
+    // pointless press of the "Auto-fill panels" button.
+    const N = payload.grid.cols * payload.grid.rows;
+    const blanks = Array.from({ length: N }, (_, i) => (payload.existingPanels[i] ?? '').trim()).filter((p) => !p);
+    if (blanks.length === 0) {
+      toast('All panels are filled — clear a panel and re-run to regenerate it.');
+      return;
+    }
+
+    setAutoFillingRows((prev) => new Set(prev).add(rowIndex));
+    console.info('[prodoc motion-collage panels] start', {
+      row_index: rowIndex,
+      grid: payload.grid,
+    });
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- LLM RPC: awaits and uses response
+      const res = await fetch('/api/generate/production-doc/motion-collage/panels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grid: payload.grid,
+          scriptText: payload.scriptText,
+          visualDescription: payload.visualDescription,
+          baseImagePrompt: payload.baseImagePrompt,
+          existingPanels: payload.existingPanels,
+          stylePreset,
+          characterDescriptions: doc?.doodle_explainer_2_character_descriptions,
+        }),
+      });
+      const data = (await res.json()) as { panelPrompts?: string[]; error?: string };
+      if (!res.ok || !Array.isArray(data.panelPrompts)) {
+        toast.error(data.error ?? `Auto-fill failed (HTTP ${res.status})`);
+        console.warn('[prodoc motion-collage panels] failed', { row_index: rowIndex, status: res.status, error: data.error });
+        return;
+      }
+
+      // Merge: keep any existing non-empty panel, fill blanks from the
+      // response. Length follows the grid.
+      const generated = data.panelPrompts;
+      const merged = Array.from({ length: N }, (_, i) => {
+        const cur = (payload.existingPanels[i] ?? '').trim();
+        return cur || (generated[i] ?? '').trim();
+      });
+
+      updateRow(rowIndex, {
+        motion_collage_grid: payload.grid,
+        motion_collage_panel_prompts: merged,
+        image_url: undefined,
+        motion_collage_image_url: undefined,
+        motion_collage_panel_urls: undefined,
+      });
+      const filled = merged.filter((p) => p.trim()).length;
+      console.info('[prodoc motion-collage panels] success', { row_index: rowIndex, filled, total: N });
+      toast.success(`Filled ${filled} panel${filled === 1 ? '' : 's'} — edit any of them before generating.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Auto-fill failed');
+    } finally {
+      setAutoFillingRows((prev) => {
+        const next = new Set(prev);
+        next.delete(rowIndex);
+        return next;
+      });
+    }
+  }
+
+  /**
    * Per-row trigger for the doodle_explainer_2 motion_collage shot kind.
    * Called when ImageCell's Generate button fires on a row whose
    * `shot_kind === 'motion_collage'` — the regular generateImageForRow
@@ -11110,9 +11222,21 @@ function ProductionDocPage() {
                                     <button
                                       type="button"
                                       onClick={() => {
+                                        // Capture the scene content BEFORE the
+                                        // convert clears ai_image_prompt — the
+                                        // auto-fill needs it to decompose the
+                                        // beat into keyframes.
+                                        const grid = { cols: 2, rows: 2 };
+                                        const captured = {
+                                          grid,
+                                          scriptText: row.script_text ?? '',
+                                          visualDescription: row.visual_description,
+                                          baseImagePrompt: row.ai_image_prompt,
+                                          existingPanels: ['', '', '', ''] as string[],
+                                        };
                                         updateRow(i, {
                                           shot_kind: 'motion_collage',
-                                          motion_collage_grid: { cols: 2, rows: 2 },
+                                          motion_collage_grid: grid,
                                           motion_collage_panel_prompts: ['', '', '', ''],
                                           // Clear the regular prompt and any
                                           // existing image so the row reads
@@ -11123,6 +11247,11 @@ function ProductionDocPage() {
                                           motion_collage_image_url: undefined,
                                           motion_collage_panel_urls: undefined,
                                         });
+                                        // Immediately auto-fill the four panels
+                                        // from the captured content. Fire and
+                                        // forget — the editor shows a spinner
+                                        // via autoFillingRows.
+                                        void autoFillMotionCollagePanels(i, captured);
                                       }}
                                       className="text-[10px] px-2 py-0.5 rounded"
                                       style={{
@@ -11621,6 +11750,7 @@ function ProductionDocPage() {
                                 // so the next Generate pass triggers a fresh
                                 // collage run. The motion_collage_* fields
                                 // carry the new state forward.
+                                const prevPanels = row.motion_collage_panel_prompts ?? [];
                                 updateRow(i, {
                                   motion_collage_grid: next.grid,
                                   motion_collage_panel_prompts: next.panelPrompts,
@@ -11628,6 +11758,25 @@ function ProductionDocPage() {
                                   motion_collage_image_url: undefined,
                                   motion_collage_panel_urls: undefined,
                                 });
+                                // Grid EXPANSION (e.g. 2×2 → 3×2) on a row that
+                                // already has at least one written panel: auto-
+                                // fill ONLY the newly-added blanks, keeping the
+                                // existing panels (the user's grid-change choice).
+                                // Skip on prompt edits and on shrink/equal grids.
+                                if (next.reason === 'grid') {
+                                  const grew = next.panelPrompts.length > prevPanels.length;
+                                  const hasContent = next.panelPrompts.some((p) => p.trim());
+                                  const hasBlanks = next.panelPrompts.some((p) => !p.trim());
+                                  if (grew && hasContent && hasBlanks) {
+                                    void autoFillMotionCollagePanels(i, {
+                                      grid: next.grid,
+                                      scriptText: row.script_text ?? '',
+                                      visualDescription: row.visual_description,
+                                      baseImagePrompt: row.ai_image_prompt,
+                                      existingPanels: next.panelPrompts,
+                                    });
+                                  }
+                                }
                               }}
                               onRevertToRegular={() => {
                                 updateRow(i, {
@@ -11639,6 +11788,16 @@ function ProductionDocPage() {
                                   image_url: undefined,
                                 });
                               }}
+                              onAutoFill={() => {
+                                void autoFillMotionCollagePanels(i, {
+                                  grid: row.motion_collage_grid ?? { cols: 2, rows: 2 },
+                                  scriptText: row.script_text ?? '',
+                                  visualDescription: row.visual_description,
+                                  baseImagePrompt: row.ai_image_prompt,
+                                  existingPanels: row.motion_collage_panel_prompts ?? [],
+                                });
+                              }}
+                              autoFilling={autoFillingRows.has(i)}
                             />
                           ) : editingPromptRow?.rowIndex === i ? (
                             <div className="flex flex-col gap-1">
