@@ -4848,6 +4848,13 @@ function ProductionDocPage() {
     for (let i = 0; i < doc.rows.length; i++) {
       if (rowImages[i]?.status !== 'error') continue;
       const row = doc.rows[i];
+      // motion_collage rows never go through the regular single/collage
+      // generator — see the matching guard in emptyImagePlan. A failed
+      // motion_collage row is re-generated via the per-row ↻ (routes to
+      // generateMotionCollageForRow) or picked up by "Generate empty"
+      // (its dedicated motion_collage queue), both of which write the
+      // panel URLs the renderer needs.
+      if (row?.shot_kind === 'motion_collage') continue;
       const prompt = row?.ai_image_prompt?.trim();
       if (!prompt) continue;
       // Row-level wins in both directions: `skip_overlay === false`
@@ -4948,6 +4955,18 @@ function ProductionDocPage() {
       if (s?.imageUrl) continue;
       if (s?.status === 'loading' || s?.status === 'pending' || s?.status === 'search') continue;
       const row = doc.rows[i];
+      // motion_collage rows are generated ONLY through the dedicated
+      // /motion-collage endpoint (collected separately as
+      // `motionCollageRowsToGenerate` in runGenerateEmptyImages). They
+      // must never enter the regular plan: with collage_mode on (the
+      // default) the batcher slices a 2×2 quadrant into image_url and
+      // leaves motion_collage_panel_urls empty, so the renderer falls
+      // back to that one static slice — the "collage plays the first
+      // cropped frame, no motion" bug. The visual_description fallback
+      // just below otherwise sweeps them in even when ai_image_prompt
+      // is blank, so the guard has to live here (not rely on an empty
+      // prompt). See _plans/2026-05-31-doodle-explainer-2-motion-collage.md.
+      if (row?.shot_kind === 'motion_collage') continue;
       // Fall back to visual_description when ai_image_prompt is empty.
       // The LLM sometimes leaves ai_image_prompt blank on rows that
       // share a scene_id / character_id with a prior row, assuming the
@@ -7714,7 +7733,14 @@ function ProductionDocPage() {
   ) {
     const aiRows = rows
       .map((r, i) => ({ row: r, idx: i }))
-      .filter(({ row }) => row.ai_image_prompt?.trim());
+      // Exclude motion_collage rows: their image is the N panels produced
+      // by the dedicated auto-fire block further down (the /motion-collage
+      // endpoint), NOT a single regular/collage still. Running them through
+      // generateImageForRow here would write a one-off still into image_url
+      // with no motion_collage_panel_urls, which the renderer then plays as
+      // a single static frame (the "no motion" bug) until the auto-fire
+      // happens to overwrite it. Skipping keeps generation single-sourced.
+      .filter(({ row }) => row.shot_kind !== 'motion_collage' && row.ai_image_prompt?.trim());
 
     // Initialise all row states immediately. Variant rows (variant_index
     // > 0) intentionally carry an empty `ai_image_prompt` — their image
