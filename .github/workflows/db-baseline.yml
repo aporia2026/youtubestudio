@@ -1,0 +1,99 @@
+# Phase 0 + 1 of _plans/2026-06-01-database-rebuildable-disaster-recovery.md
+#
+# Manual workflow that (1) captures the production schema as a single faithful
+# baseline.sql with pg_dump, (2) rebuilds it onto the empty eu-central-1 sandbox
+# from scratch, and (3) diffs the rebuilt schema against prod with migra — a
+# NON-EMPTY diff fails the run, proving whether the baseline is trustworthy
+# before we ever rely on it for disaster recovery.
+#
+# Triggered by hand (workflow_dispatch). It NEVER runs on push — it reads prod
+# and rewrites the sandbox, so it must stay deliberate.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   PROD_DATABASE_URL     prod UNPOOLED url (…ep-billowing-hill-an90sdxn.…, no -pooler)
+#   SANDBOX_DATABASE_URL  eu-central-1 UNPOOLED url (…ep-curly-truth-alg18qum.…, no -pooler)
+# Unpooled (direct) endpoints are mandatory: pg_dump and DDL break through the
+# pgbouncer pooler.
+
+name: DB Baseline (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_to_sandbox:
+        description: 'Rebuild the sandbox from the baseline and diff vs prod'
+        type: boolean
+        default: true
+
+# Never let two of these clobber the shared sandbox at once.
+concurrency:
+  group: db-baseline
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 client + migra
+        run: |
+          set -euo pipefail
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          python3 -m pip install --quiet "migra[pg]"
+          pg_dump --version
+
+      - name: Dump production schema -> baseline.sql
+        env:
+          PROD_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          pg_dump "$PROD_URL" \
+            --schema-only --no-owner --no-privileges --no-comments \
+            --schema=public -f baseline.sql
+          echo "baseline.sql: $(wc -l < baseline.sql) lines, $(grep -c 'CREATE TABLE' baseline.sql) tables"
+
+      - name: Rebuild sandbox from baseline (from empty)
+        if: ${{ inputs.apply_to_sandbox }}
+        env:
+          SANDBOX_URL: ${{ secrets.SANDBOX_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          psql "$SANDBOX_URL" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
+          psql "$SANDBOX_URL" -v ON_ERROR_STOP=1 -f baseline.sql
+          echo "Applied baseline to sandbox with no errors."
+
+      - name: Diff rebuilt sandbox vs prod (must be empty)
+        if: ${{ inputs.apply_to_sandbox }}
+        env:
+          PROD_URL: ${{ secrets.PROD_DATABASE_URL }}
+          SANDBOX_URL: ${{ secrets.SANDBOX_DATABASE_URL }}
+        run: |
+          set +e
+          migra --unsafe "$SANDBOX_URL" "$PROD_URL" > schema.diff
+          code=$?
+          echo "----- schema diff (rebuilt sandbox -> prod) -----"
+          cat schema.diff
+          echo "-------------------------------------------------"
+          # migra: 0 = identical, 2 = differences found, 3 = tool error.
+          if [ "$code" -eq 0 ]; then
+            echo "Baseline faithfully reproduces the prod schema."
+            exit 0
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "::error::Baseline is NOT faithful — rebuilt schema differs from prod (see diff above). Investigate before trusting it."
+            exit 1
+          fi
+          echo "::error::migra failed to compare the schemas (exit $code)."
+          exit 1
+
+      - name: Upload baseline.sql artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-sql
+          path: baseline.sql
+          if-no-files-found: warn

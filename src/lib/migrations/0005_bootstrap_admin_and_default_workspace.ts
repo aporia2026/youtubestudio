@@ -79,7 +79,16 @@ const migration: Migration = {
     // populated on first read via the existing self-heal path. The admin
     // doesn't use the narrator/editor portal, so a NULL personal_token is OK
     // either way.
+    //
+    // The UPDATE runs inside a SAVEPOINT: on a never-booted database these
+    // columns don't exist, and a failed statement in Postgres poisons the
+    // whole transaction — the bare try/catch swallows the JS error but the
+    // next command (the workspace INSERT) then dies with "current transaction
+    // is aborted". ROLLBACK TO SAVEPOINT rewinds just this statement so the
+    // surrounding bootstrap transaction stays usable. This path is exercised
+    // by any from-scratch migrate (disaster recovery, a new region failover).
     try {
+      await client.query('SAVEPOINT bootstrap_token_backfill');
       await client.query(
         `UPDATE collaborators
          SET unsubscribe_token = COALESCE(unsubscribe_token, $1),
@@ -87,8 +96,11 @@ const migration: Migration = {
          WHERE id = $3`,
         [unsubscribeToken, personalToken, adminId],
       );
+      await client.query('RELEASE SAVEPOINT bootstrap_token_backfill');
     } catch {
-      // Columns may not exist on a never-booted database. Non-fatal.
+      // Columns may not exist on a never-booted database. Non-fatal: undo just
+      // this statement so the transaction can proceed.
+      await client.query('ROLLBACK TO SAVEPOINT bootstrap_token_backfill');
     }
 
     // -- Create default workspace ------------------------------------------
