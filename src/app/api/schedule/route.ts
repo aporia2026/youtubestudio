@@ -37,6 +37,7 @@ export const GET = apiRoute.authed(async (session, req: NextRequest) => {
     const status = searchParams.get('status');
     const search = searchParams.get('search');
     const seriesId = searchParams.get('series_id');
+    const projectId = searchParams.get('project_id');
 
     // Compose with query builder since @vercel/postgres `sql` tag doesn't interpolate clauses.
     // Workspace anchor is always first param so the rest of the filter
@@ -72,6 +73,10 @@ export const GET = apiRoute.authed(async (session, req: NextRequest) => {
     if (seriesId) {
       clauses.push(`si.series_id = $${idx}::uuid`);
       values.push(seriesId); idx++;
+    }
+    if (projectId) {
+      clauses.push(`si.project_id = $${idx}::uuid`);
+      values.push(projectId); idx++;
     }
 
     // clauses always has at least the workspace anchor; keep the

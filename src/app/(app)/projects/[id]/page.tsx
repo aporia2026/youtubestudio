@@ -10,6 +10,7 @@ import { NarrationTab } from '@/components/narrator/NarrationTab';
 import { EditorTab } from '@/components/editor/EditorTab';
 import { YouTubeDescriptionPanel } from '@/components/ui/YouTubeDescriptionPanel';
 import { PublishToYoutubeModal } from '@/components/publishing/PublishToYoutubeModal';
+import { AddToScheduleButton } from '@/components/ui/AddToScheduleButton';
 import { downloadCrossOriginFile } from '@/lib/download-file';
 import Link from 'next/link';
 
@@ -57,6 +58,14 @@ interface YoutubeRef {
   notes: string;
 }
 
+// Minimal shape of a schedule item already linked to this project — enough to
+// show the "On schedule" indicator and deep-link to the right channel tab.
+interface LinkedScheduleItem {
+  id: string;
+  status: string;
+  channels?: Array<{ id: string; name: string }>;
+}
+
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();
@@ -68,6 +77,7 @@ export default function ProjectDetailPage() {
   const [scripts, setScripts] = useState<Script[]>([]);
   const [media, setMedia] = useState<MediaAsset[]>([]);
   const [refs, setRefs] = useState<YoutubeRef[]>([]);
+  const [scheduleItems, setScheduleItems] = useState<LinkedScheduleItem[]>([]);
   const [publishOpen, setPublishOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>(() => {
     if (typeof window === 'undefined') return 'script';
@@ -114,10 +124,26 @@ export default function ProjectDetailPage() {
       setRefs(ref.references || []);
       const active = sc.scripts?.find((s: Script) => s.is_active) ?? sc.scripts?.[0];
       if (active) setScriptContent(active.content);
+      fetchScheduleItems();
     } catch {
       toast.error('Failed to load project');
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Schedule items linked to this project. Fetched separately from the main load
+  // so a fresh add (via AddToScheduleButton's onAdded) can refresh just this slice
+  // without re-pulling scripts/media/refs. Failures are silent — the Add button
+  // stays usable even if the indicator can't load.
+  async function fetchScheduleItems() {
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- GET, loads linked schedule items
+      const res = await fetch(`/api/schedule?project_id=${id}`);
+      const data = await res.json();
+      setScheduleItems(data.items || []);
+    } catch {
+      /* non-blocking: leave the indicator absent */
     }
   }
 
@@ -404,6 +430,23 @@ export default function ProjectDetailPage() {
           <Link href={`/production-doc?projectId=${id}`}>
             <button className="btn-secondary text-sm">🎬 Production Doc</button>
           </Link>
+          {scheduleItems.length > 0 && (
+            <Link
+              href={`/schedule?channel=${scheduleItems[0]?.channels?.[0]?.id ?? ''}`}
+              className="text-xs px-2 self-center inline-flex items-center gap-1 rounded-md"
+              style={{ color: 'var(--accent-cyan-bright)' }}
+              title="This project is already on the schedule"
+            >
+              📅 On schedule ({scheduleItems.length})
+            </Link>
+          )}
+          <AddToScheduleButton
+            title={project.title}
+            pillar={project.niche}
+            autoLink={false}
+            projectId={id}
+            onAdded={fetchScheduleItems}
+          />
           <button
             onClick={() => setPublishOpen(true)}
             className="text-sm font-medium px-3 py-1.5 rounded-lg"

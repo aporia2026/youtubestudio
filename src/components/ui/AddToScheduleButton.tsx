@@ -27,12 +27,18 @@ type Props = {
    *  so the current page becomes "linked" to the new item and subsequent
    *  completions write back. Set false if you just want a one-shot add. */
   autoLink?: boolean;
+  /** Optional: link the new item to an existing project via `project_id`, so the
+   *  schedule item and the project share a home (powers the schedule round-trip). */
+  projectId?: string;
+  /** Optional: fired with the new item's id after a successful create, so a
+   *  parent can refresh any "already scheduled" state it tracks. */
+  onAdded?: (id: string) => void;
   className?: string;
   label?: string;
 };
 
 export function AddToScheduleButton({
-  title, notes, pillar, initialStatus = 'idea', autoLink = true, className = '', label = '+ Add to schedule',
+  title, notes, pillar, initialStatus = 'idea', autoLink = true, projectId, onAdded, className = '', label = '+ Add to schedule',
 }: Props) {
   const router = useRouter();
   const search = useSearchParams();
@@ -96,6 +102,7 @@ export function AddToScheduleButton({
           notes: notes?.trim() || null,
           channel_ids: channelId ? [channelId] : [],
           pillar: pillar?.trim() || null,
+          project_id: projectId ?? null,
         }),
       });
       const data = await res.json();
@@ -105,6 +112,8 @@ export function AddToScheduleButton({
       if (!newId) { toast.error('No id returned'); return; }
 
       if (channelId) localStorage.setItem(LAST_CHANNEL_KEY, channelId);
+
+      onAdded?.(newId);
 
       toast.success('Added to schedule', {
         action: {
