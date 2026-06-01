@@ -138,6 +138,11 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
   if (!short.voiceover_audio_url) {
     throw new Error('Cannot render Short — voiceover not generated yet. Click Voiceover first.');
   }
+  if (!short.short_script) {
+    // Only extracted Shorts (which always carry a script) are renderable;
+    // external SEO-only Shorts have no script to caption.
+    throw new Error('Cannot render Short — this Short has no script to caption.');
+  }
   // Prefer the actually-measured voiceover duration; fall back to the
   // word-count estimate. Either way add the outro tail so the closing
   // card renders for a beat after the last word.

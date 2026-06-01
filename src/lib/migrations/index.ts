@@ -107,6 +107,7 @@ import migration0104 from './0104_create_flex_icon_grid_workspace_fonts';
 import migration0105 from './0105_create_topic_card_grid_saved_presets';
 import migration0106 from './0106_create_n_levels_saved_presets';
 import migration0107 from './0107_create_pronunciation_review';
+import migration0108 from './0108_add_short_seo_columns';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -221,6 +222,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0105,
   migration0106,
   migration0107,
+  migration0108,
 ]);
 
 /**

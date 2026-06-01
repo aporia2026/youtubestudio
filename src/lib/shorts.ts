@@ -336,9 +336,10 @@ export async function listShortsForWorkspace(
   if (opts.projectId) {
     const { rows } = await sql<ShortRow>`
       SELECT
-        id, workspace_id, project_id, source_script_id,
+        id, workspace_id, project_id, source_script_id, kind,
         title, short_script, hook, payoff,
         word_count, estimated_duration_seconds,
+        source_title, source_description, seo_result,
         voiceover_audio_url, voiceover_blob_pathname,
         voiceover_voice_id, voiceover_duration_seconds,
         rendered_video_url, ai_model, notes,
@@ -354,9 +355,10 @@ export async function listShortsForWorkspace(
   }
   const { rows } = await sql<ShortRow>`
     SELECT
-      id, workspace_id, project_id, source_script_id,
+      id, workspace_id, project_id, source_script_id, kind,
       title, short_script, hook, payoff,
       word_count, estimated_duration_seconds,
+      source_title, source_description, seo_result,
       voiceover_audio_url, voiceover_blob_pathname,
       voiceover_voice_id, voiceover_duration_seconds,
       rendered_video_url, ai_model, notes,
@@ -373,9 +375,10 @@ export async function listShortsForWorkspace(
 export async function getShort(id: string, workspaceId: string): Promise<ShortRow | null> {
   const { rows } = await sql<ShortRow>`
     SELECT
-      id, workspace_id, project_id, source_script_id,
+      id, workspace_id, project_id, source_script_id, kind,
       title, short_script, hook, payoff,
       word_count, estimated_duration_seconds,
+      source_title, source_description, seo_result,
       voiceover_audio_url, voiceover_blob_pathname,
       voiceover_voice_id, voiceover_duration_seconds,
       rendered_video_url, ai_model, notes,

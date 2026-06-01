@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { TARGET_DURATION_SECONDS_DEFAULT, type ShortRow } from '@/lib/shorts-types';
+import { toast } from 'sonner';
+import {
+  TARGET_DURATION_SECONDS_DEFAULT,
+  type ShortRow,
+  type ShortSeoResult,
+} from '@/lib/shorts-types';
 import { downloadHref } from '@/lib/download-file';
 
 interface ProjectListItem {
@@ -38,6 +43,14 @@ export default function ShortsPage() {
   const [extracting, setExtracting] = useState(false);
   const [voiceoverBusy, setVoiceoverBusy] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+
+  // "Optimize an existing Short's SEO" form — independent of the extractor
+  // above. The source-video picker reuses the already-loaded `projects`.
+  const [seoTitle, setSeoTitle] = useState('');
+  const [seoDescription, setSeoDescription] = useState('');
+  const [seoLength, setSeoLength] = useState(45);
+  const [seoSourceVideoId, setSeoSourceVideoId] = useState('');
+  const [seoBusy, setSeoBusy] = useState(false);
 
   // Initial load — projects, voices, existing shorts.
   useEffect(() => {
@@ -125,6 +138,43 @@ export default function ShortsPage() {
       setError(e instanceof Error ? e.message : 'Extraction failed');
     } finally {
       setExtracting(false);
+    }
+  }
+
+  async function optimizeShortSeo() {
+    if (!seoTitle.trim() || !seoDescription.trim()) {
+      setError('Enter the title and description of your Short first.');
+      return;
+    }
+    setError(null);
+    setSeoBusy(true);
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- shorts-seo RPC: awaits and uses response
+      const res = await fetch('/api/shorts/seo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: seoTitle.trim(),
+          description: seoDescription.trim(),
+          lengthSeconds: seoLength,
+          sourceVideoId: seoSourceVideoId || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      await refreshShorts();
+      // The optimized Short is now at the top of "Your Shorts" with its
+      // graded options. Clear the text fields so the form is ready for the
+      // next one; keep length + source video as likely-reused defaults.
+      setSeoTitle('');
+      setSeoDescription('');
+      toast.success('SEO options ready — see your Short below.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Optimization failed');
+    } finally {
+      setSeoBusy(false);
     }
   }
 
@@ -291,6 +341,88 @@ export default function ShortsPage() {
       <motion.section
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.025 }}
+        style={{
+          background: 'rgba(255,255,255,0.02)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 12,
+          padding: 18,
+          marginBottom: 18,
+        }}
+      >
+        <h2 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 4 }}>
+          Optimize an existing Short&apos;s SEO
+        </h2>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 14 }}>
+          Already made a Short? Paste its title, description, and length. The AI hands back a few
+          graded options for a sharper title, description, and hashtags. Link the video it was cut
+          from for keywords that match the parent.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+          <Field label="Short title">
+            <input
+              type="text"
+              className="input-field"
+              value={seoTitle}
+              onChange={e => setSeoTitle(e.target.value)}
+              placeholder="The title your Short currently has"
+            />
+          </Field>
+          <Field label="Length (seconds)">
+            <input
+              type="number"
+              min={1}
+              max={600}
+              className="input-field"
+              value={seoLength}
+              onChange={e => setSeoLength(Math.max(1, Math.min(600, Number(e.target.value) || 1)))}
+            />
+          </Field>
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <Field label="Short description">
+            <textarea
+              className="input-field"
+              rows={3}
+              value={seoDescription}
+              onChange={e => setSeoDescription(e.target.value)}
+              placeholder="The description your Short currently has"
+            />
+          </Field>
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <Field
+            label="Source video (optional)"
+            hint="The created video this Short was taken from — used as keyword context when set."
+          >
+            <select
+              className="input-field"
+              value={seoSourceVideoId}
+              onChange={e => setSeoSourceVideoId(e.target.value)}
+            >
+              <option value="">No source video</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        <button
+          type="button"
+          onClick={optimizeShortSeo}
+          disabled={seoBusy || !seoTitle.trim() || !seoDescription.trim()}
+          className="btn-primary"
+          style={{ marginTop: 14 }}
+        >
+          {seoBusy ? 'Optimizing…' : '✨ Optimize SEO'}
+        </button>
+      </motion.section>
+
+      <motion.section
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.05 }}
         style={{
           background: 'rgba(255,255,255,0.02)',
@@ -308,17 +440,21 @@ export default function ShortsPage() {
           </p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {shorts.map(s => (
-              <ShortCard
-                key={s.id}
-                short={s}
-                voices={voices}
-                defaultVoiceId={projectVoiceId}
-                voiceoverBusy={voiceoverBusy.has(s.id)}
-                onGenerateVoiceover={generateVoiceover}
-                onDelete={deleteShort}
-              />
-            ))}
+            {shorts.map(s =>
+              s.kind === 'external_seo' ? (
+                <ExternalSeoShortCard key={s.id} short={s} onDelete={deleteShort} />
+              ) : (
+                <ShortCard
+                  key={s.id}
+                  short={s}
+                  voices={voices}
+                  defaultVoiceId={projectVoiceId}
+                  voiceoverBusy={voiceoverBusy.has(s.id)}
+                  onGenerateVoiceover={generateVoiceover}
+                  onDelete={deleteShort}
+                />
+              ),
+            )}
           </div>
         )}
       </motion.section>
@@ -330,6 +466,262 @@ export default function ShortsPage() {
         </Link>
         .
       </p>
+    </div>
+  );
+}
+
+/** Green ≥ 75, yellow ≥ 50, else red — mirrors the SEO Optimizer scale. */
+function gradeColor(score: number): string {
+  if (score >= 75) return 'var(--accent-green)';
+  if (score >= 50) return 'var(--accent-yellow)';
+  return '#ef4444';
+}
+
+function gradeBg(score: number): string {
+  if (score >= 75) return 'rgba(16,185,129,0.15)';
+  if (score >= 50) return 'rgba(245,158,11,0.15)';
+  return 'rgba(239,68,68,0.15)';
+}
+
+function copyToClipboard(text: string, label: string) {
+  navigator.clipboard
+    .writeText(text)
+    .then(() => toast.success(label))
+    .catch(() => toast.error('Copy failed'));
+}
+
+/**
+ * Card for an `external_seo` Short — one the user already made and ran
+ * through the SEO optimizer. Shows the original details they entered plus
+ * the AI's graded title / description / hashtag options, each copyable.
+ * Deliberately omits the voiceover + render rows: there's no script to
+ * speak or render for an externally-made Short.
+ */
+function ExternalSeoShortCard({
+  short,
+  onDelete,
+}: {
+  short: ShortRow;
+  onDelete: (id: string) => void;
+}) {
+  const seo: ShortSeoResult | null = short.seo_result;
+  const cardBorder = '1px solid rgba(255,255,255,0.08)';
+
+  return (
+    <div
+      style={{
+        background: 'rgba(255,255,255,0.02)',
+        border: cardBorder,
+        borderRadius: 8,
+        padding: 14,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="badge badge-purple text-xs">SEO</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+              {short.source_title || short.title || 'Untitled Short'}
+            </span>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+            ~{short.estimated_duration_seconds}s · {new Date(short.created_at).toLocaleString()}
+          </div>
+        </div>
+        <button
+          onClick={() => onDelete(short.id)}
+          className="text-xs"
+          style={{ color: '#ef4444', background: 'transparent', border: 'none', cursor: 'pointer' }}
+        >
+          Delete
+        </button>
+      </div>
+
+      {short.source_description && (
+        <details>
+          <summary style={{ fontSize: 12, cursor: 'pointer', color: 'var(--text-secondary)' }}>
+            Show the description you entered
+          </summary>
+          <pre
+            style={{
+              fontSize: 12,
+              color: 'var(--text-secondary)',
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'inherit',
+              background: 'rgba(0,0,0,0.2)',
+              padding: 10,
+              borderRadius: 6,
+              marginTop: 6,
+            }}
+          >
+            {short.source_description}
+          </pre>
+        </details>
+      )}
+
+      {!seo ? (
+        <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+          No optimization saved for this Short.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {seo.primary_keyword && (
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Primary keyword:{' '}
+              <strong style={{ color: 'var(--accent-purple-bright)' }}>{seo.primary_keyword}</strong>
+            </div>
+          )}
+
+          <SeoOptionGroup
+            heading="Title options"
+            options={seo.titles}
+            onCopy={text => copyToClipboard(text, 'Title copied')}
+          />
+
+          {seo.descriptions.length > 0 && (
+            <SeoOptionGroup
+              heading="Description options"
+              options={seo.descriptions}
+              onCopy={text => copyToClipboard(text, 'Description copied')}
+              multiline
+            />
+          )}
+
+          {seo.hashtag_sets.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
+                Hashtag sets
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {seo.hashtag_sets.map((set, i) => {
+                  const joined = set.tags.map(t => `#${t}`).join(' ');
+                  return (
+                    <div
+                      key={i}
+                      style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span
+                          className="text-xs font-semibold"
+                          style={{
+                            color: gradeColor(set.score),
+                            background: gradeBg(set.score),
+                            padding: '1px 8px',
+                            borderRadius: 999,
+                          }}
+                        >
+                          {set.score}/100
+                        </span>
+                        <button
+                          onClick={() => copyToClipboard(joined, 'Hashtags copied')}
+                          className="btn-secondary text-xs"
+                          style={{ marginLeft: 'auto' }}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {set.tags.map((t, j) => (
+                          <span key={j} className="badge badge-purple text-xs">
+                            #{t}
+                          </span>
+                        ))}
+                      </div>
+                      {set.rationale && (
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                          {set.rationale}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {seo.notes && (
+            <div
+              style={{
+                fontSize: 12,
+                color: 'var(--text-secondary)',
+                borderLeft: '2px solid var(--accent-purple-bright)',
+                paddingLeft: 10,
+              }}
+            >
+              {seo.notes}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A graded list of title or description options with per-option copy. */
+function SeoOptionGroup({
+  heading,
+  options,
+  onCopy,
+  multiline = false,
+}: {
+  heading: string;
+  options: { text: string; score: number; rationale: string }[];
+  onCopy: (text: string) => void;
+  multiline?: boolean;
+}) {
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
+        {heading}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {options.map((opt, i) => (
+          <div
+            key={i}
+            style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <span
+                className="text-xs font-semibold"
+                style={{
+                  color: gradeColor(opt.score),
+                  background: gradeBg(opt.score),
+                  padding: '1px 8px',
+                  borderRadius: 999,
+                  flexShrink: 0,
+                }}
+              >
+                {opt.score}/100
+              </span>
+              <span
+                style={{
+                  flex: 1,
+                  fontSize: 13,
+                  color: 'var(--text-primary)',
+                  whiteSpace: multiline ? 'pre-wrap' : 'normal',
+                }}
+              >
+                {opt.text}
+              </span>
+              <button
+                onClick={() => onCopy(opt.text)}
+                className="btn-secondary text-xs"
+                style={{ flexShrink: 0 }}
+              >
+                Copy
+              </button>
+            </div>
+            {opt.rationale && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                {opt.rationale}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

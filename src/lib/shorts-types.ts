@@ -15,18 +15,59 @@ export const TARGET_DURATION_SECONDS_DEFAULT = 45;
  *  and the duration estimator (after extraction). */
 export const WORDS_PER_SECOND = 2.33;
 
-/** Database row shape — mirrors the columns in migration 0021's `shorts` table. */
+/** Discriminates the two kinds of `shorts` rows (migration 0108):
+ *  - 'extracted'    — cut from a long-form script by the extractor;
+ *                     has `short_script`, can be voiced + rendered.
+ *  - 'external_seo' — a Short the user already made elsewhere, entered
+ *                     by hand for SEO optimization; carries
+ *                     `source_title` / `source_description` and the
+ *                     graded `seo_result`, no `short_script`. */
+export type ShortKind = 'extracted' | 'external_seo';
+
+/** One graded suggestion (title or description). Score is a 0-100
+ *  composite the model assigns; `rationale` is a one-line "why". */
+export interface GradedSuggestion {
+  text: string;
+  score: number;
+  rationale: string;
+}
+
+/** One graded hashtag set — tags are stored WITHOUT the leading '#'
+ *  (the UI prepends it), matching the SEO Optimizer's hashtag convention. */
+export interface GradedHashtagSet {
+  tags: string[];
+  score: number;
+  rationale: string;
+}
+
+/** Structured output of the Shorts SEO optimizer — a few graded options
+ *  for each field so the user can pick. Persisted as `shorts.seo_result`
+ *  (JSONB) and rendered by the external-SEO branch of the Short card. */
+export interface ShortSeoResult {
+  primary_keyword: string;
+  titles: GradedSuggestion[];
+  descriptions: GradedSuggestion[];
+  hashtag_sets: GradedHashtagSet[];
+  notes: string;
+}
+
+/** Database row shape — mirrors the columns in the `shorts` table
+ *  (migration 0021 + the SEO columns added in 0108). */
 export interface ShortRow {
   id: string;
   workspace_id: string;
   project_id: string | null;
   source_script_id: string | null;
+  kind: ShortKind;
   title: string | null;
-  short_script: string;
+  short_script: string | null;
   hook: string | null;
   payoff: string | null;
   word_count: number | null;
   estimated_duration_seconds: number | null;
+  source_title: string | null;
+  source_description: string | null;
+  seo_result: ShortSeoResult | null;
   voiceover_audio_url: string | null;
   voiceover_blob_pathname: string | null;
   voiceover_voice_id: string | null;

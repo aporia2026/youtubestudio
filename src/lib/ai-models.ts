@@ -50,6 +50,7 @@ export type AppFeature =
   | 'script-format'
   | 'dubbing-translate'
   | 'shorts-extract'
+  | 'shorts-seo'
   | 'video-composer'
   // Grow
   | 'channel-analyze'
@@ -112,6 +113,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'script-format', label: 'Script Format (ElevenLabs)', description: 'Reformats a script for ElevenLabs voiceover ingestion', section: 'create', defaultModelId: KIE_GEMINI_FLASH },
   { id: 'dubbing-translate', label: 'Dubbing — Translate', description: 'Translates a script for an auto-dub', section: 'create', defaultModelId: HAIKU },
   { id: 'shorts-extract', label: 'Shorts Extract', description: 'Extracts shorts-worthy moments from a long script', section: 'create', defaultModelId: SONNET },
+  { id: 'shorts-seo', label: 'Shorts SEO', description: 'Optimizes title + description + hashtags for an existing Short', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'video-composer', label: 'Video Composer', description: 'Composer pipeline (intake → analyze → plan → compose → critic → chair)', section: 'create', defaultModelId: SONNET },
 
   // ─── Grow ────────────────────────────────────────────────────────────
@@ -306,6 +308,7 @@ export const DEFAULT_FALLBACK_CHAINS: Partial<Record<AppFeature, string[]>> = {
   'critic-panel':     ['gpt-5.4-mini', 'gpt-5.4'],
   'production-doc':   ['gpt-5.4-mini', 'gpt-5.4'],
   'seo-optimizer':    ['gpt-5.4-mini', 'gpt-5.4'],
+  'shorts-seo':       ['gpt-5.4-mini', 'gpt-5.4'],
 };
 
 /** Lookup the configured fallback chain for a feature, or `null` when
