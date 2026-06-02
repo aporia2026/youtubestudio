@@ -75,6 +75,57 @@ describe('buildPanelFillPrompt', () => {
     expect(user).toMatch(/CHARACTER REFERENCE/);
     expect(user).toMatch(/george: tall stick figure in a red hat/);
   });
+
+  // ─── ELEMENT-SCALE LOCK (2026-06-02 fix) ────────────────────────────
+  // The #1 motion_collage failure mode was the panel-fill LLM picking
+  // "thing grows in size" as the motion (warning triangle small → huge
+  // across panels). The system prompt forbids scale-based motion
+  // explicitly and lists allowed motion types. See _plans/.
+  describe('element-scale lock', () => {
+    it('forbids scale-based motion in the system prompt', () => {
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 2,
+        rows: 2,
+      });
+      expect(system).toMatch(/ELEMENT-SCALE IS LOCKED/);
+      expect(system).toMatch(/never be the element growing/i);
+      expect(system).toMatch(/keep the SAME SIZE across every panel/);
+    });
+
+    it('enumerates the forbidden scale-change words', () => {
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 2,
+        rows: 2,
+      });
+      for (const word of ['grows', 'gets bigger', 'enlarges', 'expands', 'shrinks', 'fills the frame']) {
+        expect(system).toContain(word);
+      }
+    });
+
+    it('lists allowed motion types (translation, rotation, pose, progressive stroke)', () => {
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 2,
+        rows: 2,
+      });
+      expect(system).toMatch(/ALLOWED motions/);
+      expect(system).toMatch(/walking|sliding|raising|rotating|pointing/i);
+    });
+
+    it('shows a concrete GOOD/BAD example for the warning-sign scale failure mode', () => {
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 2,
+        rows: 2,
+      });
+      // GOOD example uses translation ("slides up"); BAD example uses
+      // the exact forbidden pattern ("now LARGER and more prominent").
+      expect(system).toMatch(/slides up/i);
+      expect(system).toMatch(/LARGER and more prominent/);
+    });
+  });
 });
 
 describe('parsePanelFillResponse', () => {

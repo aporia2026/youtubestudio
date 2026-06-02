@@ -58,11 +58,19 @@ export interface Gpt2EditOpts {
    *  not append per-vendor prompt suffixes. The pipeline's existing
    *  composer (`composeVariantEditRequest` etc.) owns prompt shape. */
   prompt: string;
-  /** Single source image URL for the edit. Atlas Edit and Kie i2i both
-   *  accept multi-input arrays, but every current caller passes exactly
-   *  one image — keeping the signature scalar avoids accidentally
-   *  spreading multi-input semantics across the dispatch surface. */
+  /** Primary source image URL for the edit. This is the image the model
+   *  treats as "the image to modify." For most callers this is the only
+   *  input; the motion_collage chained-edit path adds `extraImageUrls`
+   *  to anchor composition. */
   sourceImageUrl: string;
+  /** Optional extra image URLs appended after `sourceImageUrl` in the
+   *  vendor's input array. Used by the motion_collage pipeline to pass
+   *  the panel-0 composition anchor alongside the previous-panel motion
+   *  source: `sourceImageUrl = previousPanelUrl`,
+   *  `extraImageUrls = [panel0Url]`. Order matters — both vendors
+   *  receive `[sourceImageUrl, ...extraImageUrls]` and the prompt must
+   *  spell out which input is which. */
+  extraImageUrls?: readonly string[];
   /** User's configured primary vendor. The dispatcher tries this
    *  first; the other vendor is the fallback. Read from
    *  `UserSettings.gpt_image_2_edit_primary` server-side, or from the
@@ -125,6 +133,7 @@ const DEFAULT_ATLAS_CROP_PREFIX = 'prodoc-images-atlas-crop';
 export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2EditResult> {
   const t0 = Date.now();
   const { prompt, sourceImageUrl, primary } = opts;
+  const extraImageUrls = opts.extraImageUrls ?? [];
   const atlasCropPrefix = opts.atlasCropR2Prefix ?? DEFAULT_ATLAS_CROP_PREFIX;
   const fallback: Gpt2EditVendor = primary === 'atlas' ? 'kie' : 'atlas';
 
@@ -133,11 +142,12 @@ export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2Edi
     fallback,
     prompt_chars: prompt.length,
     source_url_len: sourceImageUrl.length,
+    extra_image_count: extraImageUrls.length,
   });
 
   let primaryError: string | null = null;
   try {
-    const result = await runVendor(primary, { prompt, sourceImageUrl, atlasCropPrefix });
+    const result = await runVendor(primary, { prompt, sourceImageUrl, extraImageUrls, atlasCropPrefix });
     console.info('[gpt2-edit dispatch] primary-ok', {
       primary,
       duration_ms: Date.now() - t0,
@@ -164,7 +174,7 @@ export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2Edi
   }
 
   try {
-    const result = await runVendor(fallback, { prompt, sourceImageUrl, atlasCropPrefix });
+    const result = await runVendor(fallback, { prompt, sourceImageUrl, extraImageUrls, atlasCropPrefix });
     console.info('[gpt2-edit fallback] fallback-ok', {
       fallback,
       duration_ms: Date.now() - t0,
@@ -199,6 +209,7 @@ export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2Edi
 interface VendorRunOpts {
   prompt: string;
   sourceImageUrl: string;
+  extraImageUrls: readonly string[];
   atlasCropPrefix: string;
 }
 
@@ -219,7 +230,7 @@ async function runVendor(
   if (vendor === 'atlas') {
     const result = await generateAtlasEdit({
       prompt: opts.prompt,
-      images: [opts.sourceImageUrl],
+      images: [opts.sourceImageUrl, ...opts.extraImageUrls],
       // Atlas Edit's documented size enum is 1024x1024 / 1024x1536 /
       // 1536x1024 — see image-edit-pricing.ts:259-264 for the 2026-05-27
       // verification that 2560x1440 returns 404 on this endpoint.
@@ -241,7 +252,7 @@ async function runVendor(
   }
   const taskId = await createKieTask(apiKey, 'gpt-image-2-image-to-image', {
     prompt: opts.prompt,
-    input_urls: [opts.sourceImageUrl],
+    input_urls: [opts.sourceImageUrl, ...opts.extraImageUrls],
     aspect_ratio: '16:9',
     resolution: '1K',
   });

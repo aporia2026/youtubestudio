@@ -98,6 +98,13 @@ export function buildPanelFillPrompt(args: BuildPanelFillPromptArgs): PanelFillP
     '',
     'FRAMING IS LOCKED: never describe a zoom, close-up, pan, tilt, dolly, or any camera move. Every subject stays at the EXACT same size and position across all panels — if the character is fully visible (head to feet) in panel 1, they must be fully visible at the same coordinates in every other panel. Do not write "zoom in", "close-up", "low angle", "wide shot", or any framing keyword in later panels.',
     '',
+    'ELEMENT-SCALE IS LOCKED — read this carefully, this is the #1 failure mode of motion_collage:',
+    '  Props, signs, icons, labels, sticky notes, characters, and every named element keep the SAME SIZE across every panel. The motion you depict must be a TRANSLATION (position change), a ROTATION, a POSE / EXPRESSION change, or a PROGRESSIVE STROKE (a line / arrow being drawn). It must NEVER be the element growing, shrinking, expanding, swelling, enlarging, looming larger, becoming more prominent, dominating the frame, or filling the frame. A warning triangle that "appears small in panel 1 and huge in panel 4" is WRONG — that scale change is a forbidden motion. If the narration sounds like "the alarm grows", depict it as the alarm SHAKING or its rays EXTENDING outward (translation), NOT as the icon getting larger.',
+    '',
+    '  FORBIDDEN words inside panel prompts (any one of these = wrong motion type): "grows", "growing", "gets bigger", "gets larger", "becomes large", "enlarges", "swells", "expands", "shrinks", "fills the frame", "dominating", "looms", "more prominent", "scaled up", "blown up", "huge", "tiny" — when used to mean a size change between panels.',
+    '',
+    '  ALLOWED motions: a character walking, an arm raising, a head turning, a prop sliding from left to right, a triangle rotating, an arrow being drawn stroke by stroke, a stick figure changing pose / expression, text appearing letter by letter, a hand pointing to different sticky notes in sequence.',
+    '',
     'PER-PANEL PROMPT RULES:',
     '  - KEEP EACH PANEL SHORT: 80-150 characters. Longer prompts push the image model toward dense, detail-filled output that breaks the sparse doodle look.',
     '  - SUBJECT-FIRST: start with the moving subject and its STATE at THIS frame, not the wide setting. Describe the position/pose the element has reached, not the action itself.',
@@ -107,6 +114,9 @@ export function buildPanelFillPrompt(args: BuildPanelFillPromptArgs): PanelFillP
     '',
     'GOOD (87 chars): "Stick figure runner mid-stride, right foot lifting from the brown ground. Same scene."',
     'BAD (210 chars): "Wide harbor view of the entire dock with several ships in the distance, blue water spreading to the horizon, a clear sky above, and a stick figure runner mid-stride near the foreground. Same scene as before."',
+    '',
+    'GOOD (warning beat — translation motion, fixed scale): "Red warning triangle slides up from below the cards, now touching the bottom edge of the dog-name sticky. Same scene, same triangle size."',
+    'BAD (warning beat — scale motion): "Red warning triangle now LARGER and more prominent, covering the cards. Same scene." — element size changed; forbidden.',
     '',
     styleSuffix
       ? 'A global doodle STYLE suffix is appended downstream — do NOT restate style/medium words ("hand-drawn", "doodle", "white background") in every panel; describe the scene and motion only.'

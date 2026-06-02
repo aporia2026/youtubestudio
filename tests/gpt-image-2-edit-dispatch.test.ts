@@ -179,4 +179,77 @@ describe('generateGptImage2Edit dispatcher', () => {
 
     expect(result.url).toBe('https://atlas.example/raw.png#cropped');
   });
+
+  // ─── extraImageUrls (2026-06-02 fix B') ──────────────────────────────
+  // The motion_collage dual-input chain passes panel 0 as a composition
+  // anchor alongside the previous-panel motion source. Both vendors
+  // accept multi-input arrays; the dispatcher concatenates
+  // [sourceImageUrl, ...extraImageUrls] in order so the prompt can refer
+  // to "first input" / "second input" deterministically.
+  describe('extraImageUrls passthrough', () => {
+    it('Atlas: appends extra URLs after the source in the images array', async () => {
+      vi.mocked(generateAtlasEdit).mockResolvedValue({
+        url: 'https://atlas.example/dual.png',
+        predictionId: 'atlas-dual',
+        predictTimeMs: 200,
+      });
+
+      await generateGptImage2Edit({
+        prompt: 'advance the moving element',
+        sourceImageUrl: 'https://r2.example/prev.png',
+        extraImageUrls: ['https://r2.example/panel0.png'],
+        primary: 'atlas',
+      });
+
+      expect(generateAtlasEdit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          images: ['https://r2.example/prev.png', 'https://r2.example/panel0.png'],
+        }),
+      );
+    });
+
+    it('Kie: appends extra URLs after the source in input_urls', async () => {
+      vi.mocked(createKieTask).mockResolvedValue('kie-dual');
+      vi.mocked(pollKieResult).mockResolvedValue('https://kie.example/dual.png');
+
+      await generateGptImage2Edit({
+        prompt: 'advance the moving element',
+        sourceImageUrl: 'https://r2.example/prev.png',
+        extraImageUrls: ['https://r2.example/panel0.png', 'https://r2.example/ref2.png'],
+        primary: 'kie',
+      });
+
+      expect(createKieTask).toHaveBeenCalledWith(
+        'test-kie-key',
+        'gpt-image-2-image-to-image',
+        expect.objectContaining({
+          input_urls: [
+            'https://r2.example/prev.png',
+            'https://r2.example/panel0.png',
+            'https://r2.example/ref2.png',
+          ],
+        }),
+      );
+    });
+
+    it('omitting extraImageUrls keeps the legacy single-input shape', async () => {
+      vi.mocked(generateAtlasEdit).mockResolvedValue({
+        url: 'https://atlas.example/single.png',
+        predictionId: 'atlas-single',
+        predictTimeMs: 100,
+      });
+
+      await generateGptImage2Edit({
+        prompt: 'p',
+        sourceImageUrl: 'https://r2.example/only.png',
+        primary: 'atlas',
+      });
+
+      expect(generateAtlasEdit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          images: ['https://r2.example/only.png'],
+        }),
+      );
+    });
+  });
 });

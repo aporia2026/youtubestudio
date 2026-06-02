@@ -1597,9 +1597,10 @@ export async function generateMotionCollage(args: {
   // Cost stays ~$0.054 per 4-panel shot (Atlas Edit ~$0.011 same as
   // i2i). Trade-off: chained, so 4 panels run sequentially — total
   // wall-clock ~2 min instead of parallel §D's ~30s. Acceptable.
-  // Drift: ~5% per chained step compounds; mitigated by the
-  // CHAINED_VARIANT_IDENTITY_ANCHOR appended on panels 2+ that
-  // explicitly references the ORIGINAL base.
+  // Drift: ~5% per chained step used to compound across the chain;
+  // mitigated 2026-06-02 by the DUAL-INPUT panel call (panel K-1 as
+  // primary input for motion continuity + panel 0 as second input for
+  // composition anchor) — see the per-panel loop below.
   const ATLAS_I2I_MAX_REFS = 4;
   const refsAware = refImageUrls.length > 0;
   const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
@@ -1758,27 +1759,39 @@ export async function generateMotionCollage(args: {
     }
   }
 
-  // ─── Panels 1..N — chained Atlas Edit on previous panel ────────────
-  // Each call takes the prior panel's URL as input + the next panel's
-  // prompt as the delta. Atlas Edit preserves identity (ship, scene,
-  // characters, camera) while applying the change. Identity anchor
-  // appended from panel 2 onwards so chained drift across 3+ steps
-  // doesn't compound away from the ORIGINAL base.
-  // Sequential because each step depends on the previous URL.
-  // Dynamic import for the identity anchor — same pattern as the
-  // existing chained-variant dispatcher at line ~416 (the canonical
-  // anchor string lives in `remotion/utils` which pulls React deps,
-  // so a static top-level import isn't safe in this server-only
-  // module).
-  const { CHAINED_VARIANT_IDENTITY_ANCHOR } = await import('../../remotion/utils');
+  // ─── Panels 1..N — dual-input chained Atlas Edit ───────────────────
+  // Each call passes TWO images to Atlas Edit:
+  //   1. PRIMARY input = previous panel — supplies motion continuity
+  //      (the moving element's position last frame; the model interpolates
+  //      smoothly to this frame's position).
+  //   2. SECOND input = panel 0 — supplies the composition anchor (every
+  //      static element keeps its panel-0 size + position). Panel 0 is
+  //      passed via `extraImageUrls`; the prompt spells out which input
+  //      is which so the model uses them correctly.
+  // For panel 1 the previous panel IS panel 0, so the second input would
+  // be a duplicate — we skip the extra image in that case.
+  //
+  // Why dual-input: single-source chained Edit on the previous panel gave
+  // smooth motion but composition drifted ~5% per step (sticky notes
+  // wandered, prop scales ramped up). Always-from-base-0 locked composition
+  // but each panel imagined element position independently → jumpy motion.
+  // Dual-input gives BOTH: motion continuity from input 1, layout lock
+  // from input 2. See user feedback 2026-06-02 + the framing-lock
+  // explainer below.
+  //
+  // Sequential because each step depends on the previous panel's URL.
   // Character bible block — built once, reused across every chained
   // edit prompt. Without this, panels 1..N rely solely on whatever
   // appearance the previous image already carries; if the LLM panel
   // prompt mentions a character by slug ("George raises his arm"),
   // Atlas Edit needs the bible context to keep George visually
-  // consistent. Empty string when the doc has no bible. (Plan
-  // "character_descriptions must apply to motion_collage too" follow-up.)
+  // consistent. Empty string when the doc has no bible.
   const chainBibleBlock = buildCharacterBibleBlock(characterDescriptions);
+  // Panel 0's URL is the composition anchor for panels 2..N-1. Read
+  // from the result slot (handles regen passthrough + fresh generation
+  // uniformly). When panel 0 failed, this stays undefined and the
+  // chain bails out anyway via the existing previousPanelUrl guard.
+  const panel0AnchorUrl = panelResults[0]?.url;
   for (let panelIdx = 1; panelIdx < N; panelIdx++) {
     // Partial regen passthrough: panel not in the regen set keeps its
     // existing URL and becomes the chain base for the NEXT panel.
@@ -1814,31 +1827,29 @@ export async function generateMotionCollage(args: {
       continue;
     }
     const panelStart = Date.now();
-    // Compose Atlas Edit prompt: character bible (so recurring
-    // characters by slug stay consistent) + raw panel prompt (the
-    // LLM's "Same X; only Y changes" delta) + identity anchor for
-    // chains depth >= 2 + light style guard.
+    // Compose Atlas Edit prompt for the dual-input call. Panel 1 uses
+    // only the previous panel (which IS panel 0); panels 2..N use both
+    // the previous panel (motion continuity) AND panel 0 (composition
+    // anchor) so static elements don't drift across the chain.
     const baseDelta = panelPrompts[panelIdx];
-    const isDeepChain = panelIdx >= 2;
-    // FRAMING-LOCK clause (2026-06-02 user ask): user reported the
-    // character's head getting cut off in later panels because Atlas
-    // Edit zoomed/panned the framing between chained calls. Bolt an
-    // explicit framing-preservation instruction to the front of every
-    // chained-edit prompt so the model keeps the SAME zoom level + the
-    // SAME character size + the SAME vertical/horizontal positioning.
-    // Identity anchor (for deep chains) covers character APPEARANCE
-    // continuity but said nothing about FRAMING; this clause fills
-    // that gap.
+    const hasCompositionAnchor =
+      panelIdx >= 2 && typeof panel0AnchorUrl === 'string' && panel0AnchorUrl !== previousPanelUrl;
+    // FRAMING + SCALE LOCK: the #1 motion_collage failure mode is the
+    // model treating "the warning gets bigger" as a license to scale the
+    // prop frame by frame. This clause forbids it explicitly + locks the
+    // camera. Reinforced for deep chains where panel 0 anchors composition
+    // via the second input image (see the dual-input directive below).
     const framingLock =
-      'CRITICAL FRAMING CONSTRAINT: Reproduce the input image\'s exact framing. Keep every subject at the SAME size, the SAME vertical position, and the SAME horizontal position as in the input. Do NOT crop, zoom in, zoom out, pan, or otherwise change the camera. If a character\'s head, hands, or feet are visible in the input, they MUST remain fully visible in the output at the same coordinates. Only the moving element described below should differ.';
+      'CRITICAL FRAMING + SCALE CONSTRAINT: Reproduce the previous-frame composition exactly. Every subject — character, sticky note, sign, icon, label, prop, background element — keeps the SAME SIZE, the SAME vertical position, and the SAME horizontal position as the input. Do NOT crop, zoom, pan, scale, enlarge, shrink, or otherwise resize any element. If the panel description below says an element "grows" or "gets larger", DISREGARD that and instead translate, rotate, or progressively draw the element — never resize it. Only the moving element\'s POSITION / ROTATION / POSE should differ.';
+    const dualInputDirective = hasCompositionAnchor
+      ? 'DUAL INPUT — read carefully: the FIRST input image is the PREVIOUS FRAME (use it to see where the moving element was last frame so this frame\'s position interpolates smoothly). The SECOND input image is the ORIGINAL COMPOSITION ANCHOR (panel 0). Every STATIC element — sticky notes, character, background, props that are not moving — must match its position, size, rotation, and shape in the SECOND input EXACTLY. If the first input shows drift (e.g. a sticky note moved 10px from panel 0), trust the SECOND input — that is the ground truth for static layout.'
+      : 'Preserve the input image\'s composition, character identity, camera angle, and background exactly. Only modify the moving element to match the description below.';
     const editPrompt = [
       framingLock,
+      dualInputDirective,
       chainBibleBlock,
       baseDelta,
-      isDeepChain
-        ? CHAINED_VARIANT_IDENTITY_ANCHOR
-        : 'Preserve the input image\'s composition, character identity, camera angle, and background exactly. Only modify the moving element to match the description above.',
-      'Keep the hand-drawn doodle aesthetic: thin black ink lines, sparse composition, generous white space. Do NOT add details or shading not present in the input image.',
+      'Keep the hand-drawn doodle aesthetic: thin black ink lines, sparse composition, generous white space. Do NOT add details or shading not present in the input image(s).',
     ].filter(Boolean).join('\n\n');
     const intent = await recordIntent({
       userId: ownerId,
@@ -1852,6 +1863,7 @@ export async function generateMotionCollage(args: {
       const edit = await generateGptImage2Edit({
         prompt: editPrompt,
         sourceImageUrl: previousPanelUrl,
+        extraImageUrls: hasCompositionAnchor ? [panel0AnchorUrl!] : [],
         primary: 'atlas',
       });
       providerRequestId = edit.providerRequestId;
@@ -1876,6 +1888,7 @@ export async function generateMotionCollage(args: {
         panel_index: panelIdx,
         of_total: N,
         kind: 'chained-edit',
+        composition_anchor: hasCompositionAnchor,
         vendor_used: edit.vendorUsed,
         fallback_used: edit.fallbackUsed,
         url: upscale.url,
