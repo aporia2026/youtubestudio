@@ -96,6 +96,8 @@ export function buildPanelFillPrompt(args: BuildPanelFillPromptArgs): PanelFillP
     '',
     'THE ONE RULE THAT MATTERS: every panel is the SAME scene — identical composition, camera angle, character, background, lighting, and props. ONLY the moving element advances frame by frame. You are NOT writing 4 different shots; you are writing 4 freeze-frames of a single motion.',
     '',
+    'FRAMING IS LOCKED: never describe a zoom, close-up, pan, tilt, dolly, or any camera move. Every subject stays at the EXACT same size and position across all panels — if the character is fully visible (head to feet) in panel 1, they must be fully visible at the same coordinates in every other panel. Do not write "zoom in", "close-up", "low angle", "wide shot", or any framing keyword in later panels.',
+    '',
     'PER-PANEL PROMPT RULES:',
     '  - KEEP EACH PANEL SHORT: 80-150 characters. Longer prompts push the image model toward dense, detail-filled output that breaks the sparse doodle look.',
     '  - SUBJECT-FIRST: start with the moving subject and its STATE at THIS frame, not the wide setting. Describe the position/pose the element has reached, not the action itself.',

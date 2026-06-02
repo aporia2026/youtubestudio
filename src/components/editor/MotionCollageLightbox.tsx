@@ -51,6 +51,13 @@ interface MotionCollageLightboxProps {
   onRegenPanel?: (panelIndex: number) => void;
   onUploadPanel?: (panelIndex: number, file: File) => void;
   onEditPanelWithPrompt?: (panelIndex: number, prompt: string) => void;
+  /** Per-panel image transform (X/Y/SCALE) so a poorly-framed panel
+   *  can be repositioned without regen. User-asked-for 2026-06-02. */
+  panelTransforms?: ReadonlyArray<{ x_pct?: number; y_pct?: number; scale_pct?: number } | null>;
+  onPanelTransformChange?: (
+    panelIndex: number,
+    next: { x_pct: number; y_pct: number; scale_pct: number },
+  ) => void;
   /** Inflight indicator from the parent. When the panel index matches
    *  any of these states, the corresponding action button shows its
    *  busy state and the others disable. */
@@ -72,6 +79,8 @@ export function MotionCollageLightbox({
   onRegenPanel,
   onUploadPanel,
   onEditPanelWithPrompt,
+  panelTransforms,
+  onPanelTransformChange,
   busyPanelIndex,
 }: MotionCollageLightboxProps): React.ReactElement {
   // `focusedIndex === null` means grid view; a number means single-panel
@@ -306,19 +315,49 @@ export function MotionCollageLightbox({
             }}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={panelUrls[focusedIndex]}
-              alt={`Panel ${focusedIndex + 1} of ${panelCount}`}
-              loading="eager"
-              style={{
-                maxWidth: '100%',
-                maxHeight: 'calc(100% - 100px)',
-                objectFit: 'contain',
-                display: 'block',
-                border: '1px solid rgba(255,255,255,0.18)',
-                borderRadius: 4,
-              }}
-            />
+            {(() => {
+              // Mirror the renderer's per-panel transform inside the
+              // preview so the slider feedback matches what the
+              // exported MP4 will paint. Containing box keeps the
+              // panel's aspect; the image inside gets the transform.
+              const tx = panelTransforms?.[focusedIndex];
+              const xPct = typeof tx?.x_pct === 'number' && Number.isFinite(tx.x_pct) ? tx.x_pct : 0;
+              const yPct = typeof tx?.y_pct === 'number' && Number.isFinite(tx.y_pct) ? tx.y_pct : 0;
+              const scalePct =
+                typeof tx?.scale_pct === 'number' && Number.isFinite(tx.scale_pct) ? tx.scale_pct : 100;
+              const transformStr =
+                xPct !== 0 || yPct !== 0 || scalePct !== 100
+                  ? `translate(${xPct}%, ${yPct}%) scale(${scalePct / 100})`
+                  : undefined;
+              return (
+                <div
+                  style={{
+                    position: 'relative',
+                    maxWidth: '100%',
+                    maxHeight: 'calc(100% - 200px)',
+                    aspectRatio: '16 / 9',
+                    overflow: 'hidden',
+                    background: '#000',
+                    border: '1px solid rgba(255,255,255,0.18)',
+                    borderRadius: 4,
+                  }}
+                >
+                  <img
+                    src={panelUrls[focusedIndex]}
+                    alt={`Panel ${focusedIndex + 1} of ${panelCount}`}
+                    loading="eager"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      transform: transformStr,
+                      transformOrigin: 'center center',
+                      display: 'block',
+                    }}
+                  />
+                </div>
+              );
+            })()}
             {(onRegenPanel || onUploadPanel || onEditPanelWithPrompt) && (
               <div
                 style={{
@@ -413,6 +452,135 @@ export function MotionCollageLightbox({
                 )}
               </div>
             )}
+            {onPanelTransformChange && (() => {
+              // Per-panel transform sliders. Reads the current value
+              // from panelTransforms[focusedIndex]; writes via the
+              // parent's onPanelTransformChange. Same X/Y/SCALE shape
+              // the existing per-shot ShotFreeTransformControls uses
+              // so the muscle memory carries over.
+              const tx = panelTransforms?.[focusedIndex];
+              const xPct = typeof tx?.x_pct === 'number' ? tx.x_pct : 0;
+              const yPct = typeof tx?.y_pct === 'number' ? tx.y_pct : 0;
+              const scalePct = typeof tx?.scale_pct === 'number' ? tx.scale_pct : 100;
+              function commit(next: { x_pct: number; y_pct: number; scale_pct: number }): void {
+                onPanelTransformChange!(focusedIndex!, next);
+              }
+              const dirty = xPct !== 0 || yPct !== 0 || scalePct !== 100;
+              return (
+                <div
+                  style={{
+                    width: '100%',
+                    maxWidth: 600,
+                    display: 'grid',
+                    gridTemplateColumns: '60px 1fr 56px',
+                    gap: '6px 10px',
+                    padding: 10,
+                    background: 'rgba(0,0,0,0.55)',
+                    border: '1px solid rgba(255,255,255,0.18)',
+                    borderRadius: 6,
+                    color: 'rgba(255,255,255,0.85)',
+                    fontSize: 11,
+                    alignItems: 'center',
+                  }}
+                >
+                  <div
+                    style={{
+                      gridColumn: '1 / -1',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 2,
+                    }}
+                  >
+                    <span style={{ fontWeight: 600 }}>Position this panel</span>
+                    {dirty && (
+                      <button
+                        type="button"
+                        onClick={() => commit({ x_pct: 0, y_pct: 0, scale_pct: 100 })}
+                        title="Reset transform to identity"
+                        style={{
+                          padding: '2px 8px',
+                          fontSize: 10,
+                          background: 'transparent',
+                          color: 'rgba(255,255,255,0.7)',
+                          border: '1px solid rgba(255,255,255,0.25)',
+                          borderRadius: 3,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+
+                  <span style={{ color: 'rgba(255,255,255,0.6)' }}>X</span>
+                  <input
+                    type="range"
+                    min={-100}
+                    max={100}
+                    step={1}
+                    value={xPct}
+                    onChange={(e) =>
+                      commit({ x_pct: Number(e.target.value), y_pct: yPct, scale_pct: scalePct })
+                    }
+                    style={{ width: '100%' }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      textAlign: 'right',
+                      color: 'rgba(255,255,255,0.85)',
+                    }}
+                  >
+                    {xPct >= 0 ? '+' : ''}{xPct}%
+                  </span>
+
+                  <span style={{ color: 'rgba(255,255,255,0.6)' }}>Y</span>
+                  <input
+                    type="range"
+                    min={-100}
+                    max={100}
+                    step={1}
+                    value={yPct}
+                    onChange={(e) =>
+                      commit({ x_pct: xPct, y_pct: Number(e.target.value), scale_pct: scalePct })
+                    }
+                    style={{ width: '100%' }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      textAlign: 'right',
+                      color: 'rgba(255,255,255,0.85)',
+                    }}
+                  >
+                    {yPct >= 0 ? '+' : ''}{yPct}%
+                  </span>
+
+                  <span style={{ color: 'rgba(255,255,255,0.6)' }}>Scale</span>
+                  <input
+                    type="range"
+                    min={25}
+                    max={400}
+                    step={1}
+                    value={scalePct}
+                    onChange={(e) =>
+                      commit({ x_pct: xPct, y_pct: yPct, scale_pct: Number(e.target.value) })
+                    }
+                    style={{ width: '100%' }}
+                  />
+                  <span
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      textAlign: 'right',
+                      color: 'rgba(255,255,255,0.85)',
+                    }}
+                  >
+                    {scalePct}%
+                  </span>
+                </div>
+              );
+            })()}
             {editPromptOpen && onEditPanelWithPrompt && (
               <div
                 style={{

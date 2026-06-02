@@ -873,6 +873,27 @@ export interface ProductionRow {
    *  URLs in `motion_collage_panel_urls`. */
   motion_collage_image_url?: string;
 
+  /** Per-panel image transform (X / Y offset + scale) for motion-
+   *  collage rows. User-asked-for 2026-06-02: "I really need to move
+   *  it down" — when a particular panel's AI generation framed the
+   *  subject badly (head cut off, off-center), the user can shift the
+   *  IMAGE inside the panel viewport without regenerating.
+   *
+   *  Sparse array — index aligned with motion_collage_panel_urls.
+   *  `null` entries leave the panel rendering centered + uncropped
+   *  (the default). Entries are { x_pct, y_pct, scale_pct } with
+   *  the same semantics as the per-shot transform fields:
+   *    - x_pct/y_pct: percent translate. +Y moves the image content
+   *      DOWN within the panel; -Y moves it UP. Same for x.
+   *    - scale_pct: 100 = identity, 50 = half size, 200 = double.
+   *  Bounds clamped at the migrator: [-100, 100] for x/y, [25, 400]
+   *  for scale. */
+  motion_collage_panel_transforms?: Array<{
+    x_pct?: number;
+    y_pct?: number;
+    scale_pct?: number;
+  } | null>;
+
   /** Pipeline-populated: R2 URLs of the sliced per-panel images, in
    *  the same index order as `motion_collage_panel_prompts`. Length
    *  equals cols × rows on success. The renderer (`<MotionCollageScene>`)
@@ -2324,6 +2345,7 @@ export function productionDocToVideoConfig(
       // missing / empty array falls back to the held single-image
       // render path.
       motionCollagePanelUrls: row.motion_collage_panel_urls,
+      motionCollagePanelTransforms: row.motion_collage_panel_transforms,
       // Grid layout threaded for editor thumbnails — the renderer
       // doesn't need it (every panel is hard-cut for an equal slice of
       // the window) but the editor's MotionCollageThumb uses it so

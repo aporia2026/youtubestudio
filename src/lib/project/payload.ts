@@ -266,6 +266,19 @@ export function migratePayload(raw: unknown): MigrateResult {
         row.on_screen_text_blocks = result.value.length > 0 ? result.value : undefined;
         dropped.push(`doc.rows[${rowIdx}].on_screen_text_blocks${result.note}`);
       }
+      // Per-panel motion-collage transforms (user ask 2026-06-02).
+      // Sanitize bounds at the boundary — clients can write
+      // arbitrary numbers via the editor sliders, but the renderer
+      // expects clamped values within [-100, 100] for x/y and
+      // [25, 400] for scale_pct.
+      const txResult = sanitizeMotionCollagePanelTransforms(
+        row.motion_collage_panel_transforms,
+      );
+      if (txResult.changed) {
+        row.motion_collage_panel_transforms =
+          txResult.value.length > 0 ? txResult.value : undefined;
+        dropped.push(`doc.rows[${rowIdx}].motion_collage_panel_transforms${txResult.note}`);
+      }
     });
   } else {
     defaulted.push('doc');
@@ -684,6 +697,100 @@ export function sanitizeOnScreenTextBlocks(
     if (cleaned.length >= ON_SCREEN_TEXT_BLOCK_LIMITS.maxBlocksPerShot) break;
   }
   const overCap = raw.length > ON_SCREEN_TEXT_BLOCK_LIMITS.maxBlocksPerShot;
+  const changed = droppedEntries > 0 || clampedEntries > 0 || overCap;
+  const noteParts: string[] = [];
+  if (droppedEntries > 0) noteParts.push(`${droppedEntries} dropped`);
+  if (clampedEntries > 0) noteParts.push(`${clampedEntries} clamped`);
+  if (overCap) noteParts.push('over-cap');
+  const note = noteParts.length > 0 ? `[${noteParts.join(',')}]` : '';
+  return { value: cleaned, changed, note };
+}
+
+// ─── Motion-collage per-panel transform sanitization ─────────────────
+//
+// PR (2026-06-02 user ask): per-panel x/y/scale transform on
+// motion_collage_panel_transforms. Clamps to bounds + drops malformed
+// entries the same way text-blocks does.
+
+const MOTION_COLLAGE_TRANSFORM_BOUNDS = {
+  xPctMin: -100,
+  xPctMax: 100,
+  yPctMin: -100,
+  yPctMax: 100,
+  scalePctMin: 25,
+  scalePctMax: 400,
+  /** Hard cap on the array length — matches MAX_COLLAGE_CELLS from
+   *  the slicer (= 16). Longer arrays are truncated. */
+  maxLength: 16,
+} as const;
+
+function clampNumOrUndef(
+  n: unknown,
+  min: number,
+  max: number,
+): { value: number | undefined; clamped: boolean } {
+  if (n === undefined || n === null) return { value: undefined, clamped: false };
+  if (typeof n !== 'number' || !Number.isFinite(n)) return { value: undefined, clamped: true };
+  if (n < min) return { value: min, clamped: true };
+  if (n > max) return { value: max, clamped: true };
+  return { value: n, clamped: false };
+}
+
+export function sanitizeMotionCollagePanelTransforms(
+  raw: unknown,
+): {
+  value: Array<{ x_pct?: number; y_pct?: number; scale_pct?: number } | null>;
+  changed: boolean;
+  note: string;
+} {
+  if (raw === undefined || raw === null) {
+    return { value: [], changed: false, note: '' };
+  }
+  if (!Array.isArray(raw)) {
+    return { value: [], changed: true, note: ':not-array' };
+  }
+  const cleaned: Array<{ x_pct?: number; y_pct?: number; scale_pct?: number } | null> = [];
+  let clampedEntries = 0;
+  let droppedEntries = 0;
+  for (const entry of raw) {
+    if (cleaned.length >= MOTION_COLLAGE_TRANSFORM_BOUNDS.maxLength) break;
+    if (entry === null || entry === undefined) {
+      cleaned.push(null);
+      continue;
+    }
+    if (!isPlainObject(entry)) {
+      droppedEntries += 1;
+      cleaned.push(null);
+      continue;
+    }
+    const x = clampNumOrUndef(
+      entry.x_pct,
+      MOTION_COLLAGE_TRANSFORM_BOUNDS.xPctMin,
+      MOTION_COLLAGE_TRANSFORM_BOUNDS.xPctMax,
+    );
+    const y = clampNumOrUndef(
+      entry.y_pct,
+      MOTION_COLLAGE_TRANSFORM_BOUNDS.yPctMin,
+      MOTION_COLLAGE_TRANSFORM_BOUNDS.yPctMax,
+    );
+    const scale = clampNumOrUndef(
+      entry.scale_pct,
+      MOTION_COLLAGE_TRANSFORM_BOUNDS.scalePctMin,
+      MOTION_COLLAGE_TRANSFORM_BOUNDS.scalePctMax,
+    );
+    const next: { x_pct?: number; y_pct?: number; scale_pct?: number } = {};
+    if (x.value !== undefined) next.x_pct = x.value;
+    if (y.value !== undefined) next.y_pct = y.value;
+    if (scale.value !== undefined) next.scale_pct = scale.value;
+    if (x.clamped || y.clamped || scale.clamped) clampedEntries += 1;
+    // Collapse all-default to null so the renderer can short-circuit.
+    if (next.x_pct === undefined && next.y_pct === undefined && next.scale_pct === undefined) {
+      cleaned.push(null);
+    } else {
+      cleaned.push(next);
+    }
+  }
+  const overCap = raw.length > MOTION_COLLAGE_TRANSFORM_BOUNDS.maxLength;
   const changed = droppedEntries > 0 || clampedEntries > 0 || overCap;
   const noteParts: string[] = [];
   if (droppedEntries > 0) noteParts.push(`${droppedEntries} dropped`);

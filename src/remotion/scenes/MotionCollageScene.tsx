@@ -124,6 +124,27 @@ export const MotionCollageScene: React.FC<
         // safety in the editor preview where durations can be
         // hand-edited to unrealistic values.
         if (!w || w.durationInFrames <= 0) return null;
+        // Per-panel transform — when the user shifted the image
+        // within this panel via the lightbox sliders (user ask
+        // 2026-06-02), apply CSS translate + scale on top of the
+        // existing objectFit:cover layout. transformOrigin stays at
+        // center so positive Y translates the image DOWN within the
+        // viewport (revealing more of the top of the source) and
+        // scale grows from center. Absent / null entries render
+        // identity (the default). Bounds already clamped at the
+        // payload boundary.
+        const tx = shot.motionCollagePanelTransforms?.[idx];
+        const txStyle: React.CSSProperties = {};
+        if (tx) {
+          const xPct = typeof tx.x_pct === 'number' && Number.isFinite(tx.x_pct) ? tx.x_pct : 0;
+          const yPct = typeof tx.y_pct === 'number' && Number.isFinite(tx.y_pct) ? tx.y_pct : 0;
+          const scalePct =
+            typeof tx.scale_pct === 'number' && Number.isFinite(tx.scale_pct) ? tx.scale_pct : 100;
+          if (xPct !== 0 || yPct !== 0 || scalePct !== 100) {
+            txStyle.transform = `translate(${xPct}%, ${yPct}%) scale(${scalePct / 100})`;
+            txStyle.transformOrigin = 'center center';
+          }
+        }
         return (
           <Sequence
             key={`panel-${idx}`}
@@ -133,7 +154,12 @@ export const MotionCollageScene: React.FC<
           >
             <Img
               src={url}
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                ...txStyle,
+              }}
             />
           </Sequence>
         );

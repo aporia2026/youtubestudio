@@ -1820,7 +1820,19 @@ export async function generateMotionCollage(args: {
     // chains depth >= 2 + light style guard.
     const baseDelta = panelPrompts[panelIdx];
     const isDeepChain = panelIdx >= 2;
+    // FRAMING-LOCK clause (2026-06-02 user ask): user reported the
+    // character's head getting cut off in later panels because Atlas
+    // Edit zoomed/panned the framing between chained calls. Bolt an
+    // explicit framing-preservation instruction to the front of every
+    // chained-edit prompt so the model keeps the SAME zoom level + the
+    // SAME character size + the SAME vertical/horizontal positioning.
+    // Identity anchor (for deep chains) covers character APPEARANCE
+    // continuity but said nothing about FRAMING; this clause fills
+    // that gap.
+    const framingLock =
+      'CRITICAL FRAMING CONSTRAINT: Reproduce the input image\'s exact framing. Keep every subject at the SAME size, the SAME vertical position, and the SAME horizontal position as in the input. Do NOT crop, zoom in, zoom out, pan, or otherwise change the camera. If a character\'s head, hands, or feet are visible in the input, they MUST remain fully visible in the output at the same coordinates. Only the moving element described below should differ.';
     const editPrompt = [
+      framingLock,
       chainBibleBlock,
       baseDelta,
       isDeepChain

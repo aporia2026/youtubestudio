@@ -432,6 +432,15 @@ interface ProductionRow {
   motion_collage_panel_prompts?: string[];
   motion_collage_image_url?: string;
   motion_collage_panel_urls?: string[];
+  /** Per-panel transform (X/Y offset + scale) so a poorly-framed panel
+   *  can be repositioned within its viewport without regen. Mirror of
+   *  the field on the canonical ProductionRow — see remotion/utils.ts
+   *  for full semantics + bounds. User-asked-for 2026-06-02. */
+  motion_collage_panel_transforms?: Array<{
+    x_pct?: number;
+    y_pct?: number;
+    scale_pct?: number;
+  } | null>;
 }
 
 interface ProductionDoc {

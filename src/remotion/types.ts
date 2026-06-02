@@ -403,6 +403,17 @@ export interface VideoShot {
    *  When absent / empty, the renderer falls back to a held single
    *  image (panel 0 mirrored into `imageUrl` by the pipeline). */
   motionCollagePanelUrls?: string[];
+  /** Per-panel transform overrides — index-aligned with
+   *  `motionCollagePanelUrls`. When set, MotionCollageScene applies
+   *  CSS `translate(x_pct%, y_pct%) scale(scale_pct/100)` to that
+   *  panel's image so the user can reposition badly-framed panels
+   *  without regen. Mirror of `motion_collage_panel_transforms` on
+   *  the source row. User-asked-for 2026-06-02. */
+  motionCollagePanelTransforms?: Array<{
+    x_pct?: number;
+    y_pct?: number;
+    scale_pct?: number;
+  } | null>;
   /** Grid layout for the panel URLs. Mirror of `ProductionRow.motion_collage_grid`,
    *  threaded so editor thumbnails can render the exact cols × rows the
    *  panels were sliced from instead of falling back to a square-ish guess.

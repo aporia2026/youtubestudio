@@ -613,6 +613,21 @@ export function InspectorMotionCollagePanel({
           onEditPanelWithPrompt={(panelIndex, prompt) =>
             void handlePanelEditWithPrompt(panelIndex, prompt)
           }
+          panelTransforms={row.motion_collage_panel_transforms}
+          onPanelTransformChange={(panelIndex, next) => {
+            const N = (row.motion_collage_panel_urls?.length ?? 0);
+            const current = row.motion_collage_panel_transforms ?? [];
+            const nextArray = Array.from({ length: N }, (_, i): typeof current[number] => {
+              if (i === panelIndex) return next;
+              return current[i] ?? null;
+            });
+            console.info('[editor motion-collage panel transform]', {
+              shotIndex,
+              panelIndex,
+              next,
+            });
+            onUpdateRow({ motion_collage_panel_transforms: nextArray });
+          }}
         />
       )}
     </div>
