@@ -21,9 +21,14 @@
  * always undo by un-dismissing via DB, and the inbox is high-volume.)
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { ShortRow } from '@/lib/shorts-types';
+import {
+  anyRowGenerating,
+  getStyleAssetStatus,
+  styleAssetLabel,
+} from '@/lib/shorts-asset-status';
 
 function formatMsAsTimestamp(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -73,6 +78,64 @@ export function ShortsInboxPanel({ mediumFilter = 'all' }: Props) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Auto-poll while ANY row is in 'generating' state. Stop the interval
+  // once every row is either ready or doesn't need assets. Poll cadence
+  // (12s) is a compromise — fast enough that an Atlas Image base lands
+  // within one tick, slow enough that the user's bandwidth + the API's
+  // listShortsForWorkspace query aren't hammered.
+  const POLL_INTERVAL_MS = 12_000;
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const shouldPoll = anyRowGenerating(rows);
+  useEffect(() => {
+    if (!shouldPoll) {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      return;
+    }
+    if (intervalRef.current) return;
+    intervalRef.current = setInterval(() => {
+      load();
+    }, POLL_INTERVAL_MS);
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [shouldPoll, load]);
+
+  // Retry — re-fires generate-style-assets for a row whose original
+  // pipeline died (Vercel function timeout, vendor flap, etc.). Same
+  // fire-and-forget pattern as the Create surface so the user isn't
+  // blocked on a 1-4 min wait.
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const retryAssets = useCallback(
+    async (row: ShortRow) => {
+      if (!row.style_id || row.style_id === 'minimal_gradient_v1') return;
+      setRetryingId(row.id);
+      try {
+        void fetch(`/api/shorts/${encodeURIComponent(row.id)}/generate-style-assets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ style_id: row.style_id }),
+          keepalive: true,
+        }).catch(() => {
+          /* swallow — failures surface on the next inbox poll */
+        });
+        toast.success(
+          `Retrying ${styleAssetLabel(row.style_id)} assets — give it 1-4 minutes; the inbox will flip to "Ready" when it lands.`,
+        );
+      } finally {
+        // Brief debounce so the same button can't be slammed; the polling
+        // loop's next tick will refresh the row state.
+        setTimeout(() => setRetryingId(null), 1500);
+      }
+    },
+    [],
+  );
 
   const dismiss = useCallback(
     async (id: string) => {
@@ -236,6 +299,7 @@ export function ShortsInboxPanel({ mediumFilter = 'all' }: Props) {
                   {formatMsAsTimestamp(row.clip_end_ms!)}
                 </span>
               )}
+              <AssetStatusBadge row={row} />
               <span style={{ marginLeft: 'auto', opacity: 0.55 }}>
                 {new Date(row.created_at).toLocaleString()}
               </span>
@@ -253,7 +317,7 @@ export function ShortsInboxPanel({ mediumFilter = 'all' }: Props) {
               )}
             </div>
 
-            <footer style={{ display: 'flex', gap: 8 }}>
+            <footer style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {row.medium === 'short_clip' && row.source_youtube_video_id && (
                 <a
                   href={studioDeepLink(row.source_youtube_video_id, row.clip_start_ms ?? 0)}
@@ -272,6 +336,26 @@ export function ShortsInboxPanel({ mediumFilter = 'all' }: Props) {
                 >
                   Open in YouTube Studio →
                 </a>
+              )}
+              {getStyleAssetStatus(row) === 'generating' && (
+                <button
+                  type="button"
+                  onClick={() => retryAssets(row)}
+                  disabled={retryingId === row.id}
+                  title="Re-fire the style asset pipeline (server may have timed out the first run)."
+                  style={{
+                    padding: '5px 11px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(124,58,237,0.4)',
+                    background: 'transparent',
+                    color: '#c4b5fd',
+                    cursor: retryingId === row.id ? 'wait' : 'pointer',
+                    fontSize: 12,
+                    fontWeight: 500,
+                  }}
+                >
+                  {retryingId === row.id ? 'Retrying…' : `Retry ${styleAssetLabel(row.style_id)} assets`}
+                </button>
               )}
               <button
                 type="button"
@@ -294,5 +378,82 @@ export function ShortsInboxPanel({ mediumFilter = 'all' }: Props) {
         ))}
       </div>
     </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Asset status badge — three states. Pulse animation on 'generating' so the
+// user has a clear "something's happening" signal while the Atlas pipeline
+// runs server-side.
+// ────────────────────────────────────────────────────────────────────────────
+
+function AssetStatusBadge({ row }: { row: ShortRow }) {
+  const status = getStyleAssetStatus(row);
+  if (status === 'none') return null;
+
+  const label = styleAssetLabel(row.style_id);
+  if (status === 'generating') {
+    return (
+      <span
+        title="Style assets are generating on the server. This page polls every 12s — the badge flips to Ready when the base frame lands."
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '2px 8px',
+          borderRadius: 999,
+          background: 'rgba(245,158,11,0.18)',
+          color: '#fde68a',
+          fontWeight: 600,
+          fontSize: 11,
+          animation: 'shorts-asset-pulse 1.6s ease-in-out infinite',
+        }}
+      >
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: '#f59e0b',
+            display: 'inline-block',
+          }}
+        />
+        {label} generating…
+        <style>{`
+          @keyframes shorts-asset-pulse {
+            0%, 100% { opacity: 0.85; }
+            50% { opacity: 1; }
+          }
+        `}</style>
+      </span>
+    );
+  }
+  // status === 'ready'
+  return (
+    <span
+      title="Style assets are ready. The next render will use them."
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '2px 8px',
+        borderRadius: 999,
+        background: 'rgba(34,197,94,0.18)',
+        color: '#86efac',
+        fontWeight: 600,
+        fontSize: 11,
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: '#22c55e',
+          display: 'inline-block',
+        }}
+      />
+      {label} ready
+    </span>
   );
 }
