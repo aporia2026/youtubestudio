@@ -77,13 +77,27 @@ export function ConvertToMotionCollageButton({
     DEFAULT_GRID,
   );
 
-  // Gates — same precedence as production-doc's convert button, but
-  // accepts saved-style UUIDs via effectiveStyleSlug too.
-  const resolvedSlug = effectiveStyleSlug ?? doc.style_preset;
-  const isDoodleDoc = resolvedSlug === 'doodle_explainer_2';
-  if (!isDoodleDoc) return null;
+  // Gates (kept tight):
+  //   - Hidden on Title Card rows (image-less typography, can't be a collage).
+  //   - Hidden on already-motion-collage rows (the panel inspector's
+  //     "← Revert" button covers the reverse direction).
+  //
+  // The doodle-style gate the first cut had was removed (2026-06-02)
+  // after a user-reported bug: a confirmed doodle doc with a saved-style
+  // UUID (style 521adb81-...) hid the button silently because the DB
+  // row's `based_on_built_in` link was never backfilled. The motion-
+  // collage pipeline IS doodle-specific (panel prompts inherit doodle
+  // style refs server-side), but hiding the button on legitimate doodle
+  // docs because of a data gap is worse UX than showing it everywhere
+  // and letting the panel-gen result speak for itself. We surface the
+  // resolved style in the tooltip so the user sees what we'll send.
   if (row.visual_type === 'Title Card') return null;
   if (row.shot_kind === 'motion_collage') return null;
+  // Resolved slug used purely for the tooltip so the user can see
+  // which style the panel-gen call will use. Empty string when the
+  // doc has no style at all (the auto-fill server-side helper still
+  // works, just with no style suffix).
+  const resolvedSlug = effectiveStyleSlug ?? doc.style_preset ?? '';
 
   async function handleConvert(): Promise<void> {
     if (converting) return;
@@ -231,7 +245,7 @@ export function ConvertToMotionCollageButton({
           border: '1px solid rgba(124,58,237,0.45)',
           cursor: converting ? 'wait' : 'pointer',
         }}
-        title={`Convert this row to a motion collage at ${selectedGrid.cols}×${selectedGrid.rows} (= ${panelCount} keyframes). Best for real motion (running, falling, transforming). Auto-fills panel prompts from the row's narration.`}
+        title={`Convert this row to a motion collage at ${selectedGrid.cols}×${selectedGrid.rows} (= ${panelCount} keyframes).${resolvedSlug ? ` Style: ${resolvedSlug}.` : ''} Best for real motion (running, falling, transforming). Auto-fills panel prompts from the row's narration.`}
       >
         {converting
           ? `↯ Converting + auto-filling ${panelCount} panels…`

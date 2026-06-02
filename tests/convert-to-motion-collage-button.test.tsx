@@ -54,20 +54,27 @@ describe('ConvertToMotionCollageButton — visibility gates', () => {
     expect(html).toContain('Convert to motion collage');
   });
 
-  it('renders when style_preset is a saved-style UUID with effectiveStyleSlug resolving to doodle', () => {
+  it('renders when style_preset is a saved-style UUID (real-world case)', () => {
+    // 2026-06-02 user-reported bug: a saved style derived from
+    // doodle_explainer_2 hid the button because its DB row lacked
+    // the based_on_built_in link. The gate is now permissive — any
+    // non-Title-Card / non-motion-collage row shows the button.
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow()}
         shotIndex={0}
-        doc={makeDoc('a1b2c3d4-uuid-saved-style')}
-        effectiveStyleSlug="doodle_explainer_2"
+        doc={makeDoc('521adb81-8e15-4b27-91c7-1bc68f572280')}
         onUpdateRow={() => {}}
       />,
     );
     expect(html).toContain('Convert to motion collage');
   });
 
-  it('returns null when the doc style is NOT doodle (no slug, no effective)', () => {
+  it('renders even when doc style is a non-doodle built-in (gate intentionally loose)', () => {
+    // The motion-collage pipeline is doodle-specific server-side, but
+    // hiding the button on legitimate doodle docs because of a data
+    // gap was the worse failure mode. Button shows; tooltip surfaces
+    // the resolved style.
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow()}
@@ -76,10 +83,11 @@ describe('ConvertToMotionCollageButton — visibility gates', () => {
         onUpdateRow={() => {}}
       />,
     );
-    expect(html).toBe('');
+    expect(html).toContain('Convert to motion collage');
+    expect(html).toContain('Style: cinematic');
   });
 
-  it('returns null when row.shot_kind is already motion_collage (revert button covers that case)', () => {
+  it('returns null when row.shot_kind is already motion_collage', () => {
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow({ shot_kind: 'motion_collage' })}
@@ -103,7 +111,7 @@ describe('ConvertToMotionCollageButton — visibility gates', () => {
     expect(html).toBe('');
   });
 
-  it('returns null when doc has no style_preset and no effectiveStyleSlug', () => {
+  it('renders even with no style_preset set (auto-fill still works without a style suffix)', () => {
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow()}
@@ -112,20 +120,20 @@ describe('ConvertToMotionCollageButton — visibility gates', () => {
         onUpdateRow={() => {}}
       />,
     );
-    expect(html).toBe('');
+    expect(html).toContain('Convert to motion collage');
   });
 
-  it('returns null when effectiveStyleSlug resolves to a non-doodle built-in', () => {
+  it('tooltip exposes the resolved built-in slug when effectiveStyleSlug is set', () => {
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow()}
         shotIndex={0}
-        doc={makeDoc('cinematic')}
-        effectiveStyleSlug="cinematic"
+        doc={makeDoc('521adb81-uuid')}
+        effectiveStyleSlug="doodle_explainer_2"
         onUpdateRow={() => {}}
       />,
     );
-    expect(html).toBe('');
+    expect(html).toContain('Style: doodle_explainer_2');
   });
 
   it('shows the auto-fill hint text so the user knows what the button does', () => {
