@@ -100,6 +100,12 @@ import {
   FlipOstToOverlayModal,
   computeAffectedRows,
 } from '@/components/editor/FlipOstToOverlayModal';
+import {
+  BulkGenerateModal,
+  computeMissingBaseImages,
+  computeMissingVariants,
+  computeMissingMotionCollages,
+} from '@/components/editor/BulkGenerateModal';
 import { BrandKitModal } from '@/components/editor/BrandKitModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
@@ -301,6 +307,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // cost-gated "Switch OST to overlay + regen" modal. Surfaces the
   // affected-row count and estimated cost before any spend.
   const [flipOstModalOpen, setFlipOstModalOpen] = useState(false);
+  // 2026-06-02 — three bulk-generate cost-gated modals (user-asked-for):
+  //   'base'     → Generate all Base images
+  //   'variants' → Generate all Variations
+  //   'collages' → Generate all motion collages
+  // null when no modal is open. Same skeleton as flipOstModalOpen.
+  const [bulkGenerateModal, setBulkGenerateModal] = useState<
+    'base' | 'variants' | 'collages' | null
+  >(null);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc. The user's preferred default
@@ -660,13 +674,34 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   // we always use doc.image_model_default for collage units — shots
   // with a row override fall through to the single path automatically
   // because they break the chunk's same-model run.
-  const runFillBlanks = useCallback(async () => {
+  // 2026-06-02 — optional `rowFilter` predicate added so the
+  // bulk-generate buttons (Generate all Base / all Variations / all
+  // motion collages) can constrain the worker to a subset without
+  // forking the whole function. Predicate runs over (row, rowIndex)
+  // and is applied AFTER the existing "missing image" filter; rows
+  // that already have an image are skipped regardless. Undefined ⇒
+  // full fill-blanks behaviour (every blank row).
+  const runFillBlanks = useCallback(async (
+    options?: {
+      rowFilter?: (row: ProductionDoc['rows'][number], rowIndex: number) => boolean;
+      /** Override the legacy "All shots already have an image" toast
+       *  when the filtered run finds nothing. Callers use this for
+       *  custom empty-state messages ("All base images already
+       *  generated", etc.). */
+      emptyMessage?: string;
+    },
+  ) => {
     if (fillState === 'running') return;
+    const filter = options?.rowFilter;
     const initialBlanks = stateRef.current.doc.rows
-      .map((_, i) => (stateRef.current.rowImages[i] ? -1 : i))
+      .map((row, i) => {
+        if (stateRef.current.rowImages[i]) return -1;
+        if (filter && !filter(row, i)) return -1;
+        return i;
+      })
       .filter((i): i is number => i >= 0);
     if (initialBlanks.length === 0) {
-      toast.info('All shots already have an image.');
+      toast.info(options?.emptyMessage ?? 'All shots already have an image.');
       return;
     }
     // Snapshot row count at kickoff so we can detect a structural
@@ -4175,6 +4210,49 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             <span>Switch OST → overlay (regen)</span>
             <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↻</span>
           </button>
+
+          {/* Bulk-generate actions — three separate cost-gated buttons.
+              User-asked-for 2026-06-02:
+                "Generate All Base images" — variant-index 0 / no variant
+                "Generate all Variations" — variant-index > 0
+                "Generate all motion collages" — shot_kind=motion_collage
+              Each opens a BulkGenerateModal with the filtered row list
+              + cost preview. Run dispatches through runFillBlanks (or
+              the motion-collage manual path) so progress shows in the
+              existing Live tab + bottom-bar fill-blanks indicator. */}
+          <div
+            className="pt-1.5 mt-1 text-[10px] uppercase tracking-wider"
+            style={{ color: 'var(--fg-muted)', borderTop: '1px solid var(--editor-edge)' }}
+          >
+            Bulk generate
+          </div>
+          <button
+            type="button"
+            onClick={() => setBulkGenerateModal('base')}
+            className="editor-btn w-full justify-between"
+            title="Generate every base image (variant 0 / no variant) that's still blank. Cost-gated; modal shows count + estimate before commit."
+          >
+            <span>Generate all Base images</span>
+            <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↯</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBulkGenerateModal('variants')}
+            className="editor-btn w-full justify-between"
+            title="Generate every variant image (variant index > 0) that's still blank, anchored on its base. Cost-gated."
+          >
+            <span>Generate all Variations</span>
+            <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↯</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBulkGenerateModal('collages')}
+            className="editor-btn w-full justify-between"
+            title="Generate every motion-collage row whose panels haven't been rendered yet. Cost-gated; each collage spends ~$0.05 across N panels."
+          >
+            <span>Generate all motion collages</span>
+            <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↯</span>
+          </button>
           {/* Pillarbox color default — used when a row's scene_zoom is
               under 100% and bars sit on either side of the scene. */}
           <div className="flex items-center gap-2">
@@ -5191,6 +5269,191 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onClose={() => setShowBrandKit(false)}
         />
       )}
+
+      {bulkGenerateModal !== null && (() => {
+        // Per-image cost — same lookup the OST flip-to-overlay modal uses.
+        // Verified against image-models.ts hints 2026-05-25.
+        const modelId = state.doc.image_model_default;
+        const { usd, label } = (() => {
+          switch (modelId) {
+            case 'gpt-image-2-atlas-t2i':
+            case undefined:
+              return { usd: 0.011, label: '$0.011 / image (GPT Image 2 Atlas, cheaper default)' };
+            case 'gpt-image-2-t2i':
+              return { usd: 0.04, label: '$0.04 / image (GPT Image 2 Kie)' };
+            case 'nano-banana':
+              return { usd: 0.04, label: '$0.04 / image (Google NanoBanana 2)' };
+            case 'ideogram-v3-quality-t2i':
+              return { usd: 0.05, label: '$0.05 / image (Ideogram v3 Quality)' };
+            case 'ideogram-v3-turbo-t2i':
+              return { usd: 0.0175, label: '$0.0175 / image (Ideogram v3 Turbo)' };
+            default:
+              return {
+                usd: 0.04,
+                label: `~$0.04 / image (estimate; model: ${modelId})`,
+              };
+          }
+        })();
+
+        if (bulkGenerateModal === 'base') {
+          const rows = computeMissingBaseImages(state.doc, state.rowImages);
+          return (
+            <BulkGenerateModal
+              title="Generate all base images"
+              description="Fires the standard image-gen for every base shot (variant index 0 / no variant) that's still blank. Variants and motion-collage rows are excluded — they have their own bulk actions. Each shot runs through the doc's selected image model + style refs, same as the per-shot Regenerate button."
+              affectedRows={rows}
+              perImageCostLabel={label}
+              perImageCostUsd={usd}
+              totalRowCount={state.doc.rows.length}
+              onCancel={() => setBulkGenerateModal(null)}
+              onConfirm={() => {
+                console.info('[editor bulk-generate base confirm]', {
+                  affectedCount: rows.length,
+                });
+                setBulkGenerateModal(null);
+                void runFillBlanks({
+                  rowFilter: (row, i) => {
+                    if (row.visual_type === 'blank' || row.visual_type === 'Title Card') return false;
+                    if (row.shot_kind === 'motion_collage') return false;
+                    return (row.variant_index ?? 0) === 0;
+                  },
+                  emptyMessage: 'No base images need generation.',
+                });
+              }}
+            />
+          );
+        }
+        if (bulkGenerateModal === 'variants') {
+          const rows = computeMissingVariants(state.doc, state.rowImages);
+          return (
+            <BulkGenerateModal
+              title="Generate all variations"
+              description="Fires the standard image-gen for every variant shot (variant index > 0) that's still blank. Each variant chains off its base image via the existing variant pipeline. Base images and motion-collage rows are excluded."
+              affectedRows={rows}
+              perImageCostLabel={label}
+              perImageCostUsd={usd}
+              totalRowCount={state.doc.rows.length}
+              onCancel={() => setBulkGenerateModal(null)}
+              onConfirm={() => {
+                console.info('[editor bulk-generate variants confirm]', {
+                  affectedCount: rows.length,
+                });
+                setBulkGenerateModal(null);
+                void runFillBlanks({
+                  rowFilter: (row, i) => {
+                    if (row.visual_type === 'blank' || row.visual_type === 'Title Card') return false;
+                    return (row.variant_index ?? 0) > 0;
+                  },
+                  emptyMessage: 'No missing variations.',
+                });
+              }}
+            />
+          );
+        }
+        // bulkGenerateModal === 'collages'
+        const rows = computeMissingMotionCollages(state.doc);
+        // Motion-collage cost: each row generates ~N panels (cols×rows),
+        // each panel ~= one image. Estimate cost = N panels × per-image.
+        // For mixed grids, use the panel-prompts length per row.
+        const totalPanels = rows.reduce((sum, r) => {
+          const row = state.doc.rows[r.rowIndex];
+          return sum + (row?.motion_collage_panel_prompts?.length ?? 4);
+        }, 0);
+        const collageCostUsd = totalPanels * usd;
+        const collageLabel = `${label} × N panels per collage`;
+        return (
+          <BulkGenerateModal
+            title="Generate all motion collages"
+            description={`Generates panels for every motion-collage row that hasn't been rendered yet (and that has a grid + panel prompts set). Total panel count across all affected rows: ${totalPanels}. Each panel costs the same as one regular image; rows run sequentially because each panel chains off the previous one inside the row.`}
+            affectedRows={rows}
+            perImageCostLabel={collageLabel}
+            perImageCostUsd={collageCostUsd / Math.max(1, rows.length)}
+            totalRowCount={state.doc.rows.length}
+            onCancel={() => setBulkGenerateModal(null)}
+            onConfirm={() => {
+              console.info('[editor bulk-generate collages confirm]', {
+                affectedCount: rows.length,
+                totalPanels,
+                estCost: collageCostUsd,
+              });
+              setBulkGenerateModal(null);
+              // Sequential dispatch — each motion-collage gen takes
+              // ~2 min wall-clock, can't safely parallelize without
+              // burning Atlas rate limits. Run them one at a time with
+              // toast progress. Per-row failure is non-fatal; the loop
+              // continues so a single bad row doesn't kill the batch.
+              void (async () => {
+                let succeeded = 0;
+                let failed = 0;
+                for (const target of rows) {
+                  const row = state.doc.rows[target.rowIndex];
+                  if (!row) continue;
+                  if (!row.motion_collage_grid || !row.motion_collage_panel_prompts?.length) {
+                    failed += 1;
+                    continue;
+                  }
+                  toast.info(
+                    `Generating collage ${succeeded + failed + 1}/${rows.length} (shot #${target.rowIndex + 1})…`,
+                  );
+                  try {
+                    // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC; awaits + reads response
+                    const res = await fetch('/api/generate/production-doc/motion-collage', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        grid: row.motion_collage_grid,
+                        panelPrompts: row.motion_collage_panel_prompts,
+                        stylePreset: state.doc.style_preset,
+                        motionCollageSettings: state.doc.doodle_explainer_2_motion_collage_settings,
+                        characterDescriptions: state.doc.doodle_explainer_2_character_descriptions,
+                      }),
+                    });
+                    const data = (await res.json()) as {
+                      imageUrl?: string;
+                      panelUrls?: string[];
+                      collageImageUrl?: string;
+                      error?: string;
+                    };
+                    if (!res.ok || !data.imageUrl || !data.panelUrls?.length) {
+                      failed += 1;
+                      console.warn('[editor bulk-generate collages] row failed', {
+                        rowIndex: target.rowIndex,
+                        error: data.error,
+                      });
+                      continue;
+                    }
+                    apply({
+                      type: 'PATCH_ROW',
+                      rowIndex: target.rowIndex,
+                      patch: {
+                        image_url: data.imageUrl,
+                        motion_collage_image_url: data.collageImageUrl,
+                        motion_collage_panel_urls: data.panelUrls,
+                      },
+                    });
+                    succeeded += 1;
+                  } catch (err) {
+                    failed += 1;
+                    console.warn('[editor bulk-generate collages] threw', {
+                      rowIndex: target.rowIndex,
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                }
+                if (failed === 0) {
+                  toast.success(`All ${succeeded} motion collages generated.`);
+                } else if (succeeded === 0) {
+                  toast.error(`All ${failed} motion collages failed. Check Live tab for details.`);
+                } else {
+                  toast.success(
+                    `${succeeded} collages generated · ${failed} failed.`,
+                  );
+                }
+              })();
+            }}
+          />
+        );
+      })()}
 
       {flipOstModalOpen && (() => {
         const affected = computeAffectedRows(state.doc, state.rowImages);
