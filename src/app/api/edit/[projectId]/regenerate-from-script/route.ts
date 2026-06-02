@@ -250,6 +250,13 @@ export const POST = apiRoute.authed(async (
   });
 
   // Build the prompt + run the generator.
+  //
+  // PR3 (2026-06-03) pacing profile. The regenerate path inherits the
+  // existing doc's pacing_profile so a user who set the doc to
+  // 'standard' (slow) doesn't surprise themselves with a fast regen.
+  // New / legacy docs without a profile fall to the 'fast' default.
+  const inheritedPacing =
+    (oldDoc as { pacing_profile?: 'standard' | 'fast' | 'very_fast' }).pacing_profile ?? 'fast';
   const { system, user } = productionDocPrompt({
     script: extracted.stripped,
     titles: extracted.titles,
@@ -258,6 +265,7 @@ export const POST = apiRoute.authed(async (
     speakingPaceWpm: oldDoc.speaking_pace_wpm,
     style,
     startTimecodeSeconds: 0,
+    pacingProfile: inheritedPacing,
   });
 
   let raw: string;

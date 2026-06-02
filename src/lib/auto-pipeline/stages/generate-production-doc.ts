@@ -19,6 +19,8 @@
  */
 import { sql } from '@vercel/postgres';
 import { productionDocPrompt } from '../../prompts';
+import { applyPacingPostProcess } from '../post-process-pacing';
+import type { ProductionDoc } from '../../../remotion/utils';
 import { extractScriptTitles } from '../../script-titles';
 import { preprocessSsmlForProductionDoc } from '../../ssml-production-doc';
 import { generateTextWithFallback } from '../../ai';
@@ -126,6 +128,12 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
       ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
       niche,
       topic,
+      // PR3 (2026-06-03): default to 'fast' for the auto-pipeline so
+      // every new pipeline-generated doc lands with vivid pacing +
+      // the opening hook directive. Per-video / per-preset overrides
+      // are a future addition — when the pipeline preset gains a
+      // `pacing_profile` field, plumb it through here.
+      pacingProfile: 'fast',
       style: style
         ? {
             id: style.id,
@@ -407,8 +415,27 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     }
   }
 
-  // Persist the parsed doc onto the artefact row. v1 — no
-  // dedicated production_doc_entries table.
+  // PR3 (2026-06-03): pacing post-processor. The LLM follows the
+  // opening-hook directive ~70% of the time; this pass enforces it
+  // deterministically for the remaining 30%. Stamps `pacing_profile`
+  // onto the doc so downstream surfaces (the page's Settings panel,
+  // future post-processors) can read the active profile. The
+  // post-processor itself is a no-op when `pacing_profile === 'standard'`
+  // so opt-out is a single-field change.
+  const docWithProfile: ProductionDoc = {
+    ...(parsedDoc as ProductionDoc),
+    pacing_profile: 'fast',
+  };
+  const pacing = applyPacingPostProcess(docWithProfile);
+  if (pacing.diagnostics.openingRowsSplit > 0 || pacing.diagnostics.openingFirstRowIsStaticBase) {
+    logger.info('[pacing post-process]', {
+      pipeline_video_id: video.id,
+      ...pacing.diagnostics,
+    });
+  }
+
+  // Persist the parsed + post-processed doc onto the artefact row.
+  // v1 — no dedicated production_doc_entries table.
   await persistArtefact({
     pipelineRunVideoId: video.id,
     stage: 'generating_production_doc',
@@ -416,7 +443,7 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     artefactKind: 'production_doc',
     artefactId: null,
     costUsd: 0,
-    metadata: { doc: parsedDoc, model_used: result.modelUsed, attempts: result.attempts.length },
+    metadata: { doc: pacing.doc, model_used: result.modelUsed, attempts: result.attempts.length },
   });
 
   logger.info('auto-pipeline: production doc persisted', {

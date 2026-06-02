@@ -13,10 +13,19 @@
  * `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
  *
  * `reinforced = true` appends a stronger directive that re-states the
- * same-scene constraint. Used on the retry pass when the slicer flags
- * a malformed grid (panels that drift in composition / camera /
- * character between frames).
+ * same-scene constraint. PR4 of 2026-06-03 plan makes this the
+ * default — empirical retry-pass success showed the reinforced
+ * directive should always be present, not only after a malformed
+ * grid is detected.
+ *
+ * PR4 of 2026-06-03 plan also runs every per-panel prompt through
+ * `scrubScaleVerbs` (verb-scrubber.ts) before it reaches the model.
+ * The LLM's tendency to write "grows" / "fills the frame" past the
+ * prompt directive was the #1 source of frame-to-frame composition
+ * drift. Pre-processing catches those words at the composer layer.
  */
+
+import { scrubScaleVerbs } from './verb-scrubber';
 
 export interface ComposeMotionCollagePromptArgs {
   panelPrompts: readonly string[];
@@ -33,20 +42,32 @@ export interface ComposeMotionCollagePromptArgs {
    *  caller (auto-pipeline) reads this off the resolved style and
    *  passes it through. */
   styleSuffix?: string;
-  /** When true, append a stronger directive re-stating the same-scene
-   *  constraint. The auto-pipeline flips this on the retry attempt
-   *  after the slicer's malformed check fires. */
+  /** When true (default since PR4), append a stronger directive
+   *  re-stating the same-scene constraint. Set to false explicitly
+   *  ONLY for diagnostic A/B tests — production callers should leave
+   *  it default. */
   reinforced?: boolean;
 }
 
 export function composeMotionCollagePrompt(args: ComposeMotionCollagePromptArgs): string {
-  const { panelPrompts, cols, rows, characterDescriptions, styleSuffix, reinforced } = args;
+  // PR4 2026-06-03: default `reinforced` to true. Pre-PR4 the reinforced
+  // directive only fired on retry after the slicer flagged a malformed
+  // grid; now every first-pass call gets it too — empirically it
+  // doesn't hurt clean cases and meaningfully helps borderline ones.
+  // Callers can opt-out with `reinforced: false` for A/B diagnostics.
+  const { panelPrompts, cols, rows, characterDescriptions, styleSuffix, reinforced = true } = args;
   const N = cols * rows;
   if (panelPrompts.length !== N) {
     throw new Error(
       `composeMotionCollagePrompt: expected ${N} panels for ${cols}×${rows}, got ${panelPrompts.length}`,
     );
   }
+
+  // PR4: scrub scale/size verbs at the composer layer. The LLM may
+  // emit "grows" / "fills the frame" / "looms" past the prompt's
+  // forbidden-word list. Pre-processing strips them before they reach
+  // the model so chained Edit can't interpret them as scale licenses.
+  const scrubbedPrompts = panelPrompts.map((p) => scrubScaleVerbs(p).text);
 
   // Header — names the grid, fixes the same-scene constraint upfront.
   const header =
@@ -65,7 +86,7 @@ export function composeMotionCollagePrompt(args: ComposeMotionCollagePromptArgs)
   const lines: string[] = [];
   for (let i = 0; i < N; i++) {
     const label = `Panel ${i + 1}${cornerLabel(i, cols, rows)}`;
-    lines.push(`${label}: ${panelPrompts[i]}`);
+    lines.push(`${label}: ${scrubbedPrompts[i]}`);
   }
   const panelList = lines.join('\n');
 
@@ -117,6 +138,8 @@ export interface ComposePerPanelPromptArgs {
 
 export function composePerPanelPrompt(args: ComposePerPanelPromptArgs): string {
   const { panelPrompt, panelIndex, totalPanels, characterDescriptions, styleSuffix } = args;
+  // PR4 2026-06-03 verb scrub — same rationale as composeMotionCollagePrompt.
+  const scrubbedPanelPrompt = scrubScaleVerbs(panelPrompt).text;
   const bibleBlock = buildCharacterBibleBlock(characterDescriptions);
   // Scene context is intentionally TIGHT. The previous version's
   // "continuous motion sequence" framing primed Atlas to render
@@ -127,7 +150,7 @@ export function composePerPanelPrompt(args: ComposePerPanelPromptArgs): string {
   const sceneContext = totalPanels > 1
     ? `Frame ${panelIndex + 1} of ${totalPanels} — same scene as every other frame in this sequence, only the moving element advances.`
     : '';
-  const frameBlock = panelPrompt;
+  const frameBlock = scrubbedPanelPrompt;
   // Sparseness directive — CRITICAL counter-weight to the LLM's
   // tendency to write verbose, detail-rich panel prompts. Atlas faithfully
   // renders every described element, so a 200-char panel prompt with

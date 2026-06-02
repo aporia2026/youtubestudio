@@ -2107,6 +2107,7 @@ export function productionDocPrompt({
   titles = [],
   ssmlSections,
   motionCollageSettings,
+  pacingProfile = 'fast',
 }: {
   script: string;
   niche: string;
@@ -2117,6 +2118,14 @@ export function productionDocPrompt({
   creativeBrief?: string;
   /** Timecode offset in seconds — used when generating a chunk of a longer script */
   startTimecodeSeconds?: number;
+  /** PR3 of `_plans/2026-06-03-production-doc-flow-stabilization.md`.
+   *  Drives per-row word budgets and the opening-hook directive.
+   *    - `'standard'`  → 4–6 s / 7 s ceiling. Pre-PR3 behaviour.
+   *    - `'fast'`      → 3–4 s / 5 s ceiling. **Default.**
+   *    - `'very_fast'` → 2–3 s / 4 s ceiling.
+   *  All three profiles enforce the opening-hook directive (first 12 s
+   *  must be ≤ 2.5 s/row, no standalone static base in the opening). */
+  pacingProfile?: 'standard' | 'fast' | 'very_fast';
   /** Forwarded from the production-doc page's `overlays_disabled` toggle.
    *  When true, the prompt instructs the LLM to leave `overlay_stock_terms`
    *  empty on every row and rely entirely on baking brand/logo content
@@ -2159,14 +2168,24 @@ export function productionDocPrompt({
   const totalSecs = chunkDurationSeconds % 60;
   const totalDuration = `${totalMins}:${String(totalSecs).padStart(2, '0')}`;
 
-  // Per-row word budgets derived from the speaking pace. LLMs respect
-  // concrete word counts far better than abstract time bounds — at 135
-  // wpm the 4–6 s sweet spot is just 9–14 words, which is shorter than
-  // the model's default sentence length and needs to be stated as a
-  // hard number, not a duration the model has to convert.
-  const minWordsPerRow = Math.max(1, Math.round((4 * speakingPaceWpm) / 60));
-  const maxWordsPerRow = Math.round((6 * speakingPaceWpm) / 60);
-  const ceilingWordsPerRow = Math.round((7 * speakingPaceWpm) / 60);
+  // Per-row word budgets derived from the speaking pace AND the
+  // pacing profile (PR3 2026-06-03). LLMs respect concrete word counts
+  // far better than abstract time bounds — at 135 wpm the "fast" 3-4 s
+  // window is just 6-9 words, which has to be stated as a hard number
+  // rather than a duration the model has to convert.
+  //
+  //   profile     target s    ceiling s   words@135wpm     description
+  //   standard    4–6          7          9–14 / 16        pre-PR3
+  //   fast        3–4          5          7–9 / 11         default
+  //   very_fast   2–3          4          5–7 / 9          TikTok-tier
+  const targetSecLow = pacingProfile === 'very_fast' ? 2 : pacingProfile === 'fast' ? 3 : 4;
+  const targetSecHigh = pacingProfile === 'very_fast' ? 3 : pacingProfile === 'fast' ? 4 : 6;
+  const ceilingSec = pacingProfile === 'very_fast' ? 4 : pacingProfile === 'fast' ? 5 : 7;
+  const minWordsPerRow = Math.max(1, Math.round((targetSecLow * speakingPaceWpm) / 60));
+  const maxWordsPerRow = Math.round((targetSecHigh * speakingPaceWpm) / 60);
+  const ceilingWordsPerRow = Math.round((ceilingSec * speakingPaceWpm) / 60);
+  // Hook-window word ceiling — 2.5 s × wpm / 60.
+  const openingMaxWords = Math.max(2, Math.round((2.5 * speakingPaceWpm) / 60));
 
   const styleSuffix = style?.ai_image_suffix ?? null;
   const mixingRules = style?.mixing_rules?.trim() ?? '';
@@ -2235,13 +2254,24 @@ Match the specified aesthetic in every image prompt. Do not mix styles across ro
     system: `You are a professional video production coordinator and shot director. You transform finished YouTube scripts into detailed, frame-by-frame production documents that video editors can execute without any back-and-forth.
 ${mandatoryStyleBlock}
 ## YOUR TASK
-Break the provided script into timed production rows. Each row = one visual shot or scene change. Aim for **4–6 seconds of narration per row**, and NEVER let a row exceed 7 seconds. Short, punchy scenes feel intentional; long scenes drag and any single image-to-video clip starts to freeze on its last frame past ~10s. Shorter scenes are non-negotiable.
+Break the provided script into timed production rows. Each row = one visual shot or scene change. Aim for **${targetSecLow}–${targetSecHigh} seconds of narration per row**, and NEVER let a row exceed ${ceilingSec} seconds. Short, punchy scenes feel intentional; long scenes drag and any single image-to-video clip starts to freeze on its last frame past ~10s. Shorter scenes are non-negotiable.
+
+## OPENING HOOK — THE FIRST 12 SECONDS DECIDE WHETHER THE VIEWER STAYS
+YouTube retention drops fastest in the opening. Two hard rules for every row whose start timecode is inside the first 12 seconds:
+
+1. **Each opening row must be ≤ 2.5 seconds** of narration — roughly **${openingMaxWords} words** at ${speakingPaceWpm} wpm. Even if the script's first sentence would naturally read longer, split it at the first comma / conjunction so the hook stays fast.
+2. **The first row cannot be a standalone static base** (a single held drawing with the narrator talking over it). Pair the first row with at least ONE of:
+   - a real-photo overlay (set \`overlay_stock_terms\` to a short search term), OR
+   - a section title (set \`section_title\` to the hook headline), OR
+   - if the style supports motion_collage, set \`shot_kind: "motion_collage"\` with 4–6 panel motion_collage_panel_prompts so motion is on screen from frame one.
+
+The "single drawing held while narration plays" opener is the #1 retention killer. The deterministic post-pass will split any opening row over 2.5 s — but the LLM is expected to land it correctly in the first place.
 
 ## TIMING RULES — COUNT THE WORDS BEFORE YOU EMIT EACH ROW
 - Speaking pace is ${speakingPaceWpm} words per minute.
 - **Per-row word budget at this pace:**
-  - Target: **${minWordsPerRow}–${maxWordsPerRow} words** of \`script_text\` per row (the 4–6s sweet spot).
-  - Hard ceiling: **${ceilingWordsPerRow} words** per row. Above this the row exceeds 7s and the renderer freezes the last frame for the rest of the take.
+  - Target: **${minWordsPerRow}–${maxWordsPerRow} words** of \`script_text\` per row (the ${targetSecLow}–${targetSecHigh}s sweet spot).
+  - Hard ceiling: **${ceilingWordsPerRow} words** per row. Above this the row exceeds ${ceilingSec}s and the renderer freezes the last frame for the rest of the take.
 - These numbers are derived from the speaking pace. Count the words in each \`script_text\` you write — if a row would exceed ${ceilingWordsPerRow} words, SPLIT IT before emitting. Do not emit it and hope the post-processor handles it: not every long sentence has an internal comma the splitter can use, and those rows freeze on the rendered video.
 - Splitting rules: if a single source sentence runs longer than ${ceilingWordsPerRow} words, break it between two rows at a natural pause — preferring a **comma**, then a **conjunction (and / but / so / because / however / although / while)**, then any **clause boundary**. The two halves keep continuous narration (read back-to-back the listener hears one sentence) but show DIFFERENT visuals — pick distinct visual moments to keep the screen alive.
 - A row may run shorter than ${minWordsPerRow} words if the content truly calls for a quick cut (one-line punchline, beat shift, sudden pivot) — short is fine, long is not.
@@ -2249,7 +2279,7 @@ Break the provided script into timed production rows. Each row = one visual shot
 - First row timecode MUST be "${startTimecode}" — increment from there based on word count.
 
 ### FAIL CRITERIA
-Any row whose \`script_text\` exceeds ${ceilingWordsPerRow} words at ${speakingPaceWpm} wpm will be auto-split by the server's deterministic post-pass. If that pass finds no internal comma/conjunction to split on, the row is left intact AND surfaces a warning to the user, AND the rendered scene will freeze its last frame after 7s. Either outcome is a failure. Split long rows yourself, in the prompt output, before this happens.
+Any row whose \`script_text\` exceeds ${ceilingWordsPerRow} words at ${speakingPaceWpm} wpm will be auto-split by the server's deterministic post-pass. If that pass finds no internal comma/conjunction to split on, the row is left intact AND surfaces a warning to the user, AND the rendered scene will freeze its last frame after ${ceilingSec}s. Either outcome is a failure. Split long rows yourself, in the prompt output, before this happens.
 
 ### Worked example — splitting a long sentence across two rows
 
@@ -2307,7 +2337,7 @@ The ${ssmlSections.length} sections, in order:
 
 ${ssmlSections.map((s, i) => `### Section ${i + 1}\n${s.length > 280 ? s.slice(0, 280) + '…' : s}`).join('\n\n')}
 
-For each section: emit one OR MORE rows. A short section (≤ 7 seconds at the speaking pace) becomes a single row. A longer section is split into multiple rows on sentence boundaries WITHIN that section. Do not pull content forward from the next section to "fill" a short row. The user authored these breaks deliberately to separate beats; preserve that structure verbatim.` : ''}
+For each section: emit one OR MORE rows. A short section (≤ ${ceilingSec} seconds at the speaking pace) becomes a single row. A longer section is split into multiple rows on sentence boundaries WITHIN that section. Do not pull content forward from the next section to "fill" a short row. The user authored these breaks deliberately to separate beats; preserve that structure verbatim.` : ''}
 
 **visual_description** — Specific and actionable for the editor. **15–25 words.** Include: subject, action, shot type (wide/medium/close), lighting/mood. Match the chosen visual style precisely. Keep it concise — the style is enforced downstream, not here.
 
@@ -2327,13 +2357,22 @@ ${allowOverlay ? `**overlay_stock_terms** — OPTIONAL. 2–4 comma-separated ke
 
 **overlay_size** — REQUIRED whenever overlay_stock_terms is non-empty. One of: "small" (≈12% of frame width, for source badges and footnote logos), "medium" (≈18% of frame width, the default for brand marks and product logos), "large" (≈25% of frame width, for hero-stamp moments where the overlay is the point). Set to "" when overlay_stock_terms is empty.` : ''}
 
-**on_screen_text** — OPTIONAL. A short, deliberate title or label to bake into the still as designed typography. **MUST be left as "" on the vast majority of rows.** On-screen text is a feature, not a default — it competes with the visual, raises CTR/comprehension only when it adds information the picture cannot, and looks cluttered when sprinkled across every shot. Use it ONLY when at least one of these applies:
+**on_screen_text** — OPTIONAL. A short, deliberate title or label that the RENDERER composites as a separate text overlay layer on top of the image at render time. **MUST be left as "" on the vast majority of rows.** On-screen text is a feature, not a default — it competes with the visual, raises CTR/comprehension only when it adds information the picture cannot, and looks cluttered when sprinkled across every shot. Use it ONLY when at least one of these applies:
   - The row is a Statistics scene and the number is the point (e.g. "$2.4B", "47%", "12,000 ATTACKS/DAY")
   - The row introduces a named entity for the first time and the wordmark belongs in the frame (e.g. "WANNACRY", "EQUIFAX")
   - The row is a Lower Third row identifying a speaker / location / source (e.g. "DR. SARAH CHEN — MIT", "GENEVA, 2024")
   - The script explicitly calls out a word for emphasis that the editor will want stamped (e.g. a one-word punch like "EXPOSED" or "GONE")
   - The row is a Title Card (handled by the heading-extraction rule; on_screen_text = the heading)
 If none of the above truly applies, set on_screen_text to "". Do NOT add on_screen_text just because the script mentions a number, a brand, or a noun in passing — most rows do, and most don't earn screen text. Default = "". Keep it ≤ 6 words when present.
+
+**HARD RULE — never duplicate on_screen_text inside ai_image_prompt.** The on_screen_text string is rendered as a SEPARATE overlay layer by the renderer (yellow comic-bold bubble for doodle/paint styles, white-on-dark lower-third for the default). When you set on_screen_text, the SAME word(s) MUST NOT appear inside ai_image_prompt — not as scene content, not as a label, not as text-on-an-object, not in quotes. Otherwise the image gets that text TWICE (once baked by the diffusion model, once overlaid by the renderer) and reads as broken. The image must describe the SCENE around the text, leaving visual room for the overlay (typically the lower-center safe zone) — never the text itself.
+
+  - Wrong (text duplicated): on_screen_text = "POWER PEG"; ai_image_prompt = "Close-up of a green monochrome terminal where the words POWER PEG sit dark, then glow bright..."
+  - Right (scene only): on_screen_text = "POWER PEG"; ai_image_prompt = "Close-up of a green monochrome terminal glowing bright with jagged red alarm marks around the screen, beige computer casing on a plain white background, camera tight and centered for a sudden awakening effect."
+  - Wrong (label baked in): on_screen_text = "AWS S3"; ai_image_prompt = "...with the AWS S3 wordmark stamped across the lower third..."
+  - Right (label as overlay): on_screen_text = "AWS S3"; ai_image_prompt = "Server rack with cool blue indicator lights glowing in a dim datacenter aisle, low angle, dramatic side lighting."
+
+  This applies even when the script narration mentions the same word — the spoken word does not need to appear AS TEXT in the picture. If the word genuinely belongs in the picture as part of the scene (a brand logo on a building, a UI label on a monitor that the action depends on), set on_screen_text to "" and write the text into ai_image_prompt instead. Pick ONE channel per row — never both.
 
 **notes** — Editor production notes. Empty string if none.
 

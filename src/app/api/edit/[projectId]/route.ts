@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
-import { loadProject, saveProjectPatch, MAX_PAYLOAD_BYTES } from '@/lib/project/persist';
+import {
+  loadProject,
+  loadProjectVersion,
+  saveProjectPatch,
+  MAX_PAYLOAD_BYTES,
+} from '@/lib/project/persist';
 
 /**
  * Project payload endpoint — Phase 1 of
@@ -102,12 +107,25 @@ export const PATCH = apiRoute.authed(async (
 
 export const GET = apiRoute.authed(async (
   session,
-  _req: NextRequest,
+  req: NextRequest,
   ctx: { params: Promise<{ projectId: string }> },
 ) => {
   const { projectId } = await ctx.params;
   if (!/^[0-9a-f-]{36}$/i.test(projectId)) {
     return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
+  }
+
+  // Slim version-only mode for `useProject`'s cross-tab poll. Skips
+  // `loadProject`'s payload migration + asset backfill in favor of a
+  // single-column read. Response is ~50 bytes vs. multi-MB for the
+  // full payload — fires every 8 s per visible tab so the saving here
+  // matters. Phase 1 of the 2026-06-03 production-doc flow plan.
+  if (req.nextUrl.searchParams.get('versionOnly') === '1') {
+    const version = await loadProjectVersion(projectId, session);
+    if (version === null) {
+      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    }
+    return NextResponse.json({ version });
   }
 
   const result = await loadProject(projectId, session);

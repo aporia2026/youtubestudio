@@ -52,6 +52,25 @@ import { SAFE_FRAMING_EDIT_SUFFIX } from '../prompt-framing';
 import { computeImageCanvas } from '../render-canvas';
 import { logger } from '../logger';
 import { recordIntent, markDelivered, markFailed } from '../provider-generations';
+import { scrubScaleVerbs } from '../verb-scrubber';
+
+/**
+ * PR4 of 2026-06-03 plan — motion-collage chain depth cap.
+ *
+ * Empirically, chained Atlas Edit drifts ~5% per step on the
+ * composition (sticky-note positions, prop scales, background detail).
+ * After ~4 steps the cumulative drift is visible to viewers. Past
+ * panel index 3 (the fourth iteration), each subsequent panel
+ * anchors directly to panel 0 instead of chaining off the previous
+ * panel — the chain becomes a fan-out from panel 0 rather than a
+ * straight line. Cost: motion arc between anchored panels is choppier
+ * (each anchored panel interprets pose independently). Benefit:
+ * composition stays locked to panel 0 verbatim.
+ *
+ * Set per the dual-input experiment data + the user's 2026-06-03
+ * complaint about figures changing sizes across panels.
+ */
+const MOTION_COLLAGE_MAX_CHAIN_DEPTH = 4;
 
 /** Per-row generation outcome. `imageUrl` set on success; on failure
  *  `error` carries the classified reason so the stage handler can
@@ -112,6 +131,28 @@ export interface PipelineImageRow {
   motion_collage_panel_prompts?: string[];
   motion_collage_image_url?: string;
   motion_collage_panel_urls?: string[];
+  // ─── PR2 reliability (2026-06-03) ────────────────────────────────
+  // Server-only mirror of ProductionRow.{attempts, last_error} in
+  // src/remotion/utils.ts. The stage handler writes these on every
+  // failed generation; the plan-build + stillRemaining checks read
+  // them to enforce the circuit breaker.
+  attempts?: number;
+  last_error?: {
+    class:
+      | 'content_policy'
+      | 'reference_rejected'
+      | 'model_rejected'
+      | 'blank_output'
+      | 'timeout'
+      | 'invalid_prompt'
+      | 'no_refs'
+      | 'source_missing'
+      | 'killed'
+      | 'validation_failed'
+      | 'unknown';
+    message: string;
+    at: string;
+  } | null;
 }
 
 /** Doc-level fields the helper needs to dispatch correctly. */
@@ -407,7 +448,14 @@ export async function generateVariantImage(args: {
   // branch; v1 skips the doodle-specific hint table here (the prompt
   // is short enough on its own that Atlas Edit + the input image do
   // the heavy lifting).
-  const trimmedInstruction = editInstruction.replace(/\.\s*$/, '');
+  //
+  // PR4 (2026-06-03) — scrub scale/size verbs from the variant edit
+  // instruction. Variants drift the same way motion-collage panels do
+  // when the LLM emits "grows" / "fills the frame" past the prompt
+  // directive. Same scrubber, applied at the same layer (composer
+  // input) so a "grows" word never reaches Atlas Edit.
+  const scrubbedEditInstruction = scrubScaleVerbs(editInstruction).text;
+  const trimmedInstruction = scrubbedEditInstruction.replace(/\.\s*$/, '');
   let composedPrompt = `${trimmedInstruction}. Keep everything else in the image identical to the input.`;
   // Phase 1.7 R5 (chained variants) — when this variant edits from
   // the previous variant (not the base), append the identity anchor
@@ -1827,13 +1875,35 @@ export async function generateMotionCollage(args: {
       continue;
     }
     const panelStart = Date.now();
-    // Compose Atlas Edit prompt for the dual-input call. Panel 1 uses
-    // only the previous panel (which IS panel 0); panels 2..N use both
-    // the previous panel (motion continuity) AND panel 0 (composition
-    // anchor) so static elements don't drift across the chain.
-    const baseDelta = panelPrompts[panelIdx];
+    // PR4 (2026-06-03) — chain depth cap. Panels 1..MAX_CHAIN_DEPTH-1
+    // chain off the previous panel (dual-input with panel 0 anchor for
+    // panel idx >= 2). Panels at index MAX_CHAIN_DEPTH and beyond anchor
+    // DIRECTLY to panel 0 with NO previous-panel dependency. The chain
+    // becomes a fan-out from panel 0 instead of a straight line, which
+    // eliminates compounding drift past the 4th step.
+    const useChainedSource = panelIdx < MOTION_COLLAGE_MAX_CHAIN_DEPTH;
+    // PR4: scrub scale/size verbs before they reach Atlas. The
+    // composer-level scrub catches grid prompts; this catches the
+    // per-panel descriptions feeding the chained dual-input loop.
+    const baseDelta = scrubScaleVerbs(panelPrompts[panelIdx]).text;
     const hasCompositionAnchor =
-      panelIdx >= 2 && typeof panel0AnchorUrl === 'string' && panel0AnchorUrl !== previousPanelUrl;
+      useChainedSource
+      && panelIdx >= 2
+      && typeof panel0AnchorUrl === 'string'
+      && panel0AnchorUrl !== previousPanelUrl;
+    // For anchored (non-chained) panels, the SOURCE image IS panel 0 —
+    // no previous panel involved. For chained panels, source = previous,
+    // and panel 0 may be passed as the second image when panelIdx >= 2.
+    const effectiveSourceUrl = useChainedSource ? previousPanelUrl : panel0AnchorUrl;
+    if (!effectiveSourceUrl) {
+      // Panel 0 is missing (chain entirely broken) — bail this panel.
+      panelResults[panelIdx] = {
+        error: 'skipped:source_url_unavailable',
+        costUsd: 0,
+        durationMs: 0,
+      };
+      continue;
+    }
     // FRAMING + SCALE LOCK: the #1 motion_collage failure mode is the
     // model treating "the warning gets bigger" as a license to scale the
     // prop frame by frame. This clause forbids it explicitly + locks the
@@ -1841,12 +1911,25 @@ export async function generateMotionCollage(args: {
     // via the second input image (see the dual-input directive below).
     const framingLock =
       'CRITICAL FRAMING + SCALE CONSTRAINT: Reproduce the previous-frame composition exactly. Every subject — character, sticky note, sign, icon, label, prop, background element — keeps the SAME SIZE, the SAME vertical position, and the SAME horizontal position as the input. Do NOT crop, zoom, pan, scale, enlarge, shrink, or otherwise resize any element. If the panel description below says an element "grows" or "gets larger", DISREGARD that and instead translate, rotate, or progressively draw the element — never resize it. Only the moving element\'s POSITION / ROTATION / POSE should differ.';
-    const dualInputDirective = hasCompositionAnchor
-      ? 'DUAL INPUT — read carefully: the FIRST input image is the PREVIOUS FRAME (use it to see where the moving element was last frame so this frame\'s position interpolates smoothly). The SECOND input image is the ORIGINAL COMPOSITION ANCHOR (panel 0). Every STATIC element — sticky notes, character, background, props that are not moving — must match its position, size, rotation, and shape in the SECOND input EXACTLY. If the first input shows drift (e.g. a sticky note moved 10px from panel 0), trust the SECOND input — that is the ground truth for static layout.'
-      : 'Preserve the input image\'s composition, character identity, camera angle, and background exactly. Only modify the moving element to match the description below.';
+    let inputDirective: string;
+    if (!useChainedSource) {
+      // PR4 fan-out branch — single input = panel 0 (the composition
+      // anchor). The chain doesn't see the previous panel here, so the
+      // motion arc between adjacent anchored panels is choppier; the
+      // composition stays locked verbatim to panel 0 which is the
+      // tradeoff the user asked for.
+      inputDirective =
+        'COMPOSITION ANCHOR INPUT — this is panel 0, the canonical layout for the entire grid. Every static element (sticky notes, character, background, props) must match its position, size, rotation, and shape in the input EXACTLY. Render the moving element at THIS frame\'s position as described below. Treat this as a fresh edit of the original frame at the position described — do not interpolate from any previous frame, draw the position as written.';
+    } else if (hasCompositionAnchor) {
+      inputDirective =
+        'DUAL INPUT — read carefully: the FIRST input image is the PREVIOUS FRAME (use it to see where the moving element was last frame so this frame\'s position interpolates smoothly). The SECOND input image is the ORIGINAL COMPOSITION ANCHOR (panel 0). Every STATIC element — sticky notes, character, background, props that are not moving — must match its position, size, rotation, and shape in the SECOND input EXACTLY. If the first input shows drift (e.g. a sticky note moved 10px from panel 0), trust the SECOND input — that is the ground truth for static layout.';
+    } else {
+      inputDirective =
+        'Preserve the input image\'s composition, character identity, camera angle, and background exactly. Only modify the moving element to match the description below.';
+    }
     const editPrompt = [
       framingLock,
-      dualInputDirective,
+      inputDirective,
       chainBibleBlock,
       baseDelta,
       'Keep the hand-drawn doodle aesthetic: thin black ink lines, sparse composition, generous white space. Do NOT add details or shading not present in the input image(s).',
@@ -1862,7 +1945,9 @@ export async function generateMotionCollage(args: {
     try {
       const edit = await generateGptImage2Edit({
         prompt: editPrompt,
-        sourceImageUrl: previousPanelUrl,
+        sourceImageUrl: effectiveSourceUrl,
+        // Anchored (non-chained) panels source from panel 0 directly,
+        // so there's no SECOND input to pass — the source IS the anchor.
         extraImageUrls: hasCompositionAnchor ? [panel0AnchorUrl!] : [],
         primary: 'atlas',
       });
@@ -1882,13 +1967,18 @@ export async function generateMotionCollage(args: {
         costUsd: panelCostUsd,
         durationMs: panelDurationMs,
       };
-      previousPanelUrl = upscale.url;
-      logger.info('[motion-collage pipeline] panel done', {
+      // Only update previousPanelUrl when we're still chaining. For
+      // anchored (fan-out) panels, "previous" is irrelevant — every
+      // anchored panel reads from panel 0 directly.
+      if (useChainedSource) {
+        previousPanelUrl = upscale.url;
+      }
+      logger.info('[motion-collage chain-strategy]', {
         row_index: lookupRowIndex(row, doc),
         panel_index: panelIdx,
         of_total: N,
-        kind: 'chained-edit',
-        composition_anchor: hasCompositionAnchor,
+        strategy: useChainedSource ? (hasCompositionAnchor ? 'chained-dual-input' : 'chained-single-input') : 'anchored-to-panel-0',
+        max_chain_depth: MOTION_COLLAGE_MAX_CHAIN_DEPTH,
         vendor_used: edit.vendorUsed,
         fallback_used: edit.fallbackUsed,
         url: upscale.url,
@@ -1913,12 +2003,15 @@ export async function generateMotionCollage(args: {
         row_index: lookupRowIndex(row, doc),
         panel_index: panelIdx,
         of_total: N,
-        kind: 'chained-edit',
+        kind: useChainedSource ? 'chained-edit' : 'anchored-to-panel-0',
         detail: msg.slice(0, 200),
       });
-      // Don't continue chain on failure — the next panel would need
-      // a non-existent prior URL.
-      previousPanelUrl = undefined;
+      // Don't continue chain on failure — the next CHAINED panel would
+      // need a non-existent prior URL. Anchored panels read from
+      // panel 0 directly, so a chain failure doesn't poison them.
+      if (useChainedSource) {
+        previousPanelUrl = undefined;
+      }
     }
   }
 

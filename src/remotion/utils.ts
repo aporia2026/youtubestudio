@@ -571,6 +571,46 @@ export interface ProductionRow {
    *  rows whose image was never generated (or generated before this
    *  field was added) leave it undefined. */
   image_url?: string;
+  /** Phase 2 of 2026-06-03 production-doc flow stabilization.
+   *
+   *  Count of image-generation attempts the auto-pipeline has made on
+   *  this row. Incremented every time a generator returns an error;
+   *  reset to 0 on user-driven Retry. When `attempts >= RETRY_BUDGET[last_error.class]`,
+   *  the stage's `stillRemaining()` treats the row as "done" for
+   *  advancement purposes (circuit breaker) and the row UI surfaces a
+   *  red error chip + Retry button. Undefined ⇒ 0 (fresh row). */
+  attempts?: number;
+  /** Most recent generation failure on this row. Pre-PR2 rows that
+   *  failed are indistinguishable from rows that never tried — they
+   *  appear in the next tick's plan and retry without limit. Once
+   *  this field lands, every failure path classifies the error and
+   *  surfaces it to the user. Null means the row succeeded (or has
+   *  never been attempted); undefined means pre-PR2 / legacy row. */
+  last_error?: {
+    /** Classified error category. Drives the per-class retry budget
+     *  and the user-facing chip text. See `classifyImageGenError`
+     *  in src/lib/auto-pipeline/image-gen-errors.ts for the regex
+     *  matchers and the budgets. */
+    class:
+      | 'content_policy'
+      | 'reference_rejected'
+      | 'model_rejected'
+      | 'blank_output'
+      | 'timeout'
+      | 'invalid_prompt'
+      | 'no_refs'
+      | 'source_missing'
+      | 'killed'
+      | 'validation_failed'
+      | 'unknown';
+    /** Short, sanitized message shown in the error chip. NEVER include
+     *  API keys, internal paths, or customer ids — the classifier
+     *  scrubs known leak patterns before storing here. */
+    message: string;
+    /** ISO timestamp when the failure landed. Drives the "Failed at …"
+     *  text in the chip's tooltip. */
+    at: string;
+  } | null;
   /** Per-row transition override; falls back to ProductionDoc.thumbnail.defaultTransition. */
   thumbnail_transition?: ThumbnailTransitionConfig;
   /** Camera padding for the thumbnail-zoom framing on this row, as a
@@ -1311,6 +1351,26 @@ export interface ProductionDoc {
    *  (ms). When omitted, the workspace default (or
    *  `DEFAULT_TAIL_BUFFER_MS`) applies. */
   tail_buffer_ms?: number;
+  /** PR3 of `_plans/2026-06-03-production-doc-flow-stabilization.md`.
+   *
+   *  Doc-level pacing profile. Drives three things at doc-generation
+   *  time: per-row target word budgets, the motion_collage floor, and
+   *  the variant-group floor. Surfaced in the Settings panel as a
+   *  three-pill picker (Standard / Fast / Very fast).
+   *
+   *    - `'standard'`  — 9–13 words/row (~4–6 s shots), 30% motion
+   *      collage floor, 40% variant floor. Pre-PR3 behaviour.
+   *    - `'fast'`      — 6–9 words/row (~3–4 s shots), 40% motion
+   *      collage floor, 50% variant floor. **New default.**
+   *    - `'very_fast'` — 4–7 words/row (~2–3 s shots), 50% motion
+   *      collage floor, 55% variant floor. TikTok-tier pace.
+   *
+   *  Legacy docs (undefined) keep their existing pacing — only NEW
+   *  docs get the new fast default. The post-processor in
+   *  `src/lib/auto-pipeline/post-process-pacing.ts` consumes this
+   *  to enforce the opening-hook split + minimum shot duration on
+   *  rows emitted by the LLM. */
+  pacing_profile?: 'standard' | 'fast' | 'very_fast';
   /** Doc-level default for the scene-to-scene cross fade. `undefined`
    *  preserves the historical behaviour (faded). `false` makes every
    *  shot hard-cut, including the very first fade-in-from-black and
@@ -1504,7 +1564,11 @@ export interface ProductionDoc {
  *  circular import); these constants stay here next to the resolver
  *  that consumes them. */
 export const PAINT_EXPLAINER_V1_DEFAULTS: Required<PaintExplainerV1Settings> = {
-  median_shot_seconds: 2.75,
+  // Bumped from 2.75 → 2.4 in PR3 of 2026-06-03 plan. Tighter median
+  // gives the LLM a higher row count for the same script duration —
+  // approximately 24 rows over 60 s instead of 22. Matches the
+  // genre's actual reference videos better than the old default.
+  median_shot_seconds: 2.4,
   mouth_swap_fps_fallback: 8,
   use_alignment_driven_visemes: true,
   real_photo_cadence_pct: 50,
@@ -1962,6 +2026,67 @@ export function summarizeConfigForDiagnostics(
   };
 }
 
+/**
+ * Resolve the canonical built-in style slug for a doc. Drives every
+ * downstream feature gate that asks "what built-in is this doc?" —
+ * the dispatcher's LowerThird variant, the renderer's paint_explainer_v1
+ * scene routing, future style-aware components.
+ *
+ * Priority:
+ *
+ *   1. `explicitSlug` — the caller passed `opts.effectiveStyleSlug`.
+ *      Always wins because the caller had the saved-style→built-in
+ *      registry available; we trust their resolution.
+ *
+ *   2. **Signal sniffing** — when `explicitSlug` is undefined, examine
+ *      fields that ONLY exist on a specific built-in:
+ *        - `paint_explainer_v1_settings` / `paint_explainer_v1_character_cache`
+ *          / `paint_explainer_v1_prop_cache` → `'paint_explainer_v1'`.
+ *        - `doodle_explainer_2_character_cache` /
+ *          `doodle_explainer_2_scene_cache` → `'doodle_explainer_2'`.
+ *      This is the load-bearing defense against the "user has a saved
+ *      style derived from paint_explainer_v1, doc.style_preset is the
+ *      UUID, dispatcher falls back to dark LowerThird" failure mode.
+ *
+ *   3. `doc.style_preset` — the raw value. May be a built-in slug, may
+ *      be a saved-style UUID. If a UUID lands here, downstream feature
+ *      gates that check `=== 'paint_explainer_v1'` won't match — but
+ *      that's only reachable when the doc has no style-specific signals
+ *      at all (e.g. legacy doc, never edited under a style-specific
+ *      flow). Preserves back-compat.
+ *
+ * Pure helper, exported for unit testing.
+ */
+export function resolveEffectiveStyleSlug(
+  doc: ProductionDoc,
+  explicitSlug?: string,
+): string | undefined {
+  if (explicitSlug) return explicitSlug;
+
+  // paint_explainer_v1 signals. ANY of these means the doc was
+  // edited / generated under that style — even if `style_preset` is
+  // a saved-style UUID derived from it.
+  if (
+    doc.paint_explainer_v1_settings ||
+    (doc as { paint_explainer_v1_character_cache?: unknown }).paint_explainer_v1_character_cache ||
+    doc.paint_explainer_v1_prop_cache
+  ) {
+    return 'paint_explainer_v1';
+  }
+
+  // doodle_explainer_2 signals — these caches are populated by the
+  // doodle_explainer_2-specific image-gen path and only ever exist on
+  // a doodle_explainer_2 doc.
+  if (
+    doc.doodle_explainer_2_character_cache ||
+    doc.doodle_explainer_2_scene_cache
+  ) {
+    return 'doodle_explainer_2';
+  }
+
+  return doc.style_preset;
+}
+
 export function productionDocToVideoConfig(
   doc: ProductionDoc,
   rowImages: (RowImageState | null)[],
@@ -2398,11 +2523,21 @@ export function productionDocToVideoConfig(
     // when the caller resolved a saved-style UUID to its built-in parent
     // (via `opts.effectiveStyleSlug`), prefer that slug so feature gates
     // like SceneRouter's yellow-LowerThird variant fire on saved styles
-    // derived from doodle_explainer_2 / paint_explainer_v1. The literal
-    // UUID would never match the hardcoded `=== 'doodle_explainer_2'`
-    // check — that was the root cause of the "OST is rendering as the
-    // default red/black bar instead of yellow" bug.
-    styleId: opts.effectiveStyleSlug ?? doc.style_preset,
+    // derived from doodle_explainer_2 / paint_explainer_v1.
+    //
+    // 2026-06-03 reliability fix: even when the caller forgets to pass
+    // `effectiveStyleSlug` AND `doc.style_preset` is a saved-style UUID,
+    // the dispatcher's `styleId === 'paint_explainer_v1'` check fails and
+    // LowerThird falls back to its dark `default` variant — the user's
+    // reported "rendering the dark bar instead of the yellow comic-bold
+    // labels" bug. Defense-in-depth: when `effectiveStyleSlug` is
+    // missing, sniff style-specific signals that only exist on a given
+    // built-in (`paint_explainer_v1_settings`, the doodle character /
+    // scene caches) and infer the slug from those. Falls through to the
+    // raw `doc.style_preset` (possibly a UUID) only when no signal hits
+    // — preserves legacy back-compat for docs that genuinely have no
+    // style-specific fields populated yet.
+    styleId: resolveEffectiveStyleSlug(doc, opts.effectiveStyleSlug),
     // paint_explainer_v1 (2026-05-28) — resolve the doc-level settings
     // once HERE so the renderer doesn't have to re-apply defaults on
     // every frame. Only populated when the doc actually carries
@@ -2410,7 +2545,7 @@ export function productionDocToVideoConfig(
     // get undefined and the renderer skips paint_explainer_v1 code
     // paths via existing shotKind / styleId guards.
     paintExplainerV1Settings:
-      (opts.effectiveStyleSlug ?? doc.style_preset) === 'paint_explainer_v1' ||
+      resolveEffectiveStyleSlug(doc, opts.effectiveStyleSlug) === 'paint_explainer_v1' ||
       doc.paint_explainer_v1_settings
         ? resolvePaintExplainerV1Settings(doc)
         : undefined,

@@ -60,6 +60,11 @@ import { generatePropImage } from '../../prop-generation';
 import { resolveStyle } from '../../production-doc-styles';
 import { loadStyleReferences, mirrorPublicUrlRefToR2 } from '../../production-doc-styles-refs';
 import { getDownloadUrlForBucket } from '../../r2';
+import {
+  classifyImageGenError,
+  isExhausted,
+  RETRY_BUDGETS,
+} from '../image-gen-errors';
 
 /** Max rows to attempt per tick. Sized so the worst-case Atlas i2i
  *  latency (~30 s) × 8 rows = ~240 s stays under the Vercel 300 s
@@ -189,8 +194,20 @@ export async function handleGenerateProductionDocImages(
   //    `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`.
   const baseIndicesToGen: number[] = [];
   const variantIndicesToGen: number[] = [];
+  let exhaustedRowCount = 0;
   doc.rows.forEach((row, i) => {
     if (row.image_url?.trim()) return;
+    // PR2 circuit breaker (2026-06-03): a row past its per-error-class
+    // retry budget stays out of the plan until the user clicks Retry
+    // (which clears `attempts` + `last_error`). Without this, a row
+    // whose prompt deterministically violates content policy would
+    // grind through the stage's $10 cost cap one Atlas call at a time
+    // — that's the "too many failures / too many retries" pattern the
+    // user reported.
+    if (row.last_error && isExhausted(row.attempts, row.last_error.class)) {
+      exhaustedRowCount += 1;
+      return;
+    }
     const prompt = (row.ai_image_prompt ?? '').trim();
     const variantIdx = row.variant_index ?? 0;
     if (variantIdx === 0) {
@@ -209,6 +226,13 @@ export async function handleGenerateProductionDocImages(
       variantIndicesToGen.push(i);
     }
   });
+  if (exhaustedRowCount > 0) {
+    logger.info('[image-gen circuit-breaker] rows skipped (past retry budget)', {
+      pipeline_video_id: video.id,
+      exhausted_count: exhaustedRowCount,
+      total_rows: doc.rows.length,
+    });
+  }
 
   // 3) Nothing to do — advance straight to the next stage.
   if (baseIndicesToGen.length === 0 && variantIndicesToGen.length === 0) {
@@ -828,6 +852,13 @@ export async function handleGenerateProductionDocImages(
       // Mutate the in-memory doc so subsequent variants in this same
       // tick see the new image_url when checking their source.
       doc.rows[item.index].image_url = result.imageUrl;
+      // PR2: clear any prior failure state so the UI chip disappears
+      // on a successful retry. Attempts intentionally preserved as a
+      // forensic counter — useful when debugging "why did this row
+      // take so many tries."
+      if (doc.rows[item.index].last_error) {
+        doc.rows[item.index].last_error = null;
+      }
       succeeded += 1;
 
       // ─── doodle_explainer_2 character cache write-back ──────────
@@ -1051,11 +1082,30 @@ export async function handleGenerateProductionDocImages(
       }
     } else {
       failed += 1;
-      logger.warn('auto-pipeline: production-doc-images row failed', {
+      // PR2 (2026-06-03): classify the raw error, persist it on the
+      // row, and let the next tick's plan-build decide whether to
+      // retry or skip via `isExhausted`. The classifier sanitizes
+      // the message before write so credentials / paths / customer
+      // ids don't end up rendered to the client.
+      const classified = classifyImageGenError(result.error);
+      const currentRow = doc.rows[item.index];
+      currentRow.attempts = (currentRow.attempts ?? 0) + 1;
+      currentRow.last_error = {
+        class: classified.class,
+        message: classified.message,
+        at: new Date().toISOString(),
+      };
+      const budget = RETRY_BUDGETS[classified.class];
+      const decision = currentRow.attempts >= budget ? 'give-up' : 'retry';
+      logger.warn('[image-gen retry]', {
         pipeline_video_id: video.id,
         row_index: item.index,
         kind: item.kind,
-        error: result.error,
+        error_class: classified.class,
+        error_message: classified.message,
+        attempts: currentRow.attempts,
+        budget,
+        decision,
         duration_ms: result.durationMs,
       });
     }
@@ -1165,6 +1215,12 @@ export async function handleGenerateProductionDocImages(
   const stillRemaining =
     doc.rows.some((r) => {
       if (!r.image_url?.trim()) {
+        // PR2 circuit breaker: a row past its budget counts as done for
+        // advancement purposes. The user must click Retry on the row
+        // chip to clear its attempts / last_error and bring it back
+        // into the plan. Mirrors the plan-build filter above so the
+        // stage's two "is this row pending?" checks agree.
+        if (r.last_error && isExhausted(r.attempts, r.last_error.class)) return false;
         const prompt = (r.ai_image_prompt ?? '').trim();
         const variantIdx = r.variant_index ?? 0;
         if (variantIdx === 0) return prompt.length > 0;

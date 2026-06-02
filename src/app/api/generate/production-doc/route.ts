@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateText } from '@/lib/ai';
 import { productionDocPrompt } from '@/lib/prompts';
+import { applyPacingPostProcess } from '@/lib/auto-pipeline/post-process-pacing';
+import type { ProductionDoc } from '@/remotion/utils';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { parseLlmJson } from '@/lib/parse-llm-json';
 import { apiRoute } from '@/lib/route-helpers';
@@ -183,6 +185,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
   }
 
+  // PR3 (2026-06-03): pacing profile. Client-driven generation gets
+  // the same 'fast' default as the auto-pipeline so opening-hook
+  // directive + denser per-row word budget apply uniformly. The
+  // request body doesn't yet carry pacing_profile — when the Settings
+  // panel UI lands, plumb it through here and into the body validator.
   const { system, user } = productionDocPrompt({
     script: effectiveStripped,
     titles: effectiveTitles,
@@ -191,6 +198,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
     overlaysDisabled: overlaysDisabled === true,
     motionCollageSettings,
+    pacingProfile: 'fast',
   });
 
   const effectiveModelId = modelId || (await getEffectiveModelId(session.ws, 'production-doc'));
@@ -756,6 +764,27 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         `${detection.emptyBaseGroupIds.length} variant group(s) have an empty base scene prompt. Affected variants won't generate images until the base prompt is filled — open the doc in the editor and add a scene description to the base row of each flagged group.`,
       );
     }
+  }
+
+  // PR3 (2026-06-03) pacing post-processor. Belt-and-braces alongside
+  // the opening-hook prompt directive: if the LLM emitted an opening
+  // row over 2.5 s, deterministically split it. Stamps `pacing_profile`
+  // onto the response so the client can persist + display it.
+  //
+  // `result` is a loose JSON object; applyPacingPostProcess only touches
+  // `pacing_profile` and `rows` which are guarded by runtime shape
+  // checks inside the helper. Double-cast through `unknown` because the
+  // route's local shape and ProductionDoc don't structurally overlap
+  // (the route's `result` is loose-typed; ProductionDoc requires title /
+  // niche / total_duration). Same for the row-array round-trip.
+  const pacing = applyPacingPostProcess({
+    ...(result as unknown as ProductionDoc),
+    pacing_profile: 'fast',
+  });
+  result.rows = pacing.doc.rows as unknown as ProductionDocRowLike[];
+  (result as { pacing_profile?: string }).pacing_profile = pacing.diagnostics.profile;
+  if (pacing.diagnostics.openingRowsSplit > 0 || pacing.diagnostics.openingFirstRowIsStaticBase) {
+    logger.info('[pacing post-process]', { ...pacing.diagnostics });
   }
 
   return NextResponse.json({ result, generation_warnings });

@@ -194,6 +194,38 @@ export async function loadProject(
   };
 }
 
+// ─── Load (version-only — cross-tab poll path) ──────────────────────
+
+/**
+ * Slim version-only read. Returns just the version integer (no payload
+ * load, no migration, no asset backfill).
+ *
+ * Used by `useProject`'s 8 s cross-tab poll to detect external writes
+ * (auto-pipeline tick, another tab saving) without paying the full GET
+ * cost on every check. A response is ~50 bytes on the wire vs. multi-
+ * MB for the full payload load.
+ *
+ * Same workspace + collaborator scoping as `loadProject` — a row
+ * outside scope returns `null`, indistinguishable from a deleted row
+ * (no existence leak per rule 13).
+ */
+export async function loadProjectVersion(
+  id: string,
+  session: SessionPayload,
+): Promise<number | null> {
+  const { rows } = await sql<{ version: number }>`
+    SELECT version
+      FROM user_history
+     WHERE id = ${id}::uuid
+       AND workspace_id = ${session.ws}::uuid
+       AND collaborator_id = ${session.uid}::uuid
+       AND kind = 'production_doc'
+     LIMIT 1
+  `;
+  if (rows.length === 0) return null;
+  return rows[0].version;
+}
+
 // ─── Save (version-checked) ─────────────────────────────────────────
 
 export type SaveResult =

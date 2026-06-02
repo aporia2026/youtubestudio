@@ -71,11 +71,23 @@ export interface UseProjectReturn {
   patch: (input: PatchInput) => void;
   flush: () => Promise<FlushResult>;
   reload: () => Promise<void>;
+  /** Dismiss the "conflict" save-status when the user chooses to
+   *  continue editing instead of reloading. The next save will land
+   *  via last-write-wins. No-op when the status is not 'conflict'. */
+  acknowledgeConflict: () => void;
 }
 
 // ─── Internals ──────────────────────────────────────────────────────
 
 const AUTO_SAVE_DEBOUNCE_MS = 800;
+
+/** Cross-tab + pipeline-vs-editor polling cadence (2026-06-03).
+ *  Every 8 s the hook hits the slim `?versionOnly=1` endpoint to
+ *  detect external writes. 8 s strikes the cost vs. responsiveness
+ *  trade for a 1–2-user tool: cheap (one int per check, paused when
+ *  the tab is hidden) and tight enough that a pipeline tick or a
+ *  second-tab save lands in the UI without manual refresh. */
+const POLL_INTERVAL_MS = 8_000;
 
 interface LoadResponse {
   payload: unknown;
@@ -137,7 +149,7 @@ export function useProject(
 
   // ─── Load ────────────────────────────────────────────────────────
 
-  const doLoad = useCallback(async () => {
+  const doLoad = useCallback(async (opts?: { abortIfDirty?: boolean }) => {
     setLoadError(null);
     try {
       const res = await fetch(endpoint(projectId), { method: 'GET' });
@@ -149,6 +161,27 @@ export function useProject(
       const body = (await res.json()) as LoadResponse;
       if (!isPlainObject(body.payload) || typeof body.version !== 'number') {
         setLoadError('Server returned an unexpected payload shape');
+        return;
+      }
+      // 2026-06-03 race guard — used by the cross-tab polling effect.
+      // The poll's "auto-reload when clean" path gates on
+      // `isDirtyRef.current === false` at the version-diff moment, but
+      // the user can type into the page (which routes through the
+      // hook's `patch()` setter, flipping `isDirty` to true) during the
+      // hundreds-of-ms window of THIS fetch. Without this guard the
+      // setPayload below would clobber their edits — that was the
+      // silent-data-loss class of bugs the PR1 sync work is supposed
+      // to close.
+      //
+      // `reload()` (the banner's user-explicit reload) calls doLoad
+      // without the option set, so it always applies — that path
+      // intentionally discards local edits with the confirm dialog.
+      if (opts?.abortIfDirty && isDirtyRef.current) {
+        console.info('[doc-sync poll] aborted apply — became dirty during fetch', {
+          projectId,
+          remoteVersion: body.version,
+        });
+        setSaveStatus({ kind: 'conflict' });
         return;
       }
       console.info('[project payload load] client received', {
@@ -406,6 +439,133 @@ export function useProject(
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [endpoint, projectId]);
 
+  // ─── Cross-tab version polling (2026-06-03) ─────────────────────
+  //
+  // Detects external writes to the project row — the auto-pipeline
+  // ticking forward (writing `image_url` onto rows the user is
+  // looking at), OR another browser tab editing the same doc. Before
+  // this poll, neither was visible to an open editor until manual
+  // refresh, and the user reported "editor shows wrong shots" /
+  // "doc doesn't update with editor changes" exactly when this gap
+  // opened up.
+  //
+  // Mechanism: every 8 s while `document.visibilityState === 'visible'`
+  // and no save is in flight, ping `?versionOnly=1` (~50 bytes).
+  // Compare to `versionRef.current`:
+  //
+  //   - same → no-op (logged at info so a busy console still shows
+  //     the heartbeat).
+  //   - different AND clean → silently `doLoad()`. The user sees the
+  //     pipeline's row updates without action.
+  //   - different AND dirty → flip `saveStatus` to `'conflict'` and
+  //     fire `options.onConflict` (if wired). Local edits stay; the
+  //     consumer renders a "remote changed — reload?" banner. The
+  //     ensuing save will produce a 409 the existing conflict path
+  //     also handles.
+  //
+  // Skipped while a save is in flight: the optimistic-version
+  // response from that save already refreshes our local version, so
+  // polling during the round-trip would race and flap.
+  //
+  // Effect gates on `projectId` only so the timer doesn't restart on
+  // every render. `endpoint` and `doLoad` come in via refs.
+  const endpointRef = useRef(endpoint);
+  endpointRef.current = endpoint;
+  const doLoadRef = useRef(doLoad);
+  doLoadRef.current = doLoad;
+  const onConflictRef = useRef(options.onConflict);
+  onConflictRef.current = options.onConflict;
+
+  useEffect(() => {
+    if (!projectId || !projectId.trim()) return;
+    let cancelled = false;
+
+    const tick = async (): Promise<void> => {
+      if (cancelled) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (inFlightAbortRef.current !== null) return;
+      const localVersion = versionRef.current;
+      if (localVersion === null) return; // initial load hasn't landed yet
+      try {
+        const res = await fetch(`${endpointRef.current(projectId)}?versionOnly=1`, {
+          method: 'GET',
+          credentials: 'same-origin',
+        });
+        if (cancelled || !res.ok) return;
+        const body = (await res.json()) as { version?: number };
+        const remoteVersion = body.version;
+        if (typeof remoteVersion !== 'number') return;
+
+        if (remoteVersion === localVersion) {
+          console.info('[doc-sync poll]', {
+            projectId,
+            version: localVersion,
+            changed: false,
+            action: 'none',
+          });
+          return;
+        }
+
+        if (isDirtyRef.current) {
+          console.info('[doc-sync poll]', {
+            projectId,
+            localVersion,
+            remoteVersion,
+            changed: true,
+            isDirty: true,
+            action: 'banner',
+          });
+          setSaveStatus({ kind: 'conflict' });
+          // We don't have the current payload here (the slim endpoint
+          // doesn't return it). The consumer's banner Reload button
+          // calls `reload()` which fetches it. If a caller wired
+          // `onConflict` expecting the payload, we still fire the
+          // callback with the local stale payload + remote version so
+          // the caller can decide; the standard recovery path is
+          // `reload()` regardless.
+          if (onConflictRef.current && payloadRef.current) {
+            onConflictRef.current(remoteVersion, payloadRef.current);
+          }
+          return;
+        }
+
+        console.info('[doc-sync poll]', {
+          projectId,
+          localVersion,
+          remoteVersion,
+          changed: true,
+          isDirty: false,
+          action: 'reload',
+        });
+        // abortIfDirty=true so doLoad's setPayload doesn't clobber
+        // an edit the user typed while the GET was in flight.
+        await doLoadRef.current({ abortIfDirty: true });
+      } catch {
+        // Network blip — skip this tick, try again next interval.
+        // Don't surface in the UI; offline detection isn't this hook's
+        // job, and the user already has the last-loaded state cached
+        // in memory.
+      }
+    };
+
+    // Catch up immediately when the tab returns to foreground after
+    // being hidden. Without this, the user would wait up to 8 s after
+    // un-hiding before seeing pipeline updates that landed while away.
+    const onVisibility = (): void => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void tick();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const timer = setInterval(() => void tick(), POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [projectId]);
+
   // ─── Cleanup ────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -413,6 +573,18 @@ export function useProject(
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       if (inFlightAbortRef.current) inFlightAbortRef.current.abort();
     };
+  }, []);
+
+  // ─── Acknowledge conflict (2026-06-03 banner support) ───────────
+  //
+  // The cross-tab polling effect above flips `saveStatus` to
+  // 'conflict' when it detects a remote version bump while local
+  // state is dirty. The consumer (production-doc page) renders a
+  // banner offering Reload or Continue editing. Continue editing
+  // calls this method to clear the conflict status; the next
+  // debounced save lands normally and last-write-wins on the server.
+  const acknowledgeConflict = useCallback((): void => {
+    setSaveStatus((prev) => (prev.kind === 'conflict' ? { kind: 'idle' } : prev));
   }, []);
 
   return {
@@ -424,5 +596,6 @@ export function useProject(
     patch,
     flush,
     reload,
+    acknowledgeConflict,
   };
 }

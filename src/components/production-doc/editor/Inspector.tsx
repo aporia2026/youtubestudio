@@ -6,6 +6,10 @@ import type { AccordionKey, AccordionState, StageTool } from './hooks/useEditorU
 import type { EditorViewProps, EditorWriters, EditorBrollContext } from './types';
 import type { ProductionRow } from '@/remotion/utils';
 import { ImageCell } from '@/app/(app)/production-doc/page';
+// PR2 reliability (2026-06-03): same pipeline-failure chip as the
+// grid view, so a row that the auto-pipeline gave up on surfaces a
+// Retry affordance in the Inspector too. Pure helpers; safe client-side.
+import { isExhausted } from '@/lib/auto-pipeline/image-gen-errors';
 import { BrollCell } from '@/components/production-doc/BrollCell';
 import { OverlayCell } from '@/components/production-doc/OverlayCell';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
@@ -304,6 +308,11 @@ const BrollAccordionItem: React.FC<BrollAccordionProps> = ({
               onUpload={(file: File) => writers.uploadImageForRow(rowIndex, file)}
               onUrlImport={(url: string) => writers.importImageUrlForRow(rowIndex, url)}
               onEdit={() => writers.openEditPanelForRow(rowIndex)}
+              pipelineError={row.last_error ?? null}
+              pipelineErrorExhausted={Boolean(
+                row.last_error && isExhausted(row.attempts, row.last_error.class),
+              )}
+              onPipelineErrorRetry={() => writers.updateRow(rowIndex, { attempts: 0, last_error: null })}
             />
           ) : (
             image?.imageUrl && image.status === 'done' ? (

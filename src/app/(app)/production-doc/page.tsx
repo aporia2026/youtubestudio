@@ -63,6 +63,7 @@ import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { PaintExplainerV1SettingsPanel } from '@/components/production-doc/PaintExplainerV1SettingsPanel';
+import { PacingProfilePanel } from '@/components/production-doc/PacingProfilePanel';
 import { TitleReviewPanel, type UserTitleSpec } from '@/components/production-doc/TitleReviewPanel';
 import { DoodleExplainer2MotionCollageSettingsPanel } from '@/components/production-doc/DoodleExplainer2MotionCollageSettingsPanel';
 import { MotionCollageRowEditor } from '@/components/production-doc/MotionCollageRowEditor';
@@ -106,6 +107,9 @@ import {
 } from '@/remotion/utils';
 import type { EditorWriters } from '@/components/production-doc/editor/types';
 import { EditorView } from '@/components/production-doc/editor/EditorView';
+// PR2 reliability (2026-06-03): pure helpers from the auto-pipeline
+// module. Safe to import client-side — no server-only deps.
+import { isExhausted, labelForErrorClass } from '@/lib/auto-pipeline/image-gen-errors';
 import { NotesDock } from '@/components/notes/NotesDock';
 import {
   buildCharacterContinuationEditPrompt,
@@ -369,6 +373,26 @@ interface ProductionRow {
    *  this field is the editor's bookmark to find them again. Mirrors
    *  the same-named field on `ProductionRow` in `@/remotion/utils.ts`. */
   image_url?: string;
+  /** Phase 2 of 2026-06-03 production-doc flow stabilization. See
+   *  the same-named fields on `ProductionRow` in `@/remotion/utils.ts`
+   *  for the full docstrings — kept in lockstep per AGENTS.md. */
+  attempts?: number;
+  last_error?: {
+    class:
+      | 'content_policy'
+      | 'reference_rejected'
+      | 'model_rejected'
+      | 'blank_output'
+      | 'timeout'
+      | 'invalid_prompt'
+      | 'no_refs'
+      | 'source_missing'
+      | 'killed'
+      | 'validation_failed'
+      | 'unknown';
+    message: string;
+    at: string;
+  } | null;
   /** Per-variant chain toggle. When true, this variant edits the
    *  previous variant's image instead of the group's base. Default
    *  false ⇒ each variant derives independently from the base. See
@@ -497,6 +521,10 @@ interface ProductionDoc {
   min_scene_ms?: number;
   /** Per-doc override of the workspace's tail buffer after narration (ms). */
   tail_buffer_ms?: number;
+  /** PR3 (2026-06-03) — see the same-named field on `ProductionDoc` in
+   *  `@/remotion/utils.ts` for the full docstring. Mirrored here per
+   *  AGENTS.md. */
+  pacing_profile?: 'standard' | 'fast' | 'very_fast';
   /** Doc-level default for the scene-to-scene cross fade. `undefined`
    *  preserves the historical behaviour (faded). `false` makes every
    *  shot hard-cut, including removing the opening fade-in and closing
@@ -1951,6 +1979,9 @@ export function ImageCell({
   canGenerate = true,
   motionCollagePanelUrls,
   motionCollageGrid,
+  pipelineError,
+  pipelineErrorExhausted,
+  onPipelineErrorRetry,
 }: {
   state: RowImageState;
   onRetry: () => void;
@@ -1975,6 +2006,24 @@ export function ImageCell({
    *  derives cols/rows from the panel count (preferring square layouts).
    *  See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
   motionCollageGrid?: { cols: number; rows: number };
+  /** PR2 reliability (2026-06-03). Server-persisted failure info from
+   *  the auto-pipeline's last attempt at this row. When set together
+   *  with `pipelineErrorExhausted=true`, the cell renders an error
+   *  chip whose tooltip carries the sanitized message + timestamp.
+   *  Click → `onPipelineErrorRetry` which clears the row's attempts
+   *  + last_error so the pipeline picks it up again next tick. */
+  pipelineError?: {
+    class: string;
+    message: string;
+    at: string;
+  } | null;
+  /** True when `pipelineError.attempts >= RETRY_BUDGETS[class]`. Drives
+   *  whether the chip is shown (exhausted) vs. silently retried by the
+   *  pipeline (not exhausted yet). */
+  pipelineErrorExhausted?: boolean;
+  /** Reset this row's `attempts` and `last_error` so the next pipeline
+   *  tick re-enters it. Called from the chip's Retry button. */
+  onPipelineErrorRetry?: () => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [urlInputOpen, setUrlInputOpen] = useState(false);
@@ -1991,6 +2040,54 @@ export function ImageCell({
   if (state.status === 'idle') {
     return (
       <div className="flex flex-col gap-1">
+        {/* PR2 (2026-06-03): pipeline-failure chip. Shown when the
+            auto-pipeline tried this row, hit the per-class retry
+            budget, and gave up. The chip's Retry button clears the
+            row's last_error + attempts so the next pipeline tick
+            picks it up again. The full sanitized message + timestamp
+            surface in the title tooltip. */}
+        {pipelineError && pipelineErrorExhausted && onPipelineErrorRetry && (
+          <div
+            role="alert"
+            title={`${pipelineError.message}\nFailed at ${new Date(pipelineError.at).toLocaleString()}`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '3px 8px',
+              borderRadius: 4,
+              background: 'rgba(239,68,68,0.12)',
+              border: '1px solid rgba(239,68,68,0.40)',
+              color: '#fca5a5',
+              fontSize: 11,
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              alignSelf: 'flex-start',
+            }}
+          >
+            <span aria-hidden="true">⚠</span>
+            <span>{labelForErrorClass(pipelineError.class)}</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPipelineErrorRetry();
+              }}
+              style={{
+                marginLeft: 4,
+                background: 'transparent',
+                color: '#fff',
+                border: '1px solid rgba(255,255,255,0.30)',
+                borderRadius: 3,
+                fontSize: 11,
+                padding: '1px 6px',
+                cursor: 'pointer',
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
         <div className="flex items-center gap-1 flex-wrap">
           <button
             type="button"
@@ -2780,17 +2877,31 @@ function ProductionDocPage() {
   // started editing, or after the save-effect bumps project.payload)
   // do NOT clobber local state.
   const hydratedForHistoryIdRef = useRef<string | null>(null);
+  // PR1 (2026-06-03) force-rehydrate flag — set by the conflict banner's
+  // Reload button so the hydration effect overrides BOTH its
+  // `hydratedForHistoryIdRef` short-circuit AND the `if (doc)` guard.
+  // Without this the banner Reload would either no-op (ref already
+  // matched + doc still set) or require `setDoc(null)` which crashes
+  // unguarded render branches that assume `doc` is non-null.
+  // Consumed (set back to false) inside the hydration effect after a
+  // single forced run.
+  const forceRehydrateRef = useRef(false);
   useEffect(() => {
     const payload = project.payload;
     if (!payload || !historyEntryId) return;
-    if (hydratedForHistoryIdRef.current === historyEntryId) return;
+    if (hydratedForHistoryIdRef.current === historyEntryId && !forceRehydrateRef.current) return;
     // Only hydrate when there's no local doc yet — protects against
     // the history-sidebar restore path (which already sets doc itself
     // via the entry shape) from being clobbered by a later payload
-    // arrival.
-    if (doc) {
+    // arrival. Bypass on a forced re-hydrate (banner Reload).
+    if (doc && !forceRehydrateRef.current) {
       hydratedForHistoryIdRef.current = historyEntryId;
       return;
+    }
+    // Consume the force flag — applies to THIS run only.
+    if (forceRehydrateRef.current) {
+      forceRehydrateRef.current = false;
+      console.info('[doc-sync force-rehydrate] applied', { historyEntryId });
     }
     console.info('[production-doc] hydrating local state from canonical payload', {
       historyEntryId,
@@ -2947,6 +3058,100 @@ function ProductionDocPage() {
     }
   }, [historyEntryId]);
 
+  // ─── Canonical doc-shape persistence (2026-06-03) ─────────────────
+  //
+  // Before today, every mutation to the `doc` state called
+  // `updateProductionDocEntry(historyEntryId, { doc: nextDoc })` which
+  // hit the LEGACY `/api/history/[id]` PATCH route. That route shares
+  // the same `user_history.payload` column with the canonical
+  // `/api/edit/[id]` PATCH (`saveProjectPatch`) — different validation,
+  // different size cap (256 KB vs. 10 MB), and last-write-wins between
+  // the two means whichever fired last clobbered the other.
+  //
+  // `useProject` writes through the canonical path, but
+  // `project.patch()` was never called from this page — only
+  // `project.reload()` / `project.payload` were used. So every doc
+  // edit went through legacy AND useProject's debounce window could
+  // PATCH back stale state, producing the "wrong shots show up" /
+  // "doc doesn't reflect editor changes" reports.
+  //
+  // `persistDoc(nextDoc)` is the single replacement: it routes EVERY
+  // doc mutation through `project.patch({ doc: nextDoc })`. Same
+  // semantics as the asset queue above: if `historyEntryId` isn't
+  // set yet (fresh-doc creation race) OR the payload hasn't hydrated,
+  // we queue and replay on hydration.
+  //
+  // Refs (not the project value directly) so the callback's identity
+  // stays stable across renders — the existing setDoc-updater pattern
+  // in this file captures persistDoc into useState updaters and we
+  // don't want every render to invalidate those captures.
+  const projectRef = useRef(project);
+  projectRef.current = project;
+  // Ref so the persistDoc callback below can read the latest
+  // historyEntryId without being re-created on every change. Critical:
+  // most callers wrap persistDoc in `useCallback([], …)` (existing
+  // pattern in this file) which would otherwise capture a stale
+  // persistDoc whose closure had historyEntryId=undefined. With the
+  // ref, persistDoc is reference-stable for the whole page lifetime
+  // and always reads the current historyEntryId at call time.
+  const historyEntryIdRef = useRef(historyEntryId);
+  historyEntryIdRef.current = historyEntryId;
+  const pendingDocPatchesRef = useRef<ProductionDoc[]>([]);
+
+  const persistDoc = useCallback((nextDoc: ProductionDoc): void => {
+    const id = historyEntryIdRef.current;
+    if (!id) {
+      pendingDocPatchesRef.current.push(nextDoc);
+      console.info('[doc-sync persist-doc] deferred — no historyEntryId yet', {
+        pendingCount: pendingDocPatchesRef.current.length,
+      });
+      return;
+    }
+    if (!projectRef.current.payload) {
+      pendingDocPatchesRef.current.push(nextDoc);
+      console.info('[doc-sync persist-doc] deferred — payload not hydrated yet', {
+        historyEntryId: id,
+        pendingCount: pendingDocPatchesRef.current.length,
+      });
+      return;
+    }
+    console.info('[doc-sync persist-doc] patching', {
+      historyEntryId: id,
+      rowCount: nextDoc.rows.length,
+    });
+    projectRef.current.patch({ doc: nextDoc });
+  }, []);
+
+  // Flush deferred doc patches once historyEntryId arrives AND the
+  // hook's payload is hydrated. Dual gate is intentional: historyEntryId
+  // can arrive a beat before the payload GET lands (URL-driven load)
+  // and patching against a null payload silently drops because
+  // useProject.patch bails on null payload.
+  //
+  // Apply ONLY the latest pending doc — earlier entries are superseded
+  // by their successors. The queue is a buffer for the race window,
+  // not a transaction log.
+  useEffect(() => {
+    if (
+      historyEntryId &&
+      project.payload &&
+      pendingDocPatchesRef.current.length > 0
+    ) {
+      const pending = pendingDocPatchesRef.current.splice(0);
+      const latest = pending[pending.length - 1];
+      console.info('[doc-sync replay]', {
+        historyEntryId,
+        total: pending.length,
+        applied: 'latest-only',
+        rowCount: latest.rows.length,
+      });
+      projectRef.current.patch({ doc: latest });
+    }
+    // project.payload is the trigger; projectRef carries the latest
+    // patch fn so we don't need it in deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyEntryId, project.payload]);
+
   const logEndRef = useRef<HTMLDivElement>(null);
   // Tracks which production doc (by runKey) was last explicitly saved via
   // the banner button. Drives the dirty indicator.
@@ -2962,9 +3167,7 @@ function ProductionDocPage() {
     setDoc(prev => {
       if (!prev) return prev;
       const nextDoc = { ...prev, thumbnail: next };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       return nextDoc;
     });
   }, [historyEntryId]);
@@ -2983,9 +3186,7 @@ function ProductionDocPage() {
         to: next,
       });
       const nextDoc: ProductionDoc = { ...prev, scene_fade_enabled: next };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       return nextDoc;
     });
   }, [historyEntryId]);
@@ -3022,9 +3223,7 @@ function ProductionDocPage() {
           patch,
         });
       }
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
-      }
+      persistDoc(next);
       return next;
     });
   }, [historyEntryId]);
@@ -3039,12 +3238,62 @@ function ProductionDocPage() {
       if (!prev) return prev;
       const nextRows = prev.rows.map((r, i) => i === rowIndex ? { ...r, ...patch } : r);
       const nextDoc = { ...prev, rows: nextRows };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       return nextDoc;
     });
   }, [historyEntryId]);
+
+  /**
+   * PR2 reliability (2026-06-03) — bulk Retry handler for the failure
+   * banner. Walks every row, finds rows that the auto-pipeline gave
+   * up on (have `last_error` AND `attempts >= RETRY_BUDGETS[class]`),
+   * resets their `attempts` to 0 and clears `last_error`. The next
+   * pipeline tick's plan-build picks them up again.
+   *
+   * One `persistDoc` call covers the whole batch — the canonical
+   * write path debounces internally so multiple rapid clicks coalesce.
+   *
+   * Returns the count of rows reset so the caller (banner) can show
+   * a toast confirming the action.
+   */
+  const retryAllFailedRows = useCallback((): number => {
+    let resetCount = 0;
+    setDoc(prev => {
+      if (!prev) return prev;
+      const nextRows = prev.rows.map((r) => {
+        if (r.last_error && isExhausted(r.attempts, r.last_error.class)) {
+          resetCount += 1;
+          return { ...r, attempts: 0, last_error: null };
+        }
+        return r;
+      });
+      if (resetCount === 0) return prev;
+      const nextDoc = { ...prev, rows: nextRows };
+      console.info('[image-gen retry] bulk', { resetCount });
+      persistDoc(nextDoc);
+      return nextDoc;
+    });
+    return resetCount;
+  }, []);
+
+  /**
+   * Count of rows currently in the "auto-pipeline gave up" state —
+   * drives the bulk-retry banner's visibility + count text. Computed
+   * lazily inside the render via useMemo so the page doesn't recompute
+   * on every keystroke (the array walk is cheap but the doc can hit
+   * 100+ rows in paint_explainer_v1).
+   *
+   * Defined here next to the retry handler so future maintenance sees
+   * both halves of the feature in one place.
+   */
+  const failedRowCount = useMemo(() => {
+    if (!doc) return 0;
+    let count = 0;
+    for (const r of doc.rows) {
+      if (r.last_error && isExhausted(r.attempts, r.last_error.class)) count += 1;
+    }
+    return count;
+  }, [doc]);
 
   /**
    * Phase 3.3 — Add a variant row anchored to the row at `baseIndex`.
@@ -3156,9 +3405,7 @@ function ProductionDocPage() {
         ...rowsWithBasePromoted.slice(insertAt),
       ];
       const nextDoc = { ...prev, rows: nextRows };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       // Keep `rowImages` aligned with `doc.rows` by inserting a parallel
       // empty slot. Without this every row at index > insertAt would
       // look up the WRONG image until the next full reload.
@@ -3398,9 +3645,7 @@ function ProductionDocPage() {
               : r,
           );
           const nextDoc = { ...prev, rows: nextRows };
-          if (historyEntryId) {
-            updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-          }
+          persistDoc(nextDoc);
           return nextDoc;
         });
         toast.success(`Variant ${variantRow.variant_index} generated`);
@@ -3580,9 +3825,7 @@ function ProductionDocPage() {
         return { ...r, variant_index: seen };
       });
       const nextDoc = { ...prev, rows: reindexed };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       setRowImages(prev => {
         const next = [...prev];
         next.splice(variantIndex, 1);
@@ -3636,9 +3879,7 @@ function ProductionDocPage() {
       nextRows[swapRowIndex] = a;
 
       const nextDoc = { ...prev, rows: nextRows };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       // Mirror the row swap on rowImages so each row's image stays
       // bound to its (now reordered) row position.
       setRowImages(prev => {
@@ -3761,9 +4002,7 @@ function ProductionDocPage() {
         const newTotalDuration = `${Math.floor(newTotalSec / 60)}:${String(newTotalSec % 60).padStart(2, '0')}`;
 
         const nextDoc = { ...prev, rows: nextRows, total_duration: newTotalDuration };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
 
@@ -3827,9 +4066,7 @@ function ProductionDocPage() {
           i >= lo && i <= hi ? { ...r, section_title: trimmed } : r,
         );
         const nextDoc = { ...prev, rows: nextRows };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
       const count = endRow - startRow + 1;
@@ -3849,9 +4086,7 @@ function ProductionDocPage() {
       setDoc(prev => {
         if (!prev) return prev;
         const nextDoc = { ...prev, pillarbox_color_default: color };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
       toast.success('Set pillarbox color as the doc default.');
@@ -3871,9 +4106,7 @@ function ProductionDocPage() {
         r.pillarbox_color ? { ...r, pillarbox_color: undefined } : r,
       );
       const nextDoc = { ...prev, rows: nextRows };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       toast.success(`Cleared pillarbox overrides on ${before} row${before === 1 ? '' : 's'}.`);
       return nextDoc;
     });
@@ -3884,9 +4117,7 @@ function ProductionDocPage() {
       setDoc(prev => {
         if (!prev) return prev;
         const nextDoc = { ...prev, section_title_layout_default: layout };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
       toast.success(`Set ${layout} as the doc-default stripe layout.`);
@@ -3906,9 +4137,7 @@ function ProductionDocPage() {
         r.section_title_layout ? { ...r, section_title_layout: undefined } : r,
       );
       const nextDoc = { ...prev, rows: nextRows };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       toast.success(`Cleared stripe-layout overrides on ${before} row${before === 1 ? '' : 's'}.`);
       return nextDoc;
     });
@@ -3929,9 +4158,7 @@ function ProductionDocPage() {
             )
           : prev.rows;
         const nextDoc = { ...prev, rows: nextRows, on_screen_text_mode_default: mode };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
       toast.success(`Set ${mode} as the doc-default OST mode.`);
@@ -3945,9 +4172,7 @@ function ProductionDocPage() {
       setDoc(prev => {
         if (!prev) return prev;
         const nextDoc = { ...prev, scene_zoom_default: clamped };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
       toast.success(`Set ${clamped}% as the doc-default zoom.`);
@@ -3995,9 +4220,7 @@ function ProductionDocPage() {
           i > titleCardRowIndex && i <= endIndex ? { ...r, section_title: text } : r,
         );
         const nextDoc = { ...prev, rows: nextRows };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         const count = endIndex - titleCardRowIndex;
         toast.success(`Applied "${text}" as section title to ${count} row${count === 1 ? '' : 's'}.`);
         return nextDoc;
@@ -4018,9 +4241,7 @@ function ProductionDocPage() {
         typeof r.scene_zoom === 'number' ? { ...r, scene_zoom: undefined } : r,
       );
       const nextDoc = { ...prev, rows: nextRows };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-      }
+      persistDoc(nextDoc);
       toast.success(`Cleared zoom overrides on ${before} row${before === 1 ? '' : 's'}.`);
       return nextDoc;
     });
@@ -4040,9 +4261,7 @@ function ProductionDocPage() {
       setDoc(prev => {
         if (!prev) return prev;
         const nextDoc = { ...prev, region_zoom_padding_default_pct: clamped };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
       console.info('[ui region-zoom-padding apply-to-all]', { paddingPct: clamped });
@@ -4668,9 +4887,7 @@ function ProductionDocPage() {
             style_sheet_prompt: data.prompt,
             style_sheet_description: opts.styleDescription,
           };
-          if (historyEntryId) {
-            updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
-          }
+          persistDoc(next);
           return next;
         });
         toast.success('Style sheet ready.');
@@ -4695,9 +4912,7 @@ function ProductionDocPage() {
         style_sheet_model: undefined,
         style_sheet_prompt: undefined,
       };
-      if (historyEntryId) {
-        updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
-      }
+      persistDoc(next);
       return next;
     });
     toast.success('Style sheet cleared.');
@@ -4708,9 +4923,7 @@ function ProductionDocPage() {
       setDoc((prev) => {
         if (!prev) return prev;
         const nextDoc = { ...prev, style_sheet_has_protagonist: next };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
     },
@@ -4722,9 +4935,7 @@ function ProductionDocPage() {
       setDoc((prev) => {
         if (!prev) return prev;
         const nextDoc = { ...prev, style_sheet_description: next };
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
         return nextDoc;
       });
     },
@@ -7290,9 +7501,7 @@ function ProductionDocPage() {
           doodle_explainer_2_character_cache: nextCache,
         };
         setDoc(nextDoc);
-        if (historyEntryId) {
-          updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-        }
+        persistDoc(nextDoc);
       }
       // Phase 3 — scene-cache miss-and-store. Same atomic-persist
       // pattern as the character-cache write above so the cache
@@ -7324,9 +7533,7 @@ function ProductionDocPage() {
             style_preset: resolvedStylePreset,
             doodle_explainer_2_scene_cache: nextSceneCache,
           };
-          if (historyEntryId) {
-            updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-          }
+          persistDoc(nextDoc);
           return nextDoc;
         });
       }
@@ -9352,6 +9559,162 @@ function ProductionDocPage() {
   return (
     <ScheduleLinkProvider item={scheduleItem}>
       <ImageGenThrottleToast />
+      {/* ─── Stacked top-of-viewport banners (2026-06-03) ──────────
+          Single fixed container so PR1's remote-update banner and
+          PR2's bulk-retry banner can coexist without overlap. Each
+          banner self-conditionalises so the container collapses to
+          nothing when neither is active. */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 90,
+          display: 'flex',
+          flexDirection: 'column',
+          pointerEvents: 'none', // child banners restore via inline style
+        }}
+      >
+        {/* Remote-update banner (PR1 doc-sync).
+            Surfaces `saveStatus.kind === 'conflict'` from `useProject`.
+            The polling effect flips to 'conflict' when an external
+            write (pipeline tick, second tab) bumps the row version
+            while the user has dirty local edits.
+              - Reload: confirm dialog, clear local doc, re-hydrate.
+                Discards uncommitted edits.
+              - Continue editing: dismisses via acknowledgeConflict().
+                Next save lands via last-write-wins. */}
+        {project.saveStatus.kind === 'conflict' && (
+          <div
+            role="alert"
+            aria-live="polite"
+            style={{
+              pointerEvents: 'auto',
+              background: '#f59e0b',
+              color: '#111',
+              padding: '10px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              fontSize: 13,
+              lineHeight: 1.4,
+              boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+              <strong>This doc changed elsewhere.</strong>
+              <span style={{ marginLeft: 8, opacity: 0.9 }}>
+                The pipeline or another tab updated it while you were editing. Reload to see the latest, or continue to overwrite on next save.
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flex: '0 0 auto' }}>
+              <button
+                type="button"
+                onClick={() => project.acknowledgeConflict()}
+                style={{
+                  background: 'transparent',
+                  color: '#111',
+                  border: '1px solid rgba(0,0,0,0.35)',
+                  padding: '5px 12px',
+                  borderRadius: 4,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                Continue editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!window.confirm('Reload this doc? Any local edits you have not saved will be discarded.')) return;
+                  console.info('[doc-sync banner]', { reason: 'user-reload', historyEntryId });
+                  // Force-rehydrate flag bypasses both gates in the
+                  // hydration effect (ref-already-matched +
+                  // doc-already-set). Avoids the previous setDoc(null)
+                  // which crashes unguarded render branches that
+                  // assume doc is non-null.
+                  hydratedForHistoryIdRef.current = null;
+                  forceRehydrateRef.current = true;
+                  void project.reload();
+                }}
+                style={{
+                  background: '#111',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '5px 12px',
+                  borderRadius: 4,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                Reload
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Bulk failed-row banner (PR2 reliability).
+            Shows when `failedRowCount > 0` — rows whose
+            auto-pipeline attempts exhausted the per-class retry
+            budget. Click Retry all → resets `attempts` + `last_error`
+            on every failed row in one `persistDoc`. Next pipeline
+            tick re-attempts them. */}
+        {failedRowCount > 0 && (
+          <div
+            role="alert"
+            aria-live="polite"
+            style={{
+              pointerEvents: 'auto',
+              background: '#7f1d1d',
+              color: '#fff',
+              padding: '8px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              fontSize: 13,
+              lineHeight: 1.4,
+              boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ minWidth: 0, flex: '1 1 auto' }}>
+              <strong>
+                {failedRowCount} {failedRowCount === 1 ? 'shot' : 'shots'} failed to generate.
+              </strong>
+              <span style={{ marginLeft: 8, opacity: 0.9 }}>
+                Each row shows its specific error. Click Retry all to re-queue them, or use the inline Retry button on the row.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const n = retryAllFailedRows();
+                if (n > 0) {
+                  toast.success(`Re-queued ${n} ${n === 1 ? 'shot' : 'shots'} for image generation.`);
+                }
+              }}
+              style={{
+                flex: '0 0 auto',
+                background: '#fff',
+                color: '#7f1d1d',
+                border: 'none',
+                padding: '5px 12px',
+                borderRadius: 4,
+                fontSize: 13,
+                cursor: 'pointer',
+                fontWeight: 700,
+              }}
+            >
+              Retry all
+            </button>
+          </div>
+        )}
+      </div>
       <ScheduleSaverRegistration
         handle={{
           artifactLabel: 'production doc',
@@ -9655,11 +10018,45 @@ function ProductionDocPage() {
               to preview against; the inputs panel still cleanly
               communicates "pick style → generate → tune settings."
               See §14 of the architecture plan. */}
+          {/* PR3 (2026-06-03) doc-level pacing-profile picker. Mounts on
+              EVERY doc regardless of style preset — pacing is a doc-level
+              concern, not a style-specific one. Default-renders 'fast'
+              when the doc has no stored value (matches the server-side
+              default in productionDocPrompt + the post-processor).
+              Persists via the same persistDoc helper PR1 introduced so
+              the change syncs across tabs + survives refresh. */}
+          {doc && (
+            <PacingProfilePanel
+              value={doc.pacing_profile}
+              onChange={(next) => {
+                setDoc((prev) => {
+                  if (!prev) return prev;
+                  const nextDoc = { ...prev, pacing_profile: next };
+                  persistDoc(nextDoc);
+                  return nextDoc;
+                });
+              }}
+            />
+          )}
+
           {doc && stylePreset === 'paint_explainer_v1' && (
             <PaintExplainerV1SettingsPanel
               value={doc.paint_explainer_v1_settings}
               onChange={(next) => {
-                setDoc((prev) => (prev ? { ...prev, paint_explainer_v1_settings: next } : prev));
+                setDoc((prev) => {
+                  if (!prev) return prev;
+                  const nextDoc = { ...prev, paint_explainer_v1_settings: next };
+                  // PR3 QA pass (2026-06-03): pre-PR1 this onChange was
+                  // local-only — settings tweaks lived in React state
+                  // but never reached the server, so a refresh restored
+                  // them from localStorage but a different device saw
+                  // nothing. persistDoc routes through useProject.patch
+                  // so the change syncs cross-tab + survives device
+                  // switch. Mirrors the same fix in the pacing panel
+                  // above and the Doodle settings panel below.
+                  persistDoc(nextDoc);
+                  return nextDoc;
+                });
               }}
             />
           )}
@@ -9679,9 +10076,17 @@ function ProductionDocPage() {
               }
               onChange={(next) => {
                 if (doc) {
-                  setDoc((prev) =>
-                    prev ? { ...prev, doodle_explainer_2_motion_collage_settings: next } : prev,
-                  );
+                  setDoc((prev) => {
+                    if (!prev) return prev;
+                    const nextDoc = {
+                      ...prev,
+                      doodle_explainer_2_motion_collage_settings: next,
+                    };
+                    // PR3 QA fix — same as Paint above. Server-side
+                    // sync via persistDoc.
+                    persistDoc(nextDoc);
+                    return nextDoc;
+                  });
                 } else {
                   setPendingMotionCollageSettings(next);
                 }
@@ -10157,9 +10562,7 @@ function ProductionDocPage() {
                   }
                   console.info('[overlay-skip] doc-level toggle', { overlays_disabled: next.overlays_disabled === true });
                   setDoc(next);
-                  if (historyEntryId) {
-                    updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
-                  }
+                  persistDoc(next);
                 }}
                 style={{ accentColor: '#a855f7' }}
               />
@@ -10215,9 +10618,7 @@ function ProductionDocPage() {
                   }
                   console.info('[collage-mode] doc-level toggle', { collage_mode: next.collage_mode !== false });
                   setDoc(next);
-                  if (historyEntryId) {
-                    updateProductionDocEntry(historyEntryId, { doc: next }).catch(() => {});
-                  }
+                  persistDoc(next);
                 }}
                 style={{ accentColor: '#a855f7' }}
               />
@@ -10526,9 +10927,7 @@ function ProductionDocPage() {
                       ...prev,
                       doodle_explainer_2_character_descriptions: next,
                     };
-                    if (historyEntryId) {
-                      updateProductionDocEntry(historyEntryId, { doc: nextDoc }).catch(() => {});
-                    }
+                    persistDoc(nextDoc);
                     return nextDoc;
                   });
                 }}
@@ -11770,6 +12169,11 @@ function ProductionDocPage() {
                             onUpload={(file) => { void uploadImageForRow(i, file); }}
                             onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
                             onEdit={() => setEditPanelRow(i)}
+                            pipelineError={row.last_error ?? null}
+                            pipelineErrorExhausted={Boolean(
+                              row.last_error && isExhausted(row.attempts, row.last_error.class),
+                            )}
+                            onPipelineErrorRetry={() => updateRow(i, { attempts: 0, last_error: null })}
                           />
                         </td>
                         {/* B-roll (animation pipeline — Kling 2.5 turbo i2v by default) */}
@@ -12419,6 +12823,11 @@ function ProductionDocPage() {
                             onUpload={(file) => { void uploadImageForRow(i, file); }}
                             onUrlImport={(url) => { void importImageUrlForRow(i, url); }}
                             onEdit={() => setEditPanelRow(i)}
+                            pipelineError={row.last_error ?? null}
+                            pipelineErrorExhausted={Boolean(
+                              row.last_error && isExhausted(row.attempts, row.last_error.class),
+                            )}
+                            onPipelineErrorRetry={() => updateRow(i, { attempts: 0, last_error: null })}
                           />
                         </div>
                         <div>

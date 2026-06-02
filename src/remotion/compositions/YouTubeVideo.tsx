@@ -470,10 +470,40 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
   // every label, and the LowerThird's per-row OST text doubles as the
   // simplest implementation of <LabelPopOn> until that component lands
   // in PR 2. Adding a new variant per style is a one-line change here.
-  const lowerThirdVariant =
-    config.styleId === 'doodle_explainer_2' || config.styleId === 'paint_explainer_v1'
-      ? 'doodle-yellow'
-      : 'default';
+  //
+  // 2026-06-03 reliability fix: ALSO check signals on the VideoConfig
+  // that only exist for paint_explainer_v1. `productionDocToVideoConfig`
+  // now resolves saved-style UUIDs to their built-in slug before this
+  // dispatcher runs, but the defense-in-depth here catches the case
+  // where some other callsite hand-builds a VideoConfig (e.g. the
+  // video-studio scratch page) and forgets to set styleId — if the
+  // doc-derived settings made it onto the config, that's a stronger
+  // signal than the missing styleId.
+  const isYellowVariantStyle =
+    config.styleId === 'doodle_explainer_2' ||
+    config.styleId === 'paint_explainer_v1' ||
+    Boolean(config.paintExplainerV1Settings) ||
+    Boolean(config.paintExplainerV1PropCache);
+  const lowerThirdVariant = isYellowVariantStyle ? 'doodle-yellow' : 'default';
+
+  // Diagnostic: when a render comes back in the default red/black/white
+  // LowerThird styling on a doc that should be yellow, the cause is
+  // almost always a missing or unexpected `config.styleId` reaching this
+  // routing point. Log the first few shots AND any shot that resolves
+  // to 'default' on a known style id, so we can correlate a single bad
+  // render against the styleId the renderer actually saw. Capped so
+  // long videos don't flood the console.
+  if (shotIndex < 5 || lowerThirdVariant === 'default') {
+    console.info('[lower-third variant resolved]', {
+      shotIndex,
+      sceneType: shot.sceneType,
+      shotKind: shot.shotKind,
+      styleId: config.styleId ?? '(undefined)',
+      resolvedVariant: lowerThirdVariant,
+      hasOnScreenText: Boolean(shot.onScreenText),
+      suppressLowerThird: shot.suppressLowerThird ?? suppressLowerThirds,
+    });
+  }
 
   // paint_explainer_v1 motion routing — runs BEFORE the sceneType
   // switch because motion is a paint_explainer_v1-specific path that
