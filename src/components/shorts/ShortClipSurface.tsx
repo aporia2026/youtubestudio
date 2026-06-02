@@ -259,40 +259,32 @@ export function ShortClipSurface({
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         const newShortId = data.id as string | undefined;
 
-        // Stamp the chosen style on the new row. For minimal this is a
-        // no-op (server returns immediately). For Doodle this kicks off
-        // the Atlas pipeline (~30-120s) — we toast on success / failure.
-        if (newShortId) {
-          try {
-            const styleRes = await fetch(
-              `/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  style_id: styleId,
-                  niche: effectiveNiche,
-                }),
-              },
-            );
-            const styleData = await styleRes.json();
-            if (!styleRes.ok) {
-              toast.warning(
-                `Short generated, but style assets failed: ${styleData.error ?? 'unknown'}. Retry from the inbox.`,
-              );
-            } else if (styleId !== 'minimal_gradient_v1') {
-              const cost = styleData.estimated_cost_usd as number | undefined;
-              toast.success(
-                `New Short generated + ${styleId} assets ready${typeof cost === 'number' ? ` (~$${cost.toFixed(2)})` : ''}. Voice it from the inbox.`,
-              );
-            } else {
-              toast.success('New Short generated — open the Shorts inbox to voice it.');
-            }
-          } catch (styleErr) {
-            toast.warning(
-              `Short generated, but style asset call failed: ${styleErr instanceof Error ? styleErr.message : 'unknown'}. Retry from the inbox.`,
-            );
-          }
+        // Stamp the chosen style on the new row. Minimal is a no-op
+        // server-side. Doodle + Paint kick off the Atlas pipeline which
+        // takes 1-4 minutes — we FIRE-AND-FORGET so the user isn't
+        // blocked on a multi-minute wait. The server function has
+        // maxDuration=300s and will keep running even if the client
+        // closes its connection. Status surfaces in the Shorts inbox.
+        if (newShortId && styleId !== 'minimal_gradient_v1') {
+          void fetch(
+            `/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                style_id: styleId,
+                niche: effectiveNiche,
+              }),
+              keepalive: true,
+            },
+          ).catch(() => {
+            // Server-side failures surface as missing assets in the inbox
+            // — toasting now would be misleading because the work may
+            // still succeed after the keepalive socket drops.
+          });
+          toast.success(
+            `New Short created — ${styleId.replace(/_/g, ' ')} assets generating in the background (1-4 min). Check the Shorts inbox shortly.`,
+          );
         } else {
           toast.success('New Short generated — open the Shorts inbox to voice it.');
         }

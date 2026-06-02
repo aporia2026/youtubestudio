@@ -1,4 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+// Doodle / Paint asset pipelines run sequentially: LLM planner (~15s) +
+// Atlas Image base (~30-60s) + N Atlas Edit variants (~15-25s each × 6
+// variants). Typical real-world runs land at 100-225s. The default
+// Vercel function timeout (60s on Hobby) was killing this mid-pipeline
+// and leaving the client hung. Match the render-route + Mode B
+// pattern of declaring 300s explicitly.
+export const maxDuration = 300;
 import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';

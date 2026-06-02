@@ -300,6 +300,7 @@ export function ShortNativeIdeasSurface() {
       const key = `${idx}-${idea.hook.slice(0, 30)}`;
       setGeneratingKey(key);
       try {
+        // 1. Create the short_native row — fast (~10-20s extractor).
         const res = await fetch('/api/shorts/generate-from-idea', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -315,16 +316,17 @@ export function ShortNativeIdeasSurface() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         const newShortId = data.id as string | undefined;
-        if (!newShortId) {
-          toast.success('Short generated — open the inbox to voice it.');
-          return;
-        }
-        if (effectiveStyleId === 'minimal_gradient_v1') {
-          toast.success('Short generated — open the inbox to voice it.');
-          return;
-        }
-        try {
-          const styleRes = await fetch(
+
+        // 2. Style asset generation. Minimal = no-op stamp (fast). Doodle
+        //    + Paint take 1-4 minutes server-side; we fire-and-forget
+        //    instead of blocking the page on the wait. The Vercel function
+        //    has maxDuration=300 and will keep running even after this
+        //    fetch promise gets resolved/cancelled.
+        if (newShortId && effectiveStyleId !== 'minimal_gradient_v1') {
+          // Kick off without awaiting. The catch keeps an uncaught
+          // promise rejection from logging to the console if the server
+          // 502s or the user navigates away.
+          void fetch(
             `/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`,
             {
               method: 'POST',
@@ -333,23 +335,18 @@ export function ShortNativeIdeasSurface() {
                 style_id: effectiveStyleId,
                 niche: effectiveNiche,
               }),
+              keepalive: true,
             },
+          ).catch(() => {
+            // Surface as an inbox status when the user gets back to it;
+            // a toast now would be misleading because the work may still
+            // succeed even after the keepalive socket drops.
+          });
+          toast.success(
+            `Short created — ${effectiveStyleId.replace(/_/g, ' ')} assets generating in the background (1-4 min). Check the Shorts inbox shortly.`,
           );
-          const styleData = await styleRes.json();
-          if (!styleRes.ok) {
-            toast.warning(
-              `Short generated, but style assets failed: ${styleData.error ?? 'unknown'}. Retry from the inbox.`,
-            );
-          } else {
-            const cost = styleData.estimated_cost_usd as number | undefined;
-            toast.success(
-              `Short generated + ${effectiveStyleId} assets ready${typeof cost === 'number' ? ` (~$${cost.toFixed(2)})` : ''}. Voice it from the inbox.`,
-            );
-          }
-        } catch (styleErr) {
-          toast.warning(
-            `Short generated, but style asset call failed: ${styleErr instanceof Error ? styleErr.message : 'unknown'}. Retry from the inbox.`,
-          );
+        } else {
+          toast.success('Short created — open the Shorts inbox to voice it.');
         }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to generate the Short');
