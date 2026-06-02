@@ -40,13 +40,25 @@ describe('listShortStyles / listAvailableShortStyles', () => {
     }
   });
 
-  it('Phase 15.3 has exactly two available styles (minimal_gradient_v1 + doodle_explainer_2_short)', () => {
+  it('Phase 15.4 has all three styles available', () => {
     const avail = listAvailableShortStyles();
     const ids = avail.map((s) => s.id).sort();
-    expect(ids).toEqual(['doodle_explainer_2_short', 'minimal_gradient_v1']);
+    expect(ids).toEqual([
+      'doodle_explainer_2_short',
+      'minimal_gradient_v1',
+      'paint_explainer_v1_short',
+    ]);
+  });
+
+  it('Phase 15.4 still has no styles in the "coming" state', () => {
+    const stylesWithComingPhase = listShortStyles().filter((s) => s.comingPhase != null);
+    expect(stylesWithComingPhase).toEqual([]);
   });
 
   it('every non-available style declares a comingPhase', () => {
+    // Phase 15.4 flipped all three styles available — this test is a
+    // no-op guard now but stays so a future regression (adding a
+    // disabled style without a comingPhase) fails loud.
     for (const s of listShortStyles()) {
       if (!s.available) {
         expect(s.comingPhase, `${s.id} missing comingPhase`).toBeTruthy();

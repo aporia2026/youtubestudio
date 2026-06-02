@@ -123,4 +123,13 @@ export interface ShortStyleAssets {
       caption_chunk_start_index: number;
     }>;
   };
+  /** Paint vertical (`paint_explainer_v1_short`) — same asset shape as
+   *  Doodle, different visual language (paint_explainer_v1 ai_image_suffix). */
+  paint?: {
+    base_url: string;
+    variants: Array<{
+      url: string;
+      caption_chunk_start_index: number;
+    }>;
+  };
 }

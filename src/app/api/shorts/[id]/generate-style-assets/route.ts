@@ -4,6 +4,7 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
 import { generateDoodleAssets } from '@/lib/shorts-doodle-asset-pipeline';
+import { generatePaintAssets } from '@/lib/shorts-paint-asset-pipeline';
 import { splitScriptIntoCaptions } from '@/lib/shorts-render';
 import { WORDS_PER_SECOND } from '@/lib/shorts-types';
 import { getShortStyle } from '@/lib/short-styles';
@@ -138,6 +139,77 @@ export const POST = apiRoute.authed(
         `;
 
         logger.info('[shorts style-assets] doodle persisted', {
+          workspaceId: session.ws,
+          shortId: row.id,
+          baseUrl: assets.base_url,
+          variantCount: assets.variants.length,
+          estimatedCostUsd: assets.estimatedCostUsd,
+        });
+
+        return NextResponse.json({
+          style_id: styleEntry.id,
+          style_assets: styleAssetsBlob,
+          estimated_cost_usd: assets.estimatedCostUsd,
+        });
+      }
+
+      // Paint path — mirrors Doodle. Same caption-chunk plumbing, same
+      // assets shape (just stored under `style_assets.paint` so the two
+      // styles never overwrite each other on the row).
+      if (styleEntry.id === 'paint_explainer_v1_short') {
+        let niche = body.niche?.trim() ?? '';
+        if (!niche && row.project_id) {
+          const { rows } = await sql<{ niche: string | null }>`
+            SELECT niche FROM projects
+             WHERE id = ${row.project_id}::uuid
+               AND workspace_id = ${session.ws}::uuid
+             LIMIT 1
+          `;
+          if (rows[0]?.niche) niche = rows[0].niche;
+        }
+        if (!niche) niche = 'general';
+
+        const seconds =
+          row.voiceover_duration_seconds
+          ?? row.estimated_duration_seconds
+          ?? Math.max(15, Math.round((row.word_count ?? 0) / WORDS_PER_SECOND));
+        const captions = splitScriptIntoCaptions(row.short_script, seconds * 1000);
+        if (captions.length === 0) {
+          return NextResponse.json(
+            { error: 'Could not chunk the script into captions — needs a non-trivial script.' },
+            { status: 422 },
+          );
+        }
+
+        const assets = await generatePaintAssets({
+          workspaceId: session.ws,
+          projectId: row.project_id,
+          shortId: row.id,
+          shortScript: row.short_script,
+          hook: row.hook ?? undefined,
+          payoff: row.payoff ?? undefined,
+          title: row.title ?? undefined,
+          niche,
+          captions,
+          maxVariants: body.maxVariants,
+        });
+
+        const styleAssetsBlob = {
+          paint: {
+            base_url: assets.base_url,
+            variants: assets.variants,
+          },
+        };
+
+        await sql`
+          UPDATE shorts
+             SET style_id = ${styleEntry.id},
+                 style_assets = ${JSON.stringify(styleAssetsBlob)}::jsonb,
+                 updated_at = NOW()
+           WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
+        `;
+
+        logger.info('[shorts style-assets] paint persisted', {
           workspaceId: session.ws,
           shortId: row.id,
           baseUrl: assets.base_url,

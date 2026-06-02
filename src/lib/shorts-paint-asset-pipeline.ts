@@ -1,0 +1,199 @@
+/**
+ * Paint Explainer V1 vertical asset pipeline — Phase 15.4 (v1).
+ *
+ * Mirrors `shorts-doodle-asset-pipeline.ts` shape but uses the long-form
+ * `paint_explainer_v1` style suffix instead of `doodle_explainer_2`. The
+ * prompt planner is shared (`shorts-doodle-prompt.ts`) because the
+ * input-output contract — base scene + N sibling-variant edit prompts —
+ * is identical across both styles.
+ *
+ * v1 limitation honestly flagged on the ROADMAP entry: the full motion-
+ * component port (MouthSwap, PropSlideIn, MicroWiggle, ScribbleDraw,
+ * LabelPopOn, RealPhotoPunchIn — see src/remotion/components/) is NOT
+ * included. That's Phase 15.4.B. v1 ships the visual language via the
+ * sibling-frame mechanism (per the user's memory: "near-static = Atlas
+ * Edit variants, NEVER Remotion motion on a static image").
+ */
+
+import { logger } from './logger';
+import { generateAtlasT2I } from './atlas-cloud-images';
+import { generateGptImage2Edit } from './gpt-image-2-edit';
+import { generateText } from './ai';
+import { type AiSpendContext } from './ai-spend';
+import { getEffectiveModelId } from './model-defaults';
+import { getBuiltInStyle } from './production-doc-styles';
+import {
+  buildDoodleVariantPrompt,
+  parseDoodleVariantResult,
+  type DoodleVariantResult,
+} from './shorts-doodle-prompt';
+import type { ShortCaptionChunk } from './shorts-render-types';
+
+const MAX_VARIANTS = 8;
+const VERTICAL_BASE_SIZE = '1024x1536';
+const VERTICAL_QUALITY = 'high';
+const ATLAS_T2I_COST_USD = 0.04;
+
+export interface PaintAssetPipelineInput {
+  workspaceId: string;
+  projectId: string | null;
+  shortId: string;
+  shortScript: string;
+  hook?: string;
+  payoff?: string;
+  title?: string;
+  niche: string;
+  captions: ShortCaptionChunk[];
+  maxVariants?: number;
+}
+
+export interface PaintAssetPipelineResult {
+  base_url: string;
+  variants: Array<{
+    url: string;
+    caption_chunk_start_index: number;
+  }>;
+  estimatedCostUsd: number;
+}
+
+function buildBasePromptFull(scenePrompt: string): string {
+  // Pull the long-form Paint Explainer V1 style suffix so the visual
+  // language matches the long-form reference videos. Fallback covers
+  // the rare case where the long-form registry entry is renamed.
+  const longFormStyle = getBuiltInStyle('paint_explainer_v1');
+  const suffix =
+    longFormStyle?.ai_image_suffix
+    ?? 'Hand-drawn doodle in the Paint Explainer style — pure white canvas, thick uneven black ink outlines, flat fills only, stick-figure character anatomy, generous negative space.';
+  // Force the vertical composition guidance up front so the model
+  // commits the subject to the middle-60% safe zone.
+  return `Vertical 9:16 composition. Subject placed in the middle 60% of the frame; top 10% and bottom 10% left intentionally empty for player UI / captions. ${scenePrompt} ${suffix}`;
+}
+
+export async function generatePaintAssets(
+  input: PaintAssetPipelineInput,
+): Promise<PaintAssetPipelineResult> {
+  const tStart = Date.now();
+  logger.info('[shorts paint pipeline] start', {
+    workspaceId: input.workspaceId,
+    shortId: input.shortId,
+    captionCount: input.captions.length,
+    requestedVariants: input.maxVariants,
+  });
+
+  // ---- 1. LLM call to plan base + variant prompts ------------------------
+  // Reuses the Doodle prompt builder — same input-output contract.
+  const modelId = await getEffectiveModelId(input.workspaceId, 'shorts-doodle-prompt');
+  const requestedMax = input.maxVariants ?? 6;
+  const cappedMax = Math.min(MAX_VARIANTS, Math.max(1, requestedMax));
+  const { system, user } = buildDoodleVariantPrompt({
+    shortScript: input.shortScript,
+    hook: input.hook,
+    payoff: input.payoff,
+    title: input.title,
+    captions: input.captions,
+    niche: input.niche,
+    maxVariants: cappedMax,
+  });
+  const spend: AiSpendContext = {
+    workspaceId: input.workspaceId,
+    projectId: input.projectId ?? null,
+    featureArea: 'shorts_paint_prompt',
+    metadata: { short_id: input.shortId, requested_variants: cappedMax },
+  };
+  const raw = await generateText({
+    modelId,
+    systemPrompt: system,
+    prompt: user,
+    maxTokens: 1600,
+    temperature: 0.65,
+    spend,
+  });
+  let plan: DoodleVariantResult;
+  try {
+    plan = parseDoodleVariantResult(raw, input.captions.length);
+  } catch (err) {
+    logger.error('[shorts paint pipeline] prompt parse failed', {
+      shortId: input.shortId,
+      detail: err instanceof Error ? err.message : String(err),
+      raw_preview: raw.slice(0, 400),
+    });
+    throw new Error(
+      `Paint planner returned an unparseable response: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const variantPlan = plan.variants.slice(0, cappedMax);
+  logger.info('[shorts paint pipeline] planned', {
+    shortId: input.shortId,
+    basePromptChars: plan.base_prompt.length,
+    variantCount: variantPlan.length,
+    chunkIndexes: variantPlan.map((v) => v.caption_chunk_start_index),
+  });
+
+  // ---- 2. Atlas Image t2i for the BASE frame -----------------------------
+  const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
+  const baseResult = await generateAtlasT2I({
+    prompt: fullBasePrompt,
+    size: VERTICAL_BASE_SIZE,
+    quality: VERTICAL_QUALITY,
+  });
+  const baseUrl = baseResult.url;
+  logger.info('[shorts paint pipeline] base ready', {
+    shortId: input.shortId,
+    basePredictionId: baseResult.predictionId,
+    baseUrl,
+    predictTimeMs: baseResult.predictTimeMs,
+    durationMsSoFar: Date.now() - tStart,
+  });
+
+  // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
+  const variants: PaintAssetPipelineResult['variants'] = [];
+  let estimatedCostUsd = ATLAS_T2I_COST_USD;
+  for (const v of variantPlan) {
+    try {
+      const result = await generateGptImage2Edit({
+        prompt: v.edit_prompt,
+        sourceImageUrl: baseUrl,
+        primary: 'atlas',
+      });
+      variants.push({
+        url: result.url,
+        caption_chunk_start_index: v.caption_chunk_start_index,
+      });
+      estimatedCostUsd += result.costUsd;
+      logger.info('[shorts paint pipeline] variant ready', {
+        shortId: input.shortId,
+        chunkIndex: v.caption_chunk_start_index,
+        vendorUsed: result.vendorUsed,
+        fallbackUsed: result.fallbackUsed,
+        costUsd: result.costUsd,
+        url: result.url,
+      });
+    } catch (err) {
+      logger.warn('[shorts paint pipeline] variant failed (skipping)', {
+        shortId: input.shortId,
+        chunkIndex: v.caption_chunk_start_index,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (variants.length === 0) {
+    throw new Error(
+      'Paint variant pipeline produced zero variants — every Atlas Edit call failed. Retry later or check ATLAS_API_KEY.',
+    );
+  }
+
+  logger.info('[shorts paint pipeline] done', {
+    shortId: input.shortId,
+    baseUrl,
+    variantCount: variants.length,
+    estimatedCostUsd,
+    totalDurationMs: Date.now() - tStart,
+  });
+
+  return {
+    base_url: baseUrl,
+    variants,
+    estimatedCostUsd,
+  };
+}

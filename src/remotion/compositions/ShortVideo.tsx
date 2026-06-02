@@ -25,7 +25,16 @@ export interface ShortVideoProps {
 
 export function ShortVideo({ config }: ShortVideoProps) {
   const styleId = config.style_id ?? 'minimal_gradient_v1';
-  if (styleId === 'doodle_explainer_2_short' && config.doodle_frames && config.doodle_frames.length > 0) {
+  // Doodle + Paint share the sibling-frame renderer — the data shape
+  // (base + variants timed to chunk indices) is identical, only the
+  // source images differ. Phase 15.4 reuses the Phase 15.3 path
+  // without a render-time split; Phase 15.4.B (full motion-component
+  // port) will introduce a separate <PaintShortVideo> when it lands.
+  if (
+    (styleId === 'doodle_explainer_2_short' || styleId === 'paint_explainer_v1_short')
+    && config.doodle_frames
+    && config.doodle_frames.length > 0
+  ) {
     return <DoodleShortVideo config={config} />;
   }
   return <MinimalShortVideo config={config} />;

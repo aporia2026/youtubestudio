@@ -170,10 +170,11 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
 
   const styleId = short.style_id ?? undefined;
 
-  // Doodle dispatch — pull frame URLs from style_assets.doodle. When the
-  // assets aren't ready yet we throw with an actionable message; the
-  // render dialog must show the "Generate style assets" button before
-  // letting the user click Render.
+  // Image-style dispatch — both Doodle and Paint vertical use the same
+  // base+variants asset shape and the same renderer (most-recent-frame
+  // walk by chunk index). Only the source images differ. When assets
+  // aren't ready we throw with an actionable message; the render dialog
+  // must show the "Generate style assets" button first.
   let doodleFrames: ShortVideoConfig['doodle_frames'] | undefined;
   if (styleId === 'doodle_explainer_2_short') {
     const doodle = short.style_assets?.doodle;
@@ -182,12 +183,22 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
         'Cannot render Doodle Short — style assets not generated yet. Click "Generate style assets" first.',
       );
     }
-    // The base frame is the implicit first frame (caption_chunk_start_index = 0).
-    // Variants extend it. Ordered by chunk index so the renderer's
-    // most-recent-frame walk is monotonic.
     doodleFrames = [
       { url: doodle.base_url, caption_chunk_start_index: 0 },
       ...doodle.variants
+        .map((v) => ({ url: v.url, caption_chunk_start_index: v.caption_chunk_start_index }))
+        .sort((a, b) => a.caption_chunk_start_index - b.caption_chunk_start_index),
+    ];
+  } else if (styleId === 'paint_explainer_v1_short') {
+    const paint = short.style_assets?.paint;
+    if (!paint || !paint.base_url) {
+      throw new Error(
+        'Cannot render Paint Short — style assets not generated yet. Click "Generate style assets" first.',
+      );
+    }
+    doodleFrames = [
+      { url: paint.base_url, caption_chunk_start_index: 0 },
+      ...paint.variants
         .map((v) => ({ url: v.url, caption_chunk_start_index: v.caption_chunk_start_index }))
         .sort((a, b) => a.caption_chunk_start_index - b.caption_chunk_start_index),
     ];

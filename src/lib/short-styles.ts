@@ -79,10 +79,9 @@ const REGISTRY: Readonly<Record<ShortStyleId, ShortStyleEntry>> = Object.freeze(
     id: 'paint_explainer_v1_short',
     label: 'Paint Explainer — vertical',
     description:
-      'Motion-driven hand-drawn doodle with mouth-swap, polaroid frames, label pops, scribble draw. High production value.',
-    available: false,
-    comingPhase: 'Phase 15.4',
-    costBand: 'heavy',
+      'Hand-drawn Paint Explainer aesthetic — pure white canvas, thick uneven ink lines, stick-figure characters. v1 ships the visual via sibling-frame variants (motion-component port = 15.4.B).',
+    available: true,
+    costBand: 'light',
   },
 });
 

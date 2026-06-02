@@ -46,9 +46,12 @@ export interface ShortVideoConfig {
    *  Unknown / missing falls through to minimal so a malformed config
    *  can't break the render.  */
   style_id?: string;
-  /** Phase 15.3 — Doodle frame URLs ordered, with the caption chunk
-   *  index each frame swaps in at. Only honored when style_id is
-   *  'doodle_explainer_2_short'; ignored for minimal. */
+  /** Phase 15.3 / 15.4 — sibling-frame URLs ordered, with the caption
+   *  chunk index each frame swaps in at. Honored for any image-driven
+   *  style (`doodle_explainer_2_short`, `paint_explainer_v1_short`);
+   *  ignored for minimal. The same array shape is reused across styles
+   *  because the renderer just walks frames by chunk index — the visual
+   *  difference is in the source images, not the data shape. */
   doodle_frames?: Array<{
     url: string;
     caption_chunk_start_index: number;

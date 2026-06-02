@@ -237,6 +237,42 @@ describe('buildShortVideoConfig — Phase 15.3 style dispatch', () => {
     ]);
   });
 
+  it('routes paint_explainer_v1_short through doodle_frames (shared renderer)', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'paint_explainer_v1_short',
+        style_assets: {
+          paint: {
+            base_url: 'https://atlas.example.com/paint-base.png',
+            variants: [
+              { url: 'https://atlas.example.com/paint-v2.png', caption_chunk_start_index: 2 },
+              { url: 'https://atlas.example.com/paint-v1.png', caption_chunk_start_index: 1 },
+            ],
+          },
+        },
+      },
+    });
+    expect(cfg.style_id).toBe('paint_explainer_v1_short');
+    expect(cfg.doodle_frames).toEqual([
+      { url: 'https://atlas.example.com/paint-base.png', caption_chunk_start_index: 0 },
+      { url: 'https://atlas.example.com/paint-v1.png', caption_chunk_start_index: 1 },
+      { url: 'https://atlas.example.com/paint-v2.png', caption_chunk_start_index: 2 },
+    ]);
+  });
+
+  it('throws actionable message when paint is selected but assets are missing', () => {
+    expect(() =>
+      buildShortVideoConfig({
+        short: {
+          ...baseShort,
+          style_id: 'paint_explainer_v1_short',
+          style_assets: {},
+        },
+      }),
+    ).toThrow(/Paint Short.*style assets not generated/i);
+  });
+
   it('omits doodle_frames entirely for the minimal style', () => {
     const cfg = buildShortVideoConfig({
       short: {
