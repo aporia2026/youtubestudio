@@ -2173,6 +2173,12 @@ export function productionDocToVideoConfig(
       startMs,
       durationMs,
       sceneType,
+      // Editor-only fields — surfaced so the timeline / left-rail can
+      // render shot-kind / base-vs-variant chips without a separate
+      // doc.rows[i] lookup. Renderer ignores. (2026-06-02 user ask.)
+      visualType: row.visual_type,
+      groupId: row.group_id,
+      variantIndex: row.variant_index,
       imageUrl,
       videoUrl,
       title: row.on_screen_text || undefined,

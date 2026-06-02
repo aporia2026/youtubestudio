@@ -37,8 +37,11 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
+import type { ProductionDoc } from '@/remotion/utils';
 import { EDITOR_MAX_SHOT_MS, EDITOR_MIN_SHOT_MS } from '@/lib/editor/store';
 import { MotionCollageThumb } from '@/components/editor/MotionCollageThumb';
+import { TitleCardThumb } from '@/components/editor/TitleCardThumb';
+import { ShotKindBadge } from '@/components/editor/ShotKindBadge';
 import { InsertSceneAffordance } from './InsertSceneAffordance';
 import { formatTimecode } from './SetTimingPopover';
 
@@ -800,6 +803,15 @@ function SortableShotCard({
           loading="lazy"
           shotIndex={index}
         />
+      ) : shot.visualType === 'Title Card' ? (
+        // Title card rows have no image but DO render typography via
+        // TitleCardScene. Show a small typography preview so the card
+        // doesn't masquerade as a broken / unfilled row (2026-06-02
+        // user report). Mirrors the same fallback added to ShotsTab.
+        <TitleCardThumb
+          title={shot.title ?? shot.sectionTitle ?? 'Title card'}
+          fillParent
+        />
       ) : (
         // No image attached — render an obvious "blank shot" marker.
         // Repeating diagonal-stripe gradient + centered "BLANK" label
@@ -829,6 +841,44 @@ function SortableShotCard({
             blank
           </span>
         </div>
+      )}
+      {/* Shot-kind badge (top-left) + base/variant chip (top-right) —
+          per-card glanceable indicators. Same data the inspector's
+          Shot type dropdown shows, but visible on every card without
+          clicking. User-asked-for 2026-06-02. */}
+      <ShotKindBadge
+        shotKind={shot.shotKind}
+        visualType={shot.visualType}
+        pinTopLeft
+        scale="sm"
+      />
+      {shot.groupId && typeof shot.variantIndex === 'number' && (
+        <span
+          title={shot.variantIndex === 0 ? 'Base image of a variant group' : `Variant ${shot.variantIndex} of a base`}
+          aria-label={shot.variantIndex === 0 ? 'Base image' : `Variant ${shot.variantIndex}`}
+          style={{
+            position: 'absolute',
+            top: 2,
+            right: 2,
+            zIndex: 1,
+            padding: '1px 4px',
+            fontSize: 9,
+            fontWeight: 700,
+            lineHeight: 1.1,
+            letterSpacing: 0.2,
+            borderRadius: 2,
+            background:
+              shot.variantIndex === 0
+                ? 'rgba(167, 139, 250, 0.90)' // light purple — BASE
+                : 'rgba(124, 58, 237, 0.90)', // deep purple — VAR
+            color: '#fff',
+            fontFamily: 'ui-monospace, monospace',
+            boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
+            pointerEvents: 'none',
+          }}
+        >
+          {shot.variantIndex === 0 ? 'BASE' : `V${shot.variantIndex}`}
+        </span>
       )}
       {/* Tinted overlay — keeps the label legible over any thumbnail.
           Heavier when selected so the card pops. */}

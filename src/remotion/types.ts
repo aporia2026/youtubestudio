@@ -91,6 +91,19 @@ export interface VideoShot {
   durationMs: number;
   /** Scene type — determines which scene component renders this shot */
   sceneType: SceneType;
+  /** Editorial type from the source row — Title Card / Animation /
+   *  Statistics / B-Roll / blank. Threaded through so the editor's
+   *  ShotKindBadge can resolve the same label the inspector's Shot type
+   *  dropdown shows, without the timeline / left-rail caller needing
+   *  separate access to `doc.rows[i]`. Renderer ignores; this is
+   *  purely an editor-UI surface. */
+  visualType?: string;
+  /** Variant grouping — when the row belongs to a variant group of
+   *  shots that share a base image. `groupId` identifies the group;
+   *  `variantIndex` is 0 for the base, 1+ for siblings. Threaded so
+   *  the editor's badge can show BASE vs VAR chips on each thumb. */
+  groupId?: string;
+  variantIndex?: number;
   /** Image URL for this shot (b-roll, icon-scene, screen-mockup) */
   imageUrl?: string;
   /** Optional animated B-roll clip URL. When present, the scene renders a

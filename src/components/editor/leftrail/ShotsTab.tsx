@@ -14,6 +14,8 @@
 
 import type { ProductionDoc } from '@/remotion/utils';
 import { MotionCollageThumb } from '@/components/editor/MotionCollageThumb';
+import { TitleCardThumb } from '@/components/editor/TitleCardThumb';
+import { ShotKindBadge } from '@/components/editor/ShotKindBadge';
 
 interface ShotsTabProps {
   rows: ProductionDoc['rows'];
@@ -115,15 +117,17 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
                 {i + 1}
               </div>
               <div
-                className="shrink-0 rounded overflow-hidden"
+                className="shrink-0 rounded overflow-hidden relative"
                 style={{ width: 56, height: 32, background: '#000' }}
               >
-                {/* Motion-collage shots show their N-panel grid here so
-                    they don't disguise themselves as single static shots.
-                    Falls through to a regular single image for static
-                    shots (the common case) and to the "no img" placeholder
-                    when neither is present. See
-                    `_plans/2026-06-02-editor-motion-collage-support.md`. */}
+                {/* Precedence:
+                    1. Motion-collage shots → N-panel grid via MotionCollageThumb.
+                    2. Static shots with a thumbnail → single image.
+                    3. Title-card rows → typography preview (no R2 image
+                       exists; the renderer paints text via TitleCardScene).
+                    4. Fallback → "no img" placeholder.
+                    User report (2026-06-02): title-card rows used to show
+                    "no img" / "BLANK" which implied a broken row. */}
                 {thumb || (row.motion_collage_panel_urls?.length ?? 0) > 0 ? (
                   <MotionCollageThumb
                     panelUrls={row.motion_collage_panel_urls}
@@ -131,6 +135,16 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
                     fallbackImageUrl={thumb}
                     loading="lazy"
                     shotIndex={i}
+                  />
+                ) : row.visual_type === 'Title Card' ? (
+                  <TitleCardThumb
+                    title={
+                      row.on_screen_text?.trim() ||
+                      row.section_title?.trim() ||
+                      row.visual_description?.trim() ||
+                      row.script_text?.trim() ||
+                      'Title card'
+                    }
                   />
                 ) : (
                   <div
@@ -140,6 +154,15 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
                     no img
                   </div>
                 )}
+                {/* Shot-kind badge — overlaid in the top-left corner so
+                    every shot communicates its type at a glance. Mirrors
+                    the renderer's SceneRouter precedence so the badge
+                    matches what the renderer will paint. */}
+                <ShotKindBadge
+                  shotKind={row.shot_kind}
+                  visualType={row.visual_type}
+                  pinTopLeft
+                />
               </div>
               <div className="min-w-0 flex-1">
                 <div
