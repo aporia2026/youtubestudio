@@ -253,6 +253,20 @@ export function migratePayload(raw: unknown): MigrateResult {
     Array.isArray((raw.doc as { rows?: unknown }).rows)
   ) {
     out.doc = raw.doc as unknown as ProductionDoc;
+    // PR 4 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+    // sanitize the new multi-block on_screen_text_blocks field on every
+    // row. Defense-in-depth per Rule 13 — malformed entries are dropped,
+    // numeric fields clamped, the array capped. The mutation is in-place
+    // on the passed-through doc so the validator and the renderer both
+    // see the cleaned shape. droppedFields entries are aggregated per
+    // row (not per block) to keep the migrator's log concise.
+    out.doc.rows.forEach((row, rowIdx) => {
+      const result = sanitizeOnScreenTextBlocks(row.on_screen_text_blocks);
+      if (result.changed) {
+        row.on_screen_text_blocks = result.value.length > 0 ? result.value : undefined;
+        dropped.push(`doc.rows[${rowIdx}].on_screen_text_blocks${result.note}`);
+      }
+    });
   } else {
     defaulted.push('doc');
   }
@@ -571,6 +585,112 @@ export function validatePayload(raw: unknown): ValidateResult {
   // best-effort fill.
   const { payload } = migratePayload(raw);
   return { ok: true, payload };
+}
+
+// ─── Multi-block OST sanitization (PR 4 of OST plan) ─────────────────
+
+import type { OnScreenTextBlock } from '@/remotion/utils';
+import { ON_SCREEN_TEXT_BLOCK_LIMITS, ON_SCREEN_TEXT_ANCHORS, ON_SCREEN_TEXT_VARIANTS } from '@/remotion/utils';
+
+/** Clamp `n` to [min, max]. Returns the clamped value and whether it
+ *  was modified. */
+function clampNum(n: unknown, min: number, max: number, fallback: number): { value: number; clamped: boolean } {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return { value: fallback, clamped: true };
+  if (n < min) return { value: min, clamped: true };
+  if (n > max) return { value: max, clamped: true };
+  return { value: n, clamped: false };
+}
+
+/** Validate + clamp a single block. Returns null when the block is
+ *  beyond repair (e.g. missing id or text). */
+function sanitizeBlock(raw: unknown): { ok: true; value: OnScreenTextBlock; clamped: boolean } | { ok: false } {
+  if (!isPlainObject(raw)) return { ok: false };
+  const id = typeof raw.id === 'string' && raw.id.length > 0 && raw.id.length < 128 ? raw.id : null;
+  if (!id) return { ok: false };
+  const text = typeof raw.text === 'string'
+    ? raw.text.slice(0, ON_SCREEN_TEXT_BLOCK_LIMITS.maxTextChars)
+    : null;
+  if (text === null) return { ok: false };
+  const textClamped = typeof raw.text === 'string' && raw.text.length > ON_SCREEN_TEXT_BLOCK_LIMITS.maxTextChars;
+
+  const x = clampNum(raw.x_pct, ON_SCREEN_TEXT_BLOCK_LIMITS.xPctMin, ON_SCREEN_TEXT_BLOCK_LIMITS.xPctMax, 50);
+  const y = clampNum(raw.y_pct, ON_SCREEN_TEXT_BLOCK_LIMITS.yPctMin, ON_SCREEN_TEXT_BLOCK_LIMITS.yPctMax, 88);
+  const scale = clampNum(raw.scale, ON_SCREEN_TEXT_BLOCK_LIMITS.scaleMin, ON_SCREEN_TEXT_BLOCK_LIMITS.scaleMax, 1);
+  const block: OnScreenTextBlock = {
+    id,
+    text,
+    x_pct: x.value,
+    y_pct: y.value,
+    scale: scale.value,
+  };
+  let clamped = textClamped || x.clamped || y.clamped || scale.clamped;
+
+  if (raw.anchor !== undefined) {
+    if (typeof raw.anchor === 'string' && (ON_SCREEN_TEXT_ANCHORS as readonly string[]).includes(raw.anchor)) {
+      block.anchor = raw.anchor as OnScreenTextBlock['anchor'];
+    } else {
+      clamped = true;
+    }
+  }
+  if (raw.variant !== undefined) {
+    if (typeof raw.variant === 'string' && (ON_SCREEN_TEXT_VARIANTS as readonly string[]).includes(raw.variant)) {
+      block.variant = raw.variant as OnScreenTextBlock['variant'];
+    } else {
+      clamped = true;
+    }
+  }
+  if (raw.rotation_deg !== undefined) {
+    const r = clampNum(
+      raw.rotation_deg,
+      ON_SCREEN_TEXT_BLOCK_LIMITS.rotationDegMin,
+      ON_SCREEN_TEXT_BLOCK_LIMITS.rotationDegMax,
+      0,
+    );
+    block.rotation_deg = r.value;
+    if (r.clamped) clamped = true;
+  }
+  return { ok: true, value: block, clamped };
+}
+
+/** Sanitize the raw `on_screen_text_blocks` field on a row. Returns
+ *  the cleaned array, whether anything changed (so the migrator can
+ *  log it), and a human-readable suffix for the dropped-field path.
+ *
+ *  - Non-array input → drop entirely (changed=true).
+ *  - Each entry runs through `sanitizeBlock`; invalid entries are
+ *    silently dropped.
+ *  - Array is capped at `maxBlocksPerShot`.
+ */
+export function sanitizeOnScreenTextBlocks(
+  raw: unknown,
+): { value: OnScreenTextBlock[]; changed: boolean; note: string } {
+  if (raw === undefined || raw === null) {
+    return { value: [], changed: false, note: '' };
+  }
+  if (!Array.isArray(raw)) {
+    return { value: [], changed: true, note: ':not-array' };
+  }
+  const cleaned: OnScreenTextBlock[] = [];
+  let droppedEntries = 0;
+  let clampedEntries = 0;
+  for (const entry of raw) {
+    const result = sanitizeBlock(entry);
+    if (!result.ok) {
+      droppedEntries += 1;
+      continue;
+    }
+    if (result.clamped) clampedEntries += 1;
+    cleaned.push(result.value);
+    if (cleaned.length >= ON_SCREEN_TEXT_BLOCK_LIMITS.maxBlocksPerShot) break;
+  }
+  const overCap = raw.length > ON_SCREEN_TEXT_BLOCK_LIMITS.maxBlocksPerShot;
+  const changed = droppedEntries > 0 || clampedEntries > 0 || overCap;
+  const noteParts: string[] = [];
+  if (droppedEntries > 0) noteParts.push(`${droppedEntries} dropped`);
+  if (clampedEntries > 0) noteParts.push(`${clampedEntries} clamped`);
+  if (overCap) noteParts.push('over-cap');
+  const note = noteParts.length > 0 ? `[${noteParts.join(',')}]` : '';
+  return { value: cleaned, changed, note };
 }
 
 // ─── Internal exports for the validator (tests only) ────────────────

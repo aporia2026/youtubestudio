@@ -115,6 +115,28 @@ export interface VideoShot {
    *  `'none'` rows the mapper omits this field so the LowerThird stays
    *  off. See `_plans/2026-05-21-phase-5-text-mode-toggle.md`. */
   onScreenText?: string;
+  /** Per-shot multi-block OST. PR 4 of
+   *  `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+   *  Renderer ignores this until PR 6 wires per-block composition;
+   *  threaded through now so the editor's persist + load round-trip
+   *  is wired and existing-shape rows keep rendering unchanged.
+   *  See `OnScreenTextBlock` in `remotion/utils.ts` for the structural
+   *  type (re-stated here would force a duplicate definition; the
+   *  renderer-side VideoShot stays the structural mirror it has been
+   *  for every other multi-cell field). */
+  onScreenTextBlocks?: Array<{
+    id: string;
+    text: string;
+    x_pct: number;
+    y_pct: number;
+    scale: number;
+    anchor?:
+      | 'top-left' | 'top-center' | 'top-right'
+      | 'center-left' | 'center' | 'center-right'
+      | 'bottom-left' | 'bottom-center' | 'bottom-right';
+    variant?: 'default' | 'doodle-yellow';
+    rotation_deg?: number;
+  }>;
   /** Per-shot override for the doc-level `suppressLowerThirds` flag. When
    *  `true`, the LowerThird component never mounts for this shot — used by
    *  Phase 5's `'bake'` / `'none'` rows whose underlying images already

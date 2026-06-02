@@ -145,6 +145,105 @@ export function dbToLinearGain(db: number): number {
   return Math.pow(10, db / 20);
 }
 
+// ─── OnScreenTextBlock — multi-block per-row OST (Part B of OST plan) ────────
+//
+// Legacy `ProductionRow.on_screen_text` (string) renders as a single
+// LowerThird per shot. Part B of
+// `_plans/2026-06-02-editor-ost-styling-and-positioning.md` adds an
+// array shape so users can place MULTIPLE text blocks per shot, each at
+// their own position, anchor, scale, rotation, and glyph variant.
+//
+// PR 4 (this file) is data-only. PR 5 mounts the inspector UI; PR 6
+// wires free placement (drag) + per-block rendering. Until PR 6 lands,
+// the renderer continues to consume `on_screen_text` and ignores
+// `on_screen_text_blocks`. The data is persisted faithfully so
+// PR 5/6 light up retroactively.
+//
+// Why a distinct name from the existing `TextOverlay` in types.ts:
+// that type is the GLOBAL doc-level text-overlay (start/end ms,
+// position pinned to a preset). This one is PER-ROW and per-shot,
+// drag-positionable, multi-block. Different concept, different
+// lifecycle, kept under its own name to avoid silent collisions.
+
+export const ON_SCREEN_TEXT_ANCHORS = [
+  'top-left',
+  'top-center',
+  'top-right',
+  'center-left',
+  'center',
+  'center-right',
+  'bottom-left',
+  'bottom-center',
+  'bottom-right',
+] as const;
+export type OnScreenTextAnchor = (typeof ON_SCREEN_TEXT_ANCHORS)[number];
+
+export const ON_SCREEN_TEXT_VARIANTS = ['default', 'doodle-yellow'] as const;
+export type OnScreenTextVariant = (typeof ON_SCREEN_TEXT_VARIANTS)[number];
+
+/** Hard caps used by the migrator + route validators. Defense-in-depth
+ *  per Rule 13 — every numeric/bound is clamped at the boundary so a
+ *  malformed PATCH never reaches state or the renderer. */
+export const ON_SCREEN_TEXT_BLOCK_LIMITS = {
+  maxBlocksPerShot: 16,
+  maxTextChars: 1024,
+  xPctMin: -50,
+  xPctMax: 150,
+  yPctMin: -50,
+  yPctMax: 150,
+  scaleMin: 0.4,
+  scaleMax: 3.0,
+  rotationDegMin: -45,
+  rotationDegMax: 45,
+} as const;
+
+export interface OnScreenTextBlock {
+  /** Stable, opaque id assigned on creation. Editors track blocks by
+   *  id so a reorder / edit doesn't lose selection state. */
+  id: string;
+  /** Plain text. React renders via {text} so XSS is not a vector;
+   *  validation only caps length. */
+  text: string;
+  /** Position as a percentage of the 1920×1080 canvas. 0,0 = top-left;
+   *  100,100 = bottom-right. The renderer multiplies by canvas
+   *  width/height. Slightly off-canvas values allowed for animation
+   *  enter / exit. */
+  x_pct: number;
+  y_pct: number;
+  /** Multiplier on the variant's default fontSize. */
+  scale: number;
+  /** Which point of the block sits at (x_pct, y_pct). Default 'center'. */
+  anchor?: OnScreenTextAnchor;
+  /** Per-block glyph variant; undefined inherits the doc's style default. */
+  variant?: OnScreenTextVariant;
+  /** Rotation degrees, clamped to [-45, 45]. */
+  rotation_deg?: number;
+}
+
+/** Resolved overlays for rendering. Always returns an array; collapses
+ *  the legacy single-text `shot.onScreenText` case into a synthetic
+ *  single-element array. PR 6 swaps the current single-LowerThird mount
+ *  in each scene for an iteration over this helper's output. */
+export function resolveOnScreenTextBlocks(args: {
+  blocks: readonly OnScreenTextBlock[] | undefined;
+  legacyOnScreenText: string | undefined;
+}): OnScreenTextBlock[] {
+  const { blocks, legacyOnScreenText } = args;
+  if (blocks && blocks.length > 0) return [...blocks];
+  const trimmed = (legacyOnScreenText ?? '').trim();
+  if (!trimmed) return [];
+  return [
+    {
+      id: `legacy:${trimmed.slice(0, 24)}`,
+      text: trimmed,
+      x_pct: 50,
+      y_pct: 88,
+      scale: 1,
+      anchor: 'bottom-center',
+    },
+  ];
+}
+
 // ─── On-screen-text mode resolution ────────────────────────────────────────────
 
 /** Result of resolving a row's OST rendering against the doc default.
@@ -369,6 +468,16 @@ export interface ProductionRow {
    *  then `'bake'` (back-compat). See
    *  `_plans/2026-05-21-phase-5-text-mode-toggle.md`. */
   on_screen_text_mode?: 'bake' | 'overlay' | 'none';
+  /** Multi-block per-row OST. Part B of
+   *  `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+   *  When set + non-empty, the renderer iterates each block and
+   *  composites N independently-placeable LowerThirds (PR 6); legacy
+   *  `on_screen_text` is ignored. When empty / undefined, the renderer
+   *  continues to use `on_screen_text` (current behaviour). The
+   *  migrator caps the array at ON_SCREEN_TEXT_BLOCK_LIMITS.maxBlocksPerShot
+   *  and clamps every numeric field. Persisted faithfully through
+   *  ProjectPayload; no auto-migration on read. */
+  on_screen_text_blocks?: OnScreenTextBlock[];
   notes: string;
   /** Planning fields for auto-sourced real-image overlays. See the
    *  `/api/overlay/fetch` route and the OverlayCell component. */
@@ -2068,6 +2177,11 @@ export function productionDocToVideoConfig(
       videoUrl,
       title: row.on_screen_text || undefined,
       onScreenText: ost.overlayText,
+      // Multi-block per-row OST (PR 4 of OST plan). Pass-through; the
+      // renderer ignores this until PR 6 wires the per-block composition
+      // path. Clamped on write via migratePayload, so the field arrives
+      // here as a well-formed array or undefined.
+      onScreenTextBlocks: row.on_screen_text_blocks as VideoShot['onScreenTextBlocks'],
       suppressLowerThird: ost.suppressLowerThird,
       scriptText: row.script_text ? stripProductionMarkers(row.script_text) || undefined : undefined,
       floatImage: true,

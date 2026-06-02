@@ -286,6 +286,23 @@ interface ProductionRow {
    *  Undefined falls back to `ProductionDoc.on_screen_text_mode_default`,
    *  then to `'bake'` (back-compat with docs created before this field). */
   on_screen_text_mode?: 'bake' | 'overlay' | 'none';
+  /** Multi-block per-row OST (PR 4 of OST plan). Mirror of the
+   *  same field on the canonical `ProductionRow` in remotion/utils.ts.
+   *  See that file for the full structural type + bounds. Persisted
+   *  through the same ProjectPayload migrator the editor uses. */
+  on_screen_text_blocks?: Array<{
+    id: string;
+    text: string;
+    x_pct: number;
+    y_pct: number;
+    scale: number;
+    anchor?:
+      | 'top-left' | 'top-center' | 'top-right'
+      | 'center-left' | 'center' | 'center-right'
+      | 'bottom-left' | 'bottom-center' | 'bottom-right';
+    variant?: 'default' | 'doodle-yellow';
+    rotation_deg?: number;
+  }>;
   notes: string;
   /** Region id (from ProductionDoc.thumbnail.regions) this row's scene
    *  zooms into. When set, the row's scene becomes a thumbnail-zoom. */
