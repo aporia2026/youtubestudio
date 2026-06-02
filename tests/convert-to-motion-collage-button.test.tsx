@@ -137,6 +137,51 @@ describe('ConvertToMotionCollageButton — visibility gates', () => {
         onUpdateRow={() => {}}
       />,
     );
-    expect(html).toContain('auto-fills panel prompts');
+    expect(html).toContain('Auto-fills');
+  });
+});
+
+describe('ConvertToMotionCollageButton — grid picker', () => {
+  it('renders every grid preset (2×2 through 4×4)', () => {
+    const html = renderToStaticMarkup(
+      <ConvertToMotionCollageButton
+        row={makeRow()}
+        shotIndex={0}
+        doc={makeDoc('doodle_explainer_2')}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toContain('2×2');
+    expect(html).toContain('3×2');
+    expect(html).toContain('2×3');
+    expect(html).toContain('3×3');
+    expect(html).toContain('4×3');
+    expect(html).toContain('4×4');
+  });
+
+  it('defaults to 2×2 selected and surfaces the panel count on the button', () => {
+    const html = renderToStaticMarkup(
+      <ConvertToMotionCollageButton
+        row={makeRow()}
+        shotIndex={0}
+        doc={makeDoc('doodle_explainer_2')}
+        onUpdateRow={() => {}}
+      />,
+    );
+    // CTA includes the selected grid + total panel count.
+    expect(html).toContain('Convert to motion collage (2×2)');
+    expect(html).toContain('Auto-fills 4 panel prompts');
+  });
+
+  it('renders the "change grid after conversion" hint', () => {
+    const html = renderToStaticMarkup(
+      <ConvertToMotionCollageButton
+        row={makeRow()}
+        shotIndex={0}
+        doc={makeDoc('doodle_explainer_2')}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toContain('change the grid after conversion');
   });
 });

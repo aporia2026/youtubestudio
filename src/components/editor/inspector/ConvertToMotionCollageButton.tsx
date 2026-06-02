@@ -46,8 +46,19 @@ interface ConvertToMotionCollageButtonProps {
   onUpdateRow: (patch: Partial<ProductionDoc['rows'][number]>) => void;
 }
 
-const DEFAULT_GRID = { cols: 2, rows: 2 } as const;
-const DEFAULT_PANEL_COUNT = DEFAULT_GRID.cols * DEFAULT_GRID.rows;
+/** Grid presets — identical to the post-convert MotionCollageRowEditor's
+ *  picker. Capped at 16 cells (= MAX_COLLAGE_CELLS). Ordered smallest
+ *  first so the default 2×2 sits at the top of the row. */
+const GRID_PRESETS: ReadonlyArray<{ cols: number; rows: number; label: string }> = [
+  { cols: 2, rows: 2, label: '2×2' },
+  { cols: 3, rows: 2, label: '3×2' },
+  { cols: 2, rows: 3, label: '2×3' },
+  { cols: 3, rows: 3, label: '3×3' },
+  { cols: 4, rows: 3, label: '4×3' },
+  { cols: 4, rows: 4, label: '4×4' },
+];
+
+const DEFAULT_GRID = GRID_PRESETS[0];
 
 export function ConvertToMotionCollageButton({
   row,
@@ -57,6 +68,14 @@ export function ConvertToMotionCollageButton({
   onUpdateRow,
 }: ConvertToMotionCollageButtonProps): React.ReactElement | null {
   const [converting, setConverting] = useState(false);
+  // User-selected grid for the convert. Persisted to local state only —
+  // grid changes after conversion happen through MotionCollageRowEditor.
+  // Default to the smallest grid (2×2) because it's the cheapest to
+  // auto-fill + regenerate, and a user who wants more can swap up
+  // before clicking convert.
+  const [selectedGrid, setSelectedGrid] = useState<{ cols: number; rows: number }>(
+    DEFAULT_GRID,
+  );
 
   // Gates — same precedence as production-doc's convert button, but
   // accepts saved-style UUIDs via effectiveStyleSlug too.
@@ -69,20 +88,22 @@ export function ConvertToMotionCollageButton({
   async function handleConvert(): Promise<void> {
     if (converting) return;
     setConverting(true);
+    const panelCount = selectedGrid.cols * selectedGrid.rows;
     // Snapshot the source content BEFORE the row mutation clears
     // ai_image_prompt — the auto-fill needs the script + visual_description
     // + baseImagePrompt to decompose the beat into keyframes.
     const captured = {
-      grid: DEFAULT_GRID,
+      grid: selectedGrid,
       scriptText: row.script_text ?? '',
       visualDescription: row.visual_description,
       baseImagePrompt: row.ai_image_prompt,
-      existingPanels: Array.from({ length: DEFAULT_PANEL_COUNT }, () => ''),
+      existingPanels: Array.from({ length: panelCount }, () => ''),
     };
     console.info('[editor motion-collage convert]', {
       shotIndex,
       from: row.shot_kind ?? row.visual_type ?? '(undefined)',
-      grid: DEFAULT_GRID,
+      grid: selectedGrid,
+      panelCount,
       hasScript: captured.scriptText.length > 0,
       hasVisualDesc: Boolean(captured.visualDescription?.trim()),
     });
@@ -92,11 +113,8 @@ export function ConvertToMotionCollageButton({
     onUpdateRow({
       shot_kind: 'motion_collage',
       visual_type: 'Animation',
-      motion_collage_grid: DEFAULT_GRID,
-      motion_collage_panel_prompts: Array.from(
-        { length: DEFAULT_PANEL_COUNT },
-        () => '',
-      ),
+      motion_collage_grid: selectedGrid,
+      motion_collage_panel_prompts: Array.from({ length: panelCount }, () => ''),
       ai_image_prompt: '',
       image_url: undefined,
       motion_collage_image_url: undefined,
@@ -129,16 +147,16 @@ export function ConvertToMotionCollageButton({
       }
       // The row was flipped with empty panels; merge the LLM result in.
       onUpdateRow({
-        motion_collage_panel_prompts: data.panelPrompts.slice(0, DEFAULT_PANEL_COUNT),
+        motion_collage_panel_prompts: data.panelPrompts.slice(0, panelCount),
       });
       const filled = data.panelPrompts.filter((p) => p.trim()).length;
       console.info('[editor motion-collage convert] autofill success', {
         shotIndex,
         filled,
-        total: DEFAULT_PANEL_COUNT,
+        total: panelCount,
       });
       toast.success(
-        `Converted to motion collage · ${filled} panel${filled === 1 ? '' : 's'} auto-filled. Click ↯ Generate when ready.`,
+        `Converted to motion collage · ${filled} of ${panelCount} panel${panelCount === 1 ? '' : 's'} auto-filled.`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Auto-fill failed';
@@ -152,31 +170,79 @@ export function ConvertToMotionCollageButton({
     }
   }
 
+  const panelCount = selectedGrid.cols * selectedGrid.rows;
+
   return (
     <div
       className="p-3 border-b"
       style={{ borderColor: 'var(--card-border)' }}
     >
+      {/* Grid picker — same preset set as MotionCollageRowEditor's
+          post-convert picker, so the user can lock in a non-default
+          grid (3×3, 4×4, etc.) before they spend an auto-fill call.
+          Grid is also editable after conversion via the same
+          presets in the panel editor. */}
+      <div className="flex items-center gap-1 flex-wrap mb-2">
+        <span
+          className="text-[10px]"
+          style={{ color: 'var(--fg-muted)' }}
+        >
+          Grid:
+        </span>
+        {GRID_PRESETS.map((preset) => {
+          const active =
+            preset.cols === selectedGrid.cols && preset.rows === selectedGrid.rows;
+          return (
+            <button
+              key={preset.label}
+              type="button"
+              disabled={converting}
+              onClick={() => setSelectedGrid({ cols: preset.cols, rows: preset.rows })}
+              className="text-[10px] px-1.5 py-0.5 rounded"
+              style={{
+                background: active
+                  ? 'rgba(124,58,237,0.25)'
+                  : 'rgba(255,255,255,0.04)',
+                color: active ? '#a78bfa' : 'var(--fg)',
+                border: active
+                  ? '1px solid rgba(124,58,237,0.45)'
+                  : '1px solid var(--card-border)',
+                cursor: converting ? 'wait' : 'pointer',
+                fontFamily: 'ui-monospace, SFMono-Regular, monospace',
+                fontWeight: active ? 600 : 400,
+              }}
+              title={`${preset.label} — ${preset.cols * preset.rows} keyframes`}
+            >
+              {preset.label}
+            </button>
+          );
+        })}
+      </div>
       <button
         type="button"
         onClick={() => void handleConvert()}
         disabled={converting}
         className="text-[11px] px-2.5 py-1.5 rounded font-semibold w-full"
         style={{
-          background: converting ? 'rgba(124,58,237,0.10)' : 'rgba(124,58,237,0.20)',
+          background: converting
+            ? 'rgba(124,58,237,0.10)'
+            : 'rgba(124,58,237,0.20)',
           color: '#a78bfa',
           border: '1px solid rgba(124,58,237,0.45)',
           cursor: converting ? 'wait' : 'pointer',
         }}
-        title="Convert this row to a motion collage: one row, N keyframes that play hard-cut over the row's duration. Best for showing real motion (running, falling, transforming). Auto-fills the panel prompts from the row's narration."
+        title={`Convert this row to a motion collage at ${selectedGrid.cols}×${selectedGrid.rows} (= ${panelCount} keyframes). Best for real motion (running, falling, transforming). Auto-fills panel prompts from the row's narration.`}
       >
-        {converting ? '↯ Converting + auto-filling…' : '↯ Convert to motion collage'}
+        {converting
+          ? `↯ Converting + auto-filling ${panelCount} panels…`
+          : `↯ Convert to motion collage (${selectedGrid.cols}×${selectedGrid.rows})`}
       </button>
       <div
         className="text-[10px] mt-1"
         style={{ color: 'var(--fg-muted)' }}
       >
-        Seeds a 2×2 grid and auto-fills panel prompts from this row&apos;s narration.
+        Auto-fills {panelCount} panel prompts from this row&apos;s narration.
+        You can still change the grid after conversion.
       </div>
     </div>
   );
