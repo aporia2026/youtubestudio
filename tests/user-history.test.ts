@@ -15,7 +15,7 @@ import {
 import { isUuid } from '@/lib/user-history-types';
 
 describe('HISTORY_KINDS', () => {
-  it('contains exactly the seven panel kinds', () => {
+  it('contains exactly the registered panel kinds', () => {
     expect([...HISTORY_KINDS].sort()).toEqual(
       [
         'ideas',
@@ -23,6 +23,7 @@ describe('HISTORY_KINDS', () => {
         'qa',
         'script',
         'seo',
+        'shorts_ideas',
         'thumbnail',
         'voiceover',
       ].sort(),

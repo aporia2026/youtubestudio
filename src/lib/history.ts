@@ -86,6 +86,39 @@ export interface IdeasHistoryEntry {
   scheduleItemId?: string;
 }
 
+/** Hook-first Shorts idea batch — produced by ShortNativeIdeasSurface.
+ *  Stored under its own history kind so the long-form `ideas` panel
+ *  stays uncluttered and the Shorts sidebar shows only Shorts batches. */
+export interface ShortsIdeasHistoryEntry {
+  id: string;
+  timestamp: number;
+  niche: string;
+  count: number;
+  /** The literal idea cards the model returned. Same shape as the
+   *  `ShortIdea` server type but kept loose here so future field
+   *  additions don't force a history schema migration. */
+  ideas: Array<Record<string, unknown>>;
+  /** Free-text context the user pasted into the box. */
+  context?: string;
+  /** Workspace niches table row id, when the user picked from the dropdown
+   *  instead of typing free-text. Lets the rehydration step restore the
+   *  exact picker selection. */
+  nicheRowId?: string;
+  /** Phase 15.6 series id, when the user picked one. Same rehydration role. */
+  seriesId?: string;
+  /** Phase 15.8 format hints. */
+  targetLengthSec?: number;
+  hookStyle?: string;
+  tone?: string;
+  pov?: string;
+  /** Phase 15.8 inspired-by + avoid lists at save time so the user can
+   *  see what context the model actually saw. */
+  inspiredByTitles?: string[];
+  avoidTitles?: string[];
+  /** AI model id that produced the batch. */
+  modelId?: string;
+}
+
 export interface VoiceoverHistoryEntry {
   id: string;
   timestamp: number;
@@ -308,9 +341,10 @@ const SEO_KEY = 'seo_history';
 const THUMBNAIL_KEY = 'thumbnail_history';
 const QA_KEY = 'qa_history';
 const PROD_DOC_KEY = 'production_doc_history';
+const SHORTS_IDEAS_KEY = 'shorts_ideas_history';
 const SCOPE_KEY = '__history_scope__';
 const PENDING_KEY = '__history_pending__';
-const ALL_CACHE_KEYS = [SCRIPT_KEY, IDEAS_KEY, VOICEOVER_KEY, SEO_KEY, THUMBNAIL_KEY, QA_KEY, PROD_DOC_KEY] as const;
+const ALL_CACHE_KEYS = [SCRIPT_KEY, IDEAS_KEY, VOICEOVER_KEY, SEO_KEY, THUMBNAIL_KEY, QA_KEY, PROD_DOC_KEY, SHORTS_IDEAS_KEY] as const;
 const MAX_SCRIPT_LENGTH = 15000; // truncate very long scripts in history
 
 interface KindWiring {
@@ -325,6 +359,7 @@ const SEO: KindWiring = { kind: 'seo', cacheKey: SEO_KEY };
 const THUMBNAIL: KindWiring = { kind: 'thumbnail', cacheKey: THUMBNAIL_KEY };
 const QA: KindWiring = { kind: 'qa', cacheKey: QA_KEY };
 const PROD_DOC: KindWiring = { kind: 'production_doc', cacheKey: PROD_DOC_KEY };
+const SHORTS_IDEAS: KindWiring = { kind: 'shorts_ideas', cacheKey: SHORTS_IDEAS_KEY };
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
@@ -995,6 +1030,35 @@ export async function deleteIdeasEntry(id: string): Promise<void> {
 
 export async function clearIdeasHistory(): Promise<void> {
   return clearOnServer(IDEAS);
+}
+
+// ---------------------------------------------------------------------------
+// Public API — Shorts Ideas (Phase 15.8 sidebar)
+// ---------------------------------------------------------------------------
+// Mirrors the long-form Ideas helpers above. Kept under its own kind so
+// the long-form Ideas history panel never accidentally surfaces a
+// hook-first Shorts batch and vice versa.
+
+export async function getShortsIdeasHistory(): Promise<ShortsIdeasHistoryEntry[]> {
+  return listFromServer(SHORTS_IDEAS);
+}
+
+export function getShortsIdeasHistoryCached(): ShortsIdeasHistoryEntry[] {
+  return readCache<ShortsIdeasHistoryEntry>(SHORTS_IDEAS_KEY, cachedScope());
+}
+
+export async function saveShortsIdeas(
+  entry: Omit<ShortsIdeasHistoryEntry, 'id' | 'timestamp'>,
+): Promise<ShortsIdeasHistoryEntry> {
+  return saveToServer(SHORTS_IDEAS, entry);
+}
+
+export async function deleteShortsIdeasEntry(id: string): Promise<void> {
+  return deleteFromServer(SHORTS_IDEAS, id);
+}
+
+export async function clearShortsIdeasHistory(): Promise<void> {
+  return clearOnServer(SHORTS_IDEAS);
 }
 
 // ---------------------------------------------------------------------------

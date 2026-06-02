@@ -34,6 +34,9 @@ export const KIND_CAPS: Record<HistoryKind, number> = {
   thumbnail: 50,
   qa: 50,
   production_doc: 30,
+  // Hook-first Shorts batches. Cap matches long-form `ideas` since the
+  // payload shape + size are comparable (N idea cards per batch).
+  shorts_ideas: 100,
 };
 
 /**

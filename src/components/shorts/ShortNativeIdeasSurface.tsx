@@ -38,6 +38,15 @@ import {
   type PovStyle,
   type Tone,
 } from '@/lib/shorts-ideas';
+import { HistoryPanel } from '@/components/ui/HistoryPanel';
+import {
+  clearShortsIdeasHistory,
+  deleteShortsIdeasEntry,
+  getShortsIdeasHistory,
+  getShortsIdeasHistoryCached,
+  saveShortsIdeas,
+  type ShortsIdeasHistoryEntry,
+} from '@/lib/history';
 
 interface ShortIdea {
   hook: string;
@@ -130,6 +139,27 @@ export function ShortNativeIdeasSurface() {
   const [error, setError] = useState<string | null>(null);
   const [styleId, setStyleId] = useState<ShortStyleId>(DEFAULT_SHORT_STYLE_ID);
   const [generatingKey, setGeneratingKey] = useState<string | null>(null);
+
+  // ── history sidebar ─────────────────────────────────────────────────
+  // Paint instantly from the localStorage cache, then refresh from the
+  // server on mount (long-form ideas page does the same).
+  const [historyItems, setHistoryItems] = useState<ShortsIdeasHistoryEntry[]>(
+    () => (typeof window !== 'undefined' ? getShortsIdeasHistoryCached() : []),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const server = await getShortsIdeasHistory();
+        if (!cancelled) setHistoryItems(server);
+      } catch {
+        /* degraded mode — cache stays */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── load workspace data on mount ────────────────────────────────────
   useEffect(() => {
@@ -264,8 +294,38 @@ export function ShortNativeIdeasSurface() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setIdeas(data.ideas || []);
-      if ((data.ideas || []).length === 0) toast.info('Got an empty response — try again.');
+      const generated = (data.ideas || []) as ShortIdea[];
+      setIdeas(generated);
+      if (generated.length === 0) {
+        toast.info('Got an empty response — try again.');
+      } else {
+        // Persist the batch into the history sidebar. Same write-through
+        // pattern as the long-form Ideas page — optimistic prepend
+        // followed by the server save. Failures degrade gracefully:
+        // the cache still has the entry from saveShortsIdeas() (which
+        // writes the cache before/around the network call).
+        try {
+          const saved = await saveShortsIdeas({
+            niche: effectiveNiche,
+            count,
+            ideas: generated as unknown as Array<Record<string, unknown>>,
+            context: context.trim() || undefined,
+            nicheRowId: selectedNicheRow?.id ?? undefined,
+            seriesId: seriesId || undefined,
+            targetLengthSec: typeof targetLengthSec === 'number' ? targetLengthSec : undefined,
+            hookStyle: hookStyle || undefined,
+            tone: tone || undefined,
+            pov: pov || undefined,
+            inspiredByTitles: useTopPerformers && inspiredByTitles.length > 0 ? inspiredByTitles : undefined,
+            avoidTitles: avoidRecentlyCovered && avoidTitles.length > 0 ? avoidTitles : undefined,
+            modelId: data.modelId as string | undefined,
+          });
+          setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+        } catch {
+          /* swallow — the cache fallback in saveShortsIdeas keeps the
+             entry visible on next mount even if the server is down */
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to generate Shorts ideas');
     } finally {
@@ -286,6 +346,81 @@ export function ShortNativeIdeasSurface() {
     avoidRecentlyCovered,
     avoidTitles,
   ]);
+
+  // ── history actions ────────────────────────────────────────────────
+  const restoreFromHistory = useCallback(
+    (id: string) => {
+      const entry = historyItems.find((h) => h.id === id);
+      if (!entry) return;
+      // Repopulate the form. If the niche row referenced in the entry
+      // still exists in the user's workspace, select it; otherwise
+      // fall back to the literal text.
+      if (entry.nicheRowId && niches.some((n) => n.id === entry.nicheRowId)) {
+        setNicheRowId(entry.nicheRowId);
+        setNicheText('');
+      } else {
+        setNicheRowId('');
+        setNicheText(entry.niche);
+      }
+      if (entry.seriesId && series.some((s) => s.id === entry.seriesId)) {
+        setSeriesId(entry.seriesId);
+      } else {
+        setSeriesId('');
+      }
+      setCount(entry.count);
+      setContext(entry.context ?? '');
+      setTargetLengthSec(typeof entry.targetLengthSec === 'number' ? entry.targetLengthSec : '');
+      setHookStyle((entry.hookStyle as HookStyle) || '');
+      setTone((entry.tone as Tone) || '');
+      setPov((entry.pov as PovStyle) || '');
+      // Open the disclosures so the restored values are visible.
+      if (entry.targetLengthSec || entry.hookStyle || entry.tone || entry.pov) {
+        setShowMoreOptions(true);
+      }
+      if ((entry.inspiredByTitles ?? []).length > 0 || (entry.avoidTitles ?? []).length > 0) {
+        setShowInspirationPanel(true);
+        setInspiredByTitles(entry.inspiredByTitles ?? []);
+        setAvoidTitles(entry.avoidTitles ?? []);
+        // Keep the toggles in sync so the prompt builder threads the
+        // restored lists through on the next Generate click.
+        setUseTopPerformers((entry.inspiredByTitles ?? []).length > 0);
+        setAvoidRecentlyCovered((entry.avoidTitles ?? []).length > 0);
+      }
+      // Restore the actual idea cards too — most useful when the user is
+      // re-evaluating a batch they generated earlier and wants to click
+      // "Generate this Short →" on one of them now.
+      setIdeas((entry.ideas as unknown as ShortIdea[]) ?? []);
+      toast.success('Batch restored');
+    },
+    [historyItems, niches, series],
+  );
+
+  const handleDeleteHistory = useCallback(
+    async (id: string) => {
+      // Optimistic remove
+      const prior = historyItems;
+      setHistoryItems((items) => items.filter((i) => i.id !== id));
+      try {
+        await deleteShortsIdeasEntry(id);
+      } catch (e) {
+        setHistoryItems(prior);
+        toast.error(e instanceof Error ? e.message : 'Delete failed');
+      }
+    },
+    [historyItems],
+  );
+
+  const handleClearHistory = useCallback(async () => {
+    const prior = historyItems;
+    setHistoryItems([]);
+    try {
+      await clearShortsIdeasHistory();
+      toast.success('History cleared');
+    } catch (e) {
+      setHistoryItems(prior);
+      toast.error(e instanceof Error ? e.message : 'Clear failed');
+    }
+  }, [historyItems]);
 
   function copyAll(idea: ShortIdea) {
     const text = `Hook: ${idea.hook}\nTitle: ${idea.title}\nPayoff: ${idea.payoff}\n\nThesis: ${idea.thesis}\nShot: ${idea.shotConcept}`;
@@ -795,6 +930,34 @@ export function ShortNativeIdeasSurface() {
           ))}
         </div>
       )}
+
+      {/* Sidebar history — same pattern as the seven long-form panels. */}
+      <HistoryPanel
+        title="Shorts Ideas History"
+        icon="⚡"
+        accentColor="#7c3aed"
+        items={historyItems.map((e) => ({
+          id: e.id,
+          timestamp: e.timestamp,
+          label: `${e.niche} — ${e.ideas.length} ideas`,
+          sublabel: [
+            typeof e.targetLengthSec === 'number' ? `${e.targetLengthSec}s` : null,
+            e.hookStyle ? `hook: ${e.hookStyle.replace(/-/g, ' ')}` : null,
+            e.tone ? `tone: ${e.tone}` : null,
+            e.pov ? `pov: ${e.pov.replace(/-/g, ' ')}` : null,
+            e.seriesId ? 'series' : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || `${e.count} requested`,
+          preview: e.ideas
+            .slice(0, 3)
+            .map((i) => (i as Record<string, string>).hook || (i as Record<string, string>).title || '')
+            .join(' | '),
+        }))}
+        onRestore={restoreFromHistory}
+        onDelete={handleDeleteHistory}
+        onClearAll={handleClearHistory}
+      />
     </section>
   );
 }

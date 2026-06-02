@@ -22,6 +22,11 @@ export const HISTORY_KINDS = [
   'thumbnail',
   'qa',
   'production_doc',
+  // Shorts-specific kinds. `shorts_ideas` is the hook-first idea batch
+  // produced by ShortNativeIdeasSurface (Phase 15.2 + 15.8). Lives next
+  // to long-form `ideas` so the history panel reads + writes go through
+  // the same code path the other six panels use.
+  'shorts_ideas',
 ] as const;
 
 export type HistoryKind = typeof HISTORY_KINDS[number];
