@@ -47,6 +47,7 @@ import {
   computeCellRect,
   computeFrameRects,
   computeGridLayout,
+  computeInnerGlowRadiusPx,
   computeShadowFilterRegion,
   escapeSvgText,
   getConsumedCellIndexes,
@@ -1882,8 +1883,9 @@ async function buildInnerGlowOverlay(
   const { width, height } = config;
   const cx = width / 2;
   const cy = height / 2;
-  const halfMin = Math.min(width, height) / 2;
-  const r = g.radius * halfMin;
+  // Phase 4.47: letterbox-aware radius so the brightest stop
+  // doesn't land behind the bars on heavily-cropped canvases.
+  const r = computeInnerGlowRadiusPx(width, height, g.radius, config.letterbox);
   const svg = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`,
     `<defs><radialGradient id="ig" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${r}">`,

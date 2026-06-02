@@ -18,6 +18,7 @@ import {
   computeCellRect,
   computeFrameRects,
   computeGridLayout,
+  computeInnerGlowRadiusPx,
   computeLetterboxBars,
   computeRegions,
   DEFAULT_CANVAS,
@@ -2595,6 +2596,65 @@ describe('Phase 4.46 — inner glow overlay', () => {
       radius: 0.9,
       blendMode: 'screen',
     });
+  });
+});
+
+describe('Phase 4.47 — computeInnerGlowRadiusPx', () => {
+  it('returns configuredRadius × half-min when no letterbox is set', () => {
+    expect(computeInnerGlowRadiusPx(1280, 720, 1.0, undefined)).toBe(360);
+    expect(computeInnerGlowRadiusPx(1280, 720, 0.5, undefined)).toBe(180);
+  });
+  it('uses canvas half-min when letterbox coverage is below 40%', () => {
+    // 60 px top + 60 px bottom on a 720-tall canvas = 16.7 % short
+    // axis coverage — well under the 40 % threshold.
+    const r = computeInnerGlowRadiusPx(1280, 720, 1.0, {
+      top: 60,
+      bottom: 60,
+      left: 0,
+      right: 0,
+    });
+    expect(r).toBe(360);
+  });
+  it('compresses to visible half-min when letterbox covers > 40% of short axis', () => {
+    // 200 px top + 200 px bottom on a 720-tall canvas = 55.5 %
+    // short-axis coverage. visibleH = 720 - 400 = 320. visibleW =
+    // 1280. visibleHalfMin = 160. So the glow's brightest stop now
+    // lands inside the 320-px visible band rather than behind the
+    // bars.
+    const r = computeInnerGlowRadiusPx(1280, 720, 1.0, {
+      top: 200,
+      bottom: 200,
+      left: 0,
+      right: 0,
+    });
+    expect(r).toBe(160);
+  });
+  it('handles a square canvas with pillarbox bars', () => {
+    // Square 1000×1000 canvas with 350 + 350 left/right bars =
+    // 70 % short-axis coverage. visibleW = 300, visibleH = 1000.
+    // visibleHalfMin = 150.
+    const r = computeInnerGlowRadiusPx(1000, 1000, 1.0, {
+      top: 0,
+      bottom: 0,
+      left: 350,
+      right: 350,
+    });
+    expect(r).toBe(150);
+  });
+  it('scales linearly with configuredRadius in the compressed branch', () => {
+    const baseR = computeInnerGlowRadiusPx(1280, 720, 1.0, {
+      top: 200,
+      bottom: 200,
+      left: 0,
+      right: 0,
+    });
+    const halfR = computeInnerGlowRadiusPx(1280, 720, 0.5, {
+      top: 200,
+      bottom: 200,
+      left: 0,
+      right: 0,
+    });
+    expect(halfR).toBe(baseR * 0.5);
   });
 });
 

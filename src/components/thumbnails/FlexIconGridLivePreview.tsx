@@ -31,6 +31,7 @@ import {
   computeCellRect,
   computeFrameRects,
   computeGridLayout,
+  computeInnerGlowRadiusPx,
   getConsumedCellIndexes,
   getSpanConflicts,
   sanitizeUserText,
@@ -978,8 +979,15 @@ export function FlexIconGridLivePreview({
           const g = config.innerGlow;
           const cx = config.width / 2;
           const cy = config.height / 2;
-          const halfMin = Math.min(config.width, config.height) / 2;
-          const r = g.radius * halfMin;
+          // Phase 4.47: letterbox-aware radius so the brightest
+          // stop lands inside the visible image area when heavy
+          // bars are present.
+          const r = computeInnerGlowRadiusPx(
+            config.width,
+            config.height,
+            g.radius,
+            config.letterbox,
+          );
           return (
             <>
               <defs>

@@ -465,6 +465,17 @@ export function FlexIconGridPanel({
   // Local UI state — not persisted. Bounded to the discrete chip
   // set to keep the math simple and avoid pathological values.
   const [previewZoom, setPreviewZoom] = useState<number>(100);
+  // Phase 4.47: A/B compare. When `true`, the preview renders with
+  // all finishing fields temporarily nulled — vignette, innerGlow,
+  // grain, dust, halftone, tint, lightLeak, letterbox, frame — so
+  // users can see how the cells / palette / labels read WITHOUT
+  // the post-processing they've layered on. The actual config
+  // values aren't modified; the toggle only affects what the
+  // preview component receives. Restoring the toggle re-renders
+  // the full effects. Useful when iterating on finishing settings
+  // because the dense Advanced panel makes it easy to lose track
+  // of the underlying composition.
+  const [hideFinishingInPreview, setHideFinishingInPreview] = useState(false);
   // Phase 4.44: user-saved finishing presets. Stored in localStorage
   // under a single versioned key so the format can evolve without
   // colliding with prior schemas. Hydration is one-shot from window
@@ -1771,6 +1782,35 @@ export function FlexIconGridPanel({
             >
               {previewZoom}%
             </span>
+            {/* Phase 4.47: A/B compare toggle. When active, the
+                preview hides every finishing overlay (vignette,
+                innerGlow, grain, dust, halftone, tint, lightLeak,
+                letterbox, frame) so users can see the underlying
+                composition. The config values aren't touched —
+                only what the preview component receives is. */}
+            <button
+              type="button"
+              aria-pressed={hideFinishingInPreview}
+              onClick={() => setHideFinishingInPreview((prev) => !prev)}
+              style={{
+                background: hideFinishingInPreview ? '#2563eb' : 'transparent',
+                color: hideFinishingInPreview ? '#fafafa' : '#a1a1aa',
+                border: '1px solid #2a2a2e',
+                borderRadius: 4,
+                padding: '3px 8px',
+                fontSize: 11,
+                fontWeight: hideFinishingInPreview ? 700 : 500,
+                cursor: 'pointer',
+                marginLeft: 4,
+              }}
+              title={
+                hideFinishingInPreview
+                  ? 'Showing preview WITHOUT finishing — click to restore all effects. Config values aren’t modified.'
+                  : 'Hide all finishing in the preview (vignette, glow, grain, dust, halftone, tint, leak, letterbox, frame) to compare against the raw composition.'
+              }
+            >
+              {hideFinishingInPreview ? 'Effects: off' : 'Effects: on'}
+            </button>
           </div>
         </div>
         <div
@@ -1799,7 +1839,21 @@ export function FlexIconGridPanel({
             }}
           >
             <FlexIconGridLivePreview
-              config={config}
+              config={
+                hideFinishingInPreview
+                  ? {
+                      ...config,
+                      // Phase 4.47: strip every finishing field so
+                      // the preview shows the underlying
+                      // composition. Re-using applyFinishingPreset
+                      // ('none') for the patch keeps the
+                      // field list in lockstep — if a new finishing
+                      // field is added later, the 'none' preset
+                      // already clears it.
+                      ...applyFinishingPreset('none', config.width, config.height),
+                    }
+                  : config
+              }
               highlightedCellIndex={selectedCellIndex}
               onCellClick={(idx) => setSelectedCellIndex(idx)}
             />
@@ -3893,8 +3947,15 @@ export function FlexIconGridPanel({
                       innerGlow: config.innerGlow
                         ? undefined
                         : {
+                            // Phase 4.47: bumped default from 0.25
+                            // to 0.35 so the warm-white hue is
+                            // actually visible at the seed. At 25%
+                            // the colour change was barely
+                            // perceptible against most cells; 35%
+                            // shows the warmth clearly while still
+                            // being a subtle effect.
                             color: '#fff4dc',
-                            intensity: 0.25,
+                            intensity: 0.35,
                             radius: 0.9,
                             blendMode: 'screen',
                           },
@@ -3966,7 +4027,20 @@ export function FlexIconGridPanel({
                         })
                       }
                       aria-label="Inner glow radius"
-                      title={`Radius: ${config.innerGlow.radius.toFixed(2)} × half-axis (lower = tight bright spot)`}
+                      // Phase 4.47: explicit behaviour for each
+                      // sub-range. Below 1.0 the gradient fades to
+                      // zero at the short-axis edge; AT 1.0 the
+                      // edges hit fully transparent; above 1.0 the
+                      // falloff is gentler so the canvas edges keep
+                      // some glow (washes the whole image rather
+                      // than spot-lighting the centre).
+                      title={
+                        config.innerGlow.radius < 1
+                          ? `Radius: ${config.innerGlow.radius.toFixed(2)} × half-axis (tight bright spot; fades fully before edges)`
+                          : config.innerGlow.radius === 1
+                            ? `Radius: 1.00 × half-axis (glow reaches exactly to the short-axis edges)`
+                            : `Radius: ${config.innerGlow.radius.toFixed(2)} × half-axis (extends past edges — washes the whole image rather than spot-lighting)`
+                      }
                       style={{ width: 80 }}
                     />
                     {/* Blend-mode chips, same 3-option set as the
@@ -4460,6 +4534,22 @@ export function FlexIconGridPanel({
                       ariaLabel="Halftone angle (numeric)"
                       title="Rotation 0–90°; 45 = classic screen angle"
                       style={{ width: 52, padding: '4px 6px', fontSize: 12 }}
+                    />
+                    {/* Phase 4.47: vertical divider separates the
+                        halftone-specific controls (opacity / dot
+                        size / spacing / angle) from the blend mode
+                        chips, so the row wraps at a meaningful
+                        boundary instead of mid-control when the
+                        Colour grade row above is expanded with
+                        split-tone. */}
+                    <span
+                      aria-hidden
+                      style={{
+                        width: 1,
+                        height: 22,
+                        background: 'rgba(255,255,255,0.12)',
+                        margin: '0 4px',
+                      }}
                     />
                     {/* Blend mode picker — multiply (default) darkens
                         underlying image with hue; screen lightens;

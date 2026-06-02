@@ -2081,6 +2081,58 @@ export function applyFinishingPreset(
 }
 
 /**
+ * Phase 4.47: compute the effective inner-glow radius in user-space
+ * pixels, accounting for letterbox bars eating into the visible
+ * canvas. Without this, a strong letterbox (e.g. portrait 1:1 with
+ * heavy pillarbox) can place the glow's brightest stop BEHIND the
+ * bars where the user can't see it — wasted effect.
+ *
+ * Algorithm:
+ *  - Start with the configured radius × `min(visibleW, visibleH)/2`
+ *    where visible dims subtract the bar thicknesses on each side.
+ *  - When letterbox bars take up MORE than 40 % of the canvas's
+ *    short axis, the glow compresses to fit. Below 40 % the
+ *    full configured radius applies as before.
+ *
+ *  Pure / deterministic — shared by the composer and the live
+ *  preview to keep the visible result in lockstep.
+ */
+export function computeInnerGlowRadiusPx(
+  canvasW: number,
+  canvasH: number,
+  configuredRadius: number,
+  letterbox: { top: number; bottom: number; left: number; right: number } | undefined,
+): number {
+  const halfMin = Math.min(canvasW, canvasH) / 2;
+  if (!letterbox) {
+    return configuredRadius * halfMin;
+  }
+  const visibleW = Math.max(1, canvasW - letterbox.left - letterbox.right);
+  const visibleH = Math.max(1, canvasH - letterbox.top - letterbox.bottom);
+  const visibleHalfMin = Math.min(visibleW, visibleH) / 2;
+  // Coverage is the WORST-case axis ratio: whichever pair of bars
+  // takes up more of its own axis is what determines whether the
+  // visible image area has been meaningfully compressed. Picking the
+  // dominant pair correctly catches both letterbox-on-landscape and
+  // pillarbox-on-square / pillarbox-on-portrait cases. (Previous
+  // version assumed the bars matched the canvas's short axis, which
+  // broke for square canvases where the short axis is ambiguous.)
+  const verticalCoverage = (letterbox.top + letterbox.bottom) / canvasH;
+  const horizontalCoverage = (letterbox.left + letterbox.right) / canvasW;
+  const barCoverage = Math.max(verticalCoverage, horizontalCoverage);
+  // Below 40 % bar coverage the configured radius applies as before
+  // so existing presets render pixel-identical when bars are off
+  // (coverage=0) or modest.
+  if (barCoverage <= 0.4) {
+    return configuredRadius * halfMin;
+  }
+  // Above the threshold, scale by the visible half-axis instead of
+  // the canvas half-axis so the brightest stop lands inside the
+  // viewable image area.
+  return configuredRadius * visibleHalfMin;
+}
+
+/**
  * Phase 4.43: compute the four letterbox bar thicknesses needed to
  * crop a canvas of dimensions `canvasW x canvasH` to a target
  * aspect ratio. Returns symmetric top/bottom bars when the canvas
