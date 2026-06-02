@@ -95,6 +95,10 @@ import {
 import { ProjectSwitcher } from '@/components/editor/ProjectSwitcher';
 import { EditorEmptyState } from '@/components/editor/EditorEmptyState';
 import { RenderModal, type RenderState } from '@/components/editor/RenderModal';
+import {
+  FlipOstToOverlayModal,
+  computeAffectedRows,
+} from '@/components/editor/FlipOstToOverlayModal';
 import { BrandKitModal } from '@/components/editor/BrandKitModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
@@ -291,6 +295,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     failed: number;
   }>({ done: 0, total: 0, failed: 0 });
   const fillAbortRef = useRef<AbortController | null>(null);
+
+  // PR 3 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md` —
+  // cost-gated "Switch OST to overlay + regen" modal. Surfaces the
+  // affected-row count and estimated cost before any spend.
+  const [flipOstModalOpen, setFlipOstModalOpen] = useState(false);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
   // preference, not part of the doc. The user's preferred default
@@ -988,6 +997,50 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     // to the same reference every fillBlanks invocation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apply, fillState, writeRowAsset]);
+
+  // PR 3 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md` —
+  // confirm handler for the "Switch OST to overlay + regen" modal.
+  // Three steps in order:
+  //   1. PATCH_DOC sets on_screen_text_mode_default = 'overlay' so future
+  //      generations skip baking text into pixels and the renderer
+  //      mounts a LowerThird overlay instead.
+  //   2. For every affected row, SET_ROW_IMAGE(null) clears the image
+  //      URL — making the row a "blank" that fill-blanks picks up.
+  //   3. Kick off runFillBlanks (next tick so state-flush settles)
+  //      which regenerates every blanked row at the new overlay setting.
+  //
+  // Each step is its own command in the undo stack — the user can Cmd+Z
+  // through (a) regen result, (b) image-url clears, (c) doc mode flip.
+  // The mass regen IS the cost driver; the modal pinned an estimate
+  // before this handler fires.
+  const handleFlipOstConfirm = useCallback(() => {
+    const affected = computeAffectedRows(state.doc, state.rowImages);
+    console.info('[editor flip-ost confirm]', {
+      affectedCount: affected.length,
+      docDefaultBefore: state.doc.on_screen_text_mode_default ?? '(undefined)',
+    });
+    apply({
+      type: 'PATCH_DOC',
+      patch: { on_screen_text_mode_default: 'overlay' },
+    });
+    for (const { rowIndex } of affected) {
+      apply({ type: 'SET_ROW_IMAGE', shotIndex: rowIndex, url: null });
+    }
+    setFlipOstModalOpen(false);
+    if (affected.length === 0) {
+      toast.success('Doc default set to overlay. No rows needed regeneration.');
+      return;
+    }
+    toast.success(
+      `Doc flipped to overlay; ${affected.length} row${affected.length === 1 ? '' : 's'} queued for regen.`,
+    );
+    // Defer one tick so the cleared image_url writes propagate before
+    // runFillBlanks reads stateRef. Without this, the runFillBlanks
+    // `initialBlanks` computation may miss the rows we just cleared.
+    setTimeout(() => {
+      void runFillBlanks();
+    }, 50);
+  }, [apply, state.doc, state.rowImages, runFillBlanks]);
 
   // ── Per-shot regenerate state ─────────────────────────────────────────
   //
@@ -4107,6 +4160,20 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               })}
             </div>
           </div>
+          {/* PR 3 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+              Cost-gated "Switch OST to overlay + regen" action. Surfaces
+              the count + cost of baked-text rows before any image-gen
+              spend, then flips the mode AND auto-queues fill-blanks so
+              the regen runs without the user manually clicking each shot. */}
+          <button
+            type="button"
+            onClick={() => setFlipOstModalOpen(true)}
+            className="editor-btn w-full justify-between"
+            title="Flip the doc to overlay-mode and regenerate every shot that currently has the lower-third text baked into the image pixels"
+          >
+            <span>Switch OST → overlay (regen)</span>
+            <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↻</span>
+          </button>
           {/* Pillarbox color default — used when a row's scene_zoom is
               under 100% and bars sit on either side of the scene. */}
           <div className="flex items-center gap-2">
@@ -5073,6 +5140,46 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           onClose={() => setShowBrandKit(false)}
         />
       )}
+
+      {flipOstModalOpen && (() => {
+        const affected = computeAffectedRows(state.doc, state.rowImages);
+        const modelId = state.doc.image_model_default;
+        // Per-image cost estimate keyed on the doc's chosen image model.
+        // Values from src/lib/image-models.ts hints (verified 2026-05-25);
+        // re-check at the source when adding a new model. Per Rule 8 we
+        // pull these forward into a visible price the user must confirm
+        // before any spend.
+        const { usd, label } = (() => {
+          switch (modelId) {
+            case 'gpt-image-2-atlas-t2i':
+            case undefined:
+              return { usd: 0.011, label: '$0.011 / image (GPT Image 2 Atlas, cheaper default)' };
+            case 'gpt-image-2-t2i':
+              return { usd: 0.04, label: '$0.04 / image (GPT Image 2 Kie)' };
+            case 'nano-banana':
+              return { usd: 0.04, label: '$0.04 / image (Google NanoBanana 2)' };
+            case 'ideogram-v3-quality-t2i':
+              return { usd: 0.05, label: '$0.05 / image (Ideogram v3 Quality)' };
+            case 'ideogram-v3-turbo-t2i':
+              return { usd: 0.0175, label: '$0.0175 / image (Ideogram v3 Turbo)' };
+            default:
+              return {
+                usd: 0.04,
+                label: `~$0.04 / image (estimate; model: ${modelId})`,
+              };
+          }
+        })();
+        return (
+          <FlipOstToOverlayModal
+            affectedRows={affected}
+            perImageCostLabel={label}
+            perImageCostUsd={usd}
+            totalRowCount={state.doc.rows.length}
+            onCancel={() => setFlipOstModalOpen(false)}
+            onConfirm={handleFlipOstConfirm}
+          />
+        );
+      })()}
 
       {showSectionThumbnail && (
         <SectionThumbnailModal
