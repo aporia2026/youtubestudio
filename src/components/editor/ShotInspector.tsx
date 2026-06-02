@@ -31,6 +31,7 @@ import {
   InspectorVariantsPanel,
   type VariantGenState,
 } from '@/components/editor/inspector/InspectorVariantsPanel';
+import { OstModeControl } from '@/components/production-doc/OstModeControl';
 import {
   InspectorShotTypePanel,
   detectLeadingHeading,
@@ -1279,6 +1280,38 @@ export function ShotInspector({
             />
           ) : (
             row.on_screen_text && <Field label="On-screen text" value={row.on_screen_text} />
+          )}
+          {/* OST mode picker — overlay (Remotion renders a LowerThird on
+              top of a clean image), bake (text painted into the diffusion
+              prompt at generation time), or none. Mounted here, right
+              under the OST text input, so the picker is co-located with
+              the value it governs. The collapsed Layout panel below also
+              carries this picker with full bulk-action affordances; this
+              one is the discoverable quick-pick. PR 2 of
+              `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+              Right-click "apply to all" intentionally NOT wired here —
+              the bulk affordance lives in the Layout panel + kebab. */}
+          {onUpdateRow && (
+            <div className="-mt-1">
+              <div
+                className="text-[10px] mb-0.5"
+                style={{ color: 'var(--fg-muted)' }}
+              >
+                Mode
+              </div>
+              <OstModeControl
+                value={row.on_screen_text_mode}
+                docDefault={doc.on_screen_text_mode_default}
+                onChange={(next) => {
+                  console.info('[editor inspector ost-mode] changed', {
+                    rowIndex: shotIndex,
+                    from: row.on_screen_text_mode,
+                    to: next,
+                  });
+                  onUpdateRow({ on_screen_text_mode: next });
+                }}
+              />
+            </div>
           )}
           {onUpdateRow ? (
             <EditableInput
