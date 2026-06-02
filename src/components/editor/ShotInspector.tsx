@@ -34,6 +34,7 @@ import {
 import { OstModeControl } from '@/components/production-doc/OstModeControl';
 import { InspectorMotionCollagePanel } from '@/components/editor/inspector/InspectorMotionCollagePanel';
 import { InspectorTextBlocksPanel } from '@/components/editor/inspector/InspectorTextBlocksPanel';
+import { ConvertToMotionCollageButton } from '@/components/editor/inspector/ConvertToMotionCollageButton';
 import {
   InspectorShotTypePanel,
   detectLeadingHeading,
@@ -73,6 +74,13 @@ interface ShotInspectorProps {
    *  back to plain text-to-image. May be a built-in slug or a
    *  saved-style UUID. */
   stylePreset?: string;
+  /** PR 4 of `_plans/2026-06-02-editor-motion-collage-support.md`.
+   *  Built-in slug `stylePreset` resolves to (for saved-style UUIDs,
+   *  this is `based_on_built_in`). Same value `productionDocToVideoConfig`
+   *  receives via PR 1 of the OST plan. Threaded through so the
+   *  Convert to motion collage button can fire on saved styles
+   *  derived from doodle_explainer_2, not just the literal slug. */
+  effectiveStyleSlug?: string;
   /** v2 (2026-05-22) — the active style's preferred i2i model id,
    *  resolved by the parent (EditorClient does one styles fetch on
    *  mount and finds the match). Used here purely for the cost-preview
@@ -333,6 +341,7 @@ export function ShotInspector({
   totalShots,
   projectId,
   stylePreset,
+  effectiveStyleSlug,
   activeStyleI2IModel,
   regenState,
   onRegenerateShot,
@@ -667,6 +676,21 @@ export function ShotInspector({
               onUpdateRow={onUpdateRow}
             />
           </div>
+        )}
+        {/* PR 4 of `_plans/2026-06-02-editor-motion-collage-support.md`:
+            explicit "Convert to motion collage" button — replaces the
+            implicit "switch shot_type to motion collage" route the user's
+            screenshot showed didn't exist. The component returns null on
+            non-doodle docs / title-card rows / already-motion-collage
+            rows, so it only appears where it's actionable. */}
+        {!isMotionCollage && onUpdateRow && (
+          <ConvertToMotionCollageButton
+            row={row}
+            shotIndex={shotIndex}
+            doc={doc}
+            effectiveStyleSlug={effectiveStyleSlug}
+            onUpdateRow={onUpdateRow}
+          />
         )}
         {!isMotionCollage && thumbnailUrl && (onOpenImageEdit || onRunRmbg) && (
           <div

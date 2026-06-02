@@ -4572,6 +4572,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               // (NanoBanana Pro cloud or Qwen-Image local). Undefined on
               // legacy docs → regen falls back to plain T2I unchanged.
               stylePreset={state.doc.style_preset}
+              // PR 4 of motion-collage plan: lets the Convert-to-motion-
+              // collage button fire on saved styles derived from doodle
+              // (UUID style_preset), not just the literal slug.
+              effectiveStyleSlug={effectiveStyleSlug ?? undefined}
               // Resolved i2i model for cost-preview rendering near the
               // Regenerate button. Null when the active style is a
               // built-in, has no preferred model, or the fetch failed.
