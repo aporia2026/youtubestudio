@@ -630,6 +630,7 @@ export function ShortEditor({ shortId }: { shortId: string }) {
             </span>
           )}
         </div>
+        <ShotsPanel row={row} onChange={loadRow} />
       </EditorSection>
 
       {/* ── Captions section (Phase 15.11) ───────────────────────── */}
@@ -1265,5 +1266,450 @@ function EditorSection({
       </header>
       {children}
     </section>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shots panel — Phase 15.12. Inline because, like CaptionsEditorPanel above,
+// it ties closely to the parent's row + loadRow contract and has exactly one
+// consumer. Lives behind the Doodle / Paint style branches; renders nothing
+// for Minimal or pre-asset-generation rows.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface ShotsPanelFrameBlock {
+  base_url: string;
+  base_prompt?: string;
+  variants: Array<{
+    url: string;
+    caption_chunk_start_index: number;
+    edit_prompt?: string;
+  }>;
+}
+
+/** Resolve which `style_assets` sub-block the panel should operate on
+ *  for the row's current `style_id`. Returns null when the row is on a
+ *  non-frame-bearing style OR when the pipeline hasn't run yet. */
+function pickShotsBlock(row: ShortRow): { key: 'doodle' | 'paint'; block: ShotsPanelFrameBlock } | null {
+  if (row.style_id === 'doodle_explainer_2_short' && row.style_assets?.doodle) {
+    return { key: 'doodle', block: row.style_assets.doodle };
+  }
+  if (row.style_id === 'paint_explainer_v1_short' && row.style_assets?.paint) {
+    return { key: 'paint', block: row.style_assets.paint };
+  }
+  return null;
+}
+
+function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<void> | void }) {
+  const picked = pickShotsBlock(row);
+
+  // Per-frame busy state. Keys: 'base' for the base frame; numeric index
+  // for variants; 'append' for the new-variant form. Allows concurrent
+  // ops on different frames if the user clicks fast.
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const setBusyFor = useCallback((key: string, v: boolean) => {
+    setBusy((prev) => ({ ...prev, [key]: v }));
+  }, []);
+
+  // Per-frame prompt drafts. Initialised from the stored prompt when the
+  // row loads; the user can type freely without re-render thrash.
+  // basePromptDraft / variantPromptDrafts[i] / appendPromptDraft.
+  const [basePromptDraft, setBasePromptDraft] = useState<string>('');
+  const [variantPromptDrafts, setVariantPromptDrafts] = useState<Record<number, string>>({});
+  const [appendPromptDraft, setAppendPromptDraft] = useState('');
+  const [appendChunkDraft, setAppendChunkDraft] = useState<number>(0);
+  const [appendOpen, setAppendOpen] = useState(false);
+
+  // Re-sync drafts whenever the row's assets change (e.g., after a
+  // regen lands). useEffect on the stable string content so we don't
+  // clobber the user's in-flight edits when polling fires while they're
+  // typing.
+  useEffect(() => {
+    setBasePromptDraft(picked?.block.base_prompt ?? '');
+    setVariantPromptDrafts(() => {
+      const next: Record<number, string> = {};
+      picked?.block.variants.forEach((v, i) => {
+        next[i] = v.edit_prompt ?? '';
+      });
+      return next;
+    });
+    // The variants array reference changes on every parent rerender, but
+    // its serialised content is stable across no-op polls. Stringifying
+    // the prompts + URLs gives a cheap dependency that only flips on
+    // real changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    picked?.block.base_prompt,
+    picked?.block.base_url,
+    JSON.stringify(picked?.block.variants ?? []),
+  ]);
+
+  if (!picked) return null;
+
+  const regenerateBase = async () => {
+    const prompt = basePromptDraft.trim();
+    if (prompt.length < 8) {
+      toast.error('Base prompt needs at least 8 characters.');
+      return;
+    }
+    setBusyFor('base', true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/base`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success('New base frame ready.');
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Regen failed');
+    } finally {
+      setBusyFor('base', false);
+    }
+  };
+
+  const regenerateVariant = async (index: number) => {
+    const prompt = (variantPromptDrafts[index] ?? '').trim();
+    if (prompt.length < 4) {
+      toast.error('Edit prompt needs at least 4 characters.');
+      return;
+    }
+    setBusyFor(`v${index}`, true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/variants/${index}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(`Variant ${index} updated.`);
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Regen failed');
+    } finally {
+      setBusyFor(`v${index}`, false);
+    }
+  };
+
+  const appendVariant = async () => {
+    const prompt = appendPromptDraft.trim();
+    if (prompt.length < 4) {
+      toast.error('Edit prompt needs at least 4 characters.');
+      return;
+    }
+    if (!Number.isFinite(appendChunkDraft) || appendChunkDraft < 0) {
+      toast.error('Caption chunk index must be ≥ 0.');
+      return;
+    }
+    setBusyFor('append', true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/variants`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            caption_chunk_start_index: Math.floor(appendChunkDraft),
+          }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(`Variant added at chunk ${Math.floor(appendChunkDraft)}.`);
+      setAppendPromptDraft('');
+      setAppendOpen(false);
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Append failed');
+    } finally {
+      setBusyFor('append', false);
+    }
+  };
+
+  const deleteVariant = async (index: number) => {
+    if (!window.confirm(`Delete variant ${index}? This cannot be undone.`)) return;
+    setBusyFor(`v${index}`, true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/variants/${index}`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(`Variant ${index} removed.`);
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setBusyFor(`v${index}`, false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px dashed rgba(255,255,255,0.12)' }}>
+      <header style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>
+          Shots — {picked.key === 'doodle' ? 'Doodle' : 'Paint'} frames
+        </h3>
+        <p style={{ margin: 0, marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
+          1 base + {picked.block.variants.length} variants. Edit the prompt and click Regenerate to
+          re-mint any single frame (15-90s each, ~$0.04 base / ~$0.011 variant).
+        </p>
+      </header>
+
+      <ShotFrameCard
+        title="Base frame"
+        subtitle="Atlas T2I · 1024×1536 portrait"
+        imageUrl={picked.block.base_url}
+        prompt={basePromptDraft}
+        onPromptChange={setBasePromptDraft}
+        promptPlaceholder={
+          picked.block.base_prompt
+            ? undefined
+            : '(no prompt recorded — type a new full-scene prompt to regenerate)'
+        }
+        busy={!!busy.base}
+        primaryLabel="Regenerate base"
+        onPrimary={regenerateBase}
+      />
+
+      {picked.block.variants.map((v, i) => (
+        <ShotFrameCard
+          key={`${v.url}-${i}`}
+          title={`Variant ${i}`}
+          subtitle={`Atlas Edit · swaps in at caption chunk ${v.caption_chunk_start_index}`}
+          imageUrl={v.url}
+          prompt={variantPromptDrafts[i] ?? ''}
+          onPromptChange={(s) =>
+            setVariantPromptDrafts((prev) => ({ ...prev, [i]: s }))
+          }
+          promptPlaceholder={
+            v.edit_prompt
+              ? undefined
+              : '(no prompt recorded — type a new edit instruction to regenerate)'
+          }
+          busy={!!busy[`v${i}`]}
+          primaryLabel="Regenerate"
+          onPrimary={() => regenerateVariant(i)}
+          danger={{ label: 'Delete', onClick: () => deleteVariant(i) }}
+        />
+      ))}
+
+      {!appendOpen ? (
+        <button
+          type="button"
+          onClick={() => setAppendOpen(true)}
+          style={{
+            marginTop: 10,
+            padding: '8px 14px',
+            borderRadius: 8,
+            border: '1px dashed rgba(255,255,255,0.2)',
+            background: 'transparent',
+            color: 'inherit',
+            fontSize: 12,
+            cursor: 'pointer',
+          }}
+        >
+          + Append new variant
+        </button>
+      ) : (
+        <div
+          style={{
+            marginTop: 10,
+            padding: 12,
+            borderRadius: 10,
+            border: '1px solid rgba(255,255,255,0.12)',
+            background: 'rgba(0,0,0,0.18)',
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>New variant</div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Caption chunk to swap in at
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={appendChunkDraft}
+              onChange={(e) => setAppendChunkDraft(parseInt(e.target.value, 10) || 0)}
+              style={{ ...inputStyle, width: 100 }}
+              disabled={!!busy.append}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Edit prompt (describes the change vs the base)
+            </span>
+            <textarea
+              rows={3}
+              value={appendPromptDraft}
+              onChange={(e) => setAppendPromptDraft(e.target.value)}
+              placeholder="e.g. Add a thought bubble above the character with a question mark."
+              style={{
+                ...inputStyle,
+                resize: 'vertical',
+                fontFamily: 'inherit',
+                fontSize: 12,
+              }}
+              disabled={!!busy.append}
+            />
+          </label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              onClick={appendVariant}
+              disabled={!!busy.append}
+              style={primaryButton(!!busy.append)}
+            >
+              {busy.append ? 'Generating…' : 'Create variant'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAppendOpen(false);
+                setAppendPromptDraft('');
+              }}
+              disabled={!!busy.append}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: '1px solid rgba(255,255,255,0.15)',
+                background: 'transparent',
+                color: 'inherit',
+                fontSize: 12,
+                cursor: busy.append ? 'wait' : 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShotFrameCard({
+  title,
+  subtitle,
+  imageUrl,
+  prompt,
+  onPromptChange,
+  promptPlaceholder,
+  busy,
+  primaryLabel,
+  onPrimary,
+  danger,
+}: {
+  title: string;
+  subtitle: string;
+  imageUrl: string;
+  prompt: string;
+  onPromptChange: (s: string) => void;
+  promptPlaceholder?: string;
+  busy: boolean;
+  primaryLabel: string;
+  onPrimary: () => void;
+  danger?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: 12,
+        borderRadius: 10,
+        border: '1px solid rgba(255,255,255,0.1)',
+        background: 'rgba(0,0,0,0.18)',
+        display: 'grid',
+        gridTemplateColumns: '96px 1fr',
+        gap: 14,
+        alignItems: 'flex-start',
+      }}
+    >
+      <a
+        href={imageUrl}
+        target="_blank"
+        rel="noreferrer"
+        title="Open full size"
+        style={{
+          display: 'block',
+          width: 96,
+          aspectRatio: '2 / 3',
+          borderRadius: 8,
+          overflow: 'hidden',
+          background: '#000',
+          border: '1px solid rgba(255,255,255,0.1)',
+        }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={imageUrl}
+          alt={title}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+      </a>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{title}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{subtitle}</span>
+          {busy && (
+            <span style={{ fontSize: 11, color: '#fde68a' }}>● working…</span>
+          )}
+        </div>
+        <textarea
+          rows={3}
+          value={prompt}
+          placeholder={promptPlaceholder}
+          onChange={(e) => onPromptChange(e.target.value)}
+          disabled={busy}
+          style={{
+            ...inputStyle,
+            resize: 'vertical',
+            fontFamily: 'inherit',
+            fontSize: 12,
+            width: '100%',
+            boxSizing: 'border-box',
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            onClick={onPrimary}
+            disabled={busy || prompt.trim().length === 0}
+            style={primaryButton(busy)}
+          >
+            {busy ? 'Generating…' : primaryLabel}
+          </button>
+          {danger && (
+            <button
+              type="button"
+              onClick={danger.onClick}
+              disabled={busy}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: '1px solid rgba(248,113,113,0.4)',
+                background: 'transparent',
+                color: '#fca5a5',
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: busy ? 'wait' : 'pointer',
+              }}
+            >
+              {danger.label}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

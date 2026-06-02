@@ -49,9 +49,11 @@ export interface PaintAssetPipelineInput {
 
 export interface PaintAssetPipelineResult {
   base_url: string;
+  base_prompt: string;
   variants: Array<{
     url: string;
     caption_chunk_start_index: number;
+    edit_prompt: string;
   }>;
   estimatedCostUsd: number;
 }
@@ -158,6 +160,7 @@ export async function generatePaintAssets(
       variants.push({
         url: result.url,
         caption_chunk_start_index: v.caption_chunk_start_index,
+        edit_prompt: v.edit_prompt,
       });
       estimatedCostUsd += result.costUsd;
       logger.info('[shorts paint pipeline] variant ready', {
@@ -193,6 +196,7 @@ export async function generatePaintAssets(
 
   return {
     base_url: baseUrl,
+    base_prompt: fullBasePrompt,
     variants,
     estimatedCostUsd,
   };

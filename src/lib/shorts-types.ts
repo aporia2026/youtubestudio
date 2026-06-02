@@ -113,27 +113,42 @@ export interface ShortRow {
 
 /** Per-style assets persisted on `shorts.style_assets` JSONB.
  *  Each style owns its own sub-shape; reader merges defaults so a
- *  partial JSON blob never crashes callers. */
+ *  partial JSON blob never crashes callers.
+ *
+ *  Phase 15.12 — the per-frame Shots panel needs the prompts that
+ *  produced each frame so the user can re-prompt + regenerate
+ *  individual frames. `base_prompt` and per-variant `edit_prompt` are
+ *  OPTIONAL for backwards compatibility — rows persisted before the
+ *  Shots panel landed have URLs without prompts. The panel surfaces
+ *  this state ("prompt not recorded — regenerating will capture one").
+ */
 export interface ShortStyleAssets {
   /** Doodle vertical (`doodle_explainer_2_short`) — Atlas-generated
    *  base frame + N variant frames timed to caption chunks. */
   doodle?: {
-    /** 1080×1920 base frame URL. */
+    /** 1080×1536-equivalent base frame URL. */
     base_url: string;
+    /** Phase 15.12 — the prompt that produced base_url (full Atlas
+     *  prompt with style suffix included). Optional for back-compat. */
+    base_prompt?: string;
     /** Variant frames, ordered. Each carries the caption chunk it lines
      *  up with so the renderer can swap frames at chunk boundaries. */
     variants: Array<{
       url: string;
       caption_chunk_start_index: number;
+      /** Phase 15.12 — the edit prompt that produced this variant. */
+      edit_prompt?: string;
     }>;
   };
   /** Paint vertical (`paint_explainer_v1_short`) — same asset shape as
    *  Doodle, different visual language (paint_explainer_v1 ai_image_suffix). */
   paint?: {
     base_url: string;
+    base_prompt?: string;
     variants: Array<{
       url: string;
       caption_chunk_start_index: number;
+      edit_prompt?: string;
     }>;
   };
 }

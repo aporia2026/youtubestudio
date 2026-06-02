@@ -134,6 +134,7 @@ export const POST = apiRoute.authed(
         const styleAssetsBlob = {
           doodle: {
             base_url: assets.base_url,
+            base_prompt: assets.base_prompt,
             variants: assets.variants,
           },
         };
@@ -205,6 +206,7 @@ export const POST = apiRoute.authed(
         const styleAssetsBlob = {
           paint: {
             base_url: assets.base_url,
+            base_prompt: assets.base_prompt,
             variants: assets.variants,
           },
         };

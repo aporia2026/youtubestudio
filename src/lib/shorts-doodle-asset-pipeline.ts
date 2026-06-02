@@ -70,9 +70,14 @@ export interface DoodleAssetPipelineInput {
 
 export interface DoodleAssetPipelineResult {
   base_url: string;
+  /** Phase 15.12 — full prompt that produced base_url. Stored so the
+   *  Shots panel can show + re-edit it on per-frame regen. */
+  base_prompt: string;
   variants: Array<{
     url: string;
     caption_chunk_start_index: number;
+    /** Phase 15.12 — edit prompt that produced this variant. */
+    edit_prompt: string;
   }>;
   /** Sum of the per-call cost USD logged to the spend log. Informational
    *  — the per-call entries are the source of truth. */
@@ -183,6 +188,7 @@ export async function generateDoodleAssets(
       variants.push({
         url: result.url,
         caption_chunk_start_index: v.caption_chunk_start_index,
+        edit_prompt: v.edit_prompt,
       });
       estimatedCostUsd += result.costUsd;
       logger.info('[shorts doodle pipeline] variant ready', {
@@ -218,6 +224,7 @@ export async function generateDoodleAssets(
 
   return {
     base_url: baseUrl,
+    base_prompt: fullBasePrompt,
     variants,
     estimatedCostUsd,
   };
