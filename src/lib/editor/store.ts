@@ -35,7 +35,7 @@
  * dispatches `RESET_FROM_SERVER` with the server's current payload
  * and version, dropping the user's unsaved edits.
  */
-import type { ProductionDoc, RowOverlayRenderState, RowVideoClipState } from '@/remotion/utils';
+import type { MotionBeat, ProductionDoc, RowOverlayRenderState, RowVideoClipState } from '@/remotion/utils';
 import { MAX_VARIANTS_PER_GROUP } from '@/remotion/utils';
 import type { BrandKit, TextOverlay } from '@/remotion/types';
 import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
@@ -341,6 +341,16 @@ export type EditorCommand =
        *  pin_duration as-is. See
        *  `_plans/2026-05-23-editor-pin-duration-architecture.md`. */
       restorePinDuration?: { value: boolean | undefined };
+      /** Pre-split motion_beats[] array, restored verbatim on the
+       *  merged row. SPLIT_SHOT slices the array into the two halves
+       *  (dropping spanners); MERGE has to put the original back so
+       *  redo-after-undo reproduces the same slice from the same
+       *  source. `value: undefined` ⇒ pre-split row had no motion
+       *  beats; the field is deleted on the merged row. Absent on the
+       *  command ⇒ legacy inverse from before the motion-beat slice
+       *  feature; leave motion_beats as-is. See
+       *  `_plans/2026-06-02-shot-split-ui.md`. */
+      restoreMotionBeats?: { value: MotionBeat[] | undefined };
     }
   | { type: 'DELETE_SHOT'; shotIndex: number; mode: 'ripple' | 'blank' }
   /** Insert a clone of the row at `shotIndex` into position
@@ -1183,6 +1193,18 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       }
       const splitStamp = stampEditedAt(row.edited_at, 'structure');
       const priorPin = capturePinState(row);
+      // Pre-split snapshot captured for the inverse — MERGE restores the
+      // original motion_beats[] verbatim so a SPLIT → UNDO → REDO cycle
+      // re-slices from the original source instead of from the post-split
+      // first-half remnants. `value: undefined` covers the no-beats case.
+      const priorMotionBeats: { value: MotionBeat[] | undefined } = {
+        value: row.motion_beats,
+      };
+      // Slice motion_beats[] by the split point. Spanning beats are
+      // dropped per `_plans/2026-06-02-shot-split-ui.md` — splitting
+      // through an animation is rare and a partial render is worse
+      // than a clean drop.
+      const beatSlice = sliceMotionBeats(row.motion_beats, firstHalfMs);
       const firstHalf = { ...row, duration_override_ms: firstHalfMs, edited_at: splitStamp };
       // Structural clone with shifted-out duration. Same visual
       // content; the user diverges fields after the split if they
@@ -1190,6 +1212,27 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       // Both halves get pin_duration: true — splitting is an
       // explicit user duration intent.
       const secondHalf = { ...row, duration_override_ms: secondHalfMs, edited_at: splitStamp };
+      // Write the sliced motion_beats onto each half. Undefined means
+      // "no beats survived on this side" — delete the field so the row
+      // stays clean (mirrors how every other optional field is shaped).
+      if (beatSlice.first === undefined) {
+        delete (firstHalf as { motion_beats?: MotionBeat[] }).motion_beats;
+      } else {
+        firstHalf.motion_beats = beatSlice.first;
+      }
+      if (beatSlice.second === undefined) {
+        delete (secondHalf as { motion_beats?: MotionBeat[] }).motion_beats;
+      } else {
+        secondHalf.motion_beats = beatSlice.second;
+      }
+      // Detach the second half from any variant group the original row
+      // belonged to. Two rows in the same group slot (same group_id +
+      // variant_index) would break the variant inspector's resolution
+      // and the variant mini-strip's per-row thumbnails. The first
+      // half keeps the group membership; the second half becomes a
+      // standalone row the user can re-promote or re-attach later.
+      const variantDetached = rowHasVariantFields(row);
+      if (variantDetached) detachVariantFields(secondHalf);
       applyPinDirective(firstHalf, undefined); // forward: pin = true
       applyPinDirective(secondHalf, undefined);
       const nextRows = [
@@ -1203,7 +1246,19 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         shotIndex,
         restoredDurationOverrideMs: row.duration_override_ms ?? null,
         restorePinDuration: priorPin,
+        restoreMotionBeats: priorMotionBeats,
       };
+      console.info('[editor split] applied', {
+        shotIndex,
+        splitAtMs: firstHalfMs,
+        secondHalfMs,
+        beatsKept: {
+          first: beatSlice.first?.length ?? 0,
+          second: beatSlice.second?.length ?? 0,
+        },
+        beatsDropped: beatSlice.dropped,
+        variantDetached,
+      });
       return {
         next: {
           ...state,
@@ -2484,7 +2539,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
     }
 
     case 'MERGE_ADJACENT_SHOTS': {
-      const { shotIndex, restoredDurationOverrideMs, restorePinDuration } = cmd;
+      const { shotIndex, restoredDurationOverrideMs, restorePinDuration, restoreMotionBeats } = cmd;
       if (shotIndex < 0 || shotIndex + 1 >= state.doc.rows.length) {
         return { next: state, inverse: null };
       }
@@ -2505,6 +2560,19 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       // restorePinDuration carries the pre-split pin state — apply
       // it so the original row's shape is restored exactly.
       applyPinDirective(restored, restorePinDuration);
+      // Inverse-path MERGE only: restoreMotionBeats carries the
+      // pre-split motion_beats[] verbatim so a SPLIT → UNDO → REDO
+      // cycle re-slices from the same source. Absent ⇒ legacy inverse
+      // from before the motion-beat slice feature; leave the merged
+      // row's beats as-is. value: undefined ⇒ pre-split row had no
+      // beats; clear the field.
+      if (restoreMotionBeats !== undefined) {
+        if (restoreMotionBeats.value === undefined) {
+          delete (restored as { motion_beats?: MotionBeat[] }).motion_beats;
+        } else {
+          restored.motion_beats = restoreMotionBeats.value;
+        }
+      }
       const nextRows = [
         ...state.doc.rows.slice(0, shotIndex),
         restored,
@@ -3327,6 +3395,85 @@ function capturePinState(
   row: ProductionDoc['rows'][number],
 ): { value: boolean | undefined } {
   return { value: row.pin_duration };
+}
+
+/**
+ * Split a row's motion_beats[] at `splitAtMs` (relative to the row's
+ * start) for SPLIT_SHOT. Beats fully before the split stay on the first
+ * half unchanged; beats fully after move to the second half with
+ * `startMs` rebased to the second half's local 0. Beats that span the
+ * split are dropped — splitting through an active animation is rare,
+ * and a clean drop is less surprising than a half-rendered beat.
+ *
+ * Boundary policy:
+ *   - `startMs + durationMs <= splitAtMs` → first half (a beat that
+ *     ends exactly at the split has finished animating; belongs to the
+ *     first half).
+ *   - `startMs >= splitAtMs` → second half (a beat starting exactly at
+ *     the split is a clean second-half opener at relative t=0).
+ *   - Everything in between spans → dropped.
+ *
+ * Returns the two arrays as `undefined` when empty so the caller can
+ * write the field optionally — keeps the JSON compact and matches the
+ * "absent unless meaningful" shape of every other optional row field.
+ *
+ * See `_plans/2026-06-02-shot-split-ui.md`.
+ */
+function sliceMotionBeats(
+  beats: MotionBeat[] | undefined,
+  splitAtMs: number,
+): { first: MotionBeat[] | undefined; second: MotionBeat[] | undefined; dropped: number } {
+  if (!beats || beats.length === 0) {
+    return { first: undefined, second: undefined, dropped: 0 };
+  }
+  const first: MotionBeat[] = [];
+  const second: MotionBeat[] = [];
+  let dropped = 0;
+  for (const b of beats) {
+    const beatEnd = b.startMs + b.durationMs;
+    if (beatEnd <= splitAtMs) first.push(b);
+    else if (b.startMs >= splitAtMs) second.push({ ...b, startMs: b.startMs - splitAtMs });
+    else dropped += 1;
+  }
+  return {
+    first: first.length > 0 ? first : undefined,
+    second: second.length > 0 ? second : undefined,
+    dropped,
+  };
+}
+
+/** Variant-group fields that live as a unit. SPLIT_SHOT detaches the
+ *  second half by clearing all of them — leaving a partial set
+ *  (e.g. group_id without variant_index) would confuse the variant
+ *  inspector and the editor's variant resolution. Keep this list in
+ *  sync with `ProductionRow`'s variant block (around line 720 of
+ *  src/remotion/utils.ts). */
+const VARIANT_GROUP_FIELDS = [
+  'group_id',
+  'variant_index',
+  'variant_edit_prompt',
+  'variant_base_image_at_generation',
+  'variant_derives_from_previous',
+  'group_variant_chain_default',
+] as const;
+
+/** True when `row` has any variant-group field set — used to log
+ *  whether a SPLIT_SHOT actually detached anything. */
+function rowHasVariantFields(row: ProductionDoc['rows'][number]): boolean {
+  const bag = row as unknown as Record<string, unknown>;
+  for (const f of VARIANT_GROUP_FIELDS) {
+    if (bag[f] !== undefined) return true;
+  }
+  return false;
+}
+
+/** Mutate `row` IN PLACE to clear every variant-group field. Caller
+ *  must have already cloned the row. */
+function detachVariantFields(row: ProductionDoc['rows'][number]): void {
+  const bag = row as unknown as Record<string, unknown>;
+  for (const f of VARIANT_GROUP_FIELDS) {
+    delete bag[f];
+  }
 }
 
 /**

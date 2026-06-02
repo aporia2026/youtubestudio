@@ -151,6 +151,14 @@ interface TimelineV2Props {
    *  neighbor in one atomic step. See
    *  `_plans/2026-05-23-editor-set-shot-timing-and-left-edge-drag.md`. */
   onLeadingResize?: (shotIndex: number, newStartMs: number) => void;
+  /** Index of the shot the playhead is currently inside, when a split
+   *  there would produce two legal halves. Null when no split is
+   *  available. Forwarded to the inner Timeline; the selected card
+   *  at this index renders a scissors button. See
+   *  `_plans/2026-06-02-shot-split-ui.md`. */
+  splitAvailableShotIndex?: number | null;
+  /** Fires when the user clicks the timeline card scissors button. */
+  onSplit?: () => void;
 }
 
 export function TimelineV2({
@@ -193,6 +201,8 @@ export function TimelineV2({
   showMinimap = true,
   minimapWrapEnabled = true,
   minimapWrapThresholdMinutes = 5,
+  splitAvailableShotIndex = null,
+  onSplit,
 }: TimelineV2Props): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -353,6 +363,8 @@ export function TimelineV2({
                   onInsertScene={onInsertScene}
                   insertSceneDefaultDurationMs={insertSceneDefaultDurationMs}
                   onLeadingResize={onLeadingResize}
+                  splitAvailableShotIndex={splitAvailableShotIndex}
+                  onSplit={onSplit}
                 />
               </LaneStrip>
               <LaneStrip

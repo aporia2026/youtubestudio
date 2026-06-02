@@ -3527,8 +3527,13 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         }
         return;
       }
-      if (key === 'b') {
+      // Split at playhead. B is the conventional "blade" tool key
+      // (DaVinci Resolve, iMovie); S is the CapCut convention and the
+      // key the user asked for in `_plans/2026-06-02-shot-split-ui.md`.
+      // Both fire the same handler so existing muscle memory is preserved.
+      if (key === 'b' || key === 's') {
         e.preventDefault();
+        console.info('[editor shortcut] split', { source: 'keyboard', key });
         handleSplit();
         return;
       }
@@ -5000,6 +5005,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               onCommitNotes={(notes) =>
                 updateRow(state.selection as number, { notes })
               }
+              canSplit={
+                splitTarget?.shotIndex === state.selection &&
+                splitTarget?.validSplit === true
+              }
+              splitOffsetMs={
+                splitTarget?.shotIndex === state.selection
+                  ? splitTarget.splitAtMs
+                  : undefined
+              }
+              onSplit={handleSplit}
             />
           ) : undefined,
         audio: (
@@ -5224,6 +5239,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           carveFrom: resolvedCarveFrom,
         });
       }}
+      splitAvailableShotIndex={
+        splitTarget && splitTarget.validSplit ? splitTarget.shotIndex : null
+      }
+      onSplit={handleSplit}
     />
   );
 

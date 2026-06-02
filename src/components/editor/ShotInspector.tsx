@@ -315,6 +315,26 @@ interface ShotInspectorProps {
   onApplyTitleCardAsSectionTitle?: () => void;
   /** Commit the per-row notes textarea via PATCH_ROW. */
   onCommitNotes?: (notes: string) => void;
+
+  // ─── Split at playhead ────────────────────────────────────────────
+  //
+  // Surfaces the same SPLIT_SHOT action available via right-click,
+  // the B / S keyboard shortcut, and the timeline card scissors button.
+  // The inspector entry shows the relative offset so the user can see
+  // where exactly the split will land before clicking. See
+  // `_plans/2026-06-02-shot-split-ui.md`.
+
+  /** True when the playhead is currently inside THIS shot AND a split
+   *  there would produce two halves both ≥ EDITOR_MIN_SHOT_MS. The
+   *  parent (EditorClient) computes this from `splitTarget`. */
+  canSplit?: boolean;
+  /** Offset (ms) from this shot's start where the split would land.
+   *  Surfaced as a "at 4.2s" hint next to the button. Meaningful only
+   *  when `canSplit` is true. */
+  splitOffsetMs?: number;
+  /** Fires when the user clicks the "Split at playhead" button. The
+   *  parent dispatches SPLIT_SHOT. */
+  onSplit?: () => void;
 }
 
 /** Lifted regen state shape — kept here so EditorClient and the
@@ -405,6 +425,9 @@ export function ShotInspector({
   onSplitAsTitleCard,
   onApplyTitleCardAsSectionTitle,
   onCommitNotes,
+  canSplit = false,
+  splitOffsetMs,
+  onSplit,
 }: ShotInspectorProps): React.ReactElement {
   const undoDepth = editHistoryDepth ?? 0;
   const overlayReady = overlayState?.status === 'done' && Boolean(overlayState.url);
@@ -645,15 +668,42 @@ export function ShotInspector({
             )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="text-xs px-2 py-1 rounded border hover:bg-white/5 transition-colors"
-          style={{ borderColor: 'var(--card-border)' }}
-          title="Close inspector"
-        >
-          ×
-        </button>
+        <div className="flex items-center gap-1">
+          {/* Split at playhead — same action as B / S keyboard, the
+              right-click context menu, and the timeline card scissors
+              button. Only rendered when the playhead is inside this
+              shot AND both halves would be ≥ EDITOR_MIN_SHOT_MS. See
+              `_plans/2026-06-02-shot-split-ui.md`. */}
+          {canSplit && onSplit && (
+            <button
+              type="button"
+              onClick={() => {
+                console.info('[editor split] click', { source: 'inspector-button' });
+                onSplit();
+              }}
+              className="text-xs px-2 py-1 rounded border hover:bg-white/5 transition-colors flex items-center gap-1"
+              style={{ borderColor: 'var(--card-border)' }}
+              title={`Split this shot at the playhead${
+                typeof splitOffsetMs === 'number' ? ` (${fmt(splitOffsetMs)} in)` : ''
+              }. Keyboard: B or S.`}
+            >
+              <span aria-hidden>✂</span>
+              <span>Split</span>
+              {typeof splitOffsetMs === 'number' && (
+                <span style={{ color: 'var(--fg-muted)' }}> at {fmt(splitOffsetMs)}</span>
+              )}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs px-2 py-1 rounded border hover:bg-white/5 transition-colors"
+            style={{ borderColor: 'var(--card-border)' }}
+            title="Close inspector"
+          >
+            ×
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto">

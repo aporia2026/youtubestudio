@@ -89,6 +89,17 @@ interface TimelineProps {
   /** Optional: pixels per second. Default 80 — readable at standard
    *  shot lengths (4-15s). Phase 2 zoom controls bind this. */
   pixelsPerSecond?: number;
+  /** Index of the shot the playhead is currently inside, when a split
+   *  there would produce two legal halves (both ≥ EDITOR_MIN_SHOT_MS).
+   *  Null when no shot is splittable right now (playhead at a seam,
+   *  inside a too-short shot, etc.). The card at this index shows a
+   *  scissors button at the playhead X when it's also selected. See
+   *  `_plans/2026-06-02-shot-split-ui.md`. */
+  splitAvailableShotIndex?: number | null;
+  /** Fires when the user clicks the scissors button on the selected
+   *  card. The parent dispatches `SPLIT_SHOT` with the playhead's
+   *  shotIndex + offset. */
+  onSplit?: () => void;
   /** Phase 3 of the editor timeline-and-shots overhaul plan. Fires
    *  on right-click of a shot card with the viewport coords so the
    *  parent (EditorClient) can open its centralized context menu.
@@ -193,6 +204,8 @@ export function Timeline({
   onShotContextMenu,
   onInsertScene,
   insertSceneDefaultDurationMs = EDITOR_MIN_SHOT_MS,
+  splitAvailableShotIndex = null,
+  onSplit,
 }: TimelineProps): React.ReactElement {
   const totalMs = useMemo(
     () => config.shots.reduce((acc, s) => acc + s.durationMs, 0),
@@ -617,6 +630,18 @@ export function Timeline({
                         }
                       : undefined
                   }
+                  splitOffsetPx={
+                    splitAvailableShotIndex === idx
+                      ? Math.max(
+                          0,
+                          Math.min(
+                            (shot.durationMs / 1000) * pixelsPerSecond,
+                            ((playheadMs - shotStartTimesMs[idx]) / 1000) * pixelsPerSecond,
+                          ),
+                        )
+                      : null
+                  }
+                  onSplit={onSplit}
                 />
               );
             })}
@@ -717,6 +742,13 @@ interface SortableShotCardProps {
   /** Right-click handler. Optional — when omitted, the native browser
    *  context menu shows. */
   onContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  /** Pixel offset from the card's left edge at which a SPLIT_SHOT
+   *  would land (== playheadMs - cardStartMs, in pixels). Null when
+   *  this card isn't the splittable target. The scissors button
+   *  renders at this X when non-null AND the card is selected. */
+  splitOffsetPx: number | null;
+  /** Fires when the user clicks the scissors button. */
+  onSplit?: () => void;
 }
 
 function SortableShotCard({
@@ -749,6 +781,8 @@ function SortableShotCard({
   transitionIn,
   onToggleTransition,
   onContextMenu,
+  splitOffsetPx,
+  onSplit,
 }: SortableShotCardProps): React.ReactElement {
   const {
     attributes,
@@ -1166,6 +1200,40 @@ function SortableShotCard({
         >
           {formatMs(resizePreviewMs)}
         </div>
+      )}
+
+      {/* Split-at-playhead affordance. A scissors button anchored at
+          the playhead's X within this card. Only renders on the
+          SELECTED card AND when the playhead position would produce
+          two legal halves (parent computes `splitOffsetPx`). Click
+          dispatches SPLIT_SHOT. Mirrors the same action as the B / S
+          keyboard shortcut and the right-click "Split at playhead"
+          context menu item. See `_plans/2026-06-02-shot-split-ui.md`.
+       */}
+      {isSelected && splitOffsetPx !== null && onSplit && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            console.info('[editor split] click', { source: 'timeline-card-button' });
+            onSplit();
+          }}
+          className="absolute z-30 rounded-full w-5 h-5 flex items-center justify-center text-[11px] leading-none transition-transform hover:scale-110"
+          style={{
+            left: splitOffsetPx,
+            top: GRAB_HANDLE_HEIGHT + 4,
+            transform: 'translateX(-50%)',
+            background: 'rgba(239, 68, 68, 0.95)',
+            color: '#fff',
+            border: '1px solid rgba(0, 0, 0, 0.6)',
+            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.6)',
+            cursor: 'pointer',
+          }}
+          title="Split shot at playhead (B / S)"
+          aria-label="Split shot at playhead"
+        >
+          ✂
+        </button>
       )}
     </div>
   );
