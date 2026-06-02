@@ -111,6 +111,7 @@ import migration0108 from './0108_add_short_seo_columns';
 import migration0109 from './0109_shorts_medium_primitive';
 import migration0110 from './0110_shorts_style_assets';
 import migration0111 from './0111_create_shorts_series';
+import migration0112 from './0112_narrator_assignments_one_active_per_project';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -229,6 +230,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0109,
   migration0110,
   migration0111,
+  migration0112,
 ]);
 
 /**

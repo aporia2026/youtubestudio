@@ -99,6 +99,19 @@ export function AssignDialog({ projectId, scriptId, scriptText, scriptVersion, o
         const data = await res.json();
         toast.success('Script assigned to narrator');
         onAssigned(data.assignment.share_token);
+      } else if (res.status === 409) {
+        // Active assignment already exists for this project — route the owner
+        // to it instead of creating a duplicate. The 409 body carries the
+        // existing share_token so the rest of the flow (clipboard copy, dialog
+        // close) is identical to the happy path.
+        const data: { existing?: { share_token?: string } } = await res.json().catch(() => ({}));
+        const existingToken = data.existing?.share_token;
+        if (existingToken) {
+          toast.success('Already assigned to this project — link copied');
+          onAssigned(existingToken);
+        } else {
+          toast.error('Already assigned to this project');
+        }
       } else {
         toast.error('Failed to create assignment');
       }

@@ -24,6 +24,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'project_id, script_id, narrator_id, and script_text are required' }, { status: 400 });
     }
 
+    // Reject when an active assignment already exists for this project.
+    //
+    // Defence-in-depth with migration 0112's unique partial index — the index
+    // would also block the INSERT, but doing the check here lets us return the
+    // existing share_token so the AssignDialog can route the owner to the
+    // current assignment instead of failing with a generic 500. Statuses
+    // outside this set (`approved`, `completed`) are terminal — a new
+    // assignment after one of those is a legitimate fresh round.
+    const { rows: existingRows } = await sql`
+      SELECT id::text AS id, share_token
+        FROM narrator_assignments
+       WHERE project_id = ${project_id}
+         AND status IN ('assigned','received','recording','submitted','revisions')
+       LIMIT 1
+    `;
+    if (existingRows.length > 0) {
+      const existing = existingRows[0];
+      logger.info('[narrator assign duplicate-blocked]', {
+        projectId: project_id,
+        existingAssignmentId: existing.id,
+      });
+      return NextResponse.json(
+        {
+          error: 'An active narrator assignment already exists for this project',
+          existing: { id: existing.id, share_token: existing.share_token },
+        },
+        { status: 409 },
+      );
+    }
+
     // Create assignment
     const assignment = await createAssignment({
       project_id,
