@@ -12,6 +12,9 @@ import { getFeatureDefaultModelId, getModelById } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { getIdeasHistory, getIdeasHistoryCached, saveIdeas, deleteIdeasEntry, clearIdeasHistory, type IdeasHistoryEntry } from '@/lib/history';
+import { MediumToggle, MediumHint, useMedium } from '@/components/ui/MediumToggle';
+import { getMediumStrategy } from '@/lib/content-medium';
+import { ShortClipSurface } from '@/components/shorts/ShortClipSurface';
 
 // Collect every previously-generated title across all history entries —
 // passed as `existingTitles` so the LLM never repeats and the server can
@@ -140,6 +143,11 @@ export default function IdeasPageWrapper() {
 function IdeasPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Medium primitive (Phase 15.1 — Shorts everywhere). Read the active
+  // medium up-front so the long-form body downstream can early-return
+  // when the user has flipped to Short flows.
+  const medium = useMedium();
+  const sectionAnswer = getMediumStrategy(medium).forSection('ideas');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
 
@@ -725,9 +733,58 @@ function IdeasPage() {
     window.location.href = '/thumbnails?from=ideas';
   }
 
+  // Shorts surfaces — early return when the user has flipped the medium
+  // toggle away from long-form. The long-form body below is untouched.
+  if (medium === 'short_clip' && sectionAnswer.phase1Available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Ideas — Shorts</h1>
+          <MediumToggle section="ideas" />
+        </div>
+        <MediumHint section="ideas" hint={sectionAnswer.headerHint} />
+        <ShortClipSurface
+          headline="Find Short ideas inside your existing videos"
+          subhead="Pick one of your published videos. We score the strongest 45-second moments — each one is a Short idea starting point."
+        />
+      </div>
+    );
+  }
+  if (medium === 'short_native' || !sectionAnswer.phase1Available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Ideas — Shorts</h1>
+          <MediumToggle section="ideas" />
+        </div>
+        <MediumHint section="ideas" hint={sectionAnswer.headerHint} />
+        <section
+          style={{
+            marginTop: 16,
+            padding: 24,
+            borderRadius: 14,
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            maxWidth: 720,
+            fontSize: 14,
+            lineHeight: 1.55,
+            color: 'var(--text-secondary, rgba(255,255,255,0.7))',
+          }}
+        >
+          {sectionAnswer.phase1EmptyHint}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="p-8 max-w-7xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
+      <div className="mb-4">
+        <MediumToggle section="ideas" />
+      </div>
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">

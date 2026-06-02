@@ -16,6 +16,8 @@ import { getSeoHistory, getSeoHistoryCached, saveSeoEntry, deleteSeoEntry, clear
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/TemplateContextPicker';
+import { MediumToggle, MediumHint, useMedium } from '@/components/ui/MediumToggle';
+import { getMediumStrategy } from '@/lib/content-medium';
 
 interface TitleBreakdownEntry {
   score: number;
@@ -75,6 +77,9 @@ export default function SeoPageWrapper() {
 function SeoPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Medium primitive — Phase 15.1. SEO for short_clip / short_native lands Phase 2.
+  const seoMedium = useMedium();
+  const seoSectionAnswer = getMediumStrategy(seoMedium).forSection('seo');
   // Wave 1 ?videoId= handoff from the Command Center kanban + strip.
   const videoIdParam = search.get('videoId');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
@@ -455,6 +460,35 @@ function SeoPage() {
   const seoIsReady = !!result && (!!seoFullDesc || seoTagStrings.length > 0);
   const seoIsDirty = seoIsReady && result !== lastSavedResultRef;
 
+  // Medium primitive — Phase 15.1. SEO for Shorts mediums lands Phase 2.
+  if (seoMedium !== 'long_form') {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="SEO Optimizer" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>SEO — Shorts</h1>
+          <MediumToggle section="seo" />
+        </div>
+        <MediumHint section="seo" hint={seoSectionAnswer.headerHint} />
+        <section
+          style={{
+            marginTop: 16,
+            padding: 24,
+            borderRadius: 14,
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            maxWidth: 720,
+            fontSize: 14,
+            lineHeight: 1.55,
+            color: 'var(--text-secondary, rgba(255,255,255,0.7))',
+          }}
+        >
+          {seoSectionAnswer.phase1EmptyHint}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <ScheduleLinkProvider item={scheduleItem}>
       <ScheduleSaverRegistration
@@ -500,6 +534,9 @@ function SeoPage() {
       />
     <div className="p-8 max-w-6xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="SEO Optimizer" />}
+      <div className="mb-4">
+        <MediumToggle section="seo" />
+      </div>
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">

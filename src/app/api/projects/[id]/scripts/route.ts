@@ -4,6 +4,7 @@ import { countWords, estimateDuration } from '@/lib/utils';
 import { resyncAssignmentSectionsIfStale } from '@/lib/narrator-db';
 import { logger } from '@/lib/logger';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
+import { runAutoFanOut } from '@/lib/shorts-auto-fan-out';
 
 /**
  * Audit C1: previously had ZERO auth and ZERO workspace filter — anyone
@@ -99,6 +100,24 @@ export const POST = apiRoute.authed(
         }
       } catch (e) {
         logger.warn('narrator section resync on script save failed', {
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+
+      // Auto-fan-out Short candidates from this script. Synchronous + cheap
+      // (deterministic scorer, no AI call). Wrapped in try so a fan-out
+      // failure can never break the script save itself.
+      try {
+        await runAutoFanOut({
+          workspaceId: session.ws,
+          projectId: id,
+          sourceScriptId: newId,
+          scriptText: content,
+        });
+      } catch (e) {
+        logger.warn('[shorts auto-fan-out] failed on script save (non-fatal)', {
+          projectId: id,
+          sourceScriptId: newId,
           detail: e instanceof Error ? e.message : String(e),
         });
       }

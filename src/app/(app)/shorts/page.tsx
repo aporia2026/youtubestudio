@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -10,6 +11,7 @@ import {
   type ShortSeoResult,
 } from '@/lib/shorts-types';
 import { downloadHref } from '@/lib/download-file';
+import { ShortsInboxPanel } from '@/components/shorts/ShortsInboxPanel';
 
 interface ProjectListItem {
   id: string;
@@ -29,7 +31,33 @@ interface ElevenVoice {
   name: string;
 }
 
+/** Reads `?tab=` from the URL with `extract` fallback. Centralised so the
+ *  tab strip + the early-return inbox branch agree. */
+type ShortsTab = 'extract' | 'inbox';
+function parseTab(raw: string | null | undefined): ShortsTab {
+  return raw === 'inbox' ? 'inbox' : 'extract';
+}
+
 export default function ShortsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+      <ShortsPageInner />
+    </Suspense>
+  );
+}
+
+function ShortsPageInner() {
+  const search = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const tab = parseTab(search?.get('tab'));
+  const setTab = (next: ShortsTab) => {
+    const params = new URLSearchParams(search?.toString() ?? '');
+    if (next === 'extract') params.delete('tab');
+    else params.set('tab', next);
+    const qs = params.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
+  };
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [scripts, setScripts] = useState<ScriptListItem[]>([]);
   const [voices, setVoices] = useState<ElevenVoice[]>([]);
@@ -224,15 +252,76 @@ export default function ShortsPage() {
   const selectedScript = scripts.find(s => s.id === selectedScriptId);
   const projectVoiceId = useMemo(() => voices[0]?.voice_id ?? '', [voices]);
 
+  // Shared tab strip — appears at the top of every tab so the user can
+  // switch from anywhere. Pulled into a const so the extract + inbox
+  // branches stay in sync.
+  const tabStrip = (
+    <div
+      role="tablist"
+      style={{
+        marginLeft: 'auto',
+        display: 'inline-flex',
+        gap: 4,
+        padding: 4,
+        borderRadius: 12,
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.08)',
+      }}
+    >
+      {(['extract', 'inbox'] as const).map((t) => (
+        <button
+          key={t}
+          role="tab"
+          aria-selected={tab === t}
+          type="button"
+          onClick={() => setTab(t)}
+          style={{
+            padding: '6px 14px',
+            borderRadius: 8,
+            border: 'none',
+            cursor: tab === t ? 'default' : 'pointer',
+            fontSize: 13,
+            fontWeight: tab === t ? 600 : 500,
+            background: tab === t ? 'rgba(124,58,237,0.9)' : 'transparent',
+            color: tab === t ? '#fff' : 'var(--text-secondary, rgba(255,255,255,0.7))',
+          }}
+        >
+          {t === 'extract' ? 'Extract' : 'Inbox'}
+        </button>
+      ))}
+    </div>
+  );
+
+  // Inbox early return — keeps the existing extract UI below untouched.
+  if (tab === 'inbox') {
+    return (
+      <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+        <div className="mb-6" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div>
+            <h1 className="text-2xl font-bold gradient-text">Shorts</h1>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              Pending Short candidates across every project in this workspace.
+            </p>
+          </div>
+          {tabStrip}
+        </div>
+        <ShortsInboxPanel mediumFilter="all" />
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold gradient-text">Shorts</h1>
-        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Extract a 30-90 second vertical Short from any long-form script. The AI picks the
-          sharpest insight, formats it for the 9:16 algorithm, and gives you back a
-          speakable script with [VISUAL] cues.
-        </p>
+      <div className="mb-6" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div>
+          <h1 className="text-2xl font-bold gradient-text">Shorts</h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Extract a 30-90 second vertical Short from any long-form script. The AI picks the
+            sharpest insight, formats it for the 9:16 algorithm, and gives you back a
+            speakable script with [VISUAL] cues.
+          </p>
+        </div>
+        {tabStrip}
       </div>
 
       {error && (

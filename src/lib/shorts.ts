@@ -328,21 +328,60 @@ export async function generateShortVoiceover(args: GenerateShortVoiceoverArgs): 
 // Read API
 // ---------------------------------------------------------------------------
 
+/** Common SELECT body. Inlined for now — extracting would force a `sql.unsafe`
+ *  call site since @vercel/postgres tags don't accept fragment values. */
 export async function listShortsForWorkspace(
   workspaceId: string,
-  opts: { projectId?: string; limit?: number } = {},
+  opts: {
+    projectId?: string;
+    medium?: 'long_form' | 'short_clip' | 'short_native';
+    /** When true, hides dismissed rows. Inbox queries pass true; the existing
+     *  /shorts page (which shows everything including dismissed) leaves it false. */
+    inboxOnly?: boolean;
+    limit?: number;
+  } = {},
 ): Promise<ShortRow[]> {
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
-  if (opts.projectId) {
+  // Branch on every filter combination — @vercel/postgres tagged templates
+  // can't compose fragments, so explicit branches are the only safe path.
+  // The Phase 1 inbox surface uses inboxOnly + medium='short_clip' for Mode A
+  // candidates and medium='short_native' for auto-fan-out + Mode C output.
+  if (opts.projectId && opts.medium && opts.inboxOnly) {
     const { rows } = await sql<ShortRow>`
       SELECT
-        id, workspace_id, project_id, source_script_id, kind,
+        id, workspace_id, project_id, source_script_id, kind, medium,
         title, short_script, hook, payoff,
         word_count, estimated_duration_seconds,
         source_title, source_description, seo_result,
         voiceover_audio_url, voiceover_blob_pathname,
         voiceover_voice_id, voiceover_duration_seconds,
         rendered_video_url, ai_model, notes,
+        hook_score, dismissed_at::text AS dismissed_at,
+        source_youtube_video_id, clip_start_ms, clip_end_ms,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at
+      FROM shorts
+      WHERE workspace_id = ${workspaceId}::uuid
+        AND project_id = ${opts.projectId}::uuid
+        AND medium = ${opts.medium}
+        AND dismissed_at IS NULL
+      ORDER BY hook_score DESC NULLS LAST, created_at DESC
+      LIMIT ${limit}
+    `;
+    return rows;
+  }
+  if (opts.projectId) {
+    const { rows } = await sql<ShortRow>`
+      SELECT
+        id, workspace_id, project_id, source_script_id, kind, medium,
+        title, short_script, hook, payoff,
+        word_count, estimated_duration_seconds,
+        source_title, source_description, seo_result,
+        voiceover_audio_url, voiceover_blob_pathname,
+        voiceover_voice_id, voiceover_duration_seconds,
+        rendered_video_url, ai_model, notes,
+        hook_score, dismissed_at::text AS dismissed_at,
+        source_youtube_video_id, clip_start_ms, clip_end_ms,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -353,15 +392,62 @@ export async function listShortsForWorkspace(
     `;
     return rows;
   }
+  if (opts.medium && opts.inboxOnly) {
+    const { rows } = await sql<ShortRow>`
+      SELECT
+        id, workspace_id, project_id, source_script_id, kind, medium,
+        title, short_script, hook, payoff,
+        word_count, estimated_duration_seconds,
+        source_title, source_description, seo_result,
+        voiceover_audio_url, voiceover_blob_pathname,
+        voiceover_voice_id, voiceover_duration_seconds,
+        rendered_video_url, ai_model, notes,
+        hook_score, dismissed_at::text AS dismissed_at,
+        source_youtube_video_id, clip_start_ms, clip_end_ms,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at
+      FROM shorts
+      WHERE workspace_id = ${workspaceId}::uuid
+        AND medium = ${opts.medium}
+        AND dismissed_at IS NULL
+      ORDER BY hook_score DESC NULLS LAST, created_at DESC
+      LIMIT ${limit}
+    `;
+    return rows;
+  }
+  if (opts.inboxOnly) {
+    const { rows } = await sql<ShortRow>`
+      SELECT
+        id, workspace_id, project_id, source_script_id, kind, medium,
+        title, short_script, hook, payoff,
+        word_count, estimated_duration_seconds,
+        source_title, source_description, seo_result,
+        voiceover_audio_url, voiceover_blob_pathname,
+        voiceover_voice_id, voiceover_duration_seconds,
+        rendered_video_url, ai_model, notes,
+        hook_score, dismissed_at::text AS dismissed_at,
+        source_youtube_video_id, clip_start_ms, clip_end_ms,
+        created_at::text AS created_at,
+        updated_at::text AS updated_at
+      FROM shorts
+      WHERE workspace_id = ${workspaceId}::uuid
+        AND dismissed_at IS NULL
+      ORDER BY hook_score DESC NULLS LAST, created_at DESC
+      LIMIT ${limit}
+    `;
+    return rows;
+  }
   const { rows } = await sql<ShortRow>`
     SELECT
-      id, workspace_id, project_id, source_script_id, kind,
+      id, workspace_id, project_id, source_script_id, kind, medium,
       title, short_script, hook, payoff,
       word_count, estimated_duration_seconds,
       source_title, source_description, seo_result,
       voiceover_audio_url, voiceover_blob_pathname,
       voiceover_voice_id, voiceover_duration_seconds,
       rendered_video_url, ai_model, notes,
+      hook_score, dismissed_at::text AS dismissed_at,
+      source_youtube_video_id, clip_start_ms, clip_end_ms,
       created_at::text AS created_at,
       updated_at::text AS updated_at
     FROM shorts
@@ -375,13 +461,15 @@ export async function listShortsForWorkspace(
 export async function getShort(id: string, workspaceId: string): Promise<ShortRow | null> {
   const { rows } = await sql<ShortRow>`
     SELECT
-      id, workspace_id, project_id, source_script_id, kind,
+      id, workspace_id, project_id, source_script_id, kind, medium,
       title, short_script, hook, payoff,
       word_count, estimated_duration_seconds,
       source_title, source_description, seo_result,
       voiceover_audio_url, voiceover_blob_pathname,
       voiceover_voice_id, voiceover_duration_seconds,
       rendered_video_url, ai_model, notes,
+      hook_score, dismissed_at::text AS dismissed_at,
+      source_youtube_video_id, clip_start_ms, clip_end_ms,
       created_at::text AS created_at,
       updated_at::text AS updated_at
     FROM shorts

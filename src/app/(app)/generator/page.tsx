@@ -23,6 +23,9 @@ import { SeriesPicker } from '@/components/ui/SeriesPicker';
 import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/TemplateContextPicker';
 import { ReferenceLibraryPicker, type PickedReference } from '@/components/ui/ReferenceLibraryPicker';
 import { fetchPriorParts, formatPriorPartsForPrompt, saveSeriesPart } from '@/lib/series';
+import { MediumToggle, MediumHint, useMedium } from '@/components/ui/MediumToggle';
+import { getMediumStrategy } from '@/lib/content-medium';
+import { ShortClipSurface } from '@/components/shorts/ShortClipSurface';
 import { EMPTY_CONSTRAINTS, type ScriptConstraints } from '@/lib/script-options';
 import { getScriptHistory, getScriptHistoryCached, saveScript as saveScriptToHistory, deleteScriptEntry, clearScriptHistory, getRecentTopics, type ScriptHistoryEntry } from '@/lib/history';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
@@ -111,6 +114,10 @@ export default function GeneratorPageWrapper() {
 function GeneratorPage() {
   const search = useSearchParams();
   const scheduleItemId = getScheduleLinkId(search);
+  // Medium primitive — Phase 15.1. Determines whether the user sees the
+  // long-form script generator (default) or a Shorts surface.
+  const medium = useMedium();
+  const sectionAnswer = getMediumStrategy(medium).forSection('scripts');
   const [scheduleItem, setScheduleItem] = useState<ScheduleItem | null>(null);
   const [schedulePrefilled, setSchedulePrefilled] = useState(false);
 
@@ -890,6 +897,52 @@ function GeneratorPage() {
   const trimmedScript = script.trim();
   const wordCountForSaver = countWords(script);
 
+  // Shorts surfaces — early return for non-long-form mediums. Long-form
+  // body below is untouched.
+  if (medium === 'short_clip' && sectionAnswer.phase1Available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Scripts — Shorts</h1>
+          <MediumToggle section="scripts" />
+        </div>
+        <MediumHint section="scripts" hint={sectionAnswer.headerHint} />
+        <ShortClipSurface
+          headline="Find a clippable moment in an existing video"
+          subhead="Pick one of your published videos. We score the strongest 45-second moments — open the winner in YouTube Studio to cut it there, or save it to the Shorts inbox."
+        />
+      </div>
+    );
+  }
+  if (medium === 'short_native' || !sectionAnswer.phase1Available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Scripts — Shorts</h1>
+          <MediumToggle section="scripts" />
+        </div>
+        <MediumHint section="scripts" hint={sectionAnswer.headerHint} />
+        <section
+          style={{
+            marginTop: 16,
+            padding: 24,
+            borderRadius: 14,
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            maxWidth: 720,
+            fontSize: 14,
+            lineHeight: 1.55,
+            color: 'var(--text-secondary, rgba(255,255,255,0.7))',
+          }}
+        >
+          {sectionAnswer.phase1EmptyHint}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <ScheduleLinkProvider item={scheduleItem}>
       <ScheduleSaverRegistration
@@ -983,6 +1036,9 @@ function GeneratorPage() {
       />
     <div className="p-8 max-w-6xl mx-auto">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
+      <div className="mb-4">
+        <MediumToggle section="scripts" />
+      </div>
       {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-2">
