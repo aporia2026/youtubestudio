@@ -1,4 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+
+// Extractor LLM calls on long ideas + context blocks routinely run 20-45s.
+// The default Vercel function timeout (60s on Hobby) was killing it under
+// load and surfacing as "generating forever" in the client because the
+// fetch never resolved. Match the render + style-assets routes' 300s cap.
+export const maxDuration = 300;
 import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';

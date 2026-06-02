@@ -27,6 +27,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
 import { DEFAULT_SHORT_STYLE_ID, type ShortStyleId } from '@/lib/short-styles';
@@ -105,6 +106,7 @@ const POV_LABELS: Record<PovStyle, string> = {
 };
 
 export function ShortNativeIdeasSurface() {
+  const router = useRouter();
   // ── primary inputs ──────────────────────────────────────────────────
   const [nicheText, setNicheText] = useState('');
   const [nicheRowId, setNicheRowId] = useState<string>(''); // '' = Custom…
@@ -452,34 +454,25 @@ export function ShortNativeIdeasSurface() {
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
         const newShortId = data.id as string | undefined;
 
-        // 2. Style asset generation. Minimal = no-op stamp (fast). Doodle
-        //    + Paint take 1-4 minutes server-side; we fire-and-forget
-        //    instead of blocking the page on the wait. The Vercel function
-        //    has maxDuration=300 and will keep running even after this
-        //    fetch promise gets resolved/cancelled.
+        // 2. Phase 15.10 — route the user STRAIGHT into the new Shorts
+        //    editor at /shorts/[id] so they get a live preview + all the
+        //    generation actions in one place. The style-assets pipeline
+        //    fires here as a fire-and-forget; the editor's polling loop
+        //    flips the status pill from "generating" to "ready" when the
+        //    server-side run lands.
         if (newShortId && effectiveStyleId !== 'minimal_gradient_v1') {
-          // Kick off without awaiting. The catch keeps an uncaught
-          // promise rejection from logging to the console if the server
-          // 502s or the user navigates away.
-          void fetch(
-            `/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                style_id: effectiveStyleId,
-                niche: effectiveNiche,
-              }),
-              keepalive: true,
-            },
-          ).catch(() => {
-            // Surface as an inbox status when the user gets back to it;
-            // a toast now would be misleading because the work may still
-            // succeed even after the keepalive socket drops.
+          void fetch(`/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ style_id: effectiveStyleId, niche: effectiveNiche }),
+            keepalive: true,
+          }).catch(() => {
+            /* status surfaces in the editor's polling loop */
           });
-          toast.success(
-            `Short created — ${effectiveStyleId.replace(/_/g, ' ')} assets generating in the background (1-4 min). Check the Shorts inbox shortly.`,
-          );
+        }
+        if (newShortId) {
+          toast.success('Short created — opening editor.');
+          router.push(`/shorts/${encodeURIComponent(newShortId)}`);
         } else {
           toast.success('Short created — open the Shorts inbox to voice it.');
         }
@@ -489,7 +482,7 @@ export function ShortNativeIdeasSurface() {
         setGeneratingKey(null);
       }
     },
-    [effectiveNiche, effectiveStyleId],
+    [effectiveNiche, effectiveStyleId, router],
   );
 
   return (

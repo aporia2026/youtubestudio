@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { toast } from 'sonner';
 import type { ShortRow } from '@/lib/shorts-types';
 import {
@@ -336,6 +337,23 @@ export function ShortsInboxPanel({ mediumFilter = 'all' }: Props) {
                 >
                   Open in YouTube Studio →
                 </a>
+              )}
+              {row.medium === 'short_native' && (
+                <Link
+                  href={`/shorts/${encodeURIComponent(row.id)}`}
+                  style={{
+                    padding: '5px 11px',
+                    borderRadius: 8,
+                    border: '1px solid rgba(124,58,237,0.4)',
+                    background: 'rgba(124,58,237,0.12)',
+                    color: '#c4b5fd',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textDecoration: 'none',
+                  }}
+                >
+                  Open editor →
+                </Link>
               )}
               {getStyleAssetStatus(row) === 'generating' && (
                 <button
