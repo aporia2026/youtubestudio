@@ -109,6 +109,104 @@ Generate 4 distinct title options (different angles: curiosity, how/why, number/
   };
 }
 
+// ---------------------------------------------------------------------------
+// Native Short SEO — Phase 15.2
+// ---------------------------------------------------------------------------
+//
+// `buildShortSeoPrompt` above optimizes a Short the USER ALREADY MADE
+// (paste-and-grade flow). For Shorts we generated in-app via the extractor
+// or Mode C, the SEO input shape is different — we have the actual script,
+// hook, and payoff, not a user-typed title/description pair.
+//
+// `buildNativeShortSeoPrompt` reframes the task: "given a generated Short
+// script, write the title + description + hashtags". Output shape is the
+// SAME ShortSeoResult so `parseShortSeoResult` is reused without a sibling
+// parser — one fewer thing to keep in sync.
+//
+// Native-specific rules (verified 2026-06-02 via WebSearch):
+//   - Description target ≤150 chars (the part above the fold on mobile).
+//   - 3-5 hashtags max (more than 15 = ALL hashtags ignored; we cap further).
+//   - No #Shorts injection — YouTube auto-classifies 9:16 ≤180s. Saves a
+//     precious title char.
+//   - No chapters — Shorts don't render chapters in the vertical feed.
+
+export interface BuildNativeShortSeoPromptArgs {
+  /** The current title from the row, if any (extractor often supplies one). */
+  generatedTitle?: string;
+  /** The Short's spoken script — used to extract keywords + framing. */
+  shortScript: string;
+  /** The literal hook line — load-bearing for the title. */
+  hook?: string;
+  /** The literal payoff line. */
+  payoff?: string;
+  /** Length in seconds (informational). */
+  lengthSeconds: number;
+  niche: string;
+  /** Title of the source long-form video, when this Short was derived. */
+  sourceVideoTitle?: string;
+}
+
+export function buildNativeShortSeoPrompt(
+  args: BuildNativeShortSeoPromptArgs,
+): { system: string; user: string } {
+  const sourceTitle = args.sourceVideoTitle?.trim();
+  return {
+    system: `You are the world's top YouTube Shorts SEO strategist. You write metadata for Shorts that the algorithm RECOGNISES and surfaces.
+
+You are given a Short SCRIPT we GENERATED — not a user-pasted Short. The video does not exist yet. Your job is to write the title, description, and hashtags that will give this Short the best chance on the vertical feed + Shorts search.
+
+## SHORTS METADATA RULES (verified June 2026):
+
+**TITLES:**
+- Under 60 characters. Front-load the hook or the primary keyword. The first 35-40 chars are what's read in the feed.
+- DO NOT inject #Shorts in the title. YouTube auto-classifies 9:16 video ≤180s — the hashtag wastes chars and provides zero categorisation lift.
+- Curiosity / bold-claim / specific-number framings beat list-style titles on Shorts.
+- Never ALL CAPS for more than one word. No fake clickbait — high bounce buries a Short fast.
+
+**DESCRIPTIONS:**
+- Target ≤150 characters. Mobile-feed users see only the above-the-fold cut; longer text is wasted.
+- One short line of context + hashtags. Do not write paragraphs.
+- No chapters — they don't render in the vertical feed.
+
+**HASHTAGS:**
+- 3 to 5 hashtags max. More than 5 = diminishing returns; more than 15 = YouTube ignores them all.
+- DO NOT include "Shorts" — see title rule.
+- Mix one broad niche tag with 2-4 specific topic tags. Store each WITHOUT the leading '#'. No spaces inside a tag.
+
+## GROUND CLAIMS IN REALITY:
+Do not invent statistics, fake dates, or quoted experts. A vivid true line beats a fake specific.
+
+## OUTPUT:
+Return STRICT JSON only — no prose before or after, no markdown fence. Grade every option 0-100 (not everything is a 95). One-line rationale for each.`,
+    user: `Write SEO metadata for this generated YouTube Short.
+
+**Niche:** ${args.niche}
+**Length:** ${args.lengthSeconds} seconds
+${args.generatedTitle ? `**Working title:** ${args.generatedTitle}\n` : ''}${args.hook ? `**Hook line:** ${args.hook}\n` : ''}${args.payoff ? `**Payoff line:** ${args.payoff}\n` : ''}**Short script:**
+"""
+${args.shortScript.trim().slice(0, 4000)}
+"""
+${sourceTitle ? `\n**Source long-form video:** ${sourceTitle}\nAlign the Short's keywords + framing with this parent video so they reinforce each other in search.\n` : ''}
+Return this EXACT JSON shape:
+
+{
+  "primary_keyword": "<the main keyword this Short should rank for>",
+  "titles": [
+    { "text": "<title, under 60 chars, NO #Shorts>", "score": <0-100>, "rationale": "<one line>" }
+  ],
+  "descriptions": [
+    { "text": "<description ≤150 chars including hashtags at end, no chapters, no #Shorts>", "score": <0-100>, "rationale": "<one line>" }
+  ],
+  "hashtag_sets": [
+    { "tags": ["<3-5 tags, NO 'Shorts'>"], "score": <0-100>, "rationale": "<one line>" }
+  ],
+  "notes": "<one or two sentences of overall SEO advice>"
+}
+
+Generate 4 distinct title options (curiosity / bold claim / number / how-why), 3 description options, and 2 hashtag sets. Return ONLY valid JSON.`,
+  };
+}
+
 /** Coerce an unknown to a 0-100 integer score, defaulting to 0. */
 function toScore(v: unknown): number {
   const n = typeof v === 'number' ? v : Number(v);

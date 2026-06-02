@@ -71,7 +71,12 @@ export function BulkGenerateModal({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.65)',
+        // Heavier scrim than the default card backdrops — the preview
+        // behind a "Generate" modal is usually a bright doodle frame
+        // that bleeds through 0.65 alpha. 0.88 keeps the preview
+        // legible (so the user can still see what they're regenerating)
+        // while keeping the modal panel obviously the foreground.
+        background: 'rgba(0,0,0,0.88)',
         zIndex: 200,
         display: 'flex',
         alignItems: 'center',
@@ -84,13 +89,19 @@ export function BulkGenerateModal({
         style={{
           width: '100%',
           maxWidth: 540,
-          background: 'var(--card-bg)',
-          border: '1px solid var(--card-border)',
+          // Solid dark background — `var(--card-bg)` was resolving to
+          // a translucent value in the editor theme; bright preview
+          // content bled through and made the cost label unreadable
+          // (user-reported 2026-06-02). Solid hex guarantees legibility
+          // regardless of theme drift.
+          background: '#0f172a',
+          border: '1px solid rgba(255,255,255,0.18)',
           borderRadius: 8,
           padding: 24,
-          color: 'var(--fg)',
+          color: '#f3f4f6',
           fontSize: 13,
           lineHeight: 1.5,
+          boxShadow: '0 12px 48px rgba(0,0,0,0.55)',
         }}
       >
         <h2 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 600 }}>

@@ -230,6 +230,135 @@ export async function extractAndSaveShort(args: ExtractShortArgs): Promise<{ id:
   return { id: rows[0]!.id, short };
 }
 
+// ---------------------------------------------------------------------------
+// Mode C — Phase 15.2
+// ---------------------------------------------------------------------------
+//
+// `extractAndSaveShort` above takes a long-form SCRIPT row (sourceScriptId
+// FK is required). Mode C feeds the extractor with a TRANSCRIPT MOMENT
+// from an existing YouTube video — no script row to point at. This sibling
+// orchestrator wraps the same prompt + parser, persists with
+// kind='extracted', medium='short_native', source_youtube_video_id set,
+// and source_script_id NULL.
+//
+// The persisted row plugs into the existing voiceover + render flow
+// unchanged (it has a `short_script` body, which is the only thing the
+// downstream pipeline cares about).
+
+export interface ExtractShortFromTranscriptMomentArgs {
+  workspaceId: string;
+  projectId: string | null;
+  /** YouTube video id the moment was taken from. */
+  sourceYoutubeVideoId: string;
+  /** Joined transcript text covering the candidate window (the moment's
+   *  text from `clip-scorer.ts` ClipCandidate). */
+  momentText: string;
+  /** Start time of the moment (ms). */
+  clipStartMs: number;
+  /** End time of the moment (ms). */
+  clipEndMs: number;
+  /** The niche the user is working in — feeds the extractor's prompt. */
+  niche: string;
+  tone?: string;
+  /** Target Short length in seconds. Clamped to [10, 90]. */
+  targetSeconds?: number;
+  modelId?: string;
+}
+
+export async function extractShortFromTranscriptMoment(
+  args: ExtractShortFromTranscriptMomentArgs,
+): Promise<{ id: string; short: ExtractedShort }> {
+  const targetSeconds = Math.max(
+    10,
+    Math.min(90, args.targetSeconds ?? TARGET_DURATION_SECONDS_DEFAULT),
+  );
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'shorts-extract'));
+  const { system, user } = buildShortExtractionPrompt({
+    longScript: args.momentText,
+    niche: args.niche,
+    tone: args.tone,
+    targetSeconds,
+  });
+
+  const raw = await generateText({
+    modelId,
+    systemPrompt: system,
+    prompt: user,
+    maxTokens: 4000,
+    temperature: 0.7,
+    spend: {
+      workspaceId: args.workspaceId,
+      projectId: args.projectId ?? null,
+      featureArea: 'shorts_mode_c',
+      metadata: {
+        target_seconds: targetSeconds,
+        source_youtube_video_id: args.sourceYoutubeVideoId,
+      },
+    },
+  });
+
+  let short: ExtractedShort;
+  try {
+    short = parseExtractedShort(raw);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error('[shorts mode-c spin] extractor parse failed', {
+      sourceYoutubeVideoId: args.sourceYoutubeVideoId,
+      detail,
+      raw_preview: raw.slice(0, 400),
+    });
+    throw new Error(`Extractor returned a malformed response: ${detail}`);
+  }
+
+  const estimatedDuration = estimateShortDurationSeconds(short.word_count);
+
+  const { rows } = await sql<{ id: string }>`
+    INSERT INTO shorts (
+      workspace_id, project_id,
+      kind, medium,
+      title, short_script, hook, payoff,
+      word_count, estimated_duration_seconds,
+      ai_model, generation_params,
+      source_youtube_video_id, clip_start_ms, clip_end_ms
+    ) VALUES (
+      ${args.workspaceId}::uuid,
+      ${args.projectId ?? null}::uuid,
+      'extracted',
+      'short_native',
+      ${short.title || null},
+      ${short.short_script},
+      ${short.hook || null},
+      ${short.payoff || null},
+      ${short.word_count},
+      ${estimatedDuration},
+      ${modelId},
+      ${JSON.stringify({
+        targetSeconds,
+        niche: args.niche,
+        tone: args.tone,
+        source_youtube_video_id: args.sourceYoutubeVideoId,
+        clip_start_ms: args.clipStartMs,
+        clip_end_ms: args.clipEndMs,
+      })}::jsonb,
+      ${args.sourceYoutubeVideoId},
+      ${args.clipStartMs},
+      ${args.clipEndMs}
+    )
+    RETURNING id
+  `;
+
+  logger.info('[shorts mode-c spin] persisted', {
+    workspaceId: args.workspaceId,
+    projectId: args.projectId,
+    sourceYoutubeVideoId: args.sourceYoutubeVideoId,
+    shortId: rows[0]!.id,
+    targetSeconds,
+    word_count: short.word_count,
+  });
+
+  return { id: rows[0]!.id, short };
+}
+
 export interface GenerateShortVoiceoverArgs {
   shortId: string;
   workspaceId: string;

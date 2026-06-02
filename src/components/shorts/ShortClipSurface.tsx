@@ -65,6 +65,13 @@ interface Props {
   headline?: string;
   /** Section-specific sub-line. */
   subhead?: string;
+  /** When true (Phase 15.2), each candidate also offers a "Make this a
+   *  Short" button that calls Mode C — spins a fresh short_native row
+   *  from the candidate moment. */
+  enableModeC?: boolean;
+  /** Niche label passed to the Mode C extractor prompt. Required when
+   *  `enableModeC` is true (the extractor's prompt needs a niche). */
+  modeCNiche?: string;
 }
 
 function formatMsAsTimestamp(ms: number): string {
@@ -80,7 +87,17 @@ function studioDeepLink(youtubeVideoId: string, startMs: number): string {
   return `https://studio.youtube.com/video/${encodeURIComponent(youtubeVideoId)}/edit?t=${t}`;
 }
 
-export function ShortClipSurface({ projectId, headline, subhead }: Props) {
+export function ShortClipSurface({
+  projectId,
+  headline,
+  subhead,
+  enableModeC,
+  modeCNiche,
+}: Props) {
+  // When Mode C is on but no niche was passed in by the parent, show an
+  // inline niche input. Scripts page wires this — it has no global niche.
+  const [inlineNiche, setInlineNiche] = useState('');
+  const effectiveNiche = (modeCNiche ?? inlineNiche).trim();
   const [channels, setChannels] = useState<ChannelListItem[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState('');
   const [videos, setVideos] = useState<VideoListItem[]>([]);
@@ -203,6 +220,46 @@ export function ShortClipSurface({ projectId, headline, subhead }: Props) {
     [selectedVideoId, projectId],
   );
 
+  // Per-candidate "Make this a Short" — Phase 15.2 Mode C. Calls the
+  // extractor with the moment's text, persists a `short_native` row,
+  // returns the new id. We use a per-candidate spinning state so the user
+  // can see which row is being generated.
+  const [generatingId, setGeneratingId] = useState<string | null>(null);
+  const generateFromCandidate = useCallback(
+    async (candidate: ClipCandidate) => {
+      if (!selectedVideoId) return;
+      if (!enableModeC) return;
+      if (!effectiveNiche) {
+        toast.error('Pick a niche first.');
+        return;
+      }
+      const key = `${candidate.startMs}-${candidate.endMs}`;
+      setGeneratingId(key);
+      try {
+        const res = await fetch('/api/shorts/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            youtubeVideoId: selectedVideoId,
+            momentText: candidate.text,
+            clipStartMs: candidate.startMs,
+            clipEndMs: candidate.endMs,
+            projectId,
+            niche: effectiveNiche,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        toast.success('New Short generated — open the Shorts inbox to voice it.');
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Failed to generate Short');
+      } finally {
+        setGeneratingId(null);
+      }
+    },
+    [selectedVideoId, projectId, enableModeC, effectiveNiche],
+  );
+
   const selectedVideo = useMemo(
     () => videos.find((v) => v.id === selectedVideoId),
     [videos, selectedVideoId],
@@ -244,6 +301,29 @@ export function ShortClipSurface({ projectId, headline, subhead }: Props) {
           Connect a channel via OAuth on a Channel page first — Mode A reads videos
           from your own connected channels only.
         </div>
+      )}
+
+      {enableModeC && !modeCNiche && (
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 16 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary, rgba(255,255,255,0.6))' }}>
+            Niche (used for the "Make this a Short" extractor prompt)
+          </span>
+          <input
+            type="text"
+            value={inlineNiche}
+            onChange={(e) => setInlineNiche(e.target.value)}
+            placeholder='e.g. "AI tools for solopreneurs"'
+            className="input-field"
+            style={{
+              padding: '8px 10px',
+              borderRadius: 8,
+              background: 'rgba(0,0,0,0.2)',
+              color: 'inherit',
+              border: '1px solid rgba(255,255,255,0.1)',
+              maxWidth: 480,
+            }}
+          />
+        </label>
       )}
 
       {!noChannels && (
@@ -391,7 +471,7 @@ export function ShortClipSurface({ projectId, headline, subhead }: Props) {
                   </span>
                 )}
               </p>
-              <footer style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <footer style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <a
                   href={selectedVideoId ? studioDeepLink(selectedVideoId, c.startMs) : '#'}
                   target="_blank"
@@ -426,6 +506,25 @@ export function ShortClipSurface({ projectId, headline, subhead }: Props) {
                 >
                   {saving ? 'Saving…' : 'Save all to inbox'}
                 </button>
+                {enableModeC && (
+                  <button
+                    type="button"
+                    onClick={() => generateFromCandidate(c)}
+                    disabled={generatingId !== null}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 8,
+                      border: 'none',
+                      background: 'rgba(124,58,237,0.85)',
+                      color: '#fff',
+                      cursor: generatingId !== null ? 'wait' : 'pointer',
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {generatingId === `${c.startMs}-${c.endMs}` ? 'Generating…' : 'Make this a Short'}
+                  </button>
+                )}
               </footer>
             </article>
           ))}

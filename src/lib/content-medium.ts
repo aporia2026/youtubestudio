@@ -89,32 +89,29 @@ export function parseMediumParam(raw: string | null | undefined): ContentMedium 
 // ---------------------------------------------------------------------------
 
 /**
- * What a section actually does for a given medium. Phase 1 only needs
- * three answers from each strategy:
+ * What a section actually does for a given medium. Three answers per
+ * (medium, section) pair:
  *
  *   - `headerHint` — one-line hint under the section title that explains
  *     what THIS medium does in THIS section. Keeps the lazy-user bar.
- *   - `phase1Available` — does this strategy fully implement THIS section
- *     yet, or should the section render a "Coming Phase 2" empty state?
- *     Used by the section page to decide what to render below the toggle.
- *   - `phase1EmptyHint` — when phase1Available is false, the empty state
- *     copy. Always specific to the (section, medium) pair.
+ *   - `available` — does this strategy have a real implementation for
+ *     THIS section, or should the section render an empty state?
+ *   - `unavailableHint` — when `available` is false, the empty-state copy.
+ *     Either "ships next phase" or "not applicable for this medium".
  *
- * Phase 2 will extend with:
- *   - `buildPrompt(section, args)` — section-aware prompt builder.
- *   - `qaCriteria()` — per-medium QA scoring weights.
- *   - `seoRules()` — per-medium SEO grading rules.
- *   - `renderTarget()` — render registry id for short_native.
- *
- * These are deliberately NOT in Phase 1's contract — see file header.
+ * Per-medium prompts / scorers / SEO rules / render targets live in
+ * dedicated modules (`shorts-ideas.ts`, `shorts-qa.ts`, `shorts-seo.ts`,
+ * `short-styles.ts`) that the section pages reach for directly, NOT in
+ * this interface — keeping `MediumStrategy` a routing primitive instead
+ * of an everything-bag.
  */
 export interface MediumSectionAnswer {
-  /** Sub-headline under the section title. <= 90 chars for layout. */
+  /** Sub-headline under the section title. <= 200 chars for layout. */
   headerHint: string;
-  /** Does this (section, medium) pair have a real Phase 1 implementation? */
-  phase1Available: boolean;
-  /** Empty-state copy shown when phase1Available is false. <= 140 chars. */
-  phase1EmptyHint: string;
+  /** Does this (medium, section) pair have a real implementation? */
+  available: boolean;
+  /** Empty-state copy shown when `available` is false. <= 200 chars. */
+  unavailableHint: string;
 }
 
 export interface MediumStrategy {
@@ -138,8 +135,8 @@ const LONG_FORM_STRATEGY: MediumStrategy = {
     };
     return {
       headerHint: hints[section],
-      phase1Available: true,
-      phase1EmptyHint: '',
+      available: true,
+      unavailableHint: '',
     };
   },
 };
@@ -152,31 +149,31 @@ const SHORT_CLIP_STRATEGY: MediumStrategy = {
         return {
           headerHint:
             'Find clippable Short moments inside the videos already on your channel.',
-          phase1Available: true,
-          phase1EmptyHint: '',
+          available: true,
+          unavailableHint: '',
         };
       case 'scripts':
         return {
           headerHint:
             'Pick a channel video; we score the strongest 45-second moments + give you a YouTube Studio deep link to cut it there.',
-          phase1Available: true,
-          phase1EmptyHint: '',
+          available: true,
+          unavailableHint: '',
         };
       case 'qa':
         return {
           headerHint:
-            'QA for clip recommendations lands in Phase 2 alongside the Make-from-scratch flow.',
-          phase1Available: false,
-          phase1EmptyHint:
-            'Pick a clip in Scripts first, then come here to grade it. The lean Shorts QA panel ships in Phase 2.',
+            'QA grades scripts you write — a clip recommendation is a pointer into someone else\'s edit.',
+          available: false,
+          unavailableHint:
+            'QA applies to Shorts you create from scratch. Flip to "New Short" to grade the script we generate.',
         };
       case 'seo':
         return {
           headerHint:
-            'SEO for Short clips lands in Phase 2 — the title/description rules differ from long-form.',
-          phase1Available: false,
-          phase1EmptyHint:
-            'Pick a clip in Scripts first. Shorts SEO scoring ships next phase.',
+            'SEO grades artifacts you publish — clip recommendations get cut in YouTube Studio where you write the metadata.',
+          available: false,
+          unavailableHint:
+            'SEO grading applies to Shorts you create from scratch. Flip to "New Short" to grade the title + description + hashtags.',
         };
     }
   },
@@ -185,21 +182,18 @@ const SHORT_CLIP_STRATEGY: MediumStrategy = {
 const SHORT_NATIVE_STRATEGY: MediumStrategy = {
   id: 'short_native',
   forSection(section) {
-    // Phase 1 deliberately defers short_native to Phase 2 across every
-    // section. Each (section, native) pair gets a specific empty state
-    // explaining what lands when.
     const hints: Record<ToggleSection, string> = {
       ideas:
-        'Hook-first vertical idea generation ships in Phase 2 alongside the rest of the Make-a-Short flow.',
+        'Hook-first vertical idea generation tuned for the 60-second algorithm.',
       scripts:
-        'Generate a fresh Short from a chosen moment — Phase 2 wires this to the existing extractor + voiceover + render.',
-      qa: 'The lean Shorts QA panel (hook, payoff, density, loop, safe-zone) ships in Phase 2.',
-      seo: 'Shorts SEO grading (hashtag rules, sub-150-char description, no chapters) ships in Phase 2.',
+        'Pick a channel-video moment, then we spin a fresh Short with voiceover + render through the existing extractor.',
+      qa: 'Lean Shorts QA — hook, payoff, density, loop, vertical-safe-zone. One AI call per pass.',
+      seo: 'Shorts SEO — hashtag rules, sub-150-char description, no chapters, no #Shorts injection.',
     };
     return {
       headerHint: hints[section],
-      phase1Available: false,
-      phase1EmptyHint: hints[section],
+      available: true,
+      unavailableHint: '',
     };
   },
 };

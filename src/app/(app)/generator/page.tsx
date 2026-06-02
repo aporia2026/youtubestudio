@@ -899,7 +899,7 @@ function GeneratorPage() {
 
   // Shorts surfaces — early return for non-long-form mediums. Long-form
   // body below is untouched.
-  if (medium === 'short_clip' && sectionAnswer.phase1Available) {
+  if (medium === 'short_clip' && sectionAnswer.available) {
     return (
       <div className="p-8 max-w-7xl mx-auto">
         {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
@@ -915,7 +915,24 @@ function GeneratorPage() {
       </div>
     );
   }
-  if (medium === 'short_native' || !sectionAnswer.phase1Available) {
+  if (medium === 'short_native' && sectionAnswer.available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Scripts — Shorts</h1>
+          <MediumToggle section="scripts" />
+        </div>
+        <MediumHint section="scripts" hint={sectionAnswer.headerHint} />
+        <ShortClipSurface
+          headline="Make a new Short from a channel-video moment"
+          subhead="Pick a video, score the moments, then click 'Make this a Short' on the winner — we spin a fresh script + persist it. Voice + render in the existing Shorts pipeline."
+          enableModeC={true}
+        />
+      </div>
+    );
+  }
+  if (!sectionAnswer.available) {
     return (
       <div className="p-8 max-w-7xl mx-auto">
         {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Script Generator" />}
@@ -937,7 +954,7 @@ function GeneratorPage() {
             color: 'var(--text-secondary, rgba(255,255,255,0.7))',
           }}
         >
-          {sectionAnswer.phase1EmptyHint}
+          {sectionAnswer.unavailableHint}
         </section>
       </div>
     );

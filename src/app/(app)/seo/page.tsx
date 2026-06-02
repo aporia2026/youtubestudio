@@ -18,6 +18,7 @@ import { saveDraft, getActiveDraft, type WorkflowDraft } from '@/lib/drafts';
 import { TemplateContextPicker, buildCombinedContext } from '@/components/ui/TemplateContextPicker';
 import { MediumToggle, MediumHint, useMedium } from '@/components/ui/MediumToggle';
 import { getMediumStrategy } from '@/lib/content-medium';
+import { ShortNativeSeoSurface } from '@/components/shorts/ShortNativeSeoSurface';
 
 interface TitleBreakdownEntry {
   score: number;
@@ -460,7 +461,20 @@ function SeoPage() {
   const seoIsReady = !!result && (!!seoFullDesc || seoTagStrings.length > 0);
   const seoIsDirty = seoIsReady && result !== lastSavedResultRef;
 
-  // Medium primitive — Phase 15.1. SEO for Shorts mediums lands Phase 2.
+  // Phase 15.2 — Shorts SEO dispatch.
+  if (seoMedium === 'short_native' && seoSectionAnswer.available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="SEO Optimizer" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>SEO — Shorts</h1>
+          <MediumToggle section="seo" />
+        </div>
+        <MediumHint section="seo" hint={seoSectionAnswer.headerHint} />
+        <ShortNativeSeoSurface />
+      </div>
+    );
+  }
   if (seoMedium !== 'long_form') {
     return (
       <div className="p-8 max-w-7xl mx-auto">
@@ -483,7 +497,7 @@ function SeoPage() {
             color: 'var(--text-secondary, rgba(255,255,255,0.7))',
           }}
         >
-          {seoSectionAnswer.phase1EmptyHint}
+          {seoSectionAnswer.unavailableHint}
         </section>
       </div>
     );

@@ -53,9 +53,9 @@ describe('strategy.forSection contract', () => {
       for (const section of TOGGLE_SECTIONS) {
         const ans = s.forSection(section);
         expect(ans.headerHint, `${m}/${section} headerHint`).toBeTruthy();
-        expect(typeof ans.phase1Available).toBe('boolean');
-        // Empty hint may be '' for phase1Available=true paths.
-        expect(typeof ans.phase1EmptyHint).toBe('string');
+        expect(typeof ans.available).toBe('boolean');
+        // Empty hint may be '' for available=true paths.
+        expect(typeof ans.unavailableHint).toBe('string');
       }
     }
   });
@@ -70,25 +70,27 @@ describe('strategy.forSection contract', () => {
     }
   });
 
-  it('long_form is phase1Available in every section', () => {
+  it('long_form is available in every section', () => {
     const s = getMediumStrategy('long_form');
     for (const section of TOGGLE_SECTIONS) {
-      expect(s.forSection(section).phase1Available, section).toBe(true);
+      expect(s.forSection(section).available, section).toBe(true);
     }
   });
 
-  it('short_clip is phase1Available in Ideas + Scripts, deferred for QA + SEO', () => {
+  it('short_clip is available in Ideas + Scripts; not applicable for QA + SEO', () => {
     const s = getMediumStrategy('short_clip');
-    expect(s.forSection('ideas').phase1Available).toBe(true);
-    expect(s.forSection('scripts').phase1Available).toBe(true);
-    expect(s.forSection('qa').phase1Available).toBe(false);
-    expect(s.forSection('seo').phase1Available).toBe(false);
+    expect(s.forSection('ideas').available).toBe(true);
+    expect(s.forSection('scripts').available).toBe(true);
+    // Clips are recommendations to cut in YT Studio — QA + SEO apply to
+    // Shorts you create from scratch, not pointers into someone else's edit.
+    expect(s.forSection('qa').available).toBe(false);
+    expect(s.forSection('seo').available).toBe(false);
   });
 
-  it('short_native is deferred across every section in Phase 1', () => {
+  it('short_native is available in every section (Phase 15.2)', () => {
     const s = getMediumStrategy('short_native');
     for (const section of TOGGLE_SECTIONS) {
-      expect(s.forSection(section).phase1Available, section).toBe(false);
+      expect(s.forSection(section).available, section).toBe(true);
     }
   });
 });

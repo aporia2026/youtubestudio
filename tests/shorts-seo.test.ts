@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildShortSeoPrompt, parseShortSeoResult } from '@/lib/shorts-seo';
+import {
+  buildNativeShortSeoPrompt,
+  buildShortSeoPrompt,
+  parseShortSeoResult,
+} from '@/lib/shorts-seo';
 
 describe('buildShortSeoPrompt', () => {
   it('embeds the entered details and omits the source-video blocks when absent', () => {
@@ -98,5 +102,81 @@ describe('parseShortSeoResult', () => {
   it('throws when there are no usable title options', () => {
     expect(() => parseShortSeoResult(JSON.stringify({ titles: [] }))).toThrow(/no usable title/i);
     expect(() => parseShortSeoResult('not json at all')).toThrow(/parse/i);
+  });
+});
+
+describe('buildNativeShortSeoPrompt', () => {
+  it('embeds the niche, hook, payoff and script body', () => {
+    const { user } = buildNativeShortSeoPrompt({
+      shortScript: 'Stop tying your shoes that way. Here is why the granny knot fails.',
+      hook: "You're tying your shoes wrong.",
+      payoff: 'Loop the second twist away.',
+      lengthSeconds: 35,
+      niche: 'life hacks',
+    });
+    expect(user).toContain('life hacks');
+    expect(user).toContain("You're tying your shoes wrong");
+    expect(user).toContain('Loop the second twist away');
+    expect(user).toContain('35 seconds');
+    expect(user).toContain('Stop tying your shoes');
+  });
+
+  it('includes the source video title when supplied', () => {
+    const { user } = buildNativeShortSeoPrompt({
+      shortScript: 'x',
+      lengthSeconds: 30,
+      niche: 'n',
+      sourceVideoTitle: 'Long-form parent',
+    });
+    expect(user).toContain('Long-form parent');
+  });
+
+  it('omits the source video block when absent', () => {
+    const { user } = buildNativeShortSeoPrompt({
+      shortScript: 'x',
+      lengthSeconds: 30,
+      niche: 'n',
+    });
+    expect(user).not.toContain('Source long-form video');
+  });
+
+  it('caps the script body in the prompt to keep budgets sane', () => {
+    const huge = 'word '.repeat(5000);
+    const { user } = buildNativeShortSeoPrompt({
+      shortScript: huge,
+      lengthSeconds: 45,
+      niche: 'n',
+    });
+    // The slice keeps the user prompt manageable — script body excerpt
+    // shouldn't be the full 25K-word input.
+    expect(user.length).toBeLessThan(10_000);
+  });
+
+  it('mandates the Phase 0 verified rules: no #Shorts in title/desc + ≤150 char description', () => {
+    const { system } = buildNativeShortSeoPrompt({
+      shortScript: 'x',
+      lengthSeconds: 30,
+      niche: 'n',
+    });
+    expect(system).toMatch(/DO NOT inject #Shorts/);
+    expect(system).toMatch(/≤?150 characters?|150 char/);
+    expect(system).toMatch(/3 to 5 hashtags|3-5 hashtags/);
+    expect(system).toMatch(/No chapters|don't render/);
+  });
+
+  it('reuses the same output shape as the external_seo flow', () => {
+    const { system, user } = buildNativeShortSeoPrompt({
+      shortScript: 'x',
+      lengthSeconds: 30,
+      niche: 'n',
+    });
+    // Both prompts demand the same JSON keys (primary_keyword, titles,
+    // descriptions, hashtag_sets, notes) so `parseShortSeoResult` can be
+    // reused without a sibling parser.
+    for (const key of ['primary_keyword', 'titles', 'descriptions', 'hashtag_sets', 'notes']) {
+      expect(user, key).toContain(key);
+    }
+    // System prompt demands STRICT JSON.
+    expect(system).toMatch(/STRICT JSON/);
   });
 });

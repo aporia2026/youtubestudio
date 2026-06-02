@@ -15,6 +15,7 @@ import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { MediumToggle, MediumHint, useMedium } from '@/components/ui/MediumToggle';
 import { getMediumStrategy } from '@/lib/content-medium';
+import { ShortNativeQaSurface } from '@/components/shorts/ShortNativeQaSurface';
 import { ScoreRing } from '@/components/ui/ScoreRing';
 import { saveDraft, getActiveDraft } from '@/lib/drafts';
 import { EMPTY_CONSTRAINTS, hasAnyConstraint, type ScriptConstraints } from '@/lib/script-options';
@@ -783,8 +784,20 @@ function QAPage() {
   const qaPassIsDirty = !!qaRunKey && qaRunKey !== lastSavedQaRunKey;
   const qaIsDirty = qaIsReady && (qaScriptIsDirty || qaPassIsDirty);
 
-  // Shorts surfaces — early return for non-long-form mediums. Phase 1
-  // defers QA for both short_clip and short_native to Phase 2.
+  // Phase 15.2 — Shorts QA dispatch.
+  if (medium === 'short_native' && sectionAnswer.available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="QA Engine" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>QA — Shorts</h1>
+          <MediumToggle section="qa" />
+        </div>
+        <MediumHint section="qa" hint={sectionAnswer.headerHint} />
+        <ShortNativeQaSurface />
+      </div>
+    );
+  }
   if (medium !== 'long_form') {
     return (
       <div className="p-8 max-w-7xl mx-auto">
@@ -807,7 +820,7 @@ function QAPage() {
             color: 'var(--text-secondary, rgba(255,255,255,0.7))',
           }}
         >
-          {sectionAnswer.phase1EmptyHint}
+          {sectionAnswer.unavailableHint}
         </section>
       </div>
     );

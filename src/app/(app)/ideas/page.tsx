@@ -15,6 +15,7 @@ import { getIdeasHistory, getIdeasHistoryCached, saveIdeas, deleteIdeasEntry, cl
 import { MediumToggle, MediumHint, useMedium } from '@/components/ui/MediumToggle';
 import { getMediumStrategy } from '@/lib/content-medium';
 import { ShortClipSurface } from '@/components/shorts/ShortClipSurface';
+import { ShortNativeIdeasSurface } from '@/components/shorts/ShortNativeIdeasSurface';
 
 // Collect every previously-generated title across all history entries —
 // passed as `existingTitles` so the LLM never repeats and the server can
@@ -735,7 +736,7 @@ function IdeasPage() {
 
   // Shorts surfaces — early return when the user has flipped the medium
   // toggle away from long-form. The long-form body below is untouched.
-  if (medium === 'short_clip' && sectionAnswer.phase1Available) {
+  if (medium === 'short_clip' && sectionAnswer.available) {
     return (
       <div className="p-8 max-w-7xl mx-auto">
         {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
@@ -751,7 +752,20 @@ function IdeasPage() {
       </div>
     );
   }
-  if (medium === 'short_native' || !sectionAnswer.phase1Available) {
+  if (medium === 'short_native' && sectionAnswer.available) {
+    return (
+      <div className="p-8 max-w-7xl mx-auto">
+        {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
+        <div className="mb-6 flex items-center gap-3">
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Ideas — Shorts</h1>
+          <MediumToggle section="ideas" />
+        </div>
+        <MediumHint section="ideas" hint={sectionAnswer.headerHint} />
+        <ShortNativeIdeasSurface />
+      </div>
+    );
+  }
+  if (!sectionAnswer.available) {
     return (
       <div className="p-8 max-w-7xl mx-auto">
         {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Idea Generator" />}
@@ -773,7 +787,7 @@ function IdeasPage() {
             color: 'var(--text-secondary, rgba(255,255,255,0.7))',
           }}
         >
-          {sectionAnswer.phase1EmptyHint}
+          {sectionAnswer.unavailableHint}
         </section>
       </div>
     );
