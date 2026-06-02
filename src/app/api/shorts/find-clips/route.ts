@@ -4,7 +4,7 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { fetchTranscript } from '@/lib/youtube-transcript';
 import { scoreClips, type ClipScorerSegment } from '@/lib/clip-scorer';
-import { getShortsSettings } from '@/lib/shorts-workspace-settings';
+import { getShortsSettings } from '@/lib/shorts-workspace-settings-db';
 
 /**
  * POST /api/shorts/find-clips

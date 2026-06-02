@@ -37,7 +37,7 @@
 import { sql } from '@vercel/postgres';
 import { logger } from './logger';
 import { scoreClips, type ClipScorerSegment } from './clip-scorer';
-import { getShortsSettings } from './shorts-workspace-settings';
+import { getShortsSettings } from './shorts-workspace-settings-db';
 import { WORDS_PER_SECOND } from './shorts-types';
 
 export interface AutoFanOutInput {

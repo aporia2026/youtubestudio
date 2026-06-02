@@ -3,8 +3,8 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import {
   getShortsSettings,
   updateShortsSettings,
-  type ShortsWorkspaceSettings,
-} from '@/lib/shorts-workspace-settings';
+} from '@/lib/shorts-workspace-settings-db';
+import type { ShortsWorkspaceSettings } from '@/lib/shorts-workspace-settings';
 
 /**
  * GET  /api/shorts/settings — read the workspace's Shorts settings.

@@ -326,3 +326,38 @@ export function computeMissingMotionCollages(
   });
   return out;
 }
+
+/** ALL motion-collage rows that are eligible (have a valid grid +
+ *  non-blank panel prompts), regardless of whether they already have
+ *  rendered panels. Drives the destructive "Regenerate all motion
+ *  collages" action — used when the user wants every collage re-run
+ *  with the latest pipeline (e.g. after the 2026-06-02 framing-lock
+ *  prompt fix to re-fix framing drift in existing renders). */
+export function computeAllEligibleMotionCollages(
+  doc: { rows: Array<{
+    shot_kind?: string;
+    motion_collage_panel_urls?: string[];
+    motion_collage_grid?: { cols: number; rows: number };
+    motion_collage_panel_prompts?: string[];
+    on_screen_text?: string;
+    section_title?: string;
+    script_text?: string;
+  }> },
+): BulkGenerateRow[] {
+  const out: BulkGenerateRow[] = [];
+  doc.rows.forEach((row, rowIndex) => {
+    if (row.shot_kind !== 'motion_collage') return;
+    if (!row.motion_collage_grid) return;
+    if (!row.motion_collage_panel_prompts?.length) return;
+    if (row.motion_collage_panel_prompts.some((p) => !p.trim())) return;
+    out.push({
+      rowIndex,
+      label:
+        row.on_screen_text?.trim() ||
+        row.section_title?.trim() ||
+        row.script_text?.trim() ||
+        `Shot ${rowIndex + 1}`,
+    });
+  });
+  return out;
+}

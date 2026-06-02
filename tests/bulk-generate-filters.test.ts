@@ -13,6 +13,7 @@ import {
   computeMissingBaseImages,
   computeMissingVariants,
   computeMissingMotionCollages,
+  computeAllEligibleMotionCollages,
 } from '@/components/editor/BulkGenerateModal';
 import type { ProductionDoc } from '@/remotion/utils';
 
@@ -181,5 +182,61 @@ describe('computeMissingMotionCollages — collages without panels', () => {
       }),
     ]);
     expect(computeMissingMotionCollages(doc)).toHaveLength(0);
+  });
+});
+
+describe('computeAllEligibleMotionCollages — every motion-collage row regardless of panel state', () => {
+  it('includes collages WITH existing panels (unlike computeMissingMotionCollages)', () => {
+    const doc = makeDoc([
+      row({
+        shot_kind: 'motion_collage',
+        motion_collage_grid: { cols: 2, rows: 2 },
+        motion_collage_panel_prompts: ['a', 'b', 'c', 'd'],
+        motion_collage_panel_urls: ['u1', 'u2', 'u3', 'u4'],
+      }),
+      row({
+        shot_kind: 'motion_collage',
+        motion_collage_grid: { cols: 2, rows: 2 },
+        motion_collage_panel_prompts: ['a', 'b', 'c', 'd'],
+      }),
+    ]);
+    expect(computeAllEligibleMotionCollages(doc).map(r => r.rowIndex)).toEqual([0, 1]);
+    // Sanity: the "missing" filter only sees row 1.
+    expect(computeMissingMotionCollages(doc).map(r => r.rowIndex)).toEqual([1]);
+  });
+
+  it('still gates on grid + non-blank prompts (regen can\'t fix data gaps)', () => {
+    const doc = makeDoc([
+      row({
+        shot_kind: 'motion_collage',
+        motion_collage_panel_urls: ['u1', 'u2', 'u3', 'u4'],
+        // missing grid + prompts
+      }),
+      row({
+        shot_kind: 'motion_collage',
+        motion_collage_grid: { cols: 2, rows: 2 },
+        motion_collage_panel_prompts: ['a', '', 'c', 'd'],
+        motion_collage_panel_urls: ['u1', 'u2', 'u3', 'u4'],
+      }),
+      row({
+        shot_kind: 'motion_collage',
+        motion_collage_grid: { cols: 2, rows: 2 },
+        motion_collage_panel_prompts: ['a', 'b', 'c', 'd'],
+        motion_collage_panel_urls: ['u1', 'u2', 'u3', 'u4'],
+      }),
+    ]);
+    expect(computeAllEligibleMotionCollages(doc).map(r => r.rowIndex)).toEqual([2]);
+  });
+
+  it('skips non-motion-collage rows entirely', () => {
+    const doc = makeDoc([
+      row({ visual_type: 'Animation' }),
+      row({
+        shot_kind: 'motion_collage',
+        motion_collage_grid: { cols: 2, rows: 2 },
+        motion_collage_panel_prompts: ['a', 'b', 'c', 'd'],
+      }),
+    ]);
+    expect(computeAllEligibleMotionCollages(doc).map(r => r.rowIndex)).toEqual([1]);
   });
 });

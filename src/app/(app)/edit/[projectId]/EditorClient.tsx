@@ -105,6 +105,7 @@ import {
   computeMissingBaseImages,
   computeMissingVariants,
   computeMissingMotionCollages,
+  computeAllEligibleMotionCollages,
 } from '@/components/editor/BulkGenerateModal';
 import { BrandKitModal } from '@/components/editor/BrandKitModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
@@ -313,7 +314,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   //   'collages' → Generate all motion collages
   // null when no modal is open. Same skeleton as flipOstModalOpen.
   const [bulkGenerateModal, setBulkGenerateModal] = useState<
-    'base' | 'variants' | 'collages' | null
+    'base' | 'variants' | 'collages' | 'collages-regen' | null
   >(null);
 
   // Timeline zoom. Lives in the client because zoom is a viewing
@@ -4253,6 +4254,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             <span>Generate all motion collages</span>
             <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↯</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setBulkGenerateModal('collages-regen')}
+            className="editor-btn w-full justify-between"
+            title="Regenerate EVERY motion-collage row, including ones that already have panels. Destructive — overwrites existing panel URLs. Useful after a pipeline change (e.g. framing-lock prompt) to re-fix all collages in one shot. Cost-gated."
+          >
+            <span>Regenerate all motion collages</span>
+            <span style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}>↻</span>
+          </button>
           {/* Pillarbox color default — used when a row's scene_zoom is
               under 100% and bars sit on either side of the scene. */}
           <div className="flex items-center gap-2">
@@ -5350,8 +5360,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             />
           );
         }
-        // bulkGenerateModal === 'collages'
-        const rows = computeMissingMotionCollages(state.doc);
+        // bulkGenerateModal === 'collages' (missing only)
+        // OR     === 'collages-regen' (every motion_collage row)
+        // Both share the same sequential worker — only the filter +
+        // modal copy differ. The regen path is destructive (overwrites
+        // existing panel URLs); the copy spells that out.
+        const isRegen = bulkGenerateModal === 'collages-regen';
+        const rows = isRegen
+          ? computeAllEligibleMotionCollages(state.doc)
+          : computeMissingMotionCollages(state.doc);
         // Motion-collage cost: each row generates ~N panels (cols×rows),
         // each panel ~= one image. Estimate cost = N panels × per-image.
         // For mixed grids, use the panel-prompts length per row.
@@ -5363,19 +5380,28 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         const collageLabel = `${label} × N panels per collage`;
         return (
           <BulkGenerateModal
-            title="Generate all motion collages"
-            description={`Generates panels for every motion-collage row that hasn't been rendered yet (and that has a grid + panel prompts set). Total panel count across all affected rows: ${totalPanels}. Each panel costs the same as one regular image; rows run sequentially because each panel chains off the previous one inside the row.`}
+            title={isRegen ? 'Regenerate all motion collages' : 'Generate all motion collages'}
+            description={
+              isRegen
+                ? `DESTRUCTIVE — overwrites existing panel URLs on every motion-collage row that has a grid + non-blank prompts. Use this to re-run the entire batch through the latest pipeline (e.g. after the framing-lock prompt fix). Total panel count across all affected rows: ${totalPanels}. Each panel costs the same as one regular image; rows run sequentially. Existing per-panel transforms (the manual X/Y/SCALE sliders) are PRESERVED — only the panel images themselves get replaced.`
+                : `Generates panels for every motion-collage row that hasn't been rendered yet (and that has a grid + panel prompts set). Total panel count across all affected rows: ${totalPanels}. Each panel costs the same as one regular image; rows run sequentially because each panel chains off the previous one inside the row.`
+            }
             affectedRows={rows}
             perImageCostLabel={collageLabel}
             perImageCostUsd={collageCostUsd / Math.max(1, rows.length)}
             totalRowCount={state.doc.rows.length}
             onCancel={() => setBulkGenerateModal(null)}
             onConfirm={() => {
-              console.info('[editor bulk-generate collages confirm]', {
-                affectedCount: rows.length,
-                totalPanels,
-                estCost: collageCostUsd,
-              });
+              console.info(
+                isRegen
+                  ? '[editor bulk-generate collages-regen confirm]'
+                  : '[editor bulk-generate collages confirm]',
+                {
+                  affectedCount: rows.length,
+                  totalPanels,
+                  estCost: collageCostUsd,
+                },
+              );
               setBulkGenerateModal(null);
               // Sequential dispatch — each motion-collage gen takes
               // ~2 min wall-clock, can't safely parallelize without
