@@ -90,6 +90,12 @@ export interface StyleSummary {
   // with bundled refs is selected. Saved styles never carry this —
   // they fetch their refs via the /refs subresource on selection.
   refs?: readonly StyleRefSummary[];
+  // For SAVED styles: the built-in slug this style was derived from.
+  // Lets downstream callers (SceneRouter variant routing, OST auto-flip)
+  // resolve a saved-style UUID to its built-in parent without an extra
+  // DB hit. Undefined on built-ins. PR 1 of
+  // `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+  based_on_built_in?: string;
 }
 
 interface StyleRefSummary {

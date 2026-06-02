@@ -368,6 +368,12 @@ export interface VideoShot {
    *  When absent / empty, the renderer falls back to a held single
    *  image (panel 0 mirrored into `imageUrl` by the pipeline). */
   motionCollagePanelUrls?: string[];
+  /** Grid layout for the panel URLs. Mirror of `ProductionRow.motion_collage_grid`,
+   *  threaded so editor thumbnails can render the exact cols × rows the
+   *  panels were sliced from instead of falling back to a square-ish guess.
+   *  Absent when shotKind is not 'motion_collage'. See PR 1 of
+   *  `_plans/2026-06-02-editor-motion-collage-support.md`. */
+  motionCollageGrid?: { cols: number; rows: number };
 }
 
 // ─── paint_explainer_v1 settings ────────────────────────────────────

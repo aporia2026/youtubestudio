@@ -888,12 +888,19 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
   voiceoverUrl,
   voiceoverAlignment,
   brandKit,
+  effectiveStyleSlug,
   onRender,
   isRendering,
   renderProgress,
   downloadUrl,
 }: {
   doc: ProductionDoc;
+  /** PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+   *  Built-in slug the doc's style_preset resolves to. Threaded into
+   *  `productionDocToVideoConfig` so saved-style UUIDs derived from
+   *  doodle/paint route to the yellow LowerThird variant in the
+   *  preview. Computed in the parent — this component is presentational. */
+  effectiveStyleSlug?: string;
   /** `user_history.id` of the current production-doc. Scopes the notes
    *  dock's REST calls. Null when the doc hasn't been server-persisted
    *  yet — the dock hides itself in that case. */
@@ -931,8 +938,9 @@ const VideoPlayerMemo = React.memo(function VideoPlayerMemo({
       rowOverlays,
       suppressLowerThirds,
       alignment: voiceoverAlignment ?? undefined,
+      effectiveStyleSlug,
     });
-  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, suppressLowerThirds, voiceoverUrl, voiceoverAlignment, brandKit]);
+  }, [doc, rowImages, rowVideoClips, rowOverlays, rowLockedAsStill, animateScenes, suppressLowerThirds, voiceoverUrl, voiceoverAlignment, brandKit, effectiveStyleSlug]);
   // PlayerController for the notes dock. Stage / VideoPlayer hand one
   // up via `onControllerReady`; we hold it in state so the dock re-
   // renders when the player mounts. NotesDock renders inert until the
@@ -2544,6 +2552,23 @@ function ProductionDocPage() {
     const fallback = availableStyles.find((s) => s.origin === 'built-in') ?? availableStyles[0];
     if (fallback) setStylePreset(fallback.id);
   }, [availableStyles, stylesLoaded, stylePreset]);
+
+  // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+  // resolve the currently-selected style id to its built-in slug. Built-ins
+  // resolve to their own id; saved styles resolve to `based_on_built_in`.
+  // Threaded into every `productionDocToVideoConfig` call below so the
+  // Remotion preview / render routes the doodle-yellow LowerThird for
+  // saved styles derived from doodle_explainer_2 / paint_explainer_v1.
+  // Undefined when the resolver finds no match — the legacy path uses
+  // `doc.style_preset` verbatim in that case.
+  const effectiveStyleSlug = useMemo<string | undefined>(() => {
+    if (!stylePreset) return undefined;
+    const match = availableStyles.find((s) => s.id === stylePreset);
+    if (!match) return undefined;
+    if (match.origin === 'built-in') return match.id;
+    if (match.origin === 'saved') return match.based_on_built_in ?? undefined;
+    return undefined;
+  }, [stylePreset, availableStyles]);
   const [ytRefInput, setYtRefInput] = useState('');
   const [visualRefs, setVisualRefs] = useState<VisualRef[]>([]);
   const screenshotInputRef = useRef<HTMLInputElement>(null);
@@ -2629,17 +2654,42 @@ function ProductionDocPage() {
   // settings toggle in EditorClient), respect that — we don't know
   // better than them.
   //
-  // Hardcoded style id here mirrors the same hardcoded id in
-  // SceneRouter. When a second style gets the doodle-yellow treatment,
-  // both sites move to a shared list (Set or registry) at the same time.
+  // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+  // resolve the doc's style_preset through `availableStyles` so saved
+  // styles derived from doodle_explainer_2 (UUID id, not literal slug)
+  // also auto-flip to overlay mode. Previously the check was a literal
+  // `=== 'doodle_explainer_2'` which silently skipped every saved style.
+  // Same change shape as SceneRouter's effectiveStyleSlug routing.
+  //
+  // The list of "styles whose OST should default to overlay" lives in
+  // ONE place — when a second built-in needs the same treatment, add
+  // it to YELLOW_OST_BUILTINS and the resolver below picks it up.
   useEffect(() => {
     if (!doc) return;
-    if (doc.style_preset !== 'doodle_explainer_2') return;
     if (doc.on_screen_text_mode_default !== undefined) return;
+    if (!doc.style_preset) return;
+    // Resolve doc.style_preset to its built-in slug:
+    //  - built-in id: matches itself
+    //  - saved-style UUID: resolves via `based_on_built_in`
+    const match = availableStyles.find((s) => s.id === doc.style_preset);
+    const effectiveSlug =
+      match?.origin === 'built-in'
+        ? match.id
+        : match?.origin === 'saved'
+          ? (match.based_on_built_in ?? null)
+          : null;
+    const YELLOW_OST_BUILTINS = new Set(['doodle_explainer_2', 'paint_explainer_v1']);
+    if (!effectiveSlug || !YELLOW_OST_BUILTINS.has(effectiveSlug)) return;
+    console.info('[production-doc OST auto-flip]', {
+      stylePresetId: doc.style_preset,
+      origin: match?.origin ?? '(unknown)',
+      effectiveSlug,
+      flippingTo: 'overlay',
+    });
     setDoc((prev) =>
       prev ? { ...prev, on_screen_text_mode_default: 'overlay' } : prev,
     );
-  }, [doc?.style_preset, doc?.on_screen_text_mode_default]);
+  }, [doc?.style_preset, doc?.on_screen_text_mode_default, availableStyles]);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   // Initial state from localStorage cache so the panel paints instantly;
@@ -9128,6 +9178,7 @@ function ProductionDocPage() {
       animateScenes,
       rowOverlays: liveRowOverlays,
       suppressLowerThirds,
+      effectiveStyleSlug,
       // Server-side Remotion renderer needs the proxy URL (clean URL
       // with no R2 presign query string) — see the proxy route at
       // `/api/broll/[id]/video`. In-browser preview keeps using the
@@ -12611,6 +12662,7 @@ function ProductionDocPage() {
                   voiceoverUrl={voiceoverUrl}
                   voiceoverAlignment={voiceoverAlignment}
                   brandKit={effectiveBrandKit}
+                  effectiveStyleSlug={effectiveStyleSlug}
                   onRender={startVideoRender}
                   isRendering={renderStatus === 'rendering'}
                   renderProgress={renderProgress}
@@ -12666,6 +12718,7 @@ function ProductionDocPage() {
                         animateScenes,
                         rowOverlays,
                         suppressLowerThirds,
+                        effectiveStyleSlug,
                       });
                       sessionStorage.setItem('video-studio:bridge', JSON.stringify({
                         config,

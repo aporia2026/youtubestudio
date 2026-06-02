@@ -1348,10 +1348,20 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   //     cloud model — legacy T2I pricing varies by model)
   //   - the styles fetch fails (best-effort; cost just doesn't surface)
   const [activeStyleI2IModel, setActiveStyleI2IModel] = useState<string | null>(null);
+  // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md` —
+  // when the doc's style_preset is a saved-style UUID, capture the
+  // built-in slug it derives from so downstream callers (SceneRouter's
+  // yellow-LowerThird variant check, future bake→overlay auto-flip)
+  // can resolve UUID-style ids to their built-in parent without a
+  // second styles fetch. Built-ins resolve to themselves; legacy /
+  // missing styles stay null. Reads from the SAME `/api/production-doc/styles`
+  // fetch as activeStyleI2IModel so we don't duplicate the network call.
+  const [effectiveStyleSlug, setEffectiveStyleSlug] = useState<string | null>(null);
   useEffect(() => {
     const stylePresetId = state.doc.style_preset;
     if (!stylePresetId) {
       setActiveStyleI2IModel(null);
+      setEffectiveStyleSlug(null);
       return;
     }
     let cancelled = false;
@@ -1365,6 +1375,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             id: string;
             origin?: 'built-in' | 'saved';
             preferred_cloud_model?: string;
+            based_on_built_in?: string;
           }>;
         };
         const match = (data.styles ?? []).find(s => s.id === stylePresetId);
@@ -1374,9 +1385,31 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         } else {
           setActiveStyleI2IModel(null);
         }
+        // Resolve effective slug: built-ins are their own slug; saved
+        // styles resolve to `based_on_built_in` when set, otherwise null
+        // (an unknown saved style with no parent has no built-in
+        // semantics to inherit).
+        let resolvedSlug: string | null = null;
+        if (match) {
+          if (match.origin === 'built-in') {
+            resolvedSlug = match.id;
+          } else if (match.origin === 'saved' && typeof match.based_on_built_in === 'string') {
+            resolvedSlug = match.based_on_built_in;
+          }
+        }
+        setEffectiveStyleSlug(resolvedSlug);
+        console.info('[editor styleId resolved]', {
+          stylePresetId,
+          origin: match?.origin ?? '(unknown)',
+          based_on_built_in: match?.based_on_built_in ?? '(unset)',
+          effectiveStyleSlug: resolvedSlug ?? '(null)',
+        });
       } catch {
         // Network/parse failures aren't fatal — cost hint just doesn't show.
-        if (!cancelled) setActiveStyleI2IModel(null);
+        if (!cancelled) {
+          setActiveStyleI2IModel(null);
+          setEffectiveStyleSlug(null);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -2054,6 +2087,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       musicUrl: state.musicUrl,
       brand: resolvedRenderBrand,
       alignment: state.voiceoverAlignment,
+      // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+      // pass the resolved built-in slug so saved-style UUIDs derived
+      // from doodle / paint route to the yellow LowerThird variant.
+      effectiveStyleSlug: effectiveStyleSlug ?? undefined,
       // CRITICAL for server-side render: stream B-roll through the
       // app's proxy so the Lambda fetch has CORS-clean, presign-
       // stable URLs.
@@ -3055,6 +3092,11 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       musicUrl: state.musicUrl,
       brand: resolvedRenderBrand,
       alignment: state.voiceoverAlignment,
+      // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+      // saved-style UUIDs route to their built-in parent for variant
+      // resolution. Same value the executeRender path passes — preview
+      // and final render stay in lockstep.
+      effectiveStyleSlug: effectiveStyleSlug ?? undefined,
     });
   }, [
     doc,
@@ -3068,6 +3110,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     state.musicUrl,
     resolvedRenderBrand,
     state.voiceoverAlignment,
+    effectiveStyleSlug,
   ]);
 
   const inputProps = useMemo(() => (videoConfig ? { config: videoConfig } : null), [videoConfig]);

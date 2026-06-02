@@ -78,6 +78,15 @@ export interface ResolvedStyle {
    *  styles that have no special OST treatment leave it undefined and
    *  fall through to the legacy `'bake'` default. */
   default_on_screen_text_mode?: 'overlay' | 'bake' | 'none';
+  /** For SAVED styles only: the built-in id this style was derived from
+   *  (e.g. a saved style "Yoav's wifi doodle" derived from
+   *  `doodle_explainer_2`). Threaded through so downstream callers can
+   *  resolve a saved-style UUID to its built-in parent for variant /
+   *  feature-gating decisions — e.g. SceneRouter's yellow lower-third
+   *  routing and the production-doc auto-flip of `on_screen_text_mode_default`.
+   *  Built-ins leave this undefined. PR 1 of
+   *  `_plans/2026-06-02-editor-ost-styling-and-positioning.md`. */
+  based_on_built_in?: string;
 }
 
 /** Shape of a row in the `production_doc_styles` table. */
@@ -1531,5 +1540,6 @@ function savedRowToResolved(row: SavedStyleRow): ResolvedStyle {
     version: row.version,
     approved_at: row.approved_at ?? undefined,
     owner_id: row.owner_id ?? undefined,
+    based_on_built_in: row.based_on_built_in ?? undefined,
   };
 }

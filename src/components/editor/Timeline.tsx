@@ -38,6 +38,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
 import { EDITOR_MAX_SHOT_MS, EDITOR_MIN_SHOT_MS } from '@/lib/editor/store';
+import { MotionCollageThumb } from '@/components/editor/MotionCollageThumb';
 import { InsertSceneAffordance } from './InsertSceneAffordance';
 import { formatTimecode } from './SetTimingPopover';
 
@@ -785,12 +786,19 @@ function SortableShotCard({
       aria-pressed={isSelected}
       aria-label={`Shot ${index + 1}: ${shotLabel(shot, index)}`}
     >
-      {thumbnail ? (
-        <img
-          src={thumbnail}
-          alt=""
-          className="absolute inset-0 w-full h-full object-cover"
-          draggable={false}
+      {thumbnail || (shot.motionCollagePanelUrls?.length ?? 0) > 0 ? (
+        // Motion-collage shots render their N-panel grid inside the card
+        // so they don't look like static shots. Falls through to a single
+        // image (the regular thumbnail) for static shots — same render
+        // shape as before. See
+        // `_plans/2026-06-02-editor-motion-collage-support.md`.
+        <MotionCollageThumb
+          panelUrls={shot.motionCollagePanelUrls}
+          grid={shot.motionCollageGrid}
+          fallbackImageUrl={thumbnail}
+          fillParent
+          loading="lazy"
+          shotIndex={index}
         />
       ) : (
         // No image attached — render an obvious "blank shot" marker.

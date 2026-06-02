@@ -286,6 +286,23 @@ export async function POST(req: NextRequest) {
   // is in the renderer's per-scene math, not in the config.
   logger.info('[render] config effective', { ...summarizeConfigForDiagnostics(effectiveConfig) });
 
+  // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+  // Surface the resolved styleId so the next instance of "OST is the
+  // default red/black bar instead of yellow" can be diagnosed from
+  // server logs alone. styleId === undefined or a UUID points at
+  // upstream wiring (no style picked, or the editor didn't resolve a
+  // saved-style UUID to its built-in slug). A built-in slug means the
+  // wiring is correct — any wrong variant downstream is a render bug.
+  logger.info('[render] styleId resolved', {
+    styleId: effectiveConfig.styleId ?? null,
+    looksLikeUuid:
+      typeof effectiveConfig.styleId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveConfig.styleId),
+    expectedYellowLowerThird:
+      effectiveConfig.styleId === 'doodle_explainer_2' ||
+      effectiveConfig.styleId === 'paint_explainer_v1',
+  });
+
   try {
     await ensureTable();
   } catch (err) {

@@ -1630,6 +1630,19 @@ export interface ProductionDocToVideoConfigOptions {
    *  scrub. Default `false` (direct URL); the render route opts in.
    *  See route `/api/broll/[id]/video/route.ts`. 2026-05-20. */
   useBrollProxy?: boolean;
+  /** PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`.
+   *  Built-in slug the doc's `style_preset` should be treated as for
+   *  style-aware routing decisions (yellow LowerThird variant, future
+   *  bake→overlay auto-flip). For built-in style_presets this equals
+   *  the style_preset itself; for saved-style UUIDs this is their
+   *  `based_on_built_in`. The caller (EditorClient / production-doc)
+   *  resolves it once via the styles fetch and passes it in — the
+   *  conversion can't fetch async DB data itself.
+   *
+   *  When set, takes precedence over `doc.style_preset` when populating
+   *  `config.styleId`. Undefined ⇒ legacy behavior (config.styleId =
+   *  doc.style_preset verbatim). */
+  effectiveStyleSlug?: string;
 }
 
 // ─── Render-config diagnostic summary ───────────────────────────────────────
@@ -2191,6 +2204,13 @@ export function productionDocToVideoConfig(
       // missing / empty array falls back to the held single-image
       // render path.
       motionCollagePanelUrls: row.motion_collage_panel_urls,
+      // Grid layout threaded for editor thumbnails — the renderer
+      // doesn't need it (every panel is hard-cut for an equal slice of
+      // the window) but the editor's MotionCollageThumb uses it so
+      // non-square grids (3×2 vs 2×3) display the way the user
+      // configured them instead of falling back to a square-ish guess.
+      // PR 1 of `_plans/2026-06-02-editor-motion-collage-support.md`.
+      motionCollageGrid: row.motion_collage_grid,
       // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });
@@ -2231,7 +2251,16 @@ export function productionDocToVideoConfig(
     // Phase 2 of _plans/2026-05-25-style-aware-overlay-text.md: forward
     // the doc's style preset so Remotion components can style-vary
     // their rendering. Undefined ⇒ all components use their defaults.
-    styleId: doc.style_preset,
+    //
+    // PR 1 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+    // when the caller resolved a saved-style UUID to its built-in parent
+    // (via `opts.effectiveStyleSlug`), prefer that slug so feature gates
+    // like SceneRouter's yellow-LowerThird variant fire on saved styles
+    // derived from doodle_explainer_2 / paint_explainer_v1. The literal
+    // UUID would never match the hardcoded `=== 'doodle_explainer_2'`
+    // check — that was the root cause of the "OST is rendering as the
+    // default red/black bar instead of yellow" bug.
+    styleId: opts.effectiveStyleSlug ?? doc.style_preset,
     // paint_explainer_v1 (2026-05-28) — resolve the doc-level settings
     // once HERE so the renderer doesn't have to re-apply defaults on
     // every frame. Only populated when the doc actually carries
@@ -2239,7 +2268,8 @@ export function productionDocToVideoConfig(
     // get undefined and the renderer skips paint_explainer_v1 code
     // paths via existing shotKind / styleId guards.
     paintExplainerV1Settings:
-      doc.style_preset === 'paint_explainer_v1' || doc.paint_explainer_v1_settings
+      (opts.effectiveStyleSlug ?? doc.style_preset) === 'paint_explainer_v1' ||
+      doc.paint_explainer_v1_settings
         ? resolvePaintExplainerV1Settings(doc)
         : undefined,
     // Prop cache forwarded only when populated — the cache is the

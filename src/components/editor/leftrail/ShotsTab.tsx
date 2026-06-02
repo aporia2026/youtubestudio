@@ -13,6 +13,7 @@
  */
 
 import type { ProductionDoc } from '@/remotion/utils';
+import { MotionCollageThumb } from '@/components/editor/MotionCollageThumb';
 
 interface ShotsTabProps {
   rows: ProductionDoc['rows'];
@@ -117,13 +118,19 @@ export function ShotsTab({ rows, rowImages, selection, onSelect, onContextMenu }
                 className="shrink-0 rounded overflow-hidden"
                 style={{ width: 56, height: 32, background: '#000' }}
               >
-                {thumb ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={thumb}
-                    alt=""
-                    className="w-full h-full object-cover"
+                {/* Motion-collage shots show their N-panel grid here so
+                    they don't disguise themselves as single static shots.
+                    Falls through to a regular single image for static
+                    shots (the common case) and to the "no img" placeholder
+                    when neither is present. See
+                    `_plans/2026-06-02-editor-motion-collage-support.md`. */}
+                {thumb || (row.motion_collage_panel_urls?.length ?? 0) > 0 ? (
+                  <MotionCollageThumb
+                    panelUrls={row.motion_collage_panel_urls}
+                    grid={row.motion_collage_grid}
+                    fallbackImageUrl={thumb}
                     loading="lazy"
+                    shotIndex={i}
                   />
                 ) : (
                   <div
