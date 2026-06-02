@@ -72,8 +72,7 @@ const REGISTRY: Readonly<Record<ShortStyleId, ShortStyleEntry>> = Object.freeze(
     label: 'Doodle Explainer — vertical',
     description:
       'Near-static doodle with Atlas Edit sibling-frame variants. Hand-drawn feel, low motion, calm tempo.',
-    available: false,
-    comingPhase: 'Phase 15.3',
+    available: true,
     costBand: 'light',
   },
   paint_explainer_v1_short: {

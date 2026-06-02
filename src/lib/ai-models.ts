@@ -53,6 +53,7 @@ export type AppFeature =
   | 'shorts-seo'
   | 'shorts-qa'
   | 'shorts-ideas'
+  | 'shorts-doodle-prompt'
   | 'video-composer'
   // Grow
   | 'channel-analyze'
@@ -118,6 +119,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'shorts-seo', label: 'Shorts SEO', description: 'Optimizes title + description + hashtags for an existing Short', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'shorts-qa', label: 'Shorts QA', description: 'Lean Shorts QA — hook, payoff, density, loop, vertical safe-zone (single pass)', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'shorts-ideas', label: 'Shorts Ideas', description: 'Hook-first vertical idea generation tuned for the 60-second algorithm', section: 'create', defaultModelId: 'gpt-5.4-mini' },
+  { id: 'shorts-doodle-prompt', label: 'Shorts Doodle Prompt', description: 'Builds the Doodle base-frame scene + per-chunk variant edit prompts for the vertical Doodle render', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'video-composer', label: 'Video Composer', description: 'Composer pipeline (intake → analyze → plan → compose → critic → chair)', section: 'create', defaultModelId: SONNET },
 
   // ─── Grow ────────────────────────────────────────────────────────────
@@ -315,6 +317,7 @@ export const DEFAULT_FALLBACK_CHAINS: Partial<Record<AppFeature, string[]>> = {
   'shorts-seo':       ['gpt-5.4-mini', 'gpt-5.4'],
   'shorts-qa':        ['gpt-5.4-mini', 'gpt-5.4'],
   'shorts-ideas':     ['gpt-5.4-mini', 'gpt-5.4'],
+  'shorts-doodle-prompt': ['gpt-5.4-mini', 'gpt-5.4'],
 };
 
 /** Lookup the configured fallback chain for a feature, or `null` when

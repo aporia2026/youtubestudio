@@ -122,7 +122,17 @@ export function splitScriptIntoCaptions(
 }
 
 export interface BuildShortVideoConfigArgs {
-  short: Pick<ShortRow, 'id' | 'short_script' | 'voiceover_audio_url' | 'voiceover_duration_seconds' | 'estimated_duration_seconds' | 'title'>;
+  short: Pick<
+    ShortRow,
+    | 'id'
+    | 'short_script'
+    | 'voiceover_audio_url'
+    | 'voiceover_duration_seconds'
+    | 'estimated_duration_seconds'
+    | 'title'
+    | 'style_id'
+    | 'style_assets'
+  >;
   channelName?: string | null;
   background?: string;
   accentColor?: string;
@@ -132,6 +142,14 @@ export interface BuildShortVideoConfigArgs {
  * Compose the full ShortVideoConfig from a shorts row + optional channel
  * branding. Throws when the row has no voiceover URL — render needs
  * audio.
+ *
+ * Style dispatch (Phase 15.3):
+ *   - When `short.style_id === 'doodle_explainer_2_short'`, validates
+ *     that `style_assets.doodle.{base_url,variants}` are present and
+ *     threads them into `doodle_frames`. The renderer swaps frames at
+ *     each variant's caption_chunk_start_index.
+ *   - For other styles (minimal default, paint placeholder), no extra
+ *     wiring is needed.
  */
 export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVideoConfig {
   const { short } = args;
@@ -148,6 +166,32 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
   // card renders for a beat after the last word.
   const baseSeconds = short.voiceover_duration_seconds ?? short.estimated_duration_seconds ?? 30;
   const durationMs = Math.max(3000, Math.round(baseSeconds * 1000)) + SHORT_OUTRO_TAIL_MS;
+  const captions = splitScriptIntoCaptions(short.short_script, durationMs - SHORT_OUTRO_TAIL_MS);
+
+  const styleId = short.style_id ?? undefined;
+
+  // Doodle dispatch — pull frame URLs from style_assets.doodle. When the
+  // assets aren't ready yet we throw with an actionable message; the
+  // render dialog must show the "Generate style assets" button before
+  // letting the user click Render.
+  let doodleFrames: ShortVideoConfig['doodle_frames'] | undefined;
+  if (styleId === 'doodle_explainer_2_short') {
+    const doodle = short.style_assets?.doodle;
+    if (!doodle || !doodle.base_url) {
+      throw new Error(
+        'Cannot render Doodle Short — style assets not generated yet. Click "Generate style assets" first.',
+      );
+    }
+    // The base frame is the implicit first frame (caption_chunk_start_index = 0).
+    // Variants extend it. Ordered by chunk index so the renderer's
+    // most-recent-frame walk is monotonic.
+    doodleFrames = [
+      { url: doodle.base_url, caption_chunk_start_index: 0 },
+      ...doodle.variants
+        .map((v) => ({ url: v.url, caption_chunk_start_index: v.caption_chunk_start_index }))
+        .sort((a, b) => a.caption_chunk_start_index - b.caption_chunk_start_index),
+    ];
+  }
 
   return {
     fps: SHORT_FPS,
@@ -155,10 +199,12 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
     height: SHORT_HEIGHT,
     voiceover_url: short.voiceover_audio_url,
     duration_ms: durationMs,
-    captions: splitScriptIntoCaptions(short.short_script, durationMs - SHORT_OUTRO_TAIL_MS),
+    captions,
     title: short.title?.trim() || undefined,
     background: args.background || DEFAULT_SHORT_BACKGROUND,
     accent_color: args.accentColor || DEFAULT_SHORT_ACCENT,
     channel_name: args.channelName?.trim() || undefined,
+    style_id: styleId,
+    doodle_frames: doodleFrames,
   };
 }

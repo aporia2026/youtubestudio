@@ -29,12 +29,30 @@ export interface ShortVideoConfig {
   captions: ShortCaptionChunk[];
   /** Optional title shown for the first ~1s. Pulled from short.title. */
   title?: string;
-  /** Solid background colour or "linear-gradient(...)" string. */
+  /** Solid background colour or "linear-gradient(...)" string.
+   *  Ignored by the Doodle style (which renders frame images full-bleed). */
   background?: string;
   /** Optional accent colour for the caption highlight word. */
   accent_color?: string;
   /** Optional channel name shown as a small badge at the bottom. */
   channel_name?: string;
+  /** Phase 15.3 — which style to render with. Composition dispatches:
+   *   - 'minimal_gradient_v1' (default) → gradient + caption-only renderer
+   *   - 'doodle_explainer_2_short'      → Doodle vertical (full-bleed
+   *     image base + sibling-frame variants timed to caption chunks,
+   *     captions overlaid in the middle 60% safe zone with yellow comic
+   *     bold styling matching the doodle reference)
+   *   - 'paint_explainer_v1_short'      → Paint vertical (Phase 15.4 stub)
+   *  Unknown / missing falls through to minimal so a malformed config
+   *  can't break the render.  */
+  style_id?: string;
+  /** Phase 15.3 — Doodle frame URLs ordered, with the caption chunk
+   *  index each frame swaps in at. Only honored when style_id is
+   *  'doodle_explainer_2_short'; ignored for minimal. */
+  doodle_frames?: Array<{
+    url: string;
+    caption_chunk_start_index: number;
+  }>;
 }
 
 /** Vertical-Shorts canonical dimensions. */

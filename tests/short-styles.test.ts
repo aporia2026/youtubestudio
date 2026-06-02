@@ -40,10 +40,10 @@ describe('listShortStyles / listAvailableShortStyles', () => {
     }
   });
 
-  it('Phase 15.2 has exactly one available style (minimal_gradient_v1)', () => {
+  it('Phase 15.3 has exactly two available styles (minimal_gradient_v1 + doodle_explainer_2_short)', () => {
     const avail = listAvailableShortStyles();
-    expect(avail.length).toBe(1);
-    expect(avail[0]!.id).toBe('minimal_gradient_v1');
+    const ids = avail.map((s) => s.id).sort();
+    expect(ids).toEqual(['doodle_explainer_2_short', 'minimal_gradient_v1']);
   });
 
   it('every non-available style declares a comingPhase', () => {

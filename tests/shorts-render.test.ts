@@ -87,6 +87,10 @@ describe('buildShortVideoConfig', () => {
     voiceover_duration_seconds: 12,
     estimated_duration_seconds: 14,
     title: 'My short',
+    // Phase 15.3 — these are required on the Pick<ShortRow>. Old test
+    // rows default to the minimal style with no assets.
+    style_id: null,
+    style_assets: {},
   };
 
   it('throws when voiceover URL is missing', () => {
@@ -136,5 +140,118 @@ describe('buildShortVideoConfig', () => {
     const lastCap = cfg.captions[cfg.captions.length - 1]!;
     // Last caption should end at duration_ms - outro_tail (= the actual audio end).
     expect(lastCap.end_ms).toBeLessThanOrEqual(cfg.duration_ms - SHORT_OUTRO_TAIL_MS);
+  });
+});
+
+describe('buildShortVideoConfig — Phase 15.3 style dispatch', () => {
+  const baseShort = {
+    id: 'short-doodle-1',
+    short_script: 'Hook line. Body content explains the takeaway. Payoff lands clean.',
+    voiceover_audio_url: 'https://example.com/audio.mp3',
+    voiceover_duration_seconds: 12,
+    estimated_duration_seconds: 14,
+    title: 'A Doodle Short',
+  } as const;
+
+  it('threads style_id through when set on the row', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'minimal_gradient_v1',
+        style_assets: {},
+      },
+    });
+    expect(cfg.style_id).toBe('minimal_gradient_v1');
+    expect(cfg.doodle_frames).toBeUndefined();
+  });
+
+  it('throws an actionable message when doodle is selected but assets are missing', () => {
+    expect(() =>
+      buildShortVideoConfig({
+        short: {
+          ...baseShort,
+          style_id: 'doodle_explainer_2_short',
+          style_assets: {},
+        },
+      }),
+    ).toThrow(/style assets not generated/i);
+  });
+
+  it('throws when doodle assets exist but base_url is missing', () => {
+    expect(() =>
+      buildShortVideoConfig({
+        short: {
+          ...baseShort,
+          style_id: 'doodle_explainer_2_short',
+          // @ts-expect-error — missing base_url, defensive test
+          style_assets: { doodle: { variants: [] } },
+        },
+      }),
+    ).toThrow(/style assets not generated/i);
+  });
+
+  it('prepends the base frame as chunk-index-0 and appends variants by chunk index', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'doodle_explainer_2_short',
+        style_assets: {
+          doodle: {
+            base_url: 'https://atlas.example.com/base.png',
+            variants: [
+              { url: 'https://atlas.example.com/v3.png', caption_chunk_start_index: 3 },
+              { url: 'https://atlas.example.com/v1.png', caption_chunk_start_index: 1 },
+              { url: 'https://atlas.example.com/v2.png', caption_chunk_start_index: 2 },
+            ],
+          },
+        },
+      },
+    });
+    expect(cfg.doodle_frames).toBeDefined();
+    const frames = cfg.doodle_frames!;
+    // First frame is the base at chunk 0.
+    expect(frames[0]).toEqual({ url: 'https://atlas.example.com/base.png', caption_chunk_start_index: 0 });
+    // Variants land sorted by chunk index.
+    expect(frames.slice(1).map((f) => f.caption_chunk_start_index)).toEqual([1, 2, 3]);
+  });
+
+  it('emits the same base + variant array shape the renderer iterates with most-recent-frame logic', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'doodle_explainer_2_short',
+        style_assets: {
+          doodle: {
+            base_url: 'https://atlas.example.com/base.png',
+            variants: [
+              { url: 'https://atlas.example.com/v2.png', caption_chunk_start_index: 2 },
+            ],
+          },
+        },
+      },
+    });
+    expect(cfg.style_id).toBe('doodle_explainer_2_short');
+    expect(cfg.doodle_frames).toEqual([
+      { url: 'https://atlas.example.com/base.png', caption_chunk_start_index: 0 },
+      { url: 'https://atlas.example.com/v2.png', caption_chunk_start_index: 2 },
+    ]);
+  });
+
+  it('omits doodle_frames entirely for the minimal style', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'minimal_gradient_v1',
+        style_assets: {
+          // Stray doodle assets are ignored when the style is minimal —
+          // user may have switched styles after the doodle generation.
+          doodle: {
+            base_url: 'https://atlas.example.com/base.png',
+            variants: [],
+          },
+        },
+      },
+    });
+    expect(cfg.doodle_frames).toBeUndefined();
   });
 });

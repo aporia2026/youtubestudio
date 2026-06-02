@@ -25,6 +25,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
+import { DEFAULT_SHORT_STYLE_ID, type ShortStyleId } from '@/lib/short-styles';
 
 interface ChannelListItem {
   id: string;
@@ -98,6 +100,11 @@ export function ShortClipSurface({
   // inline niche input. Scripts page wires this — it has no global niche.
   const [inlineNiche, setInlineNiche] = useState('');
   const effectiveNiche = (modeCNiche ?? inlineNiche).trim();
+
+  // Style picker — applies to every "Make this a Short" click in this
+  // session. Resets to the default on first mount; persisted server-side
+  // on the generated row via /api/shorts/[id]/generate-style-assets.
+  const [styleId, setStyleId] = useState<ShortStyleId>(DEFAULT_SHORT_STYLE_ID);
   const [channels, setChannels] = useState<ChannelListItem[]>([]);
   const [selectedChannelId, setSelectedChannelId] = useState('');
   const [videos, setVideos] = useState<VideoListItem[]>([]);
@@ -250,14 +257,52 @@ export function ShortClipSurface({
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        toast.success('New Short generated — open the Shorts inbox to voice it.');
+        const newShortId = data.id as string | undefined;
+
+        // Stamp the chosen style on the new row. For minimal this is a
+        // no-op (server returns immediately). For Doodle this kicks off
+        // the Atlas pipeline (~30-120s) — we toast on success / failure.
+        if (newShortId) {
+          try {
+            const styleRes = await fetch(
+              `/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  style_id: styleId,
+                  niche: effectiveNiche,
+                }),
+              },
+            );
+            const styleData = await styleRes.json();
+            if (!styleRes.ok) {
+              toast.warning(
+                `Short generated, but style assets failed: ${styleData.error ?? 'unknown'}. Retry from the inbox.`,
+              );
+            } else if (styleId !== 'minimal_gradient_v1') {
+              const cost = styleData.estimated_cost_usd as number | undefined;
+              toast.success(
+                `New Short generated + ${styleId} assets ready${typeof cost === 'number' ? ` (~$${cost.toFixed(2)})` : ''}. Voice it from the inbox.`,
+              );
+            } else {
+              toast.success('New Short generated — open the Shorts inbox to voice it.');
+            }
+          } catch (styleErr) {
+            toast.warning(
+              `Short generated, but style asset call failed: ${styleErr instanceof Error ? styleErr.message : 'unknown'}. Retry from the inbox.`,
+            );
+          }
+        } else {
+          toast.success('New Short generated — open the Shorts inbox to voice it.');
+        }
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to generate Short');
       } finally {
         setGeneratingId(null);
       }
     },
-    [selectedVideoId, projectId, enableModeC, effectiveNiche],
+    [selectedVideoId, projectId, enableModeC, effectiveNiche, styleId],
   );
 
   const selectedVideo = useMemo(
@@ -324,6 +369,15 @@ export function ShortClipSurface({
             }}
           />
         </label>
+      )}
+
+      {enableModeC && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary, rgba(255,255,255,0.6))', marginBottom: 6 }}>
+            Style — applied to every Short generated below. Doodle takes ~30-90s of extra Atlas time per Short.
+          </div>
+          <ShortStylePicker value={styleId} onChange={setStyleId} disabled={generatingId !== null} />
+        </div>
       )}
 
       {!noChannels && (

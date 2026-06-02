@@ -1,23 +1,18 @@
 import React from 'react';
-import { AbsoluteFill, Audio, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Audio, Img, useCurrentFrame, useVideoConfig } from 'remotion';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
 
 /**
  * Vertical 1080×1920 Short composition.
  *
- * Layout (intentionally minimal — the shorts algorithm rewards clarity,
- * not motion graphics flexing):
- *   - Full-bleed gradient/colour background
- *   - Title chip near the top, 90% opacity, fades out after 1.5s
- *   - Massive captions filling the middle 60% of the screen, one
- *     chunk at a time, scaled by length (longer chunks shrink to fit)
- *   - Channel-name pill at the bottom (optional)
- *   - Voiceover audio plays the whole way through
- *
- * No images, B-roll, or motion graphics in v1 — this is the floor of
- * "publishable Short". Future iterations can add: animated background,
- * waveform visualisation, per-word highlight, B-roll overlays from
- * the broll_clips table.
+ * Style dispatch (Phase 15.3):
+ *   - 'minimal_gradient_v1' (default) — gradient + caption-only floor.
+ *   - 'doodle_explainer_2_short'     — full-bleed Doodle scene with
+ *     sibling-frame variants timed to caption chunks; captions overlay
+ *     in the middle-60% safe zone with yellow comic-bold styling that
+ *     matches the doodle reference videos.
+ *   - 'paint_explainer_v1_short'     — Phase 15.4 placeholder; falls
+ *     through to minimal.
  *
  * The composition is driven by the per-caption `start_ms` / `end_ms`
  * timestamps the orchestrator computes. We DON'T compute caption
@@ -29,6 +24,14 @@ export interface ShortVideoProps {
 }
 
 export function ShortVideo({ config }: ShortVideoProps) {
+  const styleId = config.style_id ?? 'minimal_gradient_v1';
+  if (styleId === 'doodle_explainer_2_short' && config.doodle_frames && config.doodle_frames.length > 0) {
+    return <DoodleShortVideo config={config} />;
+  }
+  return <MinimalShortVideo config={config} />;
+}
+
+function MinimalShortVideo({ config }: ShortVideoProps) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const elapsedMs = (frame / fps) * 1000;
@@ -159,5 +162,201 @@ function CaptionChunk({
         ))}
       </div>
     </AbsoluteFill>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Doodle Explainer 2 vertical — Phase 15.3
+// ---------------------------------------------------------------------------
+//
+// Renders the user's selected Doodle vertical style. Layout:
+//
+//   - Full-bleed sibling-frame image (object-fit: cover at 1080×1920).
+//   - The frame swaps to the next variant at each variant's
+//     caption_chunk_start_index. Between swaps the frame is STATIC —
+//     all "animation" comes from frame swaps (per the user's memory:
+//     "near-static = Atlas Edit variants, NEVER Remotion motion").
+//   - Title chip across the top (white pill, doodle-friendly) fades out
+//     after 1.5s — same beat as the minimal style.
+//   - Captions overlay in the MIDDLE 60% safe zone (Y = 576..1344).
+//   - Caption styling matches the doodle reference: YELLOW comic-bold
+//     fill, thick black wobbly outline, no shadow, no gradient.
+//
+// The middle-60% safe zone is non-negotiable — the top 10% of a Short
+// is covered by YouTube's channel handle / settings chevron and the
+// bottom 10% by the Like/Dislike/Comment column on most clients. Text
+// outside the safe zone gets visually clipped.
+
+const DOODLE_TITLE_TOP_PX = 96;
+const DOODLE_CAPTION_BAND_TOP_RATIO = 0.55; // 55% from top = lower-middle band
+const DOODLE_CAPTION_PADDING_X_PX = 64;
+
+function DoodleShortVideo({ config }: ShortVideoProps) {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const elapsedMs = (frame / fps) * 1000;
+
+  // Find the active caption chunk for caption rendering.
+  const activeIndex = config.captions.findIndex(
+    (c) => elapsedMs >= c.start_ms && elapsedMs < c.end_ms,
+  );
+  const activeCaption = activeIndex >= 0 ? config.captions[activeIndex] : null;
+
+  // Pick the most recent doodle frame whose caption_chunk_start_index
+  // is <= the active chunk index. Falls back to the first frame for
+  // the very-early window before any variant kicks in.
+  const frames = config.doodle_frames ?? [];
+  let frameUrl = frames[0]?.url ?? '';
+  for (const f of frames) {
+    if (activeIndex >= 0 && f.caption_chunk_start_index <= activeIndex) {
+      frameUrl = f.url;
+    }
+  }
+
+  const titleOpacity = elapsedMs < 1200 ? 1 : Math.max(0, 1 - (elapsedMs - 1200) / 600);
+
+  return (
+    <AbsoluteFill style={{ background: '#ffffff', fontFamily: 'Inter, system-ui, sans-serif' }}>
+      {config.voiceover_url && <Audio src={config.voiceover_url} />}
+
+      {/* Full-bleed sibling frame */}
+      {frameUrl && (
+        <Img
+          src={frameUrl}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+          }}
+        />
+      )}
+
+      {/* Title chip at the top safe-zone margin */}
+      {config.title && titleOpacity > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            top: DOODLE_TITLE_TOP_PX,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            justifyContent: 'center',
+            opacity: titleOpacity,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 40,
+              fontWeight: 800,
+              padding: '12px 28px',
+              borderRadius: 24,
+              background: 'rgba(255,255,255,0.92)',
+              color: '#0f172a',
+              border: '3px solid #0f172a',
+              letterSpacing: -0.5,
+              maxWidth: 900,
+              textAlign: 'center',
+              lineHeight: 1.1,
+            }}
+          >
+            {config.title}
+          </div>
+        </div>
+      )}
+
+      {/* Caption band — middle-60% safe zone, yellow comic-bold styling */}
+      {activeCaption && (
+        <DoodleCaptionChunk
+          caption={activeCaption}
+          elapsedMs={elapsedMs}
+        />
+      )}
+
+      {/* Channel pill at the bottom safe-zone margin */}
+      {config.channel_name && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 96,
+            left: 0,
+            right: 0,
+            display: 'flex',
+            justifyContent: 'center',
+          }}
+        >
+          <div
+            style={{
+              fontSize: 28,
+              fontWeight: 700,
+              padding: '8px 22px',
+              borderRadius: 999,
+              background: 'rgba(255,255,255,0.92)',
+              color: '#0f172a',
+              border: '2px solid #0f172a',
+              letterSpacing: 0.4,
+            }}
+          >
+            @ {config.channel_name}
+          </div>
+        </div>
+      )}
+    </AbsoluteFill>
+  );
+}
+
+function DoodleCaptionChunk({
+  caption,
+  elapsedMs,
+}: {
+  caption: { start_ms: number; end_ms: number; text: string };
+  elapsedMs: number;
+}) {
+  const inDur = 80;
+  const outDur = 80;
+  const sinceStart = elapsedMs - caption.start_ms;
+  const untilEnd = caption.end_ms - elapsedMs;
+  const fadeIn = Math.min(1, Math.max(0, sinceStart / inDur));
+  const fadeOut = Math.min(1, Math.max(0, untilEnd / outDur));
+  const opacity = Math.min(fadeIn, fadeOut);
+
+  const wordCount = caption.text.split(/\s+/).filter(Boolean).length;
+  // Slightly smaller than minimal to leave breathing room for the
+  // illustration behind it.
+  const fontSize = wordCount <= 4 ? 96 : wordCount <= 6 ? 80 : wordCount <= 8 ? 64 : 54;
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: `${DOODLE_CAPTION_BAND_TOP_RATIO * 100}%`,
+        left: 0,
+        right: 0,
+        padding: `0 ${DOODLE_CAPTION_PADDING_X_PX}px`,
+        display: 'flex',
+        justifyContent: 'center',
+        opacity,
+      }}
+    >
+      <div
+        style={{
+          fontSize,
+          fontWeight: 900,
+          textAlign: 'center',
+          letterSpacing: -0.5,
+          lineHeight: 1.05,
+          color: '#facc15',                            // doodle yellow
+          // Thick black outline matches the doodle reference's hand-drawn
+          // comic bold typography — see production-doc-styles.ts
+          // BAKED TYPOGRAPHY block.
+          WebkitTextStroke: '6px #0f172a',
+          paintOrder: 'stroke fill',
+          textTransform: 'uppercase',
+        }}
+      >
+        {caption.text}
+      </div>
+    </div>
   );
 }

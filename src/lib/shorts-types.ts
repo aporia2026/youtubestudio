@@ -97,6 +97,30 @@ export interface ShortRow {
   source_youtube_video_id: string | null;
   clip_start_ms: number | null;
   clip_end_ms: number | null;
+  // Phase 15.3 (migration 0110): style picker + per-style asset cache.
+  // `style_id` matches a ShortStyleId from src/lib/short-styles.ts. NULL
+  // means "user hasn't picked yet". `style_assets` is style-shaped JSONB
+  // — see migration 0110 doc for the per-style contracts.
+  style_id: string | null;
+  style_assets: ShortStyleAssets;
   created_at: string;
   updated_at: string;
+}
+
+/** Per-style assets persisted on `shorts.style_assets` JSONB.
+ *  Each style owns its own sub-shape; reader merges defaults so a
+ *  partial JSON blob never crashes callers. */
+export interface ShortStyleAssets {
+  /** Doodle vertical (`doodle_explainer_2_short`) — Atlas-generated
+   *  base frame + N variant frames timed to caption chunks. */
+  doodle?: {
+    /** 1080×1920 base frame URL. */
+    base_url: string;
+    /** Variant frames, ordered. Each carries the caption chunk it lines
+     *  up with so the renderer can swap frames at chunk boundaries. */
+    variants: Array<{
+      url: string;
+      caption_chunk_start_index: number;
+    }>;
+  };
 }
