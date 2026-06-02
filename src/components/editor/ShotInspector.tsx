@@ -33,6 +33,7 @@ import {
 } from '@/components/editor/inspector/InspectorVariantsPanel';
 import { OstModeControl } from '@/components/production-doc/OstModeControl';
 import { InspectorMotionCollagePanel } from '@/components/editor/inspector/InspectorMotionCollagePanel';
+import { InspectorTextBlocksPanel } from '@/components/editor/inspector/InspectorTextBlocksPanel';
 import {
   InspectorShotTypePanel,
   detectLeadingHeading,
@@ -1338,6 +1339,19 @@ export function ShotInspector({
                 }}
               />
             </div>
+          )}
+          {/* PR 5 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+              multi-block OST. Persisted into `on_screen_text_blocks`
+              (PR 4 data shape). The renderer continues consuming the
+              legacy `on_screen_text` field above until PR 6 wires the
+              per-block composition. */}
+          {onUpdateRow && (
+            <InspectorTextBlocksPanel
+              row={row}
+              shotIndex={shotIndex}
+              doc={doc}
+              onUpdateRow={onUpdateRow}
+            />
           )}
           {onUpdateRow ? (
             <EditableInput
