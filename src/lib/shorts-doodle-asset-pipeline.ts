@@ -25,7 +25,7 @@
  */
 
 import { logger } from './logger';
-import { createAtlasTask, pollAtlasResultThenUpscale } from './atlas-images';
+import { generateAtlasT2I } from './atlas-cloud-images';
 import { generateGptImage2Edit } from './gpt-image-2-edit';
 import { generateText } from './ai';
 import { type AiSpendContext } from './ai-spend';
@@ -39,8 +39,17 @@ import {
 import type { ShortCaptionChunk } from './shorts-render-types';
 
 const MAX_VARIANTS = 8;
-const VERTICAL_ASPECT = '9:16';
-const ATLAS_TEXT_TO_IMAGE_MODEL = 'gpt-image-2-text-to-image';
+// Atlas T2I supports four enum sizes: 1024x1024, 1024x1536, 1536x1024,
+// 2560x1440. There is no native 1080x1920 — 1024x1536 (2:3, ~0.667
+// aspect) is the closest portrait. The renderer uses `object-fit:
+// cover` so 2:3 fits into 9:16 (0.5625) with a small horizontal crop;
+// keeps the base + variants all at the same Atlas-native dimensions
+// instead of forcing a stretch.
+const VERTICAL_BASE_SIZE = '1024x1536';
+const VERTICAL_QUALITY = 'high';
+// Atlas T2I flat-rate per call (per atlas-cloud-images.ts; mirrors
+// the audit-row accounting in the dispatcher).
+const ATLAS_T2I_COST_USD = 0.04;
 
 export interface DoodleAssetPipelineInput {
   workspaceId: string;
@@ -83,17 +92,6 @@ function buildBasePromptFull(scenePrompt: string): string {
   // commits the subject to the middle-60% safe zone even before reading
   // the style suffix.
   return `Vertical 9:16 composition. Subject placed in the middle 60% of the frame; top 10% and bottom 10% left intentionally empty for player UI / captions. ${scenePrompt} ${suffix}`;
-}
-
-/** Throws when the Atlas API key isn't configured — surfaces an
- *  actionable message instead of letting the Atlas client throw a
- *  cryptic auth error. */
-function readAtlasKey(): string {
-  const key = process.env.ATLAS_API_KEY ?? process.env.KIE_ATLAS_API_KEY ?? '';
-  if (!key) {
-    throw new Error('ATLAS_API_KEY missing — set it before generating Doodle Short assets.');
-  }
-  return key;
 }
 
 export async function generateDoodleAssets(
@@ -157,24 +155,24 @@ export async function generateDoodleAssets(
   });
 
   // ---- 2. Atlas Image t2i for the BASE frame -----------------------------
-  const apiKey = readAtlasKey();
   const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
-  const basePredictionId = await createAtlasTask(apiKey, ATLAS_TEXT_TO_IMAGE_MODEL, {
+  const baseResult = await generateAtlasT2I({
     prompt: fullBasePrompt,
-    aspect_ratio: VERTICAL_ASPECT,
-    resolution: '1K',
+    size: VERTICAL_BASE_SIZE,
+    quality: VERTICAL_QUALITY,
   });
-  const baseUrl = await pollAtlasResultThenUpscale(basePredictionId, apiKey);
+  const baseUrl = baseResult.url;
   logger.info('[shorts doodle pipeline] base ready', {
     shortId: input.shortId,
-    basePredictionId,
+    basePredictionId: baseResult.predictionId,
     baseUrl,
+    predictTimeMs: baseResult.predictTimeMs,
     durationMsSoFar: Date.now() - tStart,
   });
 
   // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
   const variants: DoodleAssetPipelineResult['variants'] = [];
-  let estimatedCostUsd = 0.04; // Atlas Image base + upscale baseline; per-call entries are the truth.
+  let estimatedCostUsd = ATLAS_T2I_COST_USD;
   for (const v of variantPlan) {
     try {
       const result = await generateGptImage2Edit({
