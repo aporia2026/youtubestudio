@@ -10,24 +10,29 @@
  * indication if it's title card, animation, motion collage, whatever
  * it is".
  *
- * Resolution precedence (highest wins) — mirrors the renderer's
- * SceneRouter ordering so the badge says exactly what the renderer
- * will paint:
- *
- *   1. shot_kind === 'motion_collage' → COLLAGE
- *   2. shot_kind === 'motion'         → MOTION  (paint_explainer_v1)
- *   3. visual_type === 'Title Card'   → TITLE
- *   4. visual_type === 'Statistics'   → STAT
- *   5. visual_type === 'B-Roll'       → B-ROLL
- *   6. visual_type === 'blank'        → BLANK
- *   7. visual_type === 'Animation' / fallback → ANIM
+ * Resolution precedence lives in `rowKind()` in `src/lib/shot-filter.ts`
+ * (single source of truth — the SHOTS-rail filter and this badge share
+ * one resolver so the filter chip and the on-thumb badge can never
+ * drift). This file is the visual layer + label/color mapping only.
  *
  * Layout: absolute-positioned top-left by default. The caller wraps
  * a thumbnail in a relative container; the badge overlays without
  * affecting the thumb's own sizing.
  */
 
+import { rowKind, type ShotKind } from '@/lib/shot-filter';
+
 export type ShotKindLabel = 'TITLE' | 'COLLAGE' | 'MOTION' | 'STAT' | 'B-ROLL' | 'BLANK' | 'ANIM';
+
+const KIND_TO_LABEL: Record<ShotKind, ShotKindLabel> = {
+  title: 'TITLE',
+  collage: 'COLLAGE',
+  motion: 'MOTION',
+  stat: 'STAT',
+  broll: 'B-ROLL',
+  blank: 'BLANK',
+  anim: 'ANIM',
+};
 
 interface ShotKindBadgeProps {
   /** Renderer-routing hint — same field VideoShot / ProductionRow carry.
@@ -63,15 +68,10 @@ export function resolveShotKindLabel(args: {
   shotKind?: string;
   visualType?: string;
 }): ShotKindLabel {
-  if (args.shotKind === 'motion_collage') return 'COLLAGE';
-  if (args.shotKind === 'motion') return 'MOTION';
-  if (args.visualType === 'Title Card') return 'TITLE';
-  if (args.visualType === 'Statistics') return 'STAT';
-  if (args.visualType === 'B-Roll') return 'B-ROLL';
-  if (args.visualType === 'blank') return 'BLANK';
-  // Animation OR an unknown visual_type — show ANIM as the default
-  // fallback. The renderer's default scene is also Animation/BRoll.
-  return 'ANIM';
+  // Delegates to `rowKind` so the filter chip and this badge agree on
+  // every row's kind. If you need to change the precedence, change
+  // `rowKind` in `src/lib/shot-filter.ts` and the filter follows.
+  return KIND_TO_LABEL[rowKind({ shot_kind: args.shotKind, visual_type: args.visualType })];
 }
 
 export function ShotKindBadge({

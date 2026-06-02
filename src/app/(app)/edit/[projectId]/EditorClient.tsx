@@ -109,6 +109,14 @@ import {
 } from '@/components/editor/BulkGenerateModal';
 import { BrandKitModal } from '@/components/editor/BrandKitModal';
 import { ShotsTab } from '@/components/editor/leftrail/ShotsTab';
+import {
+  EMPTY_FILTER as EMPTY_SHOT_FILTER,
+  filterStorageKey as shotFilterStorageKey,
+  isEmptyFilter as isEmptyShotFilter,
+  parseFilter as parseShotFilter,
+  serializeFilter as serializeShotFilter,
+  type ShotFilter,
+} from '@/lib/shot-filter';
 import { MediaTab } from '@/components/editor/leftrail/MediaTab';
 import { AudioTab } from '@/components/editor/leftrail/AudioTab';
 import { CaptionsTab } from '@/components/editor/leftrail/CaptionsTab';
@@ -1786,6 +1794,62 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     | { kind: 'caption'; segmentIndex: number; x: number; y: number }
     | null
   >(null);
+
+  // SHOTS-rail filter state. Empty filter on mount; we read
+  // localStorage in an effect so the SSR snapshot stays stable (the
+  // server can't read localStorage, and reading it during render
+  // would hydrate-mismatch). Per-project keying lets each video keep
+  // its own filter independently.
+  // See `_plans/2026-06-02-editor-shot-type-filter.md`.
+  const [shotFilter, setShotFilter] = useState<ShotFilter>(EMPTY_SHOT_FILTER);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(shotFilterStorageKey(projectId));
+      const restored = parseShotFilter(raw);
+      if (!isEmptyShotFilter(restored)) {
+        setShotFilter(restored);
+        console.info('[editor shot-filter] restored', {
+          project_id: projectId,
+          kinds: restored.kinds,
+          grouping: restored.grouping,
+        });
+      }
+    } catch (err) {
+      // Defensive — parse never throws but localStorage access can
+      // (Safari private mode, quota errors). Swallow and move on.
+      console.warn('[editor shot-filter] restore-failed', {
+        project_id: projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [projectId]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    // Debounce writes so chip-mashing doesn't pound localStorage.
+    const handle = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          shotFilterStorageKey(projectId),
+          serializeShotFilter(shotFilter),
+        );
+      } catch {
+        // Quota / private-mode — ignore. Filter still works for the
+        // current session, just won't persist.
+      }
+    }, 250);
+    return () => window.clearTimeout(handle);
+  }, [projectId, shotFilter]);
+  const handleShotFilterChange = useCallback(
+    (next: ShotFilter) => {
+      setShotFilter(next);
+      console.info('[editor shot-filter] applied', {
+        kinds: next.kinds,
+        grouping: next.grouping,
+      });
+    },
+    [],
+  );
 
   /** Floating "Set timing…" popover anchored at the cursor. Used by
    *  shot context menus (timeline + ShotsTab) to set both edges of
@@ -3718,6 +3782,8 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               console.info('[editor shots-tab context-menu] open', { shotIndex, x, y });
               setEditorContextMenu({ kind: 'shots-tab-item', shotIndex, x, y });
             }}
+            filter={shotFilter}
+            onFilterChange={handleShotFilterChange}
           />
         ),
         media: (
