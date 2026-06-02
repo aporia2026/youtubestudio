@@ -20,6 +20,7 @@ import {
   type ShortVideoConfig,
 } from './shorts-render-types';
 import type { ShortRow } from './shorts-types';
+import type { ForcedAlignmentResponse } from './elevenlabs';
 
 export type {
   ShortCaptionChunk,
@@ -50,10 +51,69 @@ export function countWords(text: string): number {
  *
  * Pure function — exported for tests.
  */
+/**
+ * Build per-chunk start/end timings from an ElevenLabs forced-alignment
+ * payload. Each script-word index maps to the alignment word at the same
+ * position (after the script's bracketed markers are stripped, since the
+ * voice doesn't speak those). Returns null when the alignment is shorter
+ * than the script — caller falls back to proportional scaling.
+ *
+ * Exported for tests so the matching strategy stays honest.
+ */
+export function chunkBoundariesFromAlignment(
+  chunks: number[][],
+  alignment: ForcedAlignmentResponse | null | undefined,
+  durationMs: number,
+): Array<{ start_ms: number; end_ms: number }> | null {
+  const alignWords = alignment?.words;
+  if (!alignWords || alignWords.length === 0) return null;
+  const result: Array<{ start_ms: number; end_ms: number }> = [];
+  for (const chunkIndexes of chunks) {
+    const firstIdx = chunkIndexes[0]!;
+    const lastIdx = chunkIndexes[chunkIndexes.length - 1]!;
+    const alignFirst = alignWords[firstIdx];
+    const alignLast = alignWords[lastIdx];
+    // If either edge is missing, fall back — partial alignment would
+    // leave chunks with zero/negative spans and the player would skip.
+    if (!alignFirst || !alignLast) return null;
+    const startSec = alignFirst.start;
+    const endSec = alignLast.end;
+    if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec < startSec) {
+      return null;
+    }
+    result.push({
+      // Floor start, ceil end — keeps every spoken word covered by SOME
+      // caption frame even when alignments fall mid-frame.
+      start_ms: Math.max(0, Math.floor(startSec * 1000)),
+      end_ms: Math.min(durationMs, Math.ceil(endSec * 1000)),
+    });
+  }
+  // Sanity check: chunks must be monotonically non-decreasing in time.
+  // If the alignment drifted (e.g. user re-recorded a different script
+  // against the same audio), the result might zigzag — fall back rather
+  // than render junk.
+  for (let i = 1; i < result.length; i++) {
+    if (result[i]!.start_ms < result[i - 1]!.end_ms - 50) {
+      // Allow 50ms overlap for the natural fade window, but a real
+      // backwards jump means the script ↔ alignment alignment is broken.
+      if (result[i]!.start_ms < result[i - 1]!.start_ms) {
+        return null;
+      }
+    }
+  }
+  return result;
+}
+
 export function splitScriptIntoCaptions(
   script: string,
   durationMs: number,
   targetWordsPerChunk = 4,
+  /** Phase 15.11 — when present, caption timing snaps to real word
+   *  boundaries from the ElevenLabs forced alignment payload instead of
+   *  the proportional words-per-second estimate. Falls back to the
+   *  proportional scheme when alignment is null/missing or its word count
+   *  is shorter than the script's. */
+  alignment?: ForcedAlignmentResponse | null,
 ): ShortCaptionChunk[] {
   const cleaned = stripProductionMarkers(script);
   if (!cleaned || durationMs <= 0) return [];
@@ -100,18 +160,29 @@ export function splitScriptIntoCaptions(
   }
   if (buf.length > 0) chunks.push(buf);
 
-  // 3. Time scaling — by cumulative-word-index across the whole audio.
+  // 3. Time scaling. Prefer the real word boundaries from the alignment
+  //    payload (Phase 15.11). When the alignment is missing OR shorter
+  //    than the script's word array (the user re-recorded against a
+  //    different script, etc.), fall back to proportional scaling.
   const totalWords = words.length;
-  const result: ShortCaptionChunk[] = chunks.map((chunkIndexes) => {
+  const alignmentBoundaries = chunkBoundariesFromAlignment(chunks, alignment, durationMs);
+  const result: ShortCaptionChunk[] = chunks.map((chunkIndexes, chunkIdx) => {
     const firstWordIdx = chunkIndexes[0]!;
     const lastWordIdx = chunkIndexes[chunkIndexes.length - 1]!;
-    const start_ms = Math.round((firstWordIdx / totalWords) * durationMs);
-    // End at the start of the next word (or audio end for the last chunk).
-    const nextWordIdx = lastWordIdx + 1;
-    const end_ms =
-      nextWordIdx >= totalWords
-        ? durationMs
-        : Math.round((nextWordIdx / totalWords) * durationMs);
+    let start_ms: number;
+    let end_ms: number;
+    if (alignmentBoundaries) {
+      start_ms = alignmentBoundaries[chunkIdx]!.start_ms;
+      end_ms = alignmentBoundaries[chunkIdx]!.end_ms;
+    } else {
+      start_ms = Math.round((firstWordIdx / totalWords) * durationMs);
+      // End at the start of the next word (or audio end for the last chunk).
+      const nextWordIdx = lastWordIdx + 1;
+      end_ms =
+        nextWordIdx >= totalWords
+          ? durationMs
+          : Math.round((nextWordIdx / totalWords) * durationMs);
+    }
     return {
       start_ms,
       end_ms,
@@ -132,10 +203,17 @@ export interface BuildShortVideoConfigArgs {
     | 'title'
     | 'style_id'
     | 'style_assets'
+    | 'captions_config'
   >;
   channelName?: string | null;
   background?: string;
   accentColor?: string;
+  /** Phase 15.11 — ElevenLabs forced alignment payload for the row's
+   *  voiceover. When supplied, caption timing snaps to real word
+   *  boundaries instead of proportional-WPM estimates. The render route
+   *  fetches this via `ensureAlignmentForVoiceover`; the editor preview
+   *  fetches it via `GET /api/shorts/[id]/alignment`. */
+  alignment?: ForcedAlignmentResponse | null;
 }
 
 /**
@@ -166,7 +244,29 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
   // card renders for a beat after the last word.
   const baseSeconds = short.voiceover_duration_seconds ?? short.estimated_duration_seconds ?? 30;
   const durationMs = Math.max(3000, Math.round(baseSeconds * 1000)) + SHORT_OUTRO_TAIL_MS;
-  const captions = splitScriptIntoCaptions(short.short_script, durationMs - SHORT_OUTRO_TAIL_MS);
+  const rawCaptions = splitScriptIntoCaptions(
+    short.short_script,
+    durationMs - SHORT_OUTRO_TAIL_MS,
+    /* targetWordsPerChunk */ 4,
+    args.alignment,
+  );
+  // Apply per-chunk overrides from captions_config (Phase 15.11).
+  // Hidden chunks drop from the output entirely; text/timing overrides
+  // win over the auto-chunked values.
+  const captionsCfg = short.captions_config;
+  const chunkOverrides = captionsCfg?.chunks ?? [];
+  const captions = rawCaptions
+    .map((c, i) => {
+      const ov = chunkOverrides[i];
+      if (!ov) return c;
+      if (ov.hidden) return null;
+      return {
+        text: typeof ov.text === 'string' && ov.text.trim().length > 0 ? ov.text : c.text,
+        start_ms: typeof ov.start_ms === 'number' && Number.isFinite(ov.start_ms) ? ov.start_ms : c.start_ms,
+        end_ms: typeof ov.end_ms === 'number' && Number.isFinite(ov.end_ms) ? ov.end_ms : c.end_ms,
+      };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
 
   const styleId = short.style_id ?? undefined;
 
@@ -217,5 +317,6 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
     channel_name: args.channelName?.trim() || undefined,
     style_id: styleId,
     doodle_frames: doodleFrames,
+    captions_config: short.captions_config,
   };
 }

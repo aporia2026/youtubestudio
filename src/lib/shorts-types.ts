@@ -103,6 +103,10 @@ export interface ShortRow {
   // — see migration 0110 doc for the per-style contracts.
   style_id: string | null;
   style_assets: ShortStyleAssets;
+  // Phase 15.11 (migration 0113): caption editor config. JSONB with
+  // optional `style` + per-chunk `chunks` overrides. See
+  // `ShortsCaptionsConfig` in shorts-render-types.ts. Defaults to {}.
+  captions_config: import('./shorts-render-types').ShortsCaptionsConfig;
   created_at: string;
   updated_at: string;
 }

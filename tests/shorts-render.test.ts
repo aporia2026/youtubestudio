@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildShortVideoConfig,
+  chunkBoundariesFromAlignment,
   countWords,
   splitScriptIntoCaptions,
   stripScriptMarkers,
 } from '@/lib/shorts-render';
 import { SHORT_FPS, SHORT_HEIGHT, SHORT_OUTRO_TAIL_MS, SHORT_WIDTH } from '@/lib/shorts-render-types';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 
 describe('stripScriptMarkers', () => {
   it('removes [VISUAL: ...] / [PAUSE] / [SFX: ...] markers', () => {
@@ -91,6 +93,8 @@ describe('buildShortVideoConfig', () => {
     // rows default to the minimal style with no assets.
     style_id: null,
     style_assets: {},
+    // Phase 15.11 — captions_config defaults to {} (no overrides).
+    captions_config: {},
   };
 
   it('throws when voiceover URL is missing', () => {
@@ -143,6 +147,108 @@ describe('buildShortVideoConfig', () => {
   });
 });
 
+describe('chunkBoundariesFromAlignment — Phase 15.11', () => {
+  function buildAlignment(words: Array<{ text: string; start: number; end: number }>): ForcedAlignmentResponse {
+    return { words };
+  }
+
+  it('returns null when alignment is missing / empty', () => {
+    expect(chunkBoundariesFromAlignment([[0]], null, 10000)).toBeNull();
+    expect(chunkBoundariesFromAlignment([[0]], undefined, 10000)).toBeNull();
+    expect(chunkBoundariesFromAlignment([[0]], { words: [] }, 10000)).toBeNull();
+  });
+
+  it('maps each chunk to the alignment word at the same index', () => {
+    const align = buildAlignment([
+      { text: 'Hook', start: 0, end: 0.5 },
+      { text: 'line', start: 0.5, end: 1.0 },
+      { text: 'here', start: 1.0, end: 1.4 },
+      { text: 'Body', start: 1.6, end: 2.0 },
+      { text: 'words', start: 2.0, end: 2.5 },
+    ]);
+    const chunks = [[0, 1, 2], [3, 4]];
+    const result = chunkBoundariesFromAlignment(chunks, align, 5000);
+    expect(result).not.toBeNull();
+    expect(result![0]).toEqual({ start_ms: 0, end_ms: 1400 });
+    expect(result![1]).toEqual({ start_ms: 1600, end_ms: 2500 });
+  });
+
+  it('falls back to null when the alignment is shorter than the script', () => {
+    const align = buildAlignment([{ text: 'only', start: 0, end: 1 }]);
+    expect(chunkBoundariesFromAlignment([[0, 1, 2]], align, 5000)).toBeNull();
+  });
+
+  it('falls back to null on non-finite or negative spans', () => {
+    const align: ForcedAlignmentResponse = {
+      words: [
+        { text: 'a', start: NaN, end: 1 },
+        { text: 'b', start: 1, end: 2 },
+      ],
+    };
+    expect(chunkBoundariesFromAlignment([[0]], align, 5000)).toBeNull();
+  });
+
+  it('falls back when chunks would zigzag backwards in time', () => {
+    const align = buildAlignment([
+      { text: 'A', start: 5, end: 5.5 },
+      { text: 'B', start: 0, end: 0.5 },
+    ]);
+    expect(chunkBoundariesFromAlignment([[0], [1]], align, 10000)).toBeNull();
+  });
+
+  it('clamps end_ms to the duration boundary', () => {
+    const align = buildAlignment([
+      { text: 'A', start: 0, end: 0.5 },
+      { text: 'B', start: 0.5, end: 999 },
+    ]);
+    const result = chunkBoundariesFromAlignment([[0], [1]], align, 1000);
+    expect(result![1]!.end_ms).toBe(1000);
+  });
+});
+
+describe('splitScriptIntoCaptions — Phase 15.11 alignment path', () => {
+  it('uses alignment timing when supplied', () => {
+    const script = 'One two three. Four five six.';
+    const align: ForcedAlignmentResponse = {
+      words: [
+        { text: 'One', start: 0, end: 0.4 },
+        { text: 'two', start: 0.4, end: 0.7 },
+        { text: 'three', start: 0.7, end: 1.2 },
+        { text: 'Four', start: 2.5, end: 2.8 },
+        { text: 'five', start: 2.8, end: 3.1 },
+        { text: 'six', start: 3.1, end: 3.6 },
+      ],
+    };
+    const chunks = splitScriptIntoCaptions(script, 5000, 4, align);
+    expect(chunks[0]!.start_ms).toBe(0);
+    expect(chunks[0]!.end_ms).toBe(1200);
+    expect(chunks[1]!.start_ms).toBe(2500);
+    expect(chunks[1]!.end_ms).toBe(3600);
+  });
+
+  it('falls back to proportional timing when alignment is null', () => {
+    const script = 'One two three. Four five six.';
+    const chunks = splitScriptIntoCaptions(script, 6000, 4, null);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    // Proportional path: first chunk starts at 0, last ends at duration.
+    expect(chunks[0]!.start_ms).toBe(0);
+    expect(chunks[chunks.length - 1]!.end_ms).toBe(6000);
+  });
+
+  it('falls back when alignment is shorter than the script word count', () => {
+    const script = 'One two three four five six seven eight nine.';
+    const align: ForcedAlignmentResponse = {
+      words: [
+        { text: 'One', start: 0, end: 0.5 },
+        { text: 'two', start: 0.5, end: 1.0 },
+      ],
+    };
+    const chunks = splitScriptIntoCaptions(script, 5000, 4, align);
+    // Proportional fallback last chunk should end at the duration.
+    expect(chunks[chunks.length - 1]!.end_ms).toBe(5000);
+  });
+});
+
 describe('buildShortVideoConfig — Phase 15.3 style dispatch', () => {
   const baseShort = {
     id: 'short-doodle-1',
@@ -151,6 +257,7 @@ describe('buildShortVideoConfig — Phase 15.3 style dispatch', () => {
     voiceover_duration_seconds: 12,
     estimated_duration_seconds: 14,
     title: 'A Doodle Short',
+    captions_config: {},
   } as const;
 
   it('threads style_id through when set on the row', () => {
@@ -271,6 +378,58 @@ describe('buildShortVideoConfig — Phase 15.3 style dispatch', () => {
         },
       }),
     ).toThrow(/Paint Short.*style assets not generated/i);
+  });
+
+  it('threads captions_config through onto the output config', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: null,
+        style_assets: {},
+        captions_config: {
+          style: { fontFamily: 'Anton', sizeScale: 1.2 },
+          chunks: [{ text: 'overridden' }],
+        },
+      },
+    });
+    expect(cfg.captions_config?.style?.fontFamily).toBe('Anton');
+    expect(cfg.captions_config?.chunks?.[0]?.text).toBe('overridden');
+  });
+
+  it('applies per-chunk text + timing overrides from captions_config', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: null,
+        style_assets: {},
+        captions_config: {
+          chunks: [
+            { text: 'New first chunk text' },
+            { start_ms: 5000, end_ms: 6500 },
+          ],
+        },
+      },
+    });
+    expect(cfg.captions[0]!.text).toBe('New first chunk text');
+    expect(cfg.captions[1]!.start_ms).toBe(5000);
+    expect(cfg.captions[1]!.end_ms).toBe(6500);
+  });
+
+  it('drops chunks marked hidden in captions_config', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: null,
+        style_assets: {},
+        captions_config: {
+          chunks: [{ hidden: true }],
+        },
+      },
+    });
+    const totalRaw = baseShort.short_script.split(/\s+/).filter(Boolean).length;
+    expect(cfg.captions.length).toBeGreaterThan(0);
+    expect(cfg.captions.every((c) => c.text !== baseShort.short_script.split('.')[0])).toBe(true);
+    expect(totalRaw).toBeGreaterThan(0); // sanity
   });
 
   it('omits doodle_frames entirely for the minimal style', () => {

@@ -17,6 +17,71 @@ export interface ShortCaptionChunk {
   text: string;
 }
 
+/** Phase 15.11 — caption style + per-chunk overrides.
+ *
+ *  Every field is optional. The renderer applies defaults that match the
+ *  Phase 5.5 Minimal renderer when fields are missing so existing rendered
+ *  Shorts don't visually change unless the user explicitly overrides.
+ *
+ *  Persisted on `shorts.captions_config` (migration 0112) as JSONB. The
+ *  editor reads and writes the whole blob via PATCH /api/shorts/[id]. */
+export interface ShortsCaptionsStyle {
+  /** Google Fonts family name. Must match one of the 8 families loaded
+   *  by `src/remotion/fonts.ts` so the renderer can find it. */
+  fontFamily?: 'Inter' | 'Anton' | 'Bebas Neue' | 'Archivo Black' | 'Patrick Hand' | 'Caveat' | 'Source Serif 4' | 'JetBrains Mono';
+  /** Multiplier on the auto-computed font size. 1 = default. Useful range 0.5–1.8. */
+  sizeScale?: number;
+  /** Font weight 100–900. Default depends on family. */
+  fontWeight?: number;
+  /** Vertical position of the caption band, 0.0 (top) – 1.0 (bottom). Default 0.5. */
+  positionY?: number;
+  /** Horizontal padding from the frame edges in px (at 1080×1920). Default 80. */
+  paddingX?: number;
+  /** Fill color (hex or any CSS color). Default '#ffffff'. */
+  color?: string;
+  /** Highlight color used on the LAST word of each chunk (Minimal style's
+   *  payoff focal point). Default = the row's accent_color. */
+  highlightColor?: string;
+  /** Outline (text-stroke) color. Default 'transparent' = no outline. */
+  outlineColor?: string;
+  /** Outline width in px. Default 0. */
+  outlineWidth?: number;
+  /** Drop shadow string (CSS text-shadow value). Default = a soft glow. */
+  shadow?: string;
+  /** Text transform applied at render time. */
+  textTransform?: 'none' | 'uppercase' | 'lowercase' | 'capitalize';
+  /** Letter spacing in px. Default -1.5 (tight). */
+  letterSpacing?: number;
+  /** Line height multiplier. Default 1.05. */
+  lineHeight?: number;
+  /** Background pill behind the chunk text. */
+  background?: 'none' | 'solid' | 'blur';
+  /** Background color when `background === 'solid'`. Default 'rgba(0,0,0,0.6)'. */
+  backgroundColor?: string;
+  /** Effect applied on chunk change. */
+  entryEffect?: 'none' | 'fade' | 'pop' | 'slide-up';
+}
+
+/** Per-chunk override. When the user edits a chunk's text or timing in the
+ *  editor, the override sits here. Indexed by chunk position (0-based) in
+ *  the auto-chunked caption array. */
+export interface ShortsCaptionChunkOverride {
+  /** Replacement text. When set, overrides the auto-chunked word group. */
+  text?: string;
+  /** Replacement start time in milliseconds. */
+  start_ms?: number;
+  /** Replacement end time in milliseconds. */
+  end_ms?: number;
+  /** Hide this chunk entirely from the render. Lets the user kill a stray
+   *  chunk without re-editing the script. */
+  hidden?: boolean;
+}
+
+export interface ShortsCaptionsConfig {
+  style?: ShortsCaptionsStyle;
+  chunks?: ShortsCaptionChunkOverride[];
+}
+
 export interface ShortVideoConfig {
   fps: number;
   width: number;
@@ -56,6 +121,11 @@ export interface ShortVideoConfig {
     url: string;
     caption_chunk_start_index: number;
   }>;
+  /** Phase 15.11 — caption style + per-chunk overrides. When present, the
+   *  composition's caption renderer applies these on top of the defaults.
+   *  Threaded through `buildShortVideoConfig` from the row's
+   *  `captions_config` JSONB column. */
+  captions_config?: ShortsCaptionsConfig;
 }
 
 /** Vertical-Shorts canonical dimensions. */

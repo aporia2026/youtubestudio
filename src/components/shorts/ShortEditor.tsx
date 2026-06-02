@@ -45,7 +45,13 @@ import {
   getStyleAssetStatus,
   styleAssetLabel,
 } from '@/lib/shorts-asset-status';
-import { buildShortVideoConfig } from '@/lib/shorts-render';
+import { buildShortVideoConfig, splitScriptIntoCaptions } from '@/lib/shorts-render';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
+import type {
+  ShortsCaptionChunkOverride,
+  ShortsCaptionsConfig,
+  ShortsCaptionsStyle,
+} from '@/lib/shorts-render-types';
 
 // Dynamic import keeps Remotion's browser-only deps (WebGL, Canvas, etc.)
 // out of the SSR bundle. Same pattern the production-doc page uses for its
@@ -117,6 +123,9 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   // Render state.
   const [renderJob, setRenderJob] = useState<RenderJob | null>(null);
   const [renderBusy, setRenderBusy] = useState(false);
+
+  // Phase 15.11 — alignment data for accurate caption timing in the preview.
+  const [alignment, setAlignment] = useState<ForcedAlignmentResponse | null>(null);
 
   // ── load row + voices ──────────────────────────────────────────────
   const loadRow = useCallback(async () => {
@@ -195,14 +204,15 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   // The preview tries to build a ShortVideoConfig from the current row.
   // buildShortVideoConfig throws when prerequisites are missing
   // (no voiceover, doodle without assets, etc.) — we catch and
-  // surface the message as a friendly placeholder.
+  // surface the message as a friendly placeholder. Alignment threads
+  // through when present so caption timing snaps to real word boundaries.
   const { previewConfig, previewMessage } = useMemo<{
     previewConfig: ShortVideoConfig | null;
     previewMessage: string | null;
   }>(() => {
     if (!row) return { previewConfig: null, previewMessage: null };
     try {
-      const config = buildShortVideoConfig({ short: row });
+      const config = buildShortVideoConfig({ short: row, alignment });
       return { previewConfig: config, previewMessage: null };
     } catch (e) {
       return {
@@ -210,11 +220,35 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         previewMessage: e instanceof Error ? e.message : 'Preview unavailable',
       };
     }
-  }, [row]);
+  }, [row, alignment]);
+
+  // ── fetch alignment after voiceover lands ─────────────────────────
+  useEffect(() => {
+    if (!row?.voiceover_audio_url) {
+      setAlignment(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads alignment
+        const res = await fetch(`/api/shorts/${encodeURIComponent(row.id)}/alignment`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setAlignment(data.alignment as ForcedAlignmentResponse);
+      } catch {
+        /* preview falls back to proportional timing */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [row?.id, row?.voiceover_audio_url]);
 
   // ── PATCH helper for the editable fields ───────────────────────────
   const savePatch = useCallback(
-    async (patch: Record<string, string>) => {
+    async (patch: Record<string, unknown>) => {
       try {
         const res = await fetch(`/api/shorts/${encodeURIComponent(shortId)}`, {
           method: 'PATCH',
@@ -233,6 +267,60 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     },
     [shortId],
   );
+
+  // ── Phase 15.11 — captions config + helpers ────────────────────────
+  const captionsConfig = row?.captions_config ?? {};
+  const captionStyle = captionsConfig.style ?? {};
+  const chunkOverrides = captionsConfig.chunks ?? [];
+
+  // Derived preview-chunk list so the captions editor lines up with what
+  // the renderer will show. Re-runs the same auto-chunker the renderer
+  // uses, threading alignment so the chunk text + timestamps match.
+  const previewChunks = useMemo(() => {
+    if (!row?.short_script) return [] as Array<{ text: string; start_ms: number; end_ms: number }>;
+    const baseSeconds = row.voiceover_duration_seconds
+      ?? row.estimated_duration_seconds
+      ?? 30;
+    const durationMs = Math.max(3000, Math.round(baseSeconds * 1000));
+    return splitScriptIntoCaptions(row.short_script, durationMs, 4, alignment);
+  }, [row?.short_script, row?.voiceover_duration_seconds, row?.estimated_duration_seconds, alignment]);
+
+  const saveStyle = useCallback(
+    (patch: Partial<ShortsCaptionsStyle>) => {
+      const next: ShortsCaptionsConfig = {
+        ...captionsConfig,
+        style: { ...captionStyle, ...patch },
+      };
+      savePatch({ captions_config: next });
+    },
+    [captionsConfig, captionStyle, savePatch],
+  );
+
+  const saveChunkOverride = useCallback(
+    (idx: number, patch: ShortsCaptionChunkOverride) => {
+      const nextChunks = [...chunkOverrides];
+      // Pad with empty objects so idx lands at the right slot.
+      while (nextChunks.length <= idx) nextChunks.push({});
+      nextChunks[idx] = { ...nextChunks[idx], ...patch };
+      const next: ShortsCaptionsConfig = { ...captionsConfig, chunks: nextChunks };
+      savePatch({ captions_config: next });
+    },
+    [captionsConfig, chunkOverrides, savePatch],
+  );
+
+  const resetChunkOverride = useCallback(
+    (idx: number) => {
+      const nextChunks = [...chunkOverrides];
+      nextChunks[idx] = {};
+      const next: ShortsCaptionsConfig = { ...captionsConfig, chunks: nextChunks };
+      savePatch({ captions_config: next });
+    },
+    [captionsConfig, chunkOverrides, savePatch],
+  );
+
+  const resetAllCaptions = useCallback(() => {
+    savePatch({ captions_config: {} });
+  }, [savePatch]);
 
   // ── action: generate style assets ──────────────────────────────────
   const generateAssets = useCallback(async () => {
@@ -544,6 +632,27 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         </div>
       </EditorSection>
 
+      {/* ── Captions section (Phase 15.11) ───────────────────────── */}
+      <EditorSection
+        title="Captions"
+        subtitle={
+          alignment
+            ? `Timing snapped to ${alignment.words.length} ElevenLabs word boundaries. Edit per-chunk text + timing below, or restyle globally.`
+            : 'Timing falls back to proportional WPM until the voiceover lands and the aligner runs. Edit text + style now; timing locks once the voiceover is ready.'
+        }
+      >
+        <CaptionsEditorPanel
+          previewChunks={previewChunks}
+          overrides={chunkOverrides}
+          style={captionStyle}
+          alignmentReady={!!alignment}
+          onStyleChange={saveStyle}
+          onChunkChange={saveChunkOverride}
+          onChunkReset={resetChunkOverride}
+          onResetAll={resetAllCaptions}
+        />
+      </EditorSection>
+
       {/* ── Voiceover section ────────────────────────────────────── */}
       <EditorSection
         title="Voiceover"
@@ -668,6 +777,462 @@ function Row({ label, value }: { label: string; value: string }) {
         {value}
       </span>
     </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Captions editor — Phase 15.11. Lives in this file because it tightly
+// couples to ShortEditor's state shape (overrides, preview chunks, save
+// helpers). A separate file would be ceremony for one consumer.
+// ────────────────────────────────────────────────────────────────────────────
+
+const CAPTION_FONTS: Array<NonNullable<ShortsCaptionsStyle['fontFamily']>> = [
+  'Inter',
+  'Anton',
+  'Bebas Neue',
+  'Archivo Black',
+  'Patrick Hand',
+  'Caveat',
+  'Source Serif 4',
+  'JetBrains Mono',
+];
+
+const ENTRY_EFFECTS: Array<NonNullable<ShortsCaptionsStyle['entryEffect']>> = [
+  'fade',
+  'pop',
+  'slide-up',
+  'none',
+];
+
+const BACKGROUNDS: Array<NonNullable<ShortsCaptionsStyle['background']>> = [
+  'none',
+  'solid',
+  'blur',
+];
+
+const TEXT_TRANSFORMS: Array<NonNullable<ShortsCaptionsStyle['textTransform']>> = [
+  'none',
+  'uppercase',
+  'lowercase',
+  'capitalize',
+];
+
+function formatMs(ms: number): string {
+  const sec = ms / 1000;
+  return `${sec.toFixed(2)}s`;
+}
+
+function CaptionsEditorPanel({
+  previewChunks,
+  overrides,
+  style,
+  alignmentReady,
+  onStyleChange,
+  onChunkChange,
+  onChunkReset,
+  onResetAll,
+}: {
+  previewChunks: Array<{ text: string; start_ms: number; end_ms: number }>;
+  overrides: ShortsCaptionChunkOverride[];
+  style: ShortsCaptionsStyle;
+  alignmentReady: boolean;
+  onStyleChange: (patch: Partial<ShortsCaptionsStyle>) => void;
+  onChunkChange: (idx: number, patch: ShortsCaptionChunkOverride) => void;
+  onChunkReset: (idx: number) => void;
+  onResetAll: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Global style controls */}
+      <div
+        style={{
+          padding: 12,
+          borderRadius: 10,
+          background: 'rgba(0,0,0,0.18)',
+          border: '1px solid rgba(255,255,255,0.06)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+        }}
+      >
+        <header style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <strong style={{ fontSize: 13 }}>Global style</strong>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+            All Google Fonts, free.
+          </span>
+        </header>
+
+        <StyleChipRow
+          label="Font"
+          value={style.fontFamily ?? null}
+          options={CAPTION_FONTS.map((f) => ({ value: f, label: f }))}
+          onChange={(v) => onStyleChange({ fontFamily: (v as ShortsCaptionsStyle['fontFamily']) ?? undefined })}
+        />
+        <StyleChipRow
+          label="Effect"
+          value={style.entryEffect ?? null}
+          options={ENTRY_EFFECTS.map((e) => ({ value: e, label: e }))}
+          onChange={(v) => onStyleChange({ entryEffect: (v as ShortsCaptionsStyle['entryEffect']) ?? undefined })}
+        />
+        <StyleChipRow
+          label="Background"
+          value={style.background ?? null}
+          options={BACKGROUNDS.map((b) => ({ value: b, label: b }))}
+          onChange={(v) => onStyleChange({ background: (v as ShortsCaptionsStyle['background']) ?? undefined })}
+        />
+        <StyleChipRow
+          label="Transform"
+          value={style.textTransform ?? null}
+          options={TEXT_TRANSFORMS.map((t) => ({ value: t, label: t }))}
+          onChange={(v) => onStyleChange({ textTransform: (v as ShortsCaptionsStyle['textTransform']) ?? undefined })}
+        />
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+          <NumberField
+            label="Size scale"
+            value={style.sizeScale ?? 1}
+            min={0.5}
+            max={1.8}
+            step={0.05}
+            onCommit={(v) => onStyleChange({ sizeScale: v })}
+          />
+          <NumberField
+            label="Position (0 top → 1 bottom)"
+            value={style.positionY ?? 0.5}
+            min={0}
+            max={1}
+            step={0.05}
+            onCommit={(v) => onStyleChange({ positionY: v })}
+          />
+          <NumberField
+            label="Padding X (px)"
+            value={style.paddingX ?? 80}
+            min={0}
+            max={300}
+            step={4}
+            onCommit={(v) => onStyleChange({ paddingX: Math.round(v) })}
+          />
+          <NumberField
+            label="Outline width"
+            value={style.outlineWidth ?? 0}
+            min={0}
+            max={20}
+            step={1}
+            onCommit={(v) => onStyleChange({ outlineWidth: Math.round(v) })}
+          />
+          <NumberField
+            label="Letter spacing"
+            value={style.letterSpacing ?? -1.5}
+            min={-5}
+            max={10}
+            step={0.25}
+            onCommit={(v) => onStyleChange({ letterSpacing: v })}
+          />
+          <NumberField
+            label="Line height"
+            value={style.lineHeight ?? 1.05}
+            min={0.8}
+            max={2}
+            step={0.05}
+            onCommit={(v) => onStyleChange({ lineHeight: v })}
+          />
+          <ColorField
+            label="Color"
+            value={style.color ?? '#ffffff'}
+            onCommit={(v) => onStyleChange({ color: v })}
+          />
+          <ColorField
+            label="Highlight"
+            value={style.highlightColor ?? '#a78bfa'}
+            onCommit={(v) => onStyleChange({ highlightColor: v })}
+          />
+          <ColorField
+            label="Outline"
+            value={style.outlineColor ?? '#000000'}
+            onCommit={(v) => onStyleChange({ outlineColor: v })}
+          />
+        </div>
+
+        <button
+          type="button"
+          onClick={onResetAll}
+          style={{
+            alignSelf: 'flex-start',
+            padding: '4px 10px',
+            borderRadius: 7,
+            border: '1px solid rgba(255,255,255,0.15)',
+            background: 'transparent',
+            color: 'var(--text-secondary, rgba(255,255,255,0.75))',
+            fontSize: 11,
+            cursor: 'pointer',
+          }}
+        >
+          Reset all caption styling
+        </button>
+      </div>
+
+      {/* Per-chunk editor */}
+      <div>
+        <header style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <strong style={{ fontSize: 13 }}>Per-chunk overrides</strong>
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+            {previewChunks.length} chunk{previewChunks.length === 1 ? '' : 's'} •{' '}
+            {alignmentReady ? 'real word timing' : 'proportional fallback'}
+          </span>
+        </header>
+        {previewChunks.length === 0 && (
+          <div style={{ padding: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+            No chunks yet — write a script first.
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {previewChunks.map((c, i) => {
+            const ov = overrides[i] ?? {};
+            const effectiveText = ov.text ?? c.text;
+            const effectiveStart = ov.start_ms ?? c.start_ms;
+            const effectiveEnd = ov.end_ms ?? c.end_ms;
+            const hasOverride = !!(ov.text || ov.start_ms !== undefined || ov.end_ms !== undefined || ov.hidden);
+            return (
+              <div
+                key={i}
+                style={{
+                  padding: 10,
+                  borderRadius: 10,
+                  background: ov.hidden
+                    ? 'rgba(239,68,68,0.06)'
+                    : hasOverride
+                      ? 'rgba(124,58,237,0.07)'
+                      : 'rgba(0,0,0,0.18)',
+                  border: hasOverride
+                    ? '1px solid rgba(124,58,237,0.4)'
+                    : '1px solid rgba(255,255,255,0.06)',
+                }}
+              >
+                <header style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                  <span>#{i + 1}</span>
+                  <span>{formatMs(effectiveStart)} – {formatMs(effectiveEnd)}</span>
+                  {hasOverride && !ov.hidden && <span style={{ color: '#c4b5fd' }}>overridden</span>}
+                  {ov.hidden && <span style={{ color: '#fca5a5' }}>hidden</span>}
+                  <button
+                    type="button"
+                    onClick={() => onChunkChange(i, { hidden: !ov.hidden })}
+                    style={{
+                      marginLeft: 'auto',
+                      padding: '3px 8px',
+                      borderRadius: 6,
+                      border: '1px solid rgba(255,255,255,0.15)',
+                      background: 'transparent',
+                      color: 'inherit',
+                      fontSize: 10,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {ov.hidden ? 'Show' : 'Hide'}
+                  </button>
+                  {hasOverride && (
+                    <button
+                      type="button"
+                      onClick={() => onChunkReset(i)}
+                      style={{
+                        padding: '3px 8px',
+                        borderRadius: 6,
+                        border: '1px solid rgba(255,255,255,0.15)',
+                        background: 'transparent',
+                        color: 'inherit',
+                        fontSize: 10,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </header>
+                <input
+                  type="text"
+                  defaultValue={effectiveText}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim();
+                    if (v && v !== c.text) {
+                      onChunkChange(i, { text: v });
+                    } else if (v === c.text && ov.text) {
+                      onChunkChange(i, { text: undefined });
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: 7,
+                    background: 'rgba(0,0,0,0.25)',
+                    color: 'inherit',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    fontSize: 13,
+                  }}
+                  placeholder="Replacement caption text…"
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                  <NumberField
+                    label="Start (s)"
+                    inline
+                    value={effectiveStart / 1000}
+                    step={0.05}
+                    onCommit={(v) =>
+                      onChunkChange(i, { start_ms: Math.max(0, Math.round(v * 1000)) })
+                    }
+                  />
+                  <NumberField
+                    label="End (s)"
+                    inline
+                    value={effectiveEnd / 1000}
+                    step={0.05}
+                    onCommit={(v) =>
+                      onChunkChange(i, { end_ms: Math.max(0, Math.round(v * 1000)) })
+                    }
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StyleChipRow({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  options: Array<{ value: string; label: string }>;
+  onChange: (next: string | null) => void;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <span style={{ width: 90, fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>
+      <button
+        type="button"
+        onClick={() => onChange(null)}
+        style={chipStyle(value == null)}
+      >
+        Auto
+      </button>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          onClick={() => onChange(o.value)}
+          style={chipStyle(value === o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function chipStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: '3px 9px',
+    borderRadius: 999,
+    border: '1px solid ' + (active ? 'rgba(124,58,237,0.85)' : 'rgba(255,255,255,0.1)'),
+    background: active ? 'rgba(124,58,237,0.18)' : 'transparent',
+    color: active ? '#c4b5fd' : 'var(--text-secondary, rgba(255,255,255,0.75))',
+    fontSize: 11,
+    fontWeight: active ? 600 : 500,
+    cursor: 'pointer',
+  };
+}
+
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+  inline,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  onCommit: (v: number) => void;
+  inline?: boolean;
+}) {
+  return (
+    <label
+      style={{
+        display: 'flex',
+        flexDirection: inline ? 'row' : 'column',
+        alignItems: inline ? 'center' : 'stretch',
+        gap: inline ? 6 : 3,
+        flex: inline ? '1 1 auto' : undefined,
+      }}
+    >
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{label}</span>
+      <input
+        type="number"
+        defaultValue={value}
+        min={min}
+        max={max}
+        step={step}
+        onBlur={(e) => {
+          const v = parseFloat(e.target.value);
+          if (Number.isFinite(v)) onCommit(v);
+        }}
+        style={{
+          padding: '4px 8px',
+          borderRadius: 6,
+          background: 'rgba(0,0,0,0.25)',
+          color: 'inherit',
+          border: '1px solid rgba(255,255,255,0.1)',
+          fontSize: 12,
+          width: inline ? 80 : '100%',
+        }}
+      />
+    </label>
+  );
+}
+
+function ColorField({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  onCommit: (v: string) => void;
+}) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{label}</span>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <input
+          type="color"
+          defaultValue={value.startsWith('#') ? value : '#ffffff'}
+          onBlur={(e) => onCommit(e.target.value)}
+          style={{ width: 36, height: 30, borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', cursor: 'pointer' }}
+        />
+        <input
+          type="text"
+          defaultValue={value}
+          onBlur={(e) => onCommit(e.target.value)}
+          style={{
+            flex: 1,
+            padding: '4px 8px',
+            borderRadius: 6,
+            background: 'rgba(0,0,0,0.25)',
+            color: 'inherit',
+            border: '1px solid rgba(255,255,255,0.1)',
+            fontSize: 12,
+          }}
+        />
+      </div>
+    </label>
   );
 }
 

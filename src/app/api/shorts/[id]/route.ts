@@ -32,6 +32,8 @@ export const PATCH = apiRoute.authed(
       short_script?: unknown;
       hook?: unknown;
       payoff?: unknown;
+      /** Phase 15.11 — opaque captions blob, validated below. */
+      captions_config?: unknown;
     } = {};
     try {
       body = await req.json();
@@ -50,6 +52,38 @@ export const PATCH = apiRoute.authed(
     const hook = typeof body.hook === 'string' ? body.hook.trim().slice(0, 600) : null;
     const payoff = typeof body.payoff === 'string' ? body.payoff.trim().slice(0, 600) : null;
 
+    // Phase 15.11 — captions_config. Must be a plain object if present;
+    // reject arrays / nulls / strings. The renderer + helpers do per-field
+    // defensive defaults so we don't deep-validate here. 200KB cap covers
+    // generous per-chunk overrides + style.
+    let captionsConfigJson: string | null = null;
+    if (body.captions_config !== undefined) {
+      if (
+        body.captions_config === null
+        || typeof body.captions_config !== 'object'
+        || Array.isArray(body.captions_config)
+      ) {
+        return NextResponse.json(
+          { error: 'captions_config must be an object' },
+          { status: 400 },
+        );
+      }
+      try {
+        captionsConfigJson = JSON.stringify(body.captions_config);
+        if (captionsConfigJson.length > 200_000) {
+          return NextResponse.json(
+            { error: 'captions_config is too large (>200KB)' },
+            { status: 413 },
+          );
+        }
+      } catch {
+        return NextResponse.json(
+          { error: 'captions_config could not be serialised' },
+          { status: 400 },
+        );
+      }
+    }
+
     try {
       // Recompute derived fields when the script changes.
       const wc = shortScript ? countSpokenWords(shortScript) : null;
@@ -62,6 +96,7 @@ export const PATCH = apiRoute.authed(
                payoff = COALESCE(${payoff}, payoff),
                word_count = COALESCE(${wc}, word_count),
                estimated_duration_seconds = COALESCE(${est}, estimated_duration_seconds),
+               captions_config = COALESCE(${captionsConfigJson}::jsonb, captions_config),
                updated_at = NOW()
          WHERE id = ${id}::uuid AND workspace_id = ${session.ws}::uuid
       `;

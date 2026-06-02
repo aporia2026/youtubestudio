@@ -44,6 +44,7 @@ function MinimalShortVideo({ config }: ShortVideoProps) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const elapsedMs = (frame / fps) * 1000;
+  const captionStyle = config.captions_config?.style;
 
   const activeCaption = config.captions.find(
     (c) => elapsedMs >= c.start_ms && elapsedMs < c.end_ms,
@@ -91,7 +92,14 @@ function MinimalShortVideo({ config }: ShortVideoProps) {
       )}
 
       {/* Active caption — center, massive, fade-in by 80ms / fade-out by 80ms */}
-      {activeCaption && <CaptionChunk caption={activeCaption} elapsedMs={elapsedMs} accent={config.accent_color ?? '#fff'} />}
+      {activeCaption && (
+        <CaptionChunk
+          caption={activeCaption}
+          elapsedMs={elapsedMs}
+          accent={config.accent_color ?? '#fff'}
+          style={captionStyle}
+        />
+      )}
 
       {/* Channel pill (bottom) */}
       {config.channel_name && (
@@ -128,49 +136,117 @@ function CaptionChunk({
   caption,
   elapsedMs,
   accent,
+  style: cfg,
 }: {
   caption: { start_ms: number; end_ms: number; text: string };
   elapsedMs: number;
   accent: string;
+  /** Phase 15.11 — optional caption style overrides. When undefined the
+   *  renderer keeps the original Phase 5.5 Minimal defaults so existing
+   *  rendered Shorts stay byte-stable. */
+  style?: import('@/lib/shorts-render-types').ShortsCaptionsStyle;
 }) {
-  // Fade transitions — 80ms in, 80ms out — feels snappy but not jarring.
   const inDur = 80;
   const outDur = 80;
   const sinceStart = elapsedMs - caption.start_ms;
   const untilEnd = caption.end_ms - elapsedMs;
   const fadeIn = Math.min(1, Math.max(0, sinceStart / inDur));
   const fadeOut = Math.min(1, Math.max(0, untilEnd / outDur));
-  const opacity = Math.min(fadeIn, fadeOut);
+  const baseOpacity = Math.min(fadeIn, fadeOut);
 
   // Scale font down for longer chunks so they always fit. Empirical:
   // 5 words = 96px is comfortable; 8 words = 72px.
   const wordCount = caption.text.split(/\s+/).filter(Boolean).length;
-  const fontSize = wordCount <= 4 ? 110 : wordCount <= 6 ? 92 : wordCount <= 8 ? 76 : 64;
+  const autoFontSize = wordCount <= 4 ? 110 : wordCount <= 6 ? 92 : wordCount <= 8 ? 76 : 64;
+  const sizeScale = typeof cfg?.sizeScale === 'number' && cfg.sizeScale > 0 ? cfg.sizeScale : 1;
+  const fontSize = Math.round(autoFontSize * sizeScale);
 
+  // Entry effect (Phase 15.11). 'fade' is the Phase-5.5 default.
+  const entryEffect = cfg?.entryEffect ?? 'fade';
+  let opacity = baseOpacity;
+  let scale = 1;
+  let translateY = 0;
+  if (entryEffect === 'pop') {
+    // Pop-in: scale 0.6 → 1.0 over the first 140ms.
+    const t = Math.max(0, Math.min(1, sinceStart / 140));
+    scale = 0.6 + 0.4 * t;
+  } else if (entryEffect === 'slide-up') {
+    // Slide from 40px below to position over the first 160ms.
+    const t = Math.max(0, Math.min(1, sinceStart / 160));
+    translateY = (1 - t) * 40;
+  } else if (entryEffect === 'none') {
+    opacity = 1; // hard cut
+  }
+
+  // Position — vertical band placement. 0.5 = center.
+  const positionY = typeof cfg?.positionY === 'number'
+    ? Math.max(0, Math.min(1, cfg.positionY))
+    : 0.5;
+  const paddingX = typeof cfg?.paddingX === 'number' ? cfg.paddingX : 80;
+
+  const fontFamily = cfg?.fontFamily
+    ? `'${cfg.fontFamily}', 'Inter', system-ui, sans-serif`
+    : 'Inter, system-ui, sans-serif';
+  const fontWeight = cfg?.fontWeight ?? 800;
+  const color = cfg?.color ?? '#fff';
+  const highlightColor = cfg?.highlightColor ?? accent;
+  const outlineColor = cfg?.outlineColor ?? 'transparent';
+  const outlineWidth = cfg?.outlineWidth ?? 0;
+  const shadow = cfg?.shadow ?? '0 6px 30px rgba(0,0,0,0.55)';
+  const textTransform = cfg?.textTransform ?? 'none';
+  const letterSpacing = typeof cfg?.letterSpacing === 'number' ? cfg.letterSpacing : -1.5;
+  const lineHeight = typeof cfg?.lineHeight === 'number' ? cfg.lineHeight : 1.05;
+  const background = cfg?.background ?? 'none';
+  const backgroundColor = cfg?.backgroundColor ?? 'rgba(0,0,0,0.6)';
+
+  // Position container — `top: ${positionY*100}%` then translate the
+  // inner box up by 50% so the band is CENTRED on positionY.
   return (
-    <AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 80px' }}>
+    <div
+      style={{
+        position: 'absolute',
+        top: `${positionY * 100}%`,
+        left: 0,
+        right: 0,
+        transform: 'translateY(-50%)',
+        padding: `0 ${paddingX}px`,
+        display: 'flex',
+        justifyContent: 'center',
+      }}
+    >
       <div
         style={{
+          fontFamily,
           fontSize,
-          fontWeight: 800,
+          fontWeight,
           textAlign: 'center',
-          letterSpacing: -1.5,
-          lineHeight: 1.05,
+          letterSpacing,
+          lineHeight,
+          textTransform,
           opacity,
-          textShadow: '0 6px 30px rgba(0,0,0,0.55)',
-          // Accent the LAST word — gives the eye a focal point on the
-          // chunk's payoff.
-          WebkitTextStroke: '0px',
+          color,
+          transform: `translateY(${translateY}px) scale(${scale})`,
+          textShadow: shadow,
+          WebkitTextStroke: outlineWidth > 0 ? `${outlineWidth}px ${outlineColor}` : '0px',
+          paintOrder: outlineWidth > 0 ? 'stroke fill' : undefined,
+          padding: background === 'solid' || background === 'blur' ? '10px 24px' : 0,
+          borderRadius: background !== 'none' ? 16 : 0,
+          background: background === 'solid'
+            ? backgroundColor
+            : background === 'blur'
+              ? 'rgba(0,0,0,0.35)'
+              : 'transparent',
+          backdropFilter: background === 'blur' ? 'blur(20px)' : undefined,
         }}
       >
         {caption.text.split(/\s+/).map((word, i, arr) => (
           <React.Fragment key={i}>
-            <span style={i === arr.length - 1 ? { color: accent } : undefined}>{word}</span>
+            <span style={i === arr.length - 1 ? { color: highlightColor } : undefined}>{word}</span>
             {i < arr.length - 1 ? ' ' : ''}
           </React.Fragment>
         ))}
       </div>
-    </AbsoluteFill>
+    </div>
   );
 }
 
