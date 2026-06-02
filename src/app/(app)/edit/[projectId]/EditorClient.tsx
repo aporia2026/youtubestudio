@@ -63,6 +63,7 @@ import { TransportBar, type PlaybackRate } from '@/components/editor/TransportBa
 import { EditorLeftRail } from '@/components/editor/EditorLeftRail';
 import { EditorInspector, type InspectorTabId } from '@/components/editor/EditorInspector';
 import { GenerationHistoryPanel } from '@/components/editor/inspector/GenerationHistoryPanel';
+import { InspectorLivePanel } from '@/components/editor/inspector/InspectorLivePanel';
 import {
   markGenerationEventTerminal,
   recordGenerationKickoff,
@@ -4891,6 +4892,52 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             onJumpToScene={(rowIndex) =>
               selectShotFromUser(rowIndex, 'history-panel')
             }
+          />
+        ),
+        live: (
+          <InspectorLivePanel
+            doc={state.doc}
+            rowImages={(() => {
+              // Convert the sparse rowImages map into the positional
+              // array RowImageState[] InspectorLivePanel expects.
+              // Cheap O(rows) — recomputed only when state.rowImages
+              // or rows change (React's prop diffing).
+              return state.doc.rows.map((_, i) => {
+                const url = state.rowImages[i];
+                return url ? { status: 'done', imageUrl: url } : null;
+              });
+            })()}
+            clipStatuses={state.doc.rows.reduce<Record<number, string | undefined>>((acc, _, i) => {
+              acc[i] = state.rowVideoClips[i]?.status;
+              return acc;
+            }, {})}
+            overlayStatuses={state.doc.rows.reduce<Record<number, string | undefined>>((acc, _, i) => {
+              acc[i] = state.rowOverlays[i]?.status;
+              return acc;
+            }, {})}
+            fillState={fillState}
+            fillProgress={fillProgress}
+            onStopFill={() => {
+              console.info('[editor live-tab] stop fill-blanks pressed', {
+                done: fillProgress.done,
+                total: fillProgress.total,
+              });
+              fillAbortRef.current?.abort();
+            }}
+            onJumpToShot={(rowIndex) => selectShotFromUser(rowIndex, 'live-tab')}
+            onRetryShot={(rowIndex) => {
+              console.info('[editor live-tab] retry shot via fill-blanks single', {
+                rowIndex,
+              });
+              // Clear the row's image (so fill-blanks sees it as a
+              // blank) then kick off fill-blanks. Bulk worker is the
+              // existing single-shot regenerator that already knows
+              // how to dispatch one row. Future: wire a dedicated
+              // per-row regen path so it doesn't blanket the whole
+              // doc.
+              apply({ type: 'SET_ROW_IMAGE', shotIndex: rowIndex, url: null });
+              setTimeout(() => { void runFillBlanks(); }, 50);
+            }}
           />
         ),
       }}

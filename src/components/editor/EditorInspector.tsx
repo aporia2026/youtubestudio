@@ -41,7 +41,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MoreVertical } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 
-export type InspectorTabId = 'shot' | 'audio' | 'captions' | 'history';
+export type InspectorTabId = 'shot' | 'audio' | 'captions' | 'history' | 'live';
 
 interface EditorInspectorProps {
   /** Tab bodies. Only the active one renders. */
@@ -68,6 +68,7 @@ interface EditorInspectorProps {
 
 const TABS: Array<{ id: InspectorTabId; label: string }> = [
   { id: 'shot', label: 'Shot' },
+  { id: 'live', label: 'Live' },
   { id: 'audio', label: 'Audio' },
   { id: 'captions', label: 'Captions' },
   { id: 'history', label: 'History' },
