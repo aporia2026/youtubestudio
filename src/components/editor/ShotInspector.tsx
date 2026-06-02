@@ -32,6 +32,7 @@ import {
   type VariantGenState,
 } from '@/components/editor/inspector/InspectorVariantsPanel';
 import { OstModeControl } from '@/components/production-doc/OstModeControl';
+import { InspectorMotionCollagePanel } from '@/components/editor/inspector/InspectorMotionCollagePanel';
 import {
   InspectorShotTypePanel,
   detectLeadingHeading,
@@ -437,6 +438,14 @@ export function ShotInspector({
     onUpdateScript(next);
   }, [onUpdateScript, row.script_text, scriptDraft]);
 
+  // PR 3 of `_plans/2026-06-02-editor-motion-collage-support.md`:
+  // motion_collage shots get a totally different image-editing surface
+  // (panel grid + per-panel regen + lightbox) instead of the single-image
+  // AI Replace / Animate / Visual description / AI image prompt stack
+  // that assumes one still per shot. Branch once at the body level; the
+  // four blocks below are gated on `!isMotionCollage`.
+  const isMotionCollage = shot.shotKind === 'motion_collage';
+
   const [rephraseState, setRephraseState] = useState<
     | { kind: 'idle' }
     | { kind: 'rephrasing'; style: 'same' | 'shorter' | 'longer' | 'simpler' }
@@ -645,7 +654,20 @@ export function ShotInspector({
             right-clicking (rule 10 — build for a lazy user).
             Suppressed entirely when the row has no image and no
             handler is wired. */}
-        {thumbnailUrl && (onOpenImageEdit || onRunRmbg) && (
+        {isMotionCollage && onUpdateRow && (
+          <div
+            className="p-3 border-b"
+            style={{ borderColor: 'var(--card-border)' }}
+          >
+            <InspectorMotionCollagePanel
+              row={row}
+              shotIndex={shotIndex}
+              doc={doc}
+              onUpdateRow={onUpdateRow}
+            />
+          </div>
+        )}
+        {!isMotionCollage && thumbnailUrl && (onOpenImageEdit || onRunRmbg) && (
           <div
             className="flex items-center gap-1 px-3 py-2 border-b"
             style={{ borderColor: 'var(--card-border)' }}
@@ -760,8 +782,10 @@ export function ShotInspector({
 
         {/* Replace media — upload only in this commit. The
             from-project picker + regenerate-from-prompt land in
-            follow-up commits next to this section. */}
-        {onUploadImage && (
+            follow-up commits next to this section.
+            Hidden on motion_collage shots — the InspectorMotionCollagePanel
+            mounted above owns the image surface for those rows. */}
+        {onUploadImage && !isMotionCollage && (
           <div
             className="p-3 border-b space-y-2"
             style={{ borderColor: 'var(--card-border)' }}
@@ -912,8 +936,10 @@ export function ShotInspector({
             updates into `clipStatus`; while generating, the button
             collapses to a busy state. Hidden when a clip is already
             attached and `ready` — the user can use Pick from
-            project below to swap it. */}
-        {onGenerateClip && (() => {
+            project below to swap it.
+            Hidden on motion_collage shots — these animate via panel
+            switching, not Kling. */}
+        {onGenerateClip && !isMotionCollage && (() => {
           // Per-row + doc-level + workspace-level model resolution
           // mirrors the renderer's tier priority (row > doc > user).
           // The dropdown writes row.broll_model_id; empty string clears
@@ -1190,7 +1216,7 @@ export function ShotInspector({
               the user can tweak the prompt and either regenerate the
               image (button above) or just refine what the doc says
               about this shot. */}
-          {onUpdateRow ? (
+          {!isMotionCollage && (onUpdateRow ? (
             <EditableTextarea
               label="Visual description"
               value={row.visual_description ?? ''}
@@ -1199,8 +1225,8 @@ export function ShotInspector({
             />
           ) : (
             <Field label="Visual description" value={row.visual_description || '—'} />
-          )}
-          {onUpdateRow ? (
+          ))}
+          {!isMotionCollage && (onUpdateRow ? (
             <EditableTextarea
               label="AI image prompt"
               value={row.ai_image_prompt ?? ''}
@@ -1211,7 +1237,7 @@ export function ShotInspector({
             />
           ) : (
             <Field label="AI image prompt" value={row.ai_image_prompt || '—'} mono />
-          )}
+          ))}
           {/* Voiceover script — editable inline. Commits on blur
               (or on AI rephrase). Cmd/Ctrl+Z still walks the undo
               stack through SET_ROW_SCRIPT commands. */}
