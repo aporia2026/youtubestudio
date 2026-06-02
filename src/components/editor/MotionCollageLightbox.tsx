@@ -28,7 +28,7 @@
  * "regenerate this panel" affordance separately.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface MotionCollageLightboxProps {
   /** Panel URLs, row-major. Length should match grid.cols × grid.rows;
@@ -45,6 +45,16 @@ interface MotionCollageLightboxProps {
   /** Optional: initial panel to focus, in single-panel mode. Defaults
    *  to grid view. */
   initialPanelIndex?: number;
+  /** Per-panel actions — when set, expose action buttons in the
+   *  single-panel zoom view. User-asked-for 2026-06-02: AI Replace +
+   *  Upload + (Brush deferred). */
+  onRegenPanel?: (panelIndex: number) => void;
+  onUploadPanel?: (panelIndex: number, file: File) => void;
+  onEditPanelWithPrompt?: (panelIndex: number, prompt: string) => void;
+  /** Inflight indicator from the parent. When the panel index matches
+   *  any of these states, the corresponding action button shows its
+   *  busy state and the others disable. */
+  busyPanelIndex?: number | null;
 }
 
 function deriveSquareGrid(panelCount: number): { cols: number; rows: number } {
@@ -59,12 +69,21 @@ export function MotionCollageLightbox({
   shotIndex,
   onClose,
   initialPanelIndex,
+  onRegenPanel,
+  onUploadPanel,
+  onEditPanelWithPrompt,
+  busyPanelIndex,
 }: MotionCollageLightboxProps): React.ReactElement {
   // `focusedIndex === null` means grid view; a number means single-panel
   // zoomed view. Click-a-thumb sets it; G or grid-icon clears it.
   const [focusedIndex, setFocusedIndex] = useState<number | null>(
     typeof initialPanelIndex === 'number' ? initialPanelIndex : null,
   );
+  // Per-panel edit dialog: inline prompt textarea, shown below the
+  // single-panel image when the user clicks ✎ Edit with prompt.
+  const [editPromptOpen, setEditPromptOpen] = useState(false);
+  const [editPromptDraft, setEditPromptDraft] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const panelCount = panelUrls.length;
   const resolved = grid && grid.cols > 0 && grid.rows > 0
     ? grid
@@ -273,14 +292,17 @@ export function MotionCollageLightbox({
             ))}
           </div>
         ) : (
-          // Single-panel zoomed view.
+          // Single-panel zoomed view + per-panel actions (PR 6 of user
+          // ask 2026-06-02: edit motion frames individually).
           <div
             style={{
               width: '100%',
               height: '100%',
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
+              gap: 12,
             }}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -290,13 +312,196 @@ export function MotionCollageLightbox({
               loading="eager"
               style={{
                 maxWidth: '100%',
-                maxHeight: '100%',
+                maxHeight: 'calc(100% - 100px)',
                 objectFit: 'contain',
                 display: 'block',
                 border: '1px solid rgba(255,255,255,0.18)',
                 borderRadius: 4,
               }}
             />
+            {(onRegenPanel || onUploadPanel || onEditPanelWithPrompt) && (
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  padding: '4px 0',
+                }}
+              >
+                {onRegenPanel && (
+                  <button
+                    type="button"
+                    onClick={() => onRegenPanel(focusedIndex)}
+                    disabled={busyPanelIndex === focusedIndex}
+                    title={`Regenerate panel ${focusedIndex + 1} (uses the row's panel-prompt; ~1/N the cost of a full grid regen)`}
+                    style={{
+                      padding: '6px 12px',
+                      background: 'rgba(124,58,237,0.22)',
+                      color: '#a78bfa',
+                      border: '1px solid rgba(124,58,237,0.45)',
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor:
+                        busyPanelIndex === focusedIndex ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {busyPanelIndex === focusedIndex ? '↻ Working…' : '↻ Regenerate'}
+                  </button>
+                )}
+                {onUploadPanel && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={busyPanelIndex === focusedIndex}
+                      title="Upload a custom image for this panel (PNG / JPG / WebP)"
+                      style={{
+                        padding: '6px 12px',
+                        background: 'rgba(59,130,246,0.18)',
+                        color: '#60a5fa',
+                        border: '1px solid rgba(59,130,246,0.40)',
+                        borderRadius: 4,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor:
+                          busyPanelIndex === focusedIndex ? 'wait' : 'pointer',
+                      }}
+                    >
+                      ⬆ Upload
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) onUploadPanel(focusedIndex, file);
+                      }}
+                    />
+                  </>
+                )}
+                {onEditPanelWithPrompt && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditPromptDraft('');
+                      setEditPromptOpen((v) => !v);
+                    }}
+                    disabled={busyPanelIndex === focusedIndex}
+                    title="Edit this panel with an AI prompt (e.g. 'change the character's expression', 'remove the lock')"
+                    style={{
+                      padding: '6px 12px',
+                      background: editPromptOpen
+                        ? 'rgba(168,85,247,0.30)'
+                        : 'rgba(168,85,247,0.18)',
+                      color: '#c084fc',
+                      border: '1px solid rgba(168,85,247,0.45)',
+                      borderRadius: 4,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor:
+                        busyPanelIndex === focusedIndex ? 'wait' : 'pointer',
+                    }}
+                  >
+                    ✎ Edit with prompt
+                  </button>
+                )}
+              </div>
+            )}
+            {editPromptOpen && onEditPanelWithPrompt && (
+              <div
+                style={{
+                  width: '100%',
+                  maxWidth: 600,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  padding: 10,
+                  background: 'rgba(0,0,0,0.55)',
+                  border: '1px solid rgba(168,85,247,0.45)',
+                  borderRadius: 6,
+                }}
+              >
+                <textarea
+                  value={editPromptDraft}
+                  onChange={(e) => setEditPromptDraft(e.target.value)}
+                  autoFocus
+                  rows={2}
+                  placeholder="Describe the change — e.g. 'make the character smile', 'add a key in their hand'"
+                  style={{
+                    width: '100%',
+                    padding: '6px 8px',
+                    fontSize: 12,
+                    fontFamily: 'inherit',
+                    color: '#fff',
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid rgba(255,255,255,0.18)',
+                    borderRadius: 4,
+                    outline: 'none',
+                    resize: 'vertical',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditPromptOpen(false);
+                      setEditPromptDraft('');
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: 10,
+                      background: 'transparent',
+                      color: 'rgba(255,255,255,0.7)',
+                      border: '1px solid rgba(255,255,255,0.20)',
+                      borderRadius: 3,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      editPromptDraft.trim().length === 0 ||
+                      busyPanelIndex === focusedIndex
+                    }
+                    onClick={() => {
+                      onEditPanelWithPrompt(focusedIndex, editPromptDraft.trim());
+                      setEditPromptOpen(false);
+                      setEditPromptDraft('');
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: 10,
+                      fontWeight: 600,
+                      background: 'rgba(168,85,247,0.30)',
+                      color: '#c084fc',
+                      border: '1px solid rgba(168,85,247,0.55)',
+                      borderRadius: 3,
+                      cursor:
+                        editPromptDraft.trim().length === 0 ||
+                        busyPanelIndex === focusedIndex
+                          ? 'not-allowed'
+                          : 'pointer',
+                      opacity:
+                        editPromptDraft.trim().length === 0 ||
+                        busyPanelIndex === focusedIndex
+                          ? 0.5
+                          : 1,
+                    }}
+                  >
+                    Apply edit
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

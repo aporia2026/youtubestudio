@@ -69,6 +69,9 @@ export function InspectorMotionCollagePanel({
   const [genStatus, setGenStatus] = useState<GenStatus>({ kind: 'idle' });
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [autoFillError, setAutoFillError] = useState<string | null>(null);
+  // 2026-06-02: per-panel edit busy state, surfaced into the lightbox
+  // so its action buttons show the working state on the right panel.
+  const [perPanelBusyIdx, setPerPanelBusyIdx] = useState<number | null>(null);
 
   const grid = row.motion_collage_grid ?? { cols: 2, rows: 2 };
   const N = grid.cols * grid.rows;
@@ -275,6 +278,131 @@ export function InspectorMotionCollagePanel({
     }
   }
 
+  /** Helper: merge a new URL into the panel-URLs array at one index
+   *  and dispatch the PATCH_ROW update. Used by both upload + edit
+   *  flows so the array-merge logic lives in one place. */
+  function patchPanelUrl(panelIndex: number, newUrl: string): void {
+    const next = panelUrls.map((u, i) => (i === panelIndex ? newUrl : u));
+    onUpdateRow({
+      motion_collage_panel_urls: next as string[],
+      image_url: panelIndex === 0 ? newUrl : row.image_url,
+    });
+    console.info('[editor motion-collage panel patched]', {
+      shotIndex,
+      panelIndex,
+      newUrl,
+    });
+  }
+
+  /** Upload a custom image for a single panel. Presigned PUT to R2
+   *  same as the regular per-shot upload flow in ShotInspector. */
+  async function handlePanelUpload(panelIndex: number, file: File): Promise<void> {
+    setPerPanelBusyIdx(panelIndex);
+    console.info('[editor motion-collage panel upload] start', {
+      shotIndex,
+      panelIndex,
+      fileName: file.name,
+      fileSize: file.size,
+    });
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- POST RPC; awaits + reads response
+      const presignRes = await fetch('/api/uploads/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type,
+          fileSize: file.size,
+        }),
+      });
+      if (!presignRes.ok) {
+        const data = (await presignRes.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? `Presign failed: HTTP ${presignRes.status}`);
+      }
+      const { uploadUrl, downloadUrl } = (await presignRes.json()) as {
+        uploadUrl: string;
+        downloadUrl: string;
+      };
+      // eslint-disable-next-line no-restricted-syntax -- PUT RPC; awaits + reads response
+      const putRes = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putRes.ok) {
+        throw new Error(`Upload PUT failed: HTTP ${putRes.status}`);
+      }
+      patchPanelUrl(panelIndex, downloadUrl);
+      toast.success(`Panel ${panelIndex + 1} replaced with uploaded image.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upload failed';
+      toast.error(msg);
+      console.warn('[editor motion-collage panel upload] failed', {
+        shotIndex,
+        panelIndex,
+        error: msg,
+      });
+    } finally {
+      setPerPanelBusyIdx(null);
+    }
+  }
+
+  /** Edit a single panel via the /api/generate/production-doc/image/edit
+   *  endpoint. Same backend used by the per-shot AI Replace / brush
+   *  edit, but no mask — prompt-only rewrite scoped to ONE panel. */
+  async function handlePanelEditWithPrompt(
+    panelIndex: number,
+    prompt: string,
+  ): Promise<void> {
+    if (!prompt.trim()) return;
+    const sourceUrl = panelUrls[panelIndex];
+    if (!sourceUrl) {
+      toast.error('Generate the panel first before editing.');
+      return;
+    }
+    setPerPanelBusyIdx(panelIndex);
+    console.info('[editor motion-collage panel edit] start', {
+      shotIndex,
+      panelIndex,
+      promptHead: prompt.slice(0, 60),
+    });
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC; awaits + reads response
+      const res = await fetch('/api/generate/production-doc/image/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          originalImageUrl: sourceUrl,
+          prompt,
+          stylePreset: doc.style_preset,
+        }),
+      });
+      const data = (await res.json()) as { newImageUrl?: string; error?: string };
+      if (!res.ok || !data.newImageUrl) {
+        const msg = data.error ?? `Edit failed (HTTP ${res.status})`;
+        toast.error(msg);
+        console.warn('[editor motion-collage panel edit] failed', {
+          shotIndex,
+          panelIndex,
+          error: msg,
+        });
+        return;
+      }
+      patchPanelUrl(panelIndex, data.newImageUrl);
+      toast.success(`Panel ${panelIndex + 1} edited.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Edit failed';
+      toast.error(msg);
+      console.warn('[editor motion-collage panel edit] threw', {
+        shotIndex,
+        panelIndex,
+        error: msg,
+      });
+    } finally {
+      setPerPanelBusyIdx(null);
+    }
+  }
+
   const generatingAll = genStatus.kind === 'all';
   const generatingPanelIdx =
     genStatus.kind === 'one' ? genStatus.panelIndex : null;
@@ -475,6 +603,16 @@ export function InspectorMotionCollagePanel({
           grid={row.motion_collage_grid}
           shotIndex={shotIndex}
           onClose={() => setLightboxOpen(false)}
+          busyPanelIndex={perPanelBusyIdx}
+          onRegenPanel={(panelIndex) => {
+            // Same callGenerateEndpoint path the per-panel grid buttons
+            // use, scoped to one panel via panelIndices=[i].
+            void callGenerateEndpoint([panelIndex]);
+          }}
+          onUploadPanel={(panelIndex, file) => void handlePanelUpload(panelIndex, file)}
+          onEditPanelWithPrompt={(panelIndex, prompt) =>
+            void handlePanelEditWithPrompt(panelIndex, prompt)
+          }
         />
       )}
     </div>
