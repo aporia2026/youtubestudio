@@ -65,6 +65,18 @@ interface MotionCollageRequestBody {
    *  stay consistent across the grid. Same shape as
    *  `ProductionDoc.doodle_explainer_2_character_descriptions`. */
   characterDescriptions?: Record<string, string>;
+  /** PR 2 of `_plans/2026-06-02-editor-motion-collage-support.md` —
+   *  partial regen. When set, ONLY these panel indices are
+   *  regenerated; every other slot is passed through from
+   *  `existingPanelUrls`. Must be paired with `existingPanelUrls`
+   *  of length === cols × rows. Validated again inside
+   *  generateMotionCollage; the early check here returns 400 rather
+   *  than the helper's validation_failed:* error shape. */
+  panelIndices?: number[];
+  /** Required when `panelIndices` is set. Existing panel URLs to
+   *  passthrough for slots not in `panelIndices`. Length MUST equal
+   *  cols × rows. */
+  existingPanelUrls?: string[];
 }
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
@@ -117,6 +129,55 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
+  // Partial-regen validation. The helper validates again, but failing
+  // here returns a cleaner 400 with a human-readable message rather
+  // than the helper's machine-parseable `validation_failed:...` shape.
+  // Three checks:
+  //   1. If panelIndices is set it must be a non-empty array of ints
+  //      in [0, N-1], no duplicates.
+  //   2. If panelIndices is set, existingPanelUrls must be the full
+  //      length N with HTTPS or relative `/` URLs in every non-regen slot.
+  //   3. existingPanelUrls without panelIndices is rejected — it has
+  //      no meaning on a full regen and signals a confused caller.
+  const isPartialRegen = Array.isArray(body.panelIndices);
+  if (isPartialRegen) {
+    if (body.panelIndices!.length === 0) {
+      return NextResponse.json(
+        { error: 'panelIndices, when set, must contain at least one index' },
+        { status: 400 },
+      );
+    }
+    for (const idx of body.panelIndices!) {
+      if (!Number.isInteger(idx) || idx < 0 || idx >= N) {
+        return NextResponse.json(
+          { error: `panelIndices contains an out-of-range value: ${idx} (valid range: [0, ${N - 1}])` },
+          { status: 400 },
+        );
+      }
+    }
+    const uniqueCount = new Set(body.panelIndices).size;
+    if (uniqueCount !== body.panelIndices!.length) {
+      return NextResponse.json(
+        { error: 'panelIndices must not contain duplicate indices' },
+        { status: 400 },
+      );
+    }
+    if (
+      !Array.isArray(body.existingPanelUrls) ||
+      body.existingPanelUrls.length !== N
+    ) {
+      return NextResponse.json(
+        { error: `existingPanelUrls is required for partial regen and its length must equal cols × rows (= ${N})` },
+        { status: 400 },
+      );
+    }
+  } else if (body.existingPanelUrls !== undefined) {
+    return NextResponse.json(
+      { error: 'existingPanelUrls is only valid when panelIndices is also provided' },
+      { status: 400 },
+    );
+  }
+
   // Build the minimal row + doc shapes generateMotionCollage expects.
   // The helper reads `shot_kind`, `motion_collage_grid`, and
   // `motion_collage_panel_prompts` off the row, and `style_preset` +
@@ -140,6 +201,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     grid: `${grid.cols}x${grid.rows}`,
     panel_count: N,
     style_preset: body.stylePreset,
+    partial_regen: isPartialRegen,
+    regen_count: isPartialRegen ? body.panelIndices!.length : N,
   });
 
   try {
@@ -148,6 +211,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       doc,
       workspaceId: session.ws,
       ownerId: session.uid,
+      panelIndices: isPartialRegen ? body.panelIndices : undefined,
+      existingPanelUrls: isPartialRegen ? body.existingPanelUrls : undefined,
     });
 
     if (!result.panelUrls || result.panelUrls.length === 0) {

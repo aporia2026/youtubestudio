@@ -1285,9 +1285,42 @@ export async function generateMotionCollage(args: {
    *  resolving precedence (character_cache wins over scene_cache,
    *  same rule as the regular single-shot dispatcher). */
   panel0SourceUrl?: string;
+  /** Partial regeneration (PR 2 of
+   *  `_plans/2026-06-02-editor-motion-collage-support.md`). When set,
+   *  ONLY these panels are regenerated; every other panel is preserved
+   *  from `existingPanelUrls`. Use cases:
+   *    - User changed one panel's prompt and wants to re-roll just it
+   *      without paying for N panels.
+   *    - A single panel failed in a prior run and the user clicked
+   *      "regen this panel" in the inspector.
+   *  Constraints:
+   *    - Every index must be in [0, N-1] where N = grid.cols × grid.rows.
+   *    - When `panelIndices` is set, `existingPanelUrls` MUST be provided
+   *      with length === N so the helper can pass through unrendered
+   *      panels AND chain-edit from the right base when a middle panel
+   *      regens (panel i's input is panel i-1's URL, which may be the
+   *      existing one when i-1 is not being regen'd).
+   *    - Chain semantics: regenerating panel K does NOT invalidate
+   *      panels K+1..N. They keep their existing URLs. Visual
+   *      continuity downstream of a partial regen may drift — the user
+   *      explicitly chose partial regen and accepts that trade. To get
+   *      full continuity they regen all panels.
+   *  Undefined or empty array ⇒ legacy full-regen path. */
+  panelIndices?: readonly number[];
+  /** Existing panel URLs (length must equal grid.cols × grid.rows).
+   *  Required when `panelIndices` is set; ignored otherwise. */
+  existingPanelUrls?: readonly string[];
 }): Promise<PipelineMotionCollageResult> {
   const t0 = Date.now();
-  const { row, doc, workspaceId, ownerId = null, panel0SourceUrl } = args;
+  const {
+    row,
+    doc,
+    workspaceId,
+    ownerId = null,
+    panel0SourceUrl,
+    panelIndices,
+    existingPanelUrls,
+  } = args;
 
   // ─── 1. Env kill switch ─────────────────────────────────────────────
   // Lets us disable motion_collage globally without a redeploy if a
@@ -1418,6 +1451,85 @@ export async function generateMotionCollage(args: {
     };
   }
 
+  // ─── 3.5 Partial-regen validation (PR 2 of motion-collage support) ───
+  // `panelIndices` is the set of panels to regenerate; everything else
+  // gets passed through from `existingPanelUrls`. Both inputs validated
+  // before any AI call so a malformed request fails fast with $0 spent.
+  const isPartialRegen = Array.isArray(panelIndices) && panelIndices.length > 0;
+  let partialIndexSet: Set<number> | null = null;
+  if (isPartialRegen) {
+    // Index range + integer check.
+    for (const idx of panelIndices!) {
+      if (!Number.isInteger(idx) || idx < 0 || idx >= N) {
+        logger.warn('[motion-collage pipeline] partial-regen validation failed', {
+          reason: 'panel_index_out_of_range',
+          bad_index: idx,
+          n: N,
+        });
+        return {
+          costUsd: 0,
+          durationMs: Date.now() - t0,
+          error: `validation_failed:panel_index_out_of_range:${idx} not in [0,${N - 1}]`,
+        };
+      }
+    }
+    // Duplicates — silently dedupe via the Set, but the request should
+    // not have included them in the first place. Log as a warning so a
+    // misbehaving inspector doesn't slip past unnoticed.
+    partialIndexSet = new Set(panelIndices);
+    if (partialIndexSet.size !== panelIndices!.length) {
+      logger.warn('[motion-collage pipeline] partial-regen has duplicates', {
+        raw_count: panelIndices!.length,
+        unique_count: partialIndexSet.size,
+      });
+    }
+    // The existingPanelUrls array MUST be the full-length N so we can
+    // pass through unselected panels. A partial array would mean "I
+    // want to regen panel 3 and you fill in the blanks somehow" — no.
+    if (!Array.isArray(existingPanelUrls) || existingPanelUrls.length !== N) {
+      logger.warn('[motion-collage pipeline] partial-regen validation failed', {
+        reason: 'existing_panel_urls_missing_or_wrong_length',
+        expected_length: N,
+        actual_length: Array.isArray(existingPanelUrls) ? existingPanelUrls.length : null,
+      });
+      return {
+        costUsd: 0,
+        durationMs: Date.now() - t0,
+        error: 'validation_failed:existing_panel_urls_missing_or_wrong_length',
+      };
+    }
+    // Every NON-regenerated slot needs a usable URL — otherwise the
+    // chain math breaks ("regen panel 3" reads existingPanelUrls[2]
+    // as the chain input, so [2] must be a real URL). HTTPS scheme
+    // gate matches the project's other URL boundaries (rule 13:
+    // never trust the client; cf. `isSafeAssetUrl` in payload.ts).
+    for (let i = 0; i < N; i++) {
+      if (partialIndexSet.has(i)) continue;
+      const url = existingPanelUrls[i];
+      if (
+        typeof url !== 'string' ||
+        url.length === 0 ||
+        !(/^https:\/\//i.test(url) || url.startsWith('/'))
+      ) {
+        logger.warn('[motion-collage pipeline] partial-regen validation failed', {
+          reason: 'existing_panel_url_unsafe',
+          panel_index: i,
+        });
+        return {
+          costUsd: 0,
+          durationMs: Date.now() - t0,
+          error: `validation_failed:existing_panel_url_unsafe:${i}`,
+        };
+      }
+    }
+    logger.info('[motion-collage pipeline] partial-regen scope', {
+      n: N,
+      regen_count: partialIndexSet.size,
+      regen_indices: Array.from(partialIndexSet).sort((a, b) => a - b),
+      passthrough_count: N - partialIndexSet.size,
+    });
+  }
+
   // ─── 4. Resolve style — suffix AND refs ──────────────────────────────
   // Refs are LOAD-BEARING for styles like doodle_explainer_2 — the
   // ai_image_suffix description alone won't reproduce the doodle look,
@@ -1529,7 +1641,27 @@ export async function generateMotionCollage(args: {
   //   3. Neither → Atlas t2i with suffix only (refs-less styles).
   const panel0FromCache = typeof panel0SourceUrl === 'string' && panel0SourceUrl.length > 0;
   let previousPanelUrl: string | undefined;
-  {
+  // Partial regen path: panel 0 is NOT in the regen set ⇒ pass through
+  // its existing URL straight into the result + use it as the chain
+  // base for downstream panels. No AI call, no cost. Panel 0 IS in the
+  // regen set ⇒ fall through to the normal generation block below.
+  const skipPanel0 = isPartialRegen && partialIndexSet !== null && !partialIndexSet.has(0);
+  if (skipPanel0) {
+    const passthroughUrl = existingPanelUrls![0];
+    panelResults[0] = {
+      url: passthroughUrl,
+      costUsd: 0,
+      durationMs: 0,
+    };
+    previousPanelUrl = passthroughUrl;
+    logger.info('[motion-collage pipeline] panel passthrough', {
+      row_index: lookupRowIndex(row, doc),
+      panel_index: 0,
+      of_total: N,
+      url: passthroughUrl,
+    });
+  }
+  if (!skipPanel0) {
     const panelStart = Date.now();
     const intent = await recordIntent({
       userId: ownerId,
@@ -1648,6 +1780,29 @@ export async function generateMotionCollage(args: {
   // "character_descriptions must apply to motion_collage too" follow-up.)
   const chainBibleBlock = buildCharacterBibleBlock(characterDescriptions);
   for (let panelIdx = 1; panelIdx < N; panelIdx++) {
+    // Partial regen passthrough: panel not in the regen set keeps its
+    // existing URL and becomes the chain base for the NEXT panel.
+    // Cost stays 0; no AI call. Logged for parity with the regen path.
+    if (
+      isPartialRegen &&
+      partialIndexSet !== null &&
+      !partialIndexSet.has(panelIdx)
+    ) {
+      const passthroughUrl = existingPanelUrls![panelIdx];
+      panelResults[panelIdx] = {
+        url: passthroughUrl,
+        costUsd: 0,
+        durationMs: 0,
+      };
+      previousPanelUrl = passthroughUrl;
+      logger.info('[motion-collage pipeline] panel passthrough', {
+        row_index: lookupRowIndex(row, doc),
+        panel_index: panelIdx,
+        of_total: N,
+        url: passthroughUrl,
+      });
+      continue;
+    }
     if (!previousPanelUrl) {
       // Panel 0 failed — propagate the failure through every later
       // panel without making any AI calls.
