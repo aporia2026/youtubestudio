@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { AbsoluteFill, Img, Loop, OffthreadVideo, useCurrentFrame, useVideoConfig, interpolate } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
-import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
+import { type LowerThirdVariant } from '../components/LowerThird';
+import { OnScreenTextLayer } from '../components/OnScreenTextLayer';
 import { FloatingElement } from '../components/FloatingElement';
 import { SceneTransition } from '../components/SceneTransition';
 import { VideoShot, BrandKit } from '../types';
@@ -349,19 +350,18 @@ export const BRollScene: React.FC<BRollSceneProps & { shotIndex?: number }> = ({
         }}
       />
 
-      {/* Lower third — skipped when suppressLowerThird is on (e.g. the
-          OST is baked into the AI image and the user doesn't want a
-          second Remotion-rendered overlay duplicating it). */}
-      {shot.onScreenText && !suppressLowerThird && (
-        <LowerThird
-          text={shot.onScreenText}
-          brand={brand}
-          totalFrames={durationInFrames}
-          delay={12}
-          exitBeforeEnd={15}
-          variant={lowerThirdVariant}
-        />
-      )}
+      {/* On-screen text — legacy single-text path (LowerThird) when the
+          row has only `onScreenText`; multi-block path (PositionedTextBlock
+          per entry) when `onScreenTextBlocks` is populated. Both paths
+          gated on `suppressLowerThird`. PR 6 of
+          `_plans/2026-06-02-editor-ost-styling-and-positioning.md`. */}
+      <OnScreenTextLayer
+        shot={shot}
+        brand={brand}
+        durationInFrames={durationInFrames}
+        suppressLowerThird={suppressLowerThird}
+        variant={lowerThirdVariant}
+      />
 
       <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={8} />
     </AbsoluteFill>

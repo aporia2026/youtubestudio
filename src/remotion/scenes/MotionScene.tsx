@@ -24,7 +24,8 @@ import {
   useVideoConfig,
 } from 'remotion';
 import { LabelPopOn } from '../components/LabelPopOn';
-import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
+import { type LowerThirdVariant } from '../components/LowerThird';
+import { OnScreenTextLayer } from '../components/OnScreenTextLayer';
 import { MicroWiggle } from '../components/MicroWiggle';
 import { MouthSwap } from '../components/MouthSwap';
 import { PropSlideIn, type PropSlideInDirection } from '../components/PropSlideIn';
@@ -474,16 +475,16 @@ export const MotionScene: React.FC<MotionSceneProps & { shotIndex?: number }> = 
         }}
       />
 
-      {shot.onScreenText && !suppressLowerThird && (
-        <LowerThird
-          text={shot.onScreenText}
-          brand={brand}
-          totalFrames={durationInFrames}
-          delay={12}
-          exitBeforeEnd={15}
-          variant={lowerThirdVariant}
-        />
-      )}
+      {/* PR 6 of `_plans/2026-06-02-editor-ost-styling-and-positioning.md`:
+          OnScreenTextLayer routes legacy single-text rows to LowerThird
+          and multi-block rows to per-block PositionedTextBlock. */}
+      <OnScreenTextLayer
+        shot={shot}
+        brand={brand}
+        durationInFrames={durationInFrames}
+        suppressLowerThird={suppressLowerThird}
+        variant={lowerThirdVariant}
+      />
 
       <SceneTransition
         fadeIn={fadeEnabled}

@@ -1,7 +1,8 @@
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, spring, interpolate, Img } from 'remotion';
 import { KenBurns } from '../components/KenBurns';
-import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
+import { type LowerThirdVariant } from '../components/LowerThird';
+import { OnScreenTextLayer } from '../components/OnScreenTextLayer';
 import { SceneTransition } from '../components/SceneTransition';
 import { SPRING_SMOOTH } from '../animations/spring-presets';
 import { VideoShot, BrandKit } from '../types';
@@ -163,16 +164,13 @@ export const ScreenMockupScene: React.FC<ScreenMockupSceneProps> = ({
         <div style={{ width: 220, height: 14, background: '#2A2A2A', borderRadius: 4 }} />
       </div>
 
-      {shot.onScreenText && !suppressLowerThird && (
-        <LowerThird
-          text={shot.onScreenText}
-          brand={brand}
-          totalFrames={durationInFrames}
-          delay={18}
-          exitBeforeEnd={15}
-          variant={lowerThirdVariant}
-        />
-      )}
+      <OnScreenTextLayer
+        shot={shot}
+        brand={brand}
+        durationInFrames={durationInFrames}
+        suppressLowerThird={suppressLowerThird}
+        variant={lowerThirdVariant}
+      />
 
       <SceneTransition fadeIn={fadeEnabled} fadeOut={fadeEnabled} totalFrames={durationInFrames} durationInFrames={10} color={bg} />
     </AbsoluteFill>

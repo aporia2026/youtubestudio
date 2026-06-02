@@ -29,7 +29,8 @@
  */
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, useVideoConfig } from 'remotion';
-import { LowerThird, type LowerThirdVariant } from '../components/LowerThird';
+import { type LowerThirdVariant } from '../components/LowerThird';
+import { OnScreenTextLayer } from '../components/OnScreenTextLayer';
 import { SceneTransition } from '../components/SceneTransition';
 import { planMotionCollageWindows } from '../motion-collage-frame-math';
 import type { BrandKit, VideoShot } from '../types';
@@ -78,16 +79,13 @@ export const MotionCollageScene: React.FC<
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           />
         )}
-        {shot.onScreenText && !suppressLowerThird && (
-          <LowerThird
-            text={shot.onScreenText}
-            brand={brand}
-            totalFrames={durationInFrames}
-            delay={12}
-            exitBeforeEnd={15}
-            variant={lowerThirdVariant}
-          />
-        )}
+        <OnScreenTextLayer
+          shot={shot}
+          brand={brand}
+          durationInFrames={durationInFrames}
+          suppressLowerThird={suppressLowerThird}
+          variant={lowerThirdVariant}
+        />
         <SceneTransition
           fadeIn={fadeEnabled}
           fadeOut={fadeEnabled}
@@ -141,16 +139,13 @@ export const MotionCollageScene: React.FC<
         );
       })}
 
-      {shot.onScreenText && !suppressLowerThird && (
-        <LowerThird
-          text={shot.onScreenText}
-          brand={brand}
-          totalFrames={durationInFrames}
-          delay={12}
-          exitBeforeEnd={15}
-          variant={lowerThirdVariant}
-        />
-      )}
+      <OnScreenTextLayer
+        shot={shot}
+        brand={brand}
+        durationInFrames={durationInFrames}
+        suppressLowerThird={suppressLowerThird}
+        variant={lowerThirdVariant}
+      />
 
       <SceneTransition
         fadeIn={fadeEnabled}
