@@ -39,12 +39,74 @@ export interface ShortIdea {
   confidence: number;
 }
 
+/** Phase 15.8 — format hint vocabularies. Kept here (not the
+ *  registry) because they live ONLY in the prompt + the picker UI;
+ *  no DB column reads them. The lists are deliberately small so the
+ *  model has clear choices and the UI fits chip rows. */
+export const HOOK_STYLES = [
+  'question',
+  'number',
+  'contrarian',
+  'story',
+  'fact-reveal',
+  'youre-doing-it-wrong',
+] as const;
+export type HookStyle = (typeof HOOK_STYLES)[number];
+
+export const TONES = [
+  'irreverent',
+  'authoritative',
+  'wry',
+  'earnest',
+  'urgent',
+] as const;
+export type Tone = (typeof TONES)[number];
+
+export const POVS = ['first-person', 'second-person', 'third-person'] as const;
+export type PovStyle = (typeof POVS)[number];
+
+const MIN_LENGTH_SEC = 15;
+const MAX_LENGTH_SEC = 90;
+
+export interface FormatHints {
+  /** Target Short length in seconds. Clamped to [15, 90]. Optional. */
+  targetLengthSec?: number;
+  /** Hook-style archetype. Optional. */
+  hookStyle?: HookStyle;
+  /** Tone. Optional. */
+  tone?: Tone;
+  /** Point of view. Optional. */
+  pov?: PovStyle;
+}
+
+export interface NicheContext {
+  /** Free-text description from the workspace's niches table. */
+  description?: string;
+  /** Keyword chips from the same row. */
+  keywords?: string[];
+}
+
 export interface ShortsIdeasInput {
   niche: string;
   /** Optional extra context — recent video themes, channel voice notes. */
   context?: string;
   /** How many ideas to ask for. Clamped to [3, 15] in the prompt. */
   count?: number;
+  /** Phase 15.8 — format controls injected into the prompt. */
+  formatHints?: FormatHints;
+  /** Phase 15.8 — workspace niche details (description + keywords) the user
+   *  picked from a dropdown. Auto-loaded when a niche row is picked. */
+  nicheContext?: NicheContext;
+  /** Phase 15.8 — series-locked intro/outro copy that should colour every
+   *  idea in the batch. Comes from the Phase 15.6 Series engine. */
+  seriesIntro?: string;
+  seriesOutro?: string;
+  /** Phase 15.8 — "Inspired by" titles. Top-performing recent Shorts on
+   *  the user's channel, surfaced for stylistic priming WITHOUT copying. */
+  inspiredByTitles?: string[];
+  /** Phase 15.8 — recent titles the user has already covered, surfaced
+   *  for negative priming ("don't propose topics that look like these"). */
+  avoidTitles?: string[];
 }
 
 const MIN_COUNT = 3;
@@ -56,8 +118,116 @@ export function clampCount(n: number | undefined): number {
   return Math.max(MIN_COUNT, Math.min(MAX_COUNT, Math.round(n)));
 }
 
+/** Clamp a target length to the doctrine window. Out-of-range or
+ *  non-finite values return undefined so the prompt just omits the
+ *  hint instead of forcing a bogus value on the model. */
+export function clampTargetLength(n: number | undefined): number | undefined {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return undefined;
+  return Math.max(MIN_LENGTH_SEC, Math.min(MAX_LENGTH_SEC, Math.round(n)));
+}
+
+const HOOK_STYLE_HINTS: Record<HookStyle, string> = {
+  question: 'Open every hook with a question form ("Why...", "What if...", "Did you know...").',
+  number: 'Open every hook with a specific concrete number ("3 reasons...", "By 27...", "1 in 4...").',
+  contrarian: 'Open every hook with a contrarian / counter-intuitive claim that overturns common belief.',
+  story: 'Open every hook in story-mode — drop the viewer mid-action ("She walked in and..." / "I was 14 when...").',
+  'fact-reveal': 'Open every hook with a "Nobody tells you / No one knows" reveal that promises a lesser-known fact.',
+  'youre-doing-it-wrong': "Open every hook with a 'You're doing it wrong' framing — call out a default behaviour as broken.",
+};
+
+const TONE_HINTS: Record<Tone, string> = {
+  irreverent: 'Tone: irreverent, dry, willing to mock the niche\'s sacred cows.',
+  authoritative: 'Tone: authoritative — speak as a teacher who has seen this 1000 times.',
+  wry: 'Tone: wry / amused — small smirk in every line, never grim.',
+  earnest: 'Tone: earnest — no irony, treat the viewer as a friend who genuinely wants to learn.',
+  urgent: 'Tone: urgent — every line carries a "you need to know this NOW" pulse.',
+};
+
+const POV_HINTS: Record<PovStyle, string> = {
+  'first-person': 'Point of view: first-person — speaker is the protagonist ("I tried...", "I noticed...").',
+  'second-person': 'Point of view: second-person — speaker addresses the viewer directly ("You...", "Your...").',
+  'third-person': 'Point of view: third-person narrator — speaker explains what happens to someone else.',
+};
+
+/** Builds an optional "doctrine block" injected into the system prompt
+ *  when format hints are supplied. Pure-string composition — tested. */
+export function buildDoctrineBlock(hints: FormatHints): string {
+  const lines: string[] = [];
+  const length = clampTargetLength(hints.targetLengthSec);
+  if (length) {
+    lines.push(`Target length: ~${length} seconds spoken — pace ideas so the body fits without rushing.`);
+  }
+  if (hints.hookStyle) {
+    lines.push(HOOK_STYLE_HINTS[hints.hookStyle]);
+  }
+  if (hints.tone) {
+    lines.push(TONE_HINTS[hints.tone]);
+  }
+  if (hints.pov) {
+    lines.push(POV_HINTS[hints.pov]);
+  }
+  if (lines.length === 0) return '';
+  return `
+
+DOCTRINE (treat as hard constraints, not suggestions):
+${lines.map((l) => `- ${l}`).join('\n')}`;
+}
+
+/** Builds the niche context block. Optional — empty when neither the
+ *  description nor keywords are supplied. */
+export function buildNicheContextBlock(nc: NicheContext | undefined): string {
+  if (!nc) return '';
+  const desc = typeof nc.description === 'string' ? nc.description.trim() : '';
+  const kws = Array.isArray(nc.keywords)
+    ? nc.keywords.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, 30)
+    : [];
+  if (!desc && kws.length === 0) return '';
+  const parts: string[] = [];
+  if (desc) parts.push(`Niche description: ${desc.slice(0, 1000)}`);
+  if (kws.length > 0) parts.push(`Niche keywords: ${kws.join(', ')}`);
+  return `\n${parts.join('\n')}\n`;
+}
+
+/** Builds the series intro/outro context block. Optional. */
+export function buildSeriesBlock(intro?: string, outro?: string): string {
+  const introT = typeof intro === 'string' ? intro.trim() : '';
+  const outroT = typeof outro === 'string' ? outro.trim() : '';
+  if (!introT && !outroT) return '';
+  const parts: string[] = ['', 'SERIES CONTEXT — every idea will run under a recurring series:'];
+  if (introT) parts.push(`- Series intro (spoken on every episode): "${introT.slice(0, 280)}"`);
+  if (outroT) parts.push(`- Series outro (spoken on every episode): "${outroT.slice(0, 280)}"`);
+  parts.push('Hook should still stand alone — the intro plays BEFORE the hook, not as the hook.');
+  return parts.join('\n') + '\n';
+}
+
+/** Builds the inspired-by / avoid lists block. Both lists are sliced
+ *  to a sane cap to keep the prompt budget bounded. */
+export function buildInspirationBlock(inspiredBy: string[] | undefined, avoid: string[] | undefined): string {
+  const inspired = Array.isArray(inspiredBy)
+    ? inspiredBy.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).slice(0, 8)
+    : [];
+  const avoidList = Array.isArray(avoid)
+    ? avoid.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).slice(0, 20)
+    : [];
+  if (inspired.length === 0 && avoidList.length === 0) return '';
+  const parts: string[] = [''];
+  if (inspired.length > 0) {
+    parts.push('INSPIRED BY (these recent Shorts performed well — pattern the energy, do NOT copy the topics):');
+    parts.push(inspired.map((t) => `- "${t}"`).join('\n'));
+  }
+  if (avoidList.length > 0) {
+    parts.push('AVOID (the user has already covered these — propose distinct topics):');
+    parts.push(avoidList.map((t) => `- "${t}"`).join('\n'));
+  }
+  return parts.join('\n') + '\n';
+}
+
 export function buildShortsIdeasPrompt(input: ShortsIdeasInput): { system: string; user: string } {
   const count = clampCount(input.count);
+  const doctrineBlock = input.formatHints ? buildDoctrineBlock(input.formatHints) : '';
+  const nicheBlock = buildNicheContextBlock(input.nicheContext);
+  const seriesBlock = buildSeriesBlock(input.seriesIntro, input.seriesOutro);
+  const inspirationBlock = buildInspirationBlock(input.inspiredByTitles, input.avoidTitles);
   return {
     system: `You are a YouTube Shorts strategist with a track record of 1M-view openers. Generate ${count} hook-first idea pitches for a single channel/niche.
 
@@ -73,7 +243,7 @@ Every idea must:
 
 5. **Pass the Shorts-shelf sniff test** — contrarian claim, lesser-known fact, visceral demonstration, did-you-know reveal, or tight one-trick tutorial.
 
-NEVER USE: "navigate", "landscape", "realm", "buckle up", "let's dive in", "without further ado", "in today's fast-paced world", "game-changer", "today we're going to", "hey guys".
+NEVER USE: "navigate", "landscape", "realm", "buckle up", "let's dive in", "without further ado", "in today's fast-paced world", "game-changer", "today we're going to", "hey guys".${doctrineBlock}
 
 Output STRICTLY this JSON shape with no prose:
 
@@ -89,8 +259,7 @@ Output STRICTLY this JSON shape with no prose:
     }
   ]
 }`,
-    user: `Niche: ${input.niche}
-${input.context ? `Context: ${input.context}\n` : ''}
+    user: `Niche: ${input.niche}${nicheBlock}${seriesBlock}${input.context ? `Context: ${input.context}\n` : ''}${inspirationBlock}
 Generate ${count} hook-first Shorts ideas now. JSON only.`,
   };
 }
