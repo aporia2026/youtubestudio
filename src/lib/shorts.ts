@@ -359,6 +359,142 @@ export async function extractShortFromTranscriptMoment(
   return { id: rows[0]!.id, short };
 }
 
+// ---------------------------------------------------------------------------
+// From-scratch — Phase 15.5
+// ---------------------------------------------------------------------------
+//
+// True "create a Short from scratch" path. Takes a hook-first IDEA
+// (the shape that comes out of `shorts-ideas.ts` — hook + title +
+// payoff + optional thesis) and writes a `short_native` row by
+// generating a Short script directly from the idea text. No source
+// YouTube video, no source long-form script — the AI script-writer
+// gets the idea as its source content.
+//
+// Persists with kind='extracted', medium='short_native', no
+// source_youtube_video_id, no source_script_id. The row plugs into
+// the existing voiceover + render flow unchanged.
+
+export interface ExtractShortFromIdeaArgs {
+  workspaceId: string;
+  projectId: string | null;
+  niche: string;
+  /** The literal first 1-3 seconds line — load-bearing for the script. */
+  hook: string;
+  /** The literal closing line. */
+  payoff: string;
+  /** 6-8 word display title for the idea. */
+  ideaTitle: string;
+  /** One-sentence "what this Short PROVES" — optional context. */
+  thesis?: string;
+  /** Free-text shot concept / visual notes — optional context. */
+  shotConcept?: string;
+  tone?: string;
+  /** Target Short length in seconds. Clamped to [10, 90]. */
+  targetSeconds?: number;
+  modelId?: string;
+}
+
+export async function extractShortFromIdea(
+  args: ExtractShortFromIdeaArgs,
+): Promise<{ id: string; short: ExtractedShort }> {
+  const targetSeconds = Math.max(
+    10,
+    Math.min(90, args.targetSeconds ?? TARGET_DURATION_SECONDS_DEFAULT),
+  );
+  const modelId = args.modelId || (await getEffectiveModelId(args.workspaceId, 'shorts-extract'));
+
+  // Compose the idea fields into a "source content" block the extractor
+  // can read. We frame it like a hook/payoff brief so the model writes
+  // around the literal hook + payoff lines instead of summarising them.
+  const sourceContent =
+    `Idea brief.
+
+HOOK (open with this literal line, first 1-3 seconds): "${args.hook}"
+PAYOFF (close with this literal line): "${args.payoff}"
+WORKING TITLE: "${args.ideaTitle}"
+${args.thesis ? `THESIS (what this Short proves): ${args.thesis}\n` : ''}${args.shotConcept ? `SHOT CONCEPT (visual shape): ${args.shotConcept}\n` : ''}
+Write the FULL Short script that opens on the literal HOOK line, delivers the thesis in the body, and lands on the literal PAYOFF line.`;
+
+  const { system, user } = buildShortExtractionPrompt({
+    longScript: sourceContent,
+    niche: args.niche,
+    tone: args.tone,
+    targetSeconds,
+  });
+
+  const raw = await generateText({
+    modelId,
+    systemPrompt: system,
+    prompt: user,
+    maxTokens: 4000,
+    temperature: 0.75,
+    spend: {
+      workspaceId: args.workspaceId,
+      projectId: args.projectId ?? null,
+      featureArea: 'shorts_from_scratch',
+      metadata: { target_seconds: targetSeconds, niche: args.niche.slice(0, 60) },
+    },
+  });
+
+  let short: ExtractedShort;
+  try {
+    short = parseExtractedShort(raw);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.error('[shorts from-scratch] extractor parse failed', {
+      ideaTitle: args.ideaTitle.slice(0, 80),
+      detail,
+      raw_preview: raw.slice(0, 400),
+    });
+    throw new Error(`Extractor returned a malformed response: ${detail}`);
+  }
+
+  const estimatedDuration = estimateShortDurationSeconds(short.word_count);
+
+  const { rows } = await sql<{ id: string }>`
+    INSERT INTO shorts (
+      workspace_id, project_id,
+      kind, medium,
+      title, short_script, hook, payoff,
+      word_count, estimated_duration_seconds,
+      ai_model, generation_params
+    ) VALUES (
+      ${args.workspaceId}::uuid,
+      ${args.projectId ?? null}::uuid,
+      'extracted',
+      'short_native',
+      ${short.title || args.ideaTitle || null},
+      ${short.short_script},
+      ${short.hook || args.hook || null},
+      ${short.payoff || args.payoff || null},
+      ${short.word_count},
+      ${estimatedDuration},
+      ${modelId},
+      ${JSON.stringify({
+        targetSeconds,
+        niche: args.niche,
+        tone: args.tone,
+        from_scratch: true,
+        idea_title: args.ideaTitle,
+        idea_thesis: args.thesis,
+        idea_shot_concept: args.shotConcept,
+      })}::jsonb
+    )
+    RETURNING id
+  `;
+
+  logger.info('[shorts from-scratch] persisted', {
+    workspaceId: args.workspaceId,
+    projectId: args.projectId,
+    shortId: rows[0]!.id,
+    targetSeconds,
+    word_count: short.word_count,
+    niche: args.niche.slice(0, 40),
+  });
+
+  return { id: rows[0]!.id, short };
+}
+
 export interface GenerateShortVoiceoverArgs {
   shortId: string;
   workspaceId: string;

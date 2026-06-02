@@ -1,19 +1,27 @@
 'use client';
 
 /**
- * ShortNativeIdeasSurface — Phase 15.2.
+ * ShortNativeIdeasSurface — Phase 15.2 + 15.5.
  *
- * The /ideas page renders this when `medium=short_native`. Hook-first
- * idea generation tuned for the 60-second algorithm — each idea opens
- * with the literal hook line, not a topic title.
+ * Hook-first idea generation tuned for the 60-second algorithm — each
+ * idea opens with the literal hook line, not a topic title. Mounted in
+ * two places:
+ *   - /ideas?medium=short_native            (Ideas section, Shorts mode)
+ *   - /shorts?tab=create                    (Create-from-scratch tab)
  *
- * Single AI call returns N graded ideas. The user can copy any idea's
- * components (hook / title / payoff) and pipe them into the Scripts
- * page's Mode C flow.
+ * Each idea card carries a "Generate this Short" button (Phase 15.5)
+ * that takes the idea's hook + title + payoff + thesis and writes a
+ * real `short_native` row via /api/shorts/generate-from-idea. The row
+ * plugs into the voiceover + render pipeline unchanged. Optional style
+ * picker (Minimal + Doodle) fires the same /generate-style-assets path
+ * Mode C uses, so a from-scratch Short can ship a Doodle render on the
+ * same click.
  */
 
 import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
+import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
+import { DEFAULT_SHORT_STYLE_ID, type ShortStyleId } from '@/lib/short-styles';
 
 interface ShortIdea {
   hook: string;
@@ -31,6 +39,10 @@ export function ShortNativeIdeasSurface() {
   const [busy, setBusy] = useState(false);
   const [ideas, setIdeas] = useState<ShortIdea[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Phase 15.5 — per-idea Generate state + style picker.
+  const [styleId, setStyleId] = useState<ShortStyleId>(DEFAULT_SHORT_STYLE_ID);
+  const [generatingKey, setGeneratingKey] = useState<string | null>(null);
 
   const generate = useCallback(async () => {
     if (!niche.trim()) {
@@ -67,6 +79,74 @@ export function ShortNativeIdeasSurface() {
       () => toast.error('Could not copy'),
     );
   }
+
+  /** Phase 15.5 — write the idea into a real short_native row, then
+   *  (if a non-minimal style was picked) fire the style asset pipeline. */
+  const generateShort = useCallback(
+    async (idea: ShortIdea, idx: number) => {
+      const key = `${idx}-${idea.hook.slice(0, 30)}`;
+      setGeneratingKey(key);
+      try {
+        const res = await fetch('/api/shorts/generate-from-idea', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            niche: niche.trim(),
+            hook: idea.hook,
+            payoff: idea.payoff,
+            ideaTitle: idea.title,
+            thesis: idea.thesis || undefined,
+            shotConcept: idea.shotConcept || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const newShortId = data.id as string | undefined;
+        if (!newShortId) {
+          toast.success('Short generated — open the inbox to voice it.');
+          return;
+        }
+        if (styleId === 'minimal_gradient_v1') {
+          toast.success('Short generated — open the inbox to voice it.');
+          return;
+        }
+        // Non-minimal style: kick off the asset pipeline. ~30-120s.
+        try {
+          const styleRes = await fetch(
+            `/api/shorts/${encodeURIComponent(newShortId)}/generate-style-assets`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                style_id: styleId,
+                niche: niche.trim(),
+              }),
+            },
+          );
+          const styleData = await styleRes.json();
+          if (!styleRes.ok) {
+            toast.warning(
+              `Short generated, but style assets failed: ${styleData.error ?? 'unknown'}. Retry from the inbox.`,
+            );
+          } else {
+            const cost = styleData.estimated_cost_usd as number | undefined;
+            toast.success(
+              `Short generated + ${styleId} assets ready${typeof cost === 'number' ? ` (~$${cost.toFixed(2)})` : ''}. Voice it from the inbox.`,
+            );
+          }
+        } catch (styleErr) {
+          toast.warning(
+            `Short generated, but style asset call failed: ${styleErr instanceof Error ? styleErr.message : 'unknown'}. Retry from the inbox.`,
+          );
+        }
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Failed to generate the Short');
+      } finally {
+        setGeneratingKey(null);
+      }
+    },
+    [niche, styleId],
+  );
 
   return (
     <section
@@ -148,7 +228,20 @@ export function ShortNativeIdeasSurface() {
       </div>
 
       {ideas.length > 0 && (
-        <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary, rgba(255,255,255,0.6))', marginBottom: 6 }}>
+            Style for the Shorts you generate below. Doodle adds ~30-90s of Atlas time per Short.
+          </div>
+          <ShortStylePicker
+            value={styleId}
+            onChange={setStyleId}
+            disabled={generatingKey !== null}
+          />
+        </div>
+      )}
+
+      {ideas.length > 0 && (
+        <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {ideas.map((idea, idx) => (
             <article
               key={idx}
@@ -190,7 +283,7 @@ export function ShortNativeIdeasSurface() {
                   {idea.shotConcept && <div><em>Shot:</em> {idea.shotConcept}</div>}
                 </div>
               )}
-              <footer>
+              <footer style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button
                   type="button"
                   onClick={() => copyAll(idea)}
@@ -205,6 +298,25 @@ export function ShortNativeIdeasSurface() {
                   }}
                 >
                   Copy idea
+                </button>
+                <button
+                  type="button"
+                  onClick={() => generateShort(idea, idx)}
+                  disabled={generatingKey !== null}
+                  style={{
+                    padding: '5px 11px',
+                    borderRadius: 8,
+                    border: 'none',
+                    background: 'rgba(124,58,237,0.95)',
+                    color: '#fff',
+                    cursor: generatingKey !== null ? 'wait' : 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  {generatingKey === `${idx}-${idea.hook.slice(0, 30)}`
+                    ? 'Generating…'
+                    : 'Generate this Short →'}
                 </button>
               </footer>
             </article>

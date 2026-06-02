@@ -12,6 +12,7 @@ import {
 } from '@/lib/shorts-types';
 import { downloadHref } from '@/lib/download-file';
 import { ShortsInboxPanel } from '@/components/shorts/ShortsInboxPanel';
+import { ShortNativeIdeasSurface } from '@/components/shorts/ShortNativeIdeasSurface';
 
 interface ProjectListItem {
   id: string;
@@ -31,11 +32,16 @@ interface ElevenVoice {
   name: string;
 }
 
-/** Reads `?tab=` from the URL with `extract` fallback. Centralised so the
- *  tab strip + the early-return inbox branch agree. */
-type ShortsTab = 'extract' | 'inbox';
+/** Reads `?tab=` from the URL. Three tabs (Phase 15.5):
+ *   - 'create'   — from-scratch idea-to-Short generator (Phase 15.5)
+ *   - 'extract'  — long-form script → Short extractor (legacy default)
+ *   - 'inbox'    — global pending-candidates inbox (Phase 15.1)
+ *  Centralised so the tab strip + branches agree. */
+type ShortsTab = 'create' | 'extract' | 'inbox';
 function parseTab(raw: string | null | undefined): ShortsTab {
-  return raw === 'inbox' ? 'inbox' : 'extract';
+  if (raw === 'create') return 'create';
+  if (raw === 'inbox') return 'inbox';
+  return 'extract';
 }
 
 export default function ShortsPage() {
@@ -268,7 +274,7 @@ function ShortsPageInner() {
         border: '1px solid rgba(255,255,255,0.08)',
       }}
     >
-      {(['extract', 'inbox'] as const).map((t) => (
+      {(['create', 'extract', 'inbox'] as const).map((t) => (
         <button
           key={t}
           role="tab"
@@ -286,11 +292,34 @@ function ShortsPageInner() {
             color: tab === t ? '#fff' : 'var(--text-secondary, rgba(255,255,255,0.7))',
           }}
         >
-          {t === 'extract' ? 'Extract' : 'Inbox'}
+          {t === 'create' ? 'Create' : t === 'extract' ? 'Extract' : 'Inbox'}
         </button>
       ))}
     </div>
   );
+
+  // Create early return — Phase 15.5 from-scratch Short generation.
+  // Reuses the Ideas surface (niche → graded ideas → "Generate this
+  // Short →" per card) so the entry point is identical to the one on
+  // /ideas?medium=short_native; this tab is the lazy-user shortcut for
+  // "I just want a Short, period."
+  if (tab === 'create') {
+    return (
+      <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+        <div className="mb-6" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div>
+            <h1 className="text-2xl font-bold gradient-text">Shorts</h1>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              Type a niche, get hook-first idea cards, click "Generate this Short" on the one you like.
+              No video upload, no long-form script needed.
+            </p>
+          </div>
+          {tabStrip}
+        </div>
+        <ShortNativeIdeasSurface />
+      </div>
+    );
+  }
 
   // Inbox early return — keeps the existing extract UI below untouched.
   if (tab === 'inbox') {
