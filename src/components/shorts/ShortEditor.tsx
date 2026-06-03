@@ -237,6 +237,46 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     };
   }, [shouldPoll, pollCadenceMs, loadRow]);
 
+  // ── client-driven asset tick ───────────────────────────────────────
+  // Vercel crons run only in production, so on preview / local deploys
+  // nothing advances a queued Short on its own. While a job is in flight
+  // and not stale, the editor itself drives it: each POST runs one bounded
+  // tick (plan / base / a batch of variants) server-side and persists; when
+  // it returns we re-fetch and, if still in flight, fire the next tick. This
+  // is what lets generation actually complete — and resume after a request
+  // death — without a cron. The server side is single-flight-locked, so this
+  // never collides with the cron or the enqueue drain. `tickBusyRef` ensures
+  // only one tick is outstanding at a time; `tickNonce` re-arms the effect
+  // after each tick so the loop continues until the job finalizes.
+  const tickBusyRef = useRef(false);
+  const [tickNonce, setTickNonce] = useState(0);
+  useEffect(() => {
+    if (!row?.id || !progressInFlight || progressStale || tickBusyRef.current) return;
+    tickBusyRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        await fetch(`/api/shorts/${encodeURIComponent(row.id)}/run-asset-tick`, { method: 'POST' });
+      } catch {
+        /* swallow — the poll surfaces real state; the next tick retries */
+      } finally {
+        tickBusyRef.current = false;
+        if (!cancelled) {
+          await loadRow();
+          // Throttle re-arm. A real tick takes tens of seconds (negligible
+          // overhead); but when another runner holds the lock our tick
+          // returns 'busy' instantly, and without this pause we'd hammer the
+          // endpoint. 3s keeps the loop gentle either way.
+          await new Promise((r) => setTimeout(r, 3000));
+          if (!cancelled) setTickNonce((n) => n + 1);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [row?.id, progressInFlight, progressStale, tickNonce, loadRow]);
+
   // ── derived preview config ─────────────────────────────────────────
   // The preview tries to build a ShortVideoConfig from the current row.
   // buildShortVideoConfig throws when prerequisites are missing

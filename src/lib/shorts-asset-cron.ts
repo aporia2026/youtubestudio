@@ -52,12 +52,15 @@ import { resolveBaseT2iModelId } from './shorts-base-t2i';
  *  enough that a live, slow tick (base 30-60s + a variant batch) never
  *  loses its own lease, since the cron is single-flight per invocation. */
 const LEASE_SECONDS = 90;
-/** Stop starting new work past this many ms into a tick, well under the
+/** Stop starting new work past this many ms into a tick, just under the
  *  300s function ceiling, so we yield + persist instead of being killed. */
-const TICK_BUDGET_MS = 240_000;
-/** Variants generated concurrently per batch. Bounded to avoid the 429
- *  storm that a 6-wide burst against Atlas can self-inflict. */
-const MAX_VARIANTS_PER_BATCH = 3;
+const TICK_BUDGET_MS = 280_000;
+/** Variants generated concurrently per batch. A typical Short plans ~6, so
+ *  this fires them all at once — variants are independent edits off one base
+ *  frame, and running them concurrently (rather than 3 at a time) roughly
+ *  halves the wall-clock. A per-variant attempt cap + the Kie/Atlas fallback
+ *  absorb the occasional 429 from the wider burst. */
+const MAX_VARIANTS_PER_BATCH = 6;
 
 type StyleKey = 'doodle' | 'paint';
 
@@ -129,6 +132,33 @@ async function claimNextShort(tickId: string): Promise<ClaimedShort | null> {
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )
+     RETURNING id::text, workspace_id::text, short_script, style_id, project_id::text,
+               voiceover_duration_seconds, estimated_duration_seconds, word_count,
+               hook, payoff, title, style_assets, generation_progress
+  `;
+  return rows[0] ?? null;
+}
+
+/** Claim ONE specific Short, scoped to its workspace — for the client-driven
+ *  tick, which must never touch another tenant's row (the cron's global claim
+ *  is system-only). Same lease semantics. */
+async function claimSpecificShort(
+  shortId: string,
+  workspaceId: string,
+  tickId: string,
+): Promise<ClaimedShort | null> {
+  const { rows } = await sql<ClaimedShort>`
+    UPDATE shorts
+       SET generation_claimed_at = NOW(),
+           generation_claimed_by_tick = ${tickId}
+     WHERE id = ${shortId}::uuid
+       AND workspace_id = ${workspaceId}::uuid
+       AND generation_progress->>'phase' IN ('queued', 'planning', 'base', 'variant')
+       AND (
+         generation_claimed_at IS NULL
+         OR generation_claimed_at < NOW() - make_interval(secs => ${LEASE_SECONDS})
+       )
+       AND short_script IS NOT NULL
      RETURNING id::text, workspace_id::text, short_script, style_id, project_id::text,
                voiceover_duration_seconds, estimated_duration_seconds, word_count,
                hook, payoff, title, style_assets, generation_progress
@@ -547,4 +577,25 @@ export async function triggerShortsAssetDrain(
 ): Promise<CronLockOutcome<ShortsAssetDrainResult>> {
   const tickId = `sa_${reason}_${Date.now()}_${(tickSeq++).toString(36)}`;
   return withCronLock(CRON_LOCK_KEYS.shortsAssetRunner, () => runShortsAssetDrain(tickId));
+}
+
+/**
+ * Advance ONE specific Short by a tick — the client-driven driver. The editor
+ * calls this while a job is in flight, so generation progresses (and resumes
+ * after a request death) even on preview / local deploys where the cron never
+ * runs. Workspace-scoped so a user can only drive their own row. Shares the
+ * single-flight lock with the cron + enqueue drain, so at most one runner
+ * touches the vendors at a time.
+ */
+export async function runShortsAssetTickForShort(
+  shortId: string,
+  workspaceId: string,
+): Promise<CronLockOutcome<{ claimed: boolean; outcome: TickOutcome | null }>> {
+  const tickId = `sa_tick_${Date.now()}_${(tickSeq++).toString(36)}`;
+  return withCronLock(CRON_LOCK_KEYS.shortsAssetRunner, async () => {
+    const short = await claimSpecificShort(shortId, workspaceId, tickId);
+    if (!short) return { claimed: false, outcome: null };
+    const outcome = await processClaimedShort(short, tickId, Date.now());
+    return { claimed: true, outcome };
+  });
 }
