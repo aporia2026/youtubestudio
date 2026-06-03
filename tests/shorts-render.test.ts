@@ -317,9 +317,81 @@ describe('buildShortVideoConfig — Phase 15.3 style dispatch', () => {
     expect(cfg.doodle_frames).toBeDefined();
     const frames = cfg.doodle_frames!;
     // First frame is the base at chunk 0.
-    expect(frames[0]).toEqual({ url: 'https://atlas.example.com/base.png', caption_chunk_start_index: 0 });
+    expect(frames[0].url).toBe('https://atlas.example.com/base.png');
+    expect(frames[0].caption_chunk_start_index).toBe(0);
     // Variants land sorted by chunk index.
     expect(frames.slice(1).map((f) => f.caption_chunk_start_index)).toEqual([1, 2, 3]);
+  });
+
+  it('threads base + variant animation_url onto doodle_frames when present (Phase 15.17)', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'doodle_explainer_2_short',
+        style_assets: {
+          doodle: {
+            base_url: 'https://atlas.example.com/base.png',
+            base_animation: {
+              video_url: 'https://kie.example.com/base.mp4',
+              thumbnail_url: 'https://kie.example.com/base-thumb.jpg',
+              model_id: 'runway-i2v-5s-720p',
+              cost_usd: 0.06,
+              duration_s: 5,
+              generated_at: '2026-06-03T00:00:00Z',
+              provider_request_id: 't-base',
+            },
+            variants: [
+              {
+                url: 'https://atlas.example.com/v1.png',
+                caption_chunk_start_index: 1,
+                animation: {
+                  video_url: 'https://kie.example.com/v1.mp4',
+                  model_id: 'runway-i2v-5s-720p',
+                  cost_usd: 0.06,
+                  duration_s: 5,
+                  generated_at: '2026-06-03T00:00:01Z',
+                  provider_request_id: 't-v1',
+                },
+              },
+              {
+                url: 'https://atlas.example.com/v2.png',
+                caption_chunk_start_index: 2,
+                // No animation on v2 — the renderer should fall back to the still.
+              },
+            ],
+          },
+        },
+      },
+    });
+    const frames = cfg.doodle_frames!;
+    expect(frames[0].animation_url).toBe('https://kie.example.com/base.mp4');
+    expect(frames[0].animation_thumbnail_url).toBe('https://kie.example.com/base-thumb.jpg');
+    expect(frames[1].animation_url).toBe('https://kie.example.com/v1.mp4');
+    expect(frames[2].animation_url).toBeUndefined();
+  });
+
+  it('also threads animation_url for Paint shorts (Phase 15.17)', () => {
+    const cfg = buildShortVideoConfig({
+      short: {
+        ...baseShort,
+        style_id: 'paint_explainer_v1_short',
+        style_assets: {
+          paint: {
+            base_url: 'https://atlas.example.com/p-base.png',
+            base_animation: {
+              video_url: 'https://kie.example.com/p-base.mp4',
+              model_id: 'kling-v2-5-turbo-i2v-pro-5s',
+              cost_usd: 0.21,
+              duration_s: 5,
+              generated_at: '2026-06-03T00:00:00Z',
+              provider_request_id: 't-pbase',
+            },
+            variants: [],
+          },
+        },
+      },
+    });
+    expect(cfg.doodle_frames?.[0].animation_url).toBe('https://kie.example.com/p-base.mp4');
   });
 
   it('emits the same base + variant array shape the renderer iterates with most-recent-frame logic', () => {

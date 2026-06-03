@@ -1,5 +1,13 @@
 import React from 'react';
-import { AbsoluteFill, Audio, Img, useCurrentFrame, useVideoConfig } from 'remotion';
+import {
+  AbsoluteFill,
+  Audio,
+  Img,
+  OffthreadVideo,
+  Sequence,
+  useCurrentFrame,
+  useVideoConfig,
+} from 'remotion';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
 
 /**
@@ -278,7 +286,7 @@ const DOODLE_CAPTION_PADDING_X_PX = 64;
 
 function DoodleShortVideo({ config }: ShortVideoProps) {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, durationInFrames } = useVideoConfig();
   const elapsedMs = (frame / fps) * 1000;
 
   // Find the active caption chunk for caption rendering.
@@ -287,16 +295,31 @@ function DoodleShortVideo({ config }: ShortVideoProps) {
   );
   const activeCaption = activeIndex >= 0 ? config.captions[activeIndex] : null;
 
-  // Pick the most recent doodle frame whose caption_chunk_start_index
-  // is <= the active chunk index. Falls back to the first frame for
-  // the very-early window before any variant kicks in.
-  const frames = config.doodle_frames ?? [];
-  let frameUrl = frames[0]?.url ?? '';
-  for (const f of frames) {
-    if (activeIndex >= 0 && f.caption_chunk_start_index <= activeIndex) {
-      frameUrl = f.url;
-    }
-  }
+  // Phase 15.17 — each doodle frame becomes its own <Sequence> so the
+  // i2v `<OffthreadVideo>` plays from t=0 when its window opens
+  // (Sequences re-anchor child time). Frame i starts at the
+  // caption[start_index].start_ms and runs until frame (i+1)'s
+  // caption.start_ms, or the end of the composition for the last
+  // frame. Sorted ascending by caption_chunk_start_index upstream in
+  // `buildShortVideoConfig`, so neighbour math is correct as-is.
+  const rawFrames = config.doodle_frames ?? [];
+  const frameWindows = rawFrames.map((f, i) => {
+    const captionForFrame = config.captions[f.caption_chunk_start_index];
+    const startMs = captionForFrame?.start_ms ?? 0;
+    const nextFrame = rawFrames[i + 1];
+    const nextStartMs = nextFrame
+      ? config.captions[nextFrame.caption_chunk_start_index]?.start_ms ?? config.duration_ms
+      : config.duration_ms;
+    const fromFrames = Math.max(0, Math.round((startMs / 1000) * fps));
+    const lengthFrames = Math.max(
+      1,
+      Math.round(((nextStartMs - startMs) / 1000) * fps),
+    );
+    // Clamp the tail to the actual composition length so the last
+    // frame doesn't get a Sequence that extends past durationInFrames.
+    const cappedLength = Math.max(1, Math.min(lengthFrames, durationInFrames - fromFrames));
+    return { ...f, fromFrames, lengthFrames: cappedLength };
+  });
 
   const titleOpacity = elapsedMs < 1200 ? 1 : Math.max(0, 1 - (elapsedMs - 1200) / 600);
 
@@ -304,19 +327,44 @@ function DoodleShortVideo({ config }: ShortVideoProps) {
     <AbsoluteFill style={{ background: '#ffffff', fontFamily: 'Inter, system-ui, sans-serif' }}>
       {config.voiceover_url && <Audio src={config.voiceover_url} />}
 
-      {/* Full-bleed sibling frame */}
-      {frameUrl && (
-        <Img
-          src={frameUrl}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-          }}
-        />
-      )}
+      {/* Full-bleed sibling frame layer — one Sequence per frame. */}
+      {frameWindows.map((f, i) => (
+        <Sequence
+          key={`${f.url}-${i}`}
+          from={f.fromFrames}
+          durationInFrames={f.lengthFrames}
+        >
+          {f.animation_url ? (
+            // OffthreadVideo > Video for Lambda renders: doesn't block
+            // the main render thread and handles longer clips without
+            // chewing memory. muted because the voiceover is the
+            // single audio source — vendor mp4s sometimes ship with
+            // ambient hum the model added to "fill" the clip.
+            <OffthreadVideo
+              src={f.animation_url}
+              muted
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+              }}
+            />
+          ) : (
+            <Img
+              src={f.url}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+              }}
+            />
+          )}
+        </Sequence>
+      ))}
 
       {/* Title chip at the top safe-zone margin */}
       {config.title && titleOpacity > 0 && (

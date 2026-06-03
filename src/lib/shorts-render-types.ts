@@ -120,6 +120,15 @@ export interface ShortVideoConfig {
   doodle_frames?: Array<{
     url: string;
     caption_chunk_start_index: number;
+    /** Phase 15.17 — i2v animation generated from `url`. When present
+     *  the renderer plays the mp4 in place of the still during the
+     *  frame's window. The still stays as the OffthreadVideo poster
+     *  so any frame the video doesn't render (cold start, error) falls
+     *  back cleanly. */
+    animation_url?: string;
+    /** Phase 15.17 — vendor thumbnail for the animation, used as the
+     *  poster. Falls back to `url` when absent. */
+    animation_thumbnail_url?: string;
   }>;
   /** Phase 15.11 — caption style + per-chunk overrides. When present, the
    *  composition's caption renderer applies these on top of the defaults.

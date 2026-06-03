@@ -284,9 +284,19 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
       );
     }
     doodleFrames = [
-      { url: doodle.base_url, caption_chunk_start_index: 0 },
+      {
+        url: doodle.base_url,
+        caption_chunk_start_index: 0,
+        animation_url: doodle.base_animation?.video_url,
+        animation_thumbnail_url: doodle.base_animation?.thumbnail_url,
+      },
       ...doodle.variants
-        .map((v) => ({ url: v.url, caption_chunk_start_index: v.caption_chunk_start_index }))
+        .map((v) => ({
+          url: v.url,
+          caption_chunk_start_index: v.caption_chunk_start_index,
+          animation_url: v.animation?.video_url,
+          animation_thumbnail_url: v.animation?.thumbnail_url,
+        }))
         .sort((a, b) => a.caption_chunk_start_index - b.caption_chunk_start_index),
     ];
   } else if (styleId === 'paint_explainer_v1_short') {
@@ -297,9 +307,19 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
       );
     }
     doodleFrames = [
-      { url: paint.base_url, caption_chunk_start_index: 0 },
+      {
+        url: paint.base_url,
+        caption_chunk_start_index: 0,
+        animation_url: paint.base_animation?.video_url,
+        animation_thumbnail_url: paint.base_animation?.thumbnail_url,
+      },
       ...paint.variants
-        .map((v) => ({ url: v.url, caption_chunk_start_index: v.caption_chunk_start_index }))
+        .map((v) => ({
+          url: v.url,
+          caption_chunk_start_index: v.caption_chunk_start_index,
+          animation_url: v.animation?.video_url,
+          animation_thumbnail_url: v.animation?.thumbnail_url,
+        }))
         .sort((a, b) => a.caption_chunk_start_index - b.caption_chunk_start_index),
     ];
   }
