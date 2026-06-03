@@ -7,6 +7,11 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { getShort } from '@/lib/shorts';
 import { buildShortVideoConfig } from '@/lib/shorts-render';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
+import {
+  buildCanonicalScript,
+  ensureAlignmentForVoiceover,
+} from '@/lib/voiceover-alignment-cache';
+import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 import { logger } from '@/lib/logger';
 import { remotionWebpackOverride } from '@/lib/remotion-bundler';
 import {
@@ -93,6 +98,34 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
+  // Snap caption timing to real ElevenLabs word boundaries — the same
+  // forced-alignment the editor preview uses (GET /api/shorts/[id]/alignment).
+  // Built from the identical canonical script so the cache key matches the
+  // editor's, meaning the render almost always hits the warm cache the
+  // preview populated and the final MP4 matches what the user saw. Best
+  // effort: on any failure we fall back to proportional-WPM timing rather
+  // than blocking the render.
+  let alignment: ForcedAlignmentResponse | null = null;
+  if (short.short_script) {
+    try {
+      const canonical = buildCanonicalScript([short.short_script]);
+      const result = await ensureAlignmentForVoiceover(short.voiceover_audio_url, canonical);
+      if (result.status === 'ready') {
+        alignment = result.alignment;
+      } else {
+        logger.warn('[short-render] alignment not ready — using proportional timing', {
+          shortId,
+          reason: result.reason,
+        });
+      }
+    } catch (err) {
+      logger.warn('[short-render] alignment failed — using proportional timing', {
+        shortId,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   let config: ShortVideoConfig;
   try {
     config = buildShortVideoConfig({
@@ -100,6 +133,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       channelName: typeof b.channelName === 'string' ? b.channelName : null,
       background: typeof b.background === 'string' ? b.background : undefined,
       accentColor: typeof b.accentColor === 'string' ? b.accentColor : undefined,
+      alignment,
     });
   } catch (err) {
     return domainErrorResponse(err, {
