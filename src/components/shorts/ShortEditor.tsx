@@ -44,6 +44,8 @@ import type {
   ShortRow,
 } from '@/lib/shorts-types';
 import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
+import { ShortSeoResults } from '@/components/shorts/ShortSeoResults';
+import { NicheFinderModelPicker } from '@/components/niche-finder/NicheFinderModelPicker';
 import { type ShortStyleId } from '@/lib/short-styles';
 import {
   anyRowGenerating,
@@ -122,6 +124,9 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   const [voices, setVoices] = useState<ElevenVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState('');
   const [voiceoverBusy, setVoiceoverBusy] = useState(false);
+
+  // SEO state.
+  const [seoBusy, setSeoBusy] = useState(false);
 
   // Style asset generation state.
   const [assetsBusy, setAssetsBusy] = useState(false);
@@ -483,6 +488,28 @@ export function ShortEditor({ shortId }: { shortId: string }) {
       setVoiceoverBusy(false);
     }
   }, [row, selectedVoice, loadRow]);
+
+  // ── action: generate SEO ───────────────────────────────────────────
+  const generateSeo = useCallback(async () => {
+    if (!row) return;
+    setSeoBusy(true);
+    try {
+      // The model is the workspace's 'shorts-seo' default, set via the
+      // model picker below; the route reads it server-side. Persists
+      // seo_result on the row, so we re-fetch to show it.
+      const res = await fetch(`/api/shorts/${encodeURIComponent(row.id)}/seo-native`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      await loadRow();
+      toast.success('SEO suggestions ready.');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'SEO generation failed');
+    } finally {
+      setSeoBusy(false);
+    }
+  }, [row, loadRow]);
 
   // ── action: render to MP4 ──────────────────────────────────────────
   const renderShort = useCallback(async () => {
@@ -879,6 +906,37 @@ export function ShortEditor({ shortId }: { shortId: string }) {
             <span style={{ fontSize: 12, color: '#fca5a5' }}>{renderJob.error}</span>
           )}
         </div>
+      </EditorSection>
+
+      {/* ── SEO section ──────────────────────────────────────────── */}
+      <EditorSection
+        title="SEO"
+        subtitle="Generate graded title, description, and hashtag suggestions for this Short. Pick the AI model, then generate."
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={generateSeo}
+            disabled={seoBusy}
+            style={primaryButton(seoBusy)}
+          >
+            {seoBusy
+              ? 'Generating…'
+              : row.seo_result
+                ? 'Regenerate SEO'
+                : 'Generate SEO'}
+          </button>
+          <NicheFinderModelPicker feature="shorts-seo" label="SEO model" />
+        </div>
+        {row.seo_result ? (
+          <div style={{ marginTop: 14 }}>
+            <ShortSeoResults result={row.seo_result} />
+          </div>
+        ) : (
+          <p style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
+            No SEO yet. Generate to get graded titles, descriptions, and hashtag sets you can copy.
+          </p>
+        )}
       </EditorSection>
     </div>
   );
