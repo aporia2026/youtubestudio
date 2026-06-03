@@ -30,18 +30,25 @@ const nextConfig: NextConfig = {
   //   - src/lib/**            — the `@/lib/*` modules the composition pulls (and their closure)
   // Without these the bundle fails with "Cannot find module '@rspack/binding'"
   // then "Can't resolve 'remotion'", etc. Keep in sync with any new render route.
+  // NB: only the packages the composition actually bundles are listed — NOT
+  // all of @remotion/*. @remotion/google-fonts alone is 65MB and the renderer
+  // / lambda / studio packages carry big binaries; pulling the whole scope
+  // would risk Vercel's 250MB function limit. @remotion/renderer is already a
+  // serverExternalPackage, so its files come in separately.
   outputFileTracingIncludes: {
     '/api/render/short': [
       './node_modules/@rspack/**/*',
       './node_modules/remotion/**/*',
-      './node_modules/@remotion/**/*',
+      './node_modules/@remotion/google-fonts/**/*',
+      './node_modules/@remotion/transitions/**/*',
       './src/remotion/**/*',
       './src/lib/**/*',
     ],
     '/api/render/video': [
       './node_modules/@rspack/**/*',
       './node_modules/remotion/**/*',
-      './node_modules/@remotion/**/*',
+      './node_modules/@remotion/google-fonts/**/*',
+      './node_modules/@remotion/transitions/**/*',
       './src/remotion/**/*',
       './src/lib/**/*',
     ],
