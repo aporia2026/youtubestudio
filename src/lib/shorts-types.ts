@@ -187,6 +187,11 @@ export interface ShortStyleAssets {
     /** Phase 15.12 — the prompt that produced base_url (full Atlas
      *  prompt with style suffix included). Optional for back-compat. */
     base_prompt?: string;
+    /** Phase 15.16 — i2v animation generated from `base_url`. When
+     *  present, the renderer (Phase 15.17) plays the mp4 in place of
+     *  the still during the base's window. The still stays as the
+     *  thumbnail / fallback for non-video surfaces. Optional. */
+    base_animation?: ShortFrameAnimation;
     /** Variant frames, ordered. Each carries the caption chunk it lines
      *  up with so the renderer can swap frames at chunk boundaries. */
     variants: Array<{
@@ -194,6 +199,8 @@ export interface ShortStyleAssets {
       caption_chunk_start_index: number;
       /** Phase 15.12 — the edit prompt that produced this variant. */
       edit_prompt?: string;
+      /** Phase 15.16 — i2v animation generated from `url`. */
+      animation?: ShortFrameAnimation;
     }>;
   };
   /** Paint vertical (`paint_explainer_v1_short`) — same asset shape as
@@ -201,10 +208,42 @@ export interface ShortStyleAssets {
   paint?: {
     base_url: string;
     base_prompt?: string;
+    base_animation?: ShortFrameAnimation;
     variants: Array<{
       url: string;
       caption_chunk_start_index: number;
       edit_prompt?: string;
+      animation?: ShortFrameAnimation;
     }>;
   };
+}
+
+/** Phase 15.16 — per-frame image-to-video animation metadata. Every
+ *  field is required after the animation lands so the renderer + the
+ *  UI cost surfacing both have what they need; nothing here is
+ *  back-compat optional. */
+export interface ShortFrameAnimation {
+  /** mp4 URL returned by the i2v provider. The renderer plays this
+   *  during the frame's caption window when present. */
+  video_url: string;
+  /** Vendor thumbnail URL (when the provider returns one). Used by
+   *  the Shots panel preview before the user clicks play. */
+  thumbnail_url?: string;
+  /** Underlying b-roll model id used to generate this animation. Lets
+   *  the Shots panel display "Animated with X" without a side lookup. */
+  model_id: string;
+  /** Flat cost USD recorded at generation time. Surfaced in the UI so
+   *  the user can see what each animation cost without a roundtrip
+   *  through the spend log. */
+  cost_usd: number;
+  /** Duration the model was asked to produce, in seconds. Lets the
+   *  renderer decide whether to loop / freeze the last frame when the
+   *  caption window outlasts the clip. */
+  duration_s: number;
+  /** ISO timestamp the animation was generated. Useful for ordering
+   *  / regen-vs-old detection in the Shots panel. */
+  generated_at: string;
+  /** Provider task id (Kie taskId) used as the audit trail when
+   *  something goes wrong post-success. */
+  provider_request_id: string;
 }

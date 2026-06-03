@@ -37,7 +37,7 @@ import {
   SHORT_WIDTH,
   type ShortVideoConfig,
 } from '@/lib/shorts-render-types';
-import type { GenerationProgressState, ShortRow } from '@/lib/shorts-types';
+import type { GenerationProgressState, ShortFrameAnimation, ShortRow } from '@/lib/shorts-types';
 import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
 import { type ShortStyleId } from '@/lib/short-styles';
 import {
@@ -1291,10 +1291,14 @@ function EditorSection({
 interface ShotsPanelFrameBlock {
   base_url: string;
   base_prompt?: string;
+  /** Phase 15.16 — i2v animation generated from `base_url`. */
+  base_animation?: ShortFrameAnimation;
   variants: Array<{
     url: string;
     caption_chunk_start_index: number;
     edit_prompt?: string;
+    /** Phase 15.16 — i2v animation generated from this variant's `url`. */
+    animation?: ShortFrameAnimation;
   }>;
 }
 
@@ -1331,6 +1335,19 @@ interface BaseT2iModelOption {
   vendor: 'atlas' | 'kie';
   costUsd: number;
   hint: string;
+}
+
+/** Phase 15.16 — i2v model registry shape returned by
+ *  `/api/shorts/i2v-models`. Subset of `BrollModelDescriptor`. */
+interface I2vModelOption {
+  id: string;
+  label: string;
+  family: string;
+  durationSeconds: number;
+  priceUsd: number;
+  priceUsdLabel: string;
+  blurb: string;
+  recommended: boolean;
 }
 
 const VARIANT_VENDOR_LABELS: Record<VendorChoice, { label: string; cost: string; note: string }> = {
@@ -1404,6 +1421,54 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
       toast.error('Could not save your model choice (still applied for this session).');
     } finally {
       setBaseModelSaving(false);
+    }
+  }, []);
+
+  // Phase 15.16 — i2v animation model picker. Reads the user's
+  // `default_broll_i2v_model_id` (same setting the b-roll picker
+  // uses) so the choice is shared with long-form animation work.
+  const [i2vModelId, setI2vModelId] = useState<string>('');
+  const [i2vModels, setI2vModels] = useState<I2vModelOption[]>([]);
+  const [i2vModelSaving, setI2vModelSaving] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads i2v registry + default
+        const res = await fetch('/api/shorts/i2v-models');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (Array.isArray(data.models)) {
+          setI2vModels(data.models as I2vModelOption[]);
+        }
+        if (typeof data.current === 'string') {
+          setI2vModelId(data.current);
+        }
+      } catch {
+        /* swallow — picker stays empty, Animate button hidden */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const setI2vModelPersisted = useCallback(async (next: string) => {
+    setI2vModelId(next);
+    setI2vModelSaving(true);
+    try {
+      // Reuse the existing /broll-default PUT so long-form + Shorts
+      // share one persisted i2v default. The route routes the value
+      // into `default_broll_i2v_model_id` based on the model's kind.
+      await fetch('/api/user/settings/broll-default', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId: next }),
+      });
+    } catch {
+      toast.error('Could not save your animation model choice (still applied for this session).');
+    } finally {
+      setI2vModelSaving(false);
     }
   }, []);
   useEffect(() => {
@@ -1568,6 +1633,96 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
     }
   };
 
+  const animateBase = async () => {
+    if (!i2vModelId) {
+      toast.error('Pick an animation model first.');
+      return;
+    }
+    setBusyFor('anim-base', true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/base/animate`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_id: i2vModelId }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success('Base frame animated.');
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Animation failed');
+    } finally {
+      setBusyFor('anim-base', false);
+    }
+  };
+
+  const clearBaseAnimation = async () => {
+    if (!window.confirm('Clear the base animation? The mp4 stays on the provider but the Short stops using it.')) return;
+    setBusyFor('anim-base', true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/base/animate`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success('Base animation cleared.');
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Clear failed');
+    } finally {
+      setBusyFor('anim-base', false);
+    }
+  };
+
+  const animateVariant = async (index: number) => {
+    if (!i2vModelId) {
+      toast.error('Pick an animation model first.');
+      return;
+    }
+    setBusyFor(`anim-v${index}`, true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/variants/${index}/animate`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_id: i2vModelId }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(`Variant ${index} animated.`);
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Animation failed');
+    } finally {
+      setBusyFor(`anim-v${index}`, false);
+    }
+  };
+
+  const clearVariantAnimation = async (index: number) => {
+    if (!window.confirm(`Clear variant ${index}'s animation?`)) return;
+    setBusyFor(`anim-v${index}`, true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/variants/${index}/animate`,
+        { method: 'DELETE' },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(`Variant ${index} animation cleared.`);
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Clear failed');
+    } finally {
+      setBusyFor(`anim-v${index}`, false);
+    }
+  };
+
   const deleteVariant = async (index: number) => {
     if (!window.confirm(`Delete variant ${index}? This cannot be undone.`)) return;
     setBusyFor(`v${index}`, true);
@@ -1679,6 +1834,46 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
             <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>saving…</span>
           )}
         </div>
+        {i2vModels.length > 0 && (
+          <div
+            style={{
+              marginTop: 8,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Animation model:</span>
+            <select
+              value={i2vModelId}
+              onChange={(e) => setI2vModelPersisted(e.target.value)}
+              disabled={i2vModelSaving}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 6,
+                background: 'rgba(0,0,0,0.2)',
+                color: 'inherit',
+                border: '1px solid rgba(255,255,255,0.15)',
+                fontSize: 11,
+                maxWidth: 280,
+              }}
+              title={
+                i2vModels.find((m) => m.id === i2vModelId)?.blurb
+                ?? 'i2v model used when you click "Animate"'
+              }
+            >
+              {i2vModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} — {m.priceUsdLabel} ({m.durationSeconds}s)
+                </option>
+              ))}
+            </select>
+            {i2vModelSaving && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>saving…</span>
+            )}
+          </div>
+        )}
       </header>
 
       <ShotFrameCard
@@ -1690,6 +1885,7 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
             : 'Base T2I · portrait 9:16';
         })()}
         imageUrl={picked.block.base_url}
+        animation={picked.block.base_animation}
         prompt={basePromptDraft}
         onPromptChange={setBasePromptDraft}
         promptPlaceholder={
@@ -1700,6 +1896,15 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
         busy={!!busy.base}
         primaryLabel="Regenerate base"
         onPrimary={regenerateBase}
+        animate={
+          i2vModels.length > 0
+            ? {
+                busy: !!busy['anim-base'],
+                onAnimate: animateBase,
+                onClear: clearBaseAnimation,
+              }
+            : undefined
+        }
       />
 
       {picked.block.variants.map((v, i) => (
@@ -1708,6 +1913,7 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
           title={`Variant ${i}`}
           subtitle={`Swaps in at caption chunk ${v.caption_chunk_start_index} · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`}
           imageUrl={v.url}
+          animation={v.animation}
           prompt={variantPromptDrafts[i] ?? ''}
           onPromptChange={(s) =>
             setVariantPromptDrafts((prev) => ({ ...prev, [i]: s }))
@@ -1721,6 +1927,15 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
           primaryLabel="Regenerate"
           onPrimary={() => regenerateVariant(i)}
           danger={{ label: 'Delete', onClick: () => deleteVariant(i) }}
+          animate={
+            i2vModels.length > 0
+              ? {
+                  busy: !!busy[`anim-v${i}`],
+                  onAnimate: () => animateVariant(i),
+                  onClear: () => clearVariantAnimation(i),
+                }
+              : undefined
+          }
         />
       ))}
 
@@ -1822,6 +2037,7 @@ function ShotFrameCard({
   title,
   subtitle,
   imageUrl,
+  animation,
   prompt,
   onPromptChange,
   promptPlaceholder,
@@ -1829,10 +2045,12 @@ function ShotFrameCard({
   primaryLabel,
   onPrimary,
   danger,
+  animate,
 }: {
   title: string;
   subtitle: string;
   imageUrl: string;
+  animation?: ShortFrameAnimation;
   prompt: string;
   onPromptChange: (s: string) => void;
   promptPlaceholder?: string;
@@ -1840,6 +2058,11 @@ function ShotFrameCard({
   primaryLabel: string;
   onPrimary: () => void;
   danger?: { label: string; onClick: () => void };
+  animate?: {
+    busy: boolean;
+    onAnimate: () => void;
+    onClear: () => void;
+  };
 }) {
   return (
     <div
@@ -1900,7 +2123,7 @@ function ShotFrameCard({
             boxSizing: 'border-box',
           }}
         />
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
             type="button"
             onClick={onPrimary}
@@ -1909,6 +2132,64 @@ function ShotFrameCard({
           >
             {busy ? 'Generating…' : primaryLabel}
           </button>
+          {animate && !animation && (
+            <button
+              type="button"
+              onClick={animate.onAnimate}
+              disabled={animate.busy || busy}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: '1px solid rgba(167,139,250,0.4)',
+                background: animate.busy ? 'rgba(167,139,250,0.12)' : 'transparent',
+                color: '#c4b5fd',
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: animate.busy ? 'wait' : 'pointer',
+              }}
+              title="Generate a 5-10s motion clip from this still using the model selected above."
+            >
+              {animate.busy ? 'Animating…' : '▶ Animate'}
+            </button>
+          )}
+          {animate && animation && (
+            <>
+              <button
+                type="button"
+                onClick={animate.onAnimate}
+                disabled={animate.busy || busy}
+                style={{
+                  padding: '8px 14px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(167,139,250,0.4)',
+                  background: animate.busy ? 'rgba(167,139,250,0.12)' : 'transparent',
+                  color: '#c4b5fd',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: animate.busy ? 'wait' : 'pointer',
+                }}
+              >
+                {animate.busy ? 'Animating…' : 'Re-animate'}
+              </button>
+              <button
+                type="button"
+                onClick={animate.onClear}
+                disabled={animate.busy || busy}
+                style={{
+                  padding: '8px 14px',
+                  borderRadius: 8,
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  background: 'transparent',
+                  color: 'inherit',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: animate.busy ? 'wait' : 'pointer',
+                }}
+              >
+                Clear animation
+              </button>
+            </>
+          )}
           {danger && (
             <button
               type="button"
@@ -1929,6 +2210,48 @@ function ShotFrameCard({
             </button>
           )}
         </div>
+        {animation && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: 8,
+              borderRadius: 8,
+              border: '1px solid rgba(167,139,250,0.25)',
+              background: 'rgba(167,139,250,0.05)',
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+            }}
+          >
+            <video
+              src={animation.video_url}
+              poster={animation.thumbnail_url}
+              controls
+              loop
+              muted
+              playsInline
+              style={{
+                width: 144,
+                aspectRatio: '9 / 16',
+                borderRadius: 6,
+                background: '#000',
+                display: 'block',
+              }}
+            />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
+              <span style={{ fontWeight: 600, color: '#c4b5fd' }}>Animated</span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {animation.model_id} · {animation.duration_s}s · ${animation.cost_usd.toFixed(2)}
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                Generated {new Date(animation.generated_at).toLocaleString()}
+              </span>
+              <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                Renderer integration coming in Phase 15.17 — for now the still is what plays in the Short.
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

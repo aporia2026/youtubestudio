@@ -163,11 +163,11 @@ export function mapKieStateToStatus(state: unknown): BrollStatus {
 // Kie wire layer
 // ---------------------------------------------------------------------------
 
-interface KieCreateResult {
+export interface KieCreateResult {
   taskId: string;
 }
 
-interface KieStatusResult {
+export interface KieStatusResult {
   state: 'waiting' | 'queuing' | 'generating' | 'success' | 'fail' | string;
   videoUrl?: string;
   thumbnailUrl?: string;
@@ -194,7 +194,11 @@ async function kieErrorMsg(res: Response): Promise<string> {
   return `Kie.ai error ${res.status}: ${text.slice(0, 200)}`;
 }
 
-async function kieCreateVideoTask(args: {
+/** Phase 15.16 — exported so the Shorts animate orchestrator
+ *  (`shorts-frame-animate.ts`) can reuse the wire layer without
+ *  pulling in `broll_clips` row state. The b-roll path still calls it
+ *  internally via `startBrollGeneration`. */
+export async function kieCreateVideoTask(args: {
   apiKey: string;
   model: BrollModelDescriptor;
   prompt: string;
@@ -259,7 +263,9 @@ async function kieCreateVideoTask(args: {
  *  (`/api/v1/veo/record-info`) returns a different shape — `successFlag`
  *  integer + `response.fullResultUrls` array — versus the unified
  *  `/api/v1/jobs/recordInfo` shape (`state` string + `resultJson.resultUrls`). */
-async function kieFetchVideoStatus(args: {
+/** See `kieCreateVideoTask` — paired exposure for the Shorts animate
+ *  orchestrator's polling loop. */
+export async function kieFetchVideoStatus(args: {
   apiKey: string;
   taskId: string;
   endpoint: BrollModelDescriptor['endpoint'];
