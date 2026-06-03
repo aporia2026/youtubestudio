@@ -198,21 +198,33 @@ export const POST = apiRoute.authed(
           baseT2iModelId,
         });
 
-        // Kick the drain now (fire-and-forget) so the job starts without
-        // waiting on the cron — and so it runs at all on preview / local
-        // deploys where Vercel crons don't fire. Single-flight-locked, so
-        // concurrent kicks (e.g. a batch of auto-created Shorts) collapse to
-        // one drain rather than a vendor stampede. The function keeps running
-        // until the drain finishes or maxDuration; the response already
-        // returned. Mirrors the render route's background pattern.
-        void triggerShortsAssetDrain('enqueue').catch((err) => {
-          logger.warn('[shorts style-assets] background drain kick failed', {
+        // Run the drain INSIDE this request (awaited), not as a fire-and-forget
+        // task. Vercel suspends the function the instant the response is sent,
+        // so an unregistered background promise gets frozen right after the
+        // claim commits but before any vendor call runs — exactly the
+        // "claimed but never advanced" stall we observed. Awaiting keeps the
+        // function provably alive until the work is done, with no dependence on
+        // the platform's post-response lifecycle. The client fires this request
+        // fire-and-forget (keepalive) and renders progress from its poll, so
+        // holding the response open does not block the UI. The drain is
+        // single-flight-locked + bounded by its own tick budget (< maxDuration)
+        // and persists incrementally, so a kill is never fatal; the production
+        // cron is the backstop that resumes anything left.
+        try {
+          const outcome = await triggerShortsAssetDrain('enqueue');
+          logger.info('[shorts style-assets] drain finished', {
+            shortId: row.id,
+            ran: outcome.ran,
+            ...(outcome.ran ? outcome.result : { reason: 'busy' }),
+          });
+        } catch (err) {
+          logger.error('[shorts style-assets] drain threw', {
             shortId: row.id,
             detail: err instanceof Error ? err.message : String(err),
           });
-        });
+        }
 
-        return NextResponse.json({ status: 'queued', style_id: styleEntry.id }, { status: 202 });
+        return NextResponse.json({ status: 'processed', style_id: styleEntry.id });
       }
 
       return NextResponse.json(
