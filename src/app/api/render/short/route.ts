@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import { sql } from '@vercel/postgres';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { getShort } from '@/lib/shorts';
-import { buildShortVideoConfig } from '@/lib/shorts-render';
+import { buildShortVideoConfig, shortAlignmentScript } from '@/lib/shorts-render';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
 import {
   buildCanonicalScript,
@@ -108,7 +108,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   let alignment: ForcedAlignmentResponse | null = null;
   if (short.short_script) {
     try {
-      const canonical = buildCanonicalScript([short.short_script]);
+      const canonical = buildCanonicalScript([shortAlignmentScript(short.short_script)]);
       const result = await ensureAlignmentForVoiceover(short.voiceover_audio_url, canonical);
       if (result.status === 'ready') {
         alignment = result.alignment;

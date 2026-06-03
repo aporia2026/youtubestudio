@@ -147,18 +147,18 @@ describe('buildShortVideoConfig', () => {
   });
 });
 
-describe('chunkBoundariesFromAlignment — Phase 15.11', () => {
+describe('chunkBoundariesFromAlignment — robust word-matching (Phase 15.16)', () => {
   function buildAlignment(words: Array<{ text: string; start: number; end: number }>): ForcedAlignmentResponse {
     return { words };
   }
 
   it('returns null when alignment is missing / empty', () => {
-    expect(chunkBoundariesFromAlignment([[0]], null, 10000)).toBeNull();
-    expect(chunkBoundariesFromAlignment([[0]], undefined, 10000)).toBeNull();
-    expect(chunkBoundariesFromAlignment([[0]], { words: [] }, 10000)).toBeNull();
+    expect(chunkBoundariesFromAlignment(['hook'], [0], 10000, null)).toBeNull();
+    expect(chunkBoundariesFromAlignment(['hook'], [0], 10000, undefined)).toBeNull();
+    expect(chunkBoundariesFromAlignment(['hook'], [0], 10000, { words: [] })).toBeNull();
   });
 
-  it('maps each chunk to the alignment word at the same index', () => {
+  it('maps each chunk to its spoken word boundaries', () => {
     const align = buildAlignment([
       { text: 'Hook', start: 0, end: 0.5 },
       { text: 'line', start: 0.5, end: 1.0 },
@@ -166,42 +166,59 @@ describe('chunkBoundariesFromAlignment — Phase 15.11', () => {
       { text: 'Body', start: 1.6, end: 2.0 },
       { text: 'words', start: 2.0, end: 2.5 },
     ]);
-    const chunks = [[0, 1, 2], [3, 4]];
-    const result = chunkBoundariesFromAlignment(chunks, align, 5000);
+    const result = chunkBoundariesFromAlignment(['Hook line here', 'Body words'], [0, 1600], 5000, align);
     expect(result).not.toBeNull();
     expect(result![0]).toEqual({ start_ms: 0, end_ms: 1400 });
-    expect(result![1]).toEqual({ start_ms: 1600, end_ms: 2500 });
+    // chunk 1 starts exactly on "Body" (1.6s) — the sync that matters; its end
+    // extends to the duration to cover the audio tail (trailing-row rule).
+    expect(result![1]).toEqual({ start_ms: 1600, end_ms: 5000 });
   });
 
-  it('falls back to null when the alignment is shorter than the script', () => {
-    const align = buildAlignment([{ text: 'only', start: 0, end: 1 }]);
-    expect(chunkBoundariesFromAlignment([[0, 1, 2]], align, 5000)).toBeNull();
-  });
-
-  it('falls back to null on non-finite or negative spans', () => {
-    const align: ForcedAlignmentResponse = {
-      words: [
-        { text: 'a', start: NaN, end: 1 },
-        { text: 'b', start: 1, end: 2 },
-      ],
-    };
-    expect(chunkBoundariesFromAlignment([[0]], align, 5000)).toBeNull();
-  });
-
-  it('falls back when chunks would zigzag backwards in time', () => {
+  it('handles the interleaved space tokens ElevenLabs actually returns', () => {
+    // The real payload alternates word, " ", word, " " — ~2x the script's
+    // token count. The old index mapping drifted immediately on this; the
+    // cursor walk filters spacing tokens and matches by text.
     const align = buildAlignment([
-      { text: 'A', start: 5, end: 5.5 },
-      { text: 'B', start: 0, end: 0.5 },
+      { text: 'Incognito', start: 0, end: 0.5 },
+      { text: ' ', start: 0.5, end: 0.5 },
+      { text: 'mode', start: 0.5, end: 1.0 },
+      { text: ' ', start: 1.0, end: 1.0 },
+      { text: 'lies', start: 1.0, end: 1.5 },
+      { text: ' ', start: 1.5, end: 1.6 },
+      { text: 'to', start: 1.8, end: 2.0 },
+      { text: ' ', start: 2.0, end: 2.0 },
+      { text: 'you', start: 2.0, end: 2.6 },
     ]);
-    expect(chunkBoundariesFromAlignment([[0], [1]], align, 10000)).toBeNull();
+    const result = chunkBoundariesFromAlignment(['Incognito mode lies', 'to you'], [0, 1700], 5000, align);
+    expect(result).not.toBeNull();
+    // chunk 0 maps cleanly past the interleaved spaces; chunk 1 starts on
+    // "to" (1.8s) — the index mapping would have drifted here.
+    expect(result![0]).toEqual({ start_ms: 0, end_ms: 1500 });
+    expect(result![1]!.start_ms).toBe(1800);
   });
 
-  it('clamps end_ms to the duration boundary', () => {
+  it('absorbs aligner over-segmentation of contractions', () => {
+    // "doesn't" → ["doesn", "t"] in the aligner; the cursor walk merges it.
+    // A trailing chunk follows so the first chunk's end is the real word end.
+    const align = buildAlignment([
+      { text: 'It', start: 0, end: 0.3 },
+      { text: 'doesn', start: 0.3, end: 0.6 },
+      { text: 't', start: 0.6, end: 0.7 },
+      { text: 'hide', start: 0.7, end: 1.1 },
+      { text: 'anything', start: 1.3, end: 1.8 },
+    ]);
+    const result = chunkBoundariesFromAlignment(["It doesn't hide", 'anything'], [0, 1200], 5000, align);
+    expect(result).not.toBeNull();
+    expect(result![0]).toEqual({ start_ms: 0, end_ms: 1100 });
+    expect(result![1]!.start_ms).toBe(1300);
+  });
+
+  it('clamps boundaries to the duration', () => {
     const align = buildAlignment([
       { text: 'A', start: 0, end: 0.5 },
       { text: 'B', start: 0.5, end: 999 },
     ]);
-    const result = chunkBoundariesFromAlignment([[0], [1]], align, 1000);
+    const result = chunkBoundariesFromAlignment(['A', 'B'], [0, 500], 1000, align);
     expect(result![1]!.end_ms).toBe(1000);
   });
 });
@@ -223,7 +240,8 @@ describe('splitScriptIntoCaptions — Phase 15.11 alignment path', () => {
     expect(chunks[0]!.start_ms).toBe(0);
     expect(chunks[0]!.end_ms).toBe(1200);
     expect(chunks[1]!.start_ms).toBe(2500);
-    expect(chunks[1]!.end_ms).toBe(3600);
+    // Trailing caption extends to the duration to cover the audio tail.
+    expect(chunks[1]!.end_ms).toBe(5000);
   });
 
   it('falls back to proportional timing when alignment is null', () => {

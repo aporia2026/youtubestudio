@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
+import { shortAlignmentScript } from '@/lib/shorts-render';
 import {
   buildCanonicalScript,
   ensureAlignmentForVoiceover,
@@ -35,7 +36,11 @@ export const GET = apiRoute.authed(
     }
 
     try {
-      const canonical = buildCanonicalScript([row.short_script]);
+      // Align on the SPOKEN text (markers stripped) so the aligner's word
+      // stream matches the audio + the captions. Aligning on the raw script
+      // desyncs from word zero. Same canonical build as the render route, so
+      // both resolve the same cached alignment.
+      const canonical = buildCanonicalScript([shortAlignmentScript(row.short_script)]);
       const result = await ensureAlignmentForVoiceover(row.voiceover_audio_url, canonical);
       if (result.status !== 'ready') {
         logger.warn('[shorts alignment] not ready', {

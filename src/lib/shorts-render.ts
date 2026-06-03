@@ -21,6 +21,7 @@ import {
 } from './shorts-render-types';
 import type { ShortRow } from './shorts-types';
 import type { ForcedAlignmentResponse } from './elevenlabs';
+import { alignRowsToWords } from './voiceover-alignment';
 
 export type {
   ShortCaptionChunk,
@@ -52,56 +53,54 @@ export function countWords(text: string): number {
  * Pure function — exported for tests.
  */
 /**
- * Build per-chunk start/end timings from an ElevenLabs forced-alignment
- * payload. Each script-word index maps to the alignment word at the same
- * position (after the script's bracketed markers are stripped, since the
- * voice doesn't speak those). Returns null when the alignment is shorter
- * than the script — caller falls back to proportional scaling.
+ * The exact text the shorts forced-alignment must run on: production markers
+ * stripped. This matters because the spoken audio is already stripped — see
+ * `synthesizeShortVoiceover` in `shorts.ts`, which removes `[VISUAL: ...]`
+ * before TTS — so aligning on the RAW script hands the aligner text the audio
+ * never speaks (a `[VISUAL: ...]` block as "word" zero), desyncing every
+ * caption from the first frame. Aligning on this stripped text keeps the
+ * alignment word stream matched to both the audio and the caption words.
  *
- * Exported for tests so the matching strategy stays honest.
+ * The alignment route and the render route both build their cache key from
+ * this, so the editor preview and the final render resolve the SAME alignment.
+ */
+export function shortAlignmentScript(shortScript: string): string {
+  return stripProductionMarkers(shortScript);
+}
+
+/**
+ * Map each caption chunk onto real audio time using the ElevenLabs forced
+ * alignment, via the same robust cursor walk the long-form pipeline uses
+ * (`alignRowsToWords`). That walk filters the aligner's interleaved spacing
+ * tokens, normalises unicode, and absorbs over-segmentation ("don't" → "don"
+ * + "t") — none of which a naive script-index → alignment-index mapping can
+ * handle (ElevenLabs returns ~2× the tokens, one space between every word, so
+ * index mapping drifts immediately). Any chunk the walk can't match falls
+ * back to its proportional estimate per-row, so partial alignment degrades
+ * gracefully instead of dropping the whole doc.
+ *
+ * Returns null only when there's no alignment at all — caller then uses the
+ * pure proportional scheme. Exported for tests.
  */
 export function chunkBoundariesFromAlignment(
-  chunks: number[][],
-  alignment: ForcedAlignmentResponse | null | undefined,
+  chunkTexts: string[],
+  fallbackStartMs: number[],
   durationMs: number,
+  alignment: ForcedAlignmentResponse | null | undefined,
 ): Array<{ start_ms: number; end_ms: number }> | null {
-  const alignWords = alignment?.words;
-  if (!alignWords || alignWords.length === 0) return null;
-  const result: Array<{ start_ms: number; end_ms: number }> = [];
-  for (const chunkIndexes of chunks) {
-    const firstIdx = chunkIndexes[0]!;
-    const lastIdx = chunkIndexes[chunkIndexes.length - 1]!;
-    const alignFirst = alignWords[firstIdx];
-    const alignLast = alignWords[lastIdx];
-    // If either edge is missing, fall back — partial alignment would
-    // leave chunks with zero/negative spans and the player would skip.
-    if (!alignFirst || !alignLast) return null;
-    const startSec = alignFirst.start;
-    const endSec = alignLast.end;
-    if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec < startSec) {
-      return null;
-    }
-    result.push({
-      // Floor start, ceil end — keeps every spoken word covered by SOME
-      // caption frame even when alignments fall mid-frame.
-      start_ms: Math.max(0, Math.floor(startSec * 1000)),
-      end_ms: Math.min(durationMs, Math.ceil(endSec * 1000)),
-    });
-  }
-  // Sanity check: chunks must be monotonically non-decreasing in time.
-  // If the alignment drifted (e.g. user re-recorded a different script
-  // against the same audio), the result might zigzag — fall back rather
-  // than render junk.
-  for (let i = 1; i < result.length; i++) {
-    if (result[i]!.start_ms < result[i - 1]!.end_ms - 50) {
-      // Allow 50ms overlap for the natural fade window, but a real
-      // backwards jump means the script ↔ alignment alignment is broken.
-      if (result[i]!.start_ms < result[i - 1]!.start_ms) {
-        return null;
-      }
-    }
-  }
-  return result;
+  if (!alignment?.words || alignment.words.length === 0) return null;
+  const aligned = alignRowsToWords({
+    rowScripts: chunkTexts,
+    fallbackStartMs,
+    fallbackTotalMs: durationMs,
+    alignment,
+  });
+  return aligned.map((r) => ({
+    // Floor start, ceil end — keeps every spoken word covered by SOME
+    // caption frame even when boundaries fall mid-frame.
+    start_ms: Math.max(0, Math.min(durationMs, Math.floor(r.startMs))),
+    end_ms: Math.max(0, Math.min(durationMs, Math.ceil(r.endMs))),
+  }));
 }
 
 export function splitScriptIntoCaptions(
@@ -160,22 +159,32 @@ export function splitScriptIntoCaptions(
   }
   if (buf.length > 0) chunks.push(buf);
 
-  // 3. Time scaling. Prefer the real word boundaries from the alignment
-  //    payload (Phase 15.11). When the alignment is missing OR shorter
-  //    than the script's word array (the user re-recorded against a
-  //    different script, etc.), fall back to proportional scaling.
+  // 3. Time scaling. Prefer real word boundaries from the alignment payload
+  //    via the robust cursor walk (Phase 15.11 / 15.16). Build the
+  //    proportional baseline first — it's the answer when there's no
+  //    alignment, and it's also the per-chunk fallback the walk uses for any
+  //    chunk it can't match.
   const totalWords = words.length;
-  const alignmentBoundaries = chunkBoundariesFromAlignment(chunks, alignment, durationMs);
+  const chunkTexts = chunks.map((chunkIndexes) => chunkIndexes.map((i) => words[i]!).join(' '));
+  const proportionalStartMs = chunks.map((chunkIndexes) =>
+    Math.round((chunkIndexes[0]! / totalWords) * durationMs),
+  );
+  const alignmentBoundaries = chunkBoundariesFromAlignment(
+    chunkTexts,
+    proportionalStartMs,
+    durationMs,
+    alignment,
+  );
+
   const result: ShortCaptionChunk[] = chunks.map((chunkIndexes, chunkIdx) => {
-    const firstWordIdx = chunkIndexes[0]!;
-    const lastWordIdx = chunkIndexes[chunkIndexes.length - 1]!;
     let start_ms: number;
     let end_ms: number;
     if (alignmentBoundaries) {
       start_ms = alignmentBoundaries[chunkIdx]!.start_ms;
       end_ms = alignmentBoundaries[chunkIdx]!.end_ms;
     } else {
-      start_ms = Math.round((firstWordIdx / totalWords) * durationMs);
+      const lastWordIdx = chunkIndexes[chunkIndexes.length - 1]!;
+      start_ms = proportionalStartMs[chunkIdx]!;
       // End at the start of the next word (or audio end for the last chunk).
       const nextWordIdx = lastWordIdx + 1;
       end_ms =
@@ -186,7 +195,7 @@ export function splitScriptIntoCaptions(
     return {
       start_ms,
       end_ms,
-      text: chunkIndexes.map((i) => words[i]!).join(' '),
+      text: chunkTexts[chunkIdx]!,
     };
   });
   return result;
