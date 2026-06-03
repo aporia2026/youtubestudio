@@ -32,7 +32,7 @@ export type StyleAssetStatus = 'none' | 'generating' | 'ready';
  *  surface a Retry instead of a forever-climbing bar. */
 export const SHORTS_ASSET_DEADLINE_MS = 330_000;
 
-const IN_FLIGHT_PHASES: ReadonlySet<string> = new Set(['planning', 'base', 'variant']);
+const IN_FLIGHT_PHASES: ReadonlySet<string> = new Set(['queued', 'planning', 'base', 'variant']);
 
 /** Pure helper — true when a generation_progress row is still "in flight"
  *  but has run past the function's hard deadline, i.e. the backend died

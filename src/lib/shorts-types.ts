@@ -137,7 +137,45 @@ export interface ShortRow {
  *
  *  All fields are optional past the phase so a partial blob (e.g. an
  *  old function crashing mid-step) never breaks the renderer. */
-export type GenerationProgressPhase = 'planning' | 'base' | 'variant' | 'done' | 'error';
+export type GenerationProgressPhase =
+  /** Phase 15.16 — enqueued by the route, waiting for the background cron
+   *  to claim it. The work itself runs on the cron, not the request. */
+  | 'queued'
+  | 'planning'
+  | 'base'
+  | 'variant'
+  | 'done'
+  | 'error';
+
+/**
+ * Phase 15.16 — durable work-state the background cron carries between
+ * ticks, persisted under `GenerationProgressState.job`. Lets a tick resume
+ * exactly where the previous one stopped: the planner output is kept so we
+ * never re-pay for the LLM call, and per-variant attempt/error counts let
+ * the cron stop retrying a deterministically-failing variant and finalize
+ * with partial success (render with what succeeded).
+ *
+ * Finished base + variants live on `shorts.style_assets` (where the
+ * renderer reads them), not here — this is scheduling state, not assets.
+ */
+export interface ShortsAssetJobState {
+  /** Planner's base scene prompt, persisted so re-ticks skip the LLM. */
+  base_prompt?: string;
+  /** Planner's variant edit prompts + their caption-chunk anchors. */
+  variant_plan?: Array<{ caption_chunk_start_index: number; edit_prompt: string }>;
+  /** Attempt count per variant, keyed by caption_chunk_start_index (as a
+   *  string). The cron stops retrying once a variant hits the cap. */
+  variant_attempts?: Record<string, number>;
+  /** Last error per variant, keyed the same way — for self-diagnosis. */
+  variant_errors?: Record<string, string>;
+  /** Resolved niche, carried so re-planning (if ever needed) is stable. */
+  niche?: string;
+  /** Resolved vendor/model choices, carried across ticks. */
+  base_t2i_model_id?: string;
+  variant_edit_primary?: 'atlas' | 'kie';
+  /** Running cost tally across ticks, informational. */
+  cost_usd?: number;
+}
 
 export interface GenerationProgressState {
   /** Empty object = no in-flight job. The state below applies only when
@@ -165,6 +203,9 @@ export interface GenerationProgressState {
   /** Optional: which style the job was minting assets for. Used by the
    *  strip to render "Doodle pipeline" vs "Paint pipeline". */
   style_id?: string;
+  /** Phase 15.16 — durable cron work-state. Absent for the legacy
+   *  synchronous path; present once the background cron owns the job. */
+  job?: ShortsAssetJobState;
 }
 
 /** Per-style assets persisted on `shorts.style_assets` JSONB.

@@ -200,7 +200,10 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressPhase = row?.generation_progress?.phase;
   const progressInFlight =
-    progressPhase === 'planning' || progressPhase === 'base' || progressPhase === 'variant';
+    progressPhase === 'queued' ||
+    progressPhase === 'planning' ||
+    progressPhase === 'base' ||
+    progressPhase === 'variant';
   // A job still "in flight" past the function's hard deadline is dead (the
   // serverless function was killed before it could write a terminal state).
   // Stop the fast poll — there's nothing left to advance it — and let the

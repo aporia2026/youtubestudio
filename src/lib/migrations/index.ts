@@ -114,6 +114,7 @@ import migration0111 from './0111_create_shorts_series';
 import migration0112 from './0112_narrator_assignments_one_active_per_project';
 import migration0113 from './0113_shorts_captions_config';
 import migration0114 from './0114_shorts_generation_progress';
+import migration0115 from './0115_shorts_generation_lease';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -235,6 +236,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0112,
   migration0113,
   migration0114,
+  migration0115,
 ]);
 
 /**
