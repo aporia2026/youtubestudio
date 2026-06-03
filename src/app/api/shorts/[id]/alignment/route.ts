@@ -24,8 +24,12 @@ import {
 export const maxDuration = 60;
 
 export const GET = apiRoute.authed(
-  async (session, _req, ctx: { params: Promise<{ id: string }> }) => {
+  async (session, req, ctx: { params: Promise<{ id: string }> }) => {
     const { id } = await ctx.params;
+    // `?refresh=1` re-runs the aligner, bypassing the cache — backs the
+    // editor's "Re-sync timing" button so a creator can force a fresh
+    // alignment after editing the script.
+    const forceRefresh = req.nextUrl.searchParams.get('refresh') === '1';
     const row = await getShort(id, session.ws);
     if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });
     if (!row.voiceover_audio_url || !row.short_script) {
@@ -41,7 +45,7 @@ export const GET = apiRoute.authed(
       // desyncs from word zero. Same canonical build as the render route, so
       // both resolve the same cached alignment.
       const canonical = buildCanonicalScript([shortAlignmentScript(row.short_script)]);
-      const result = await ensureAlignmentForVoiceover(row.voiceover_audio_url, canonical);
+      const result = await ensureAlignmentForVoiceover(row.voiceover_audio_url, canonical, { forceRefresh });
       if (result.status !== 'ready') {
         logger.warn('[shorts alignment] not ready', {
           shortId: row.id,

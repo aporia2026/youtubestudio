@@ -323,6 +323,25 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     };
   }, [row?.id, row?.voiceover_audio_url]);
 
+  // ── manual re-sync (force re-alignment, bypass cache) ──────────────
+  const [resyncing, setResyncing] = useState(false);
+  const resyncAlignment = useCallback(async () => {
+    if (!row?.id || !row.voiceover_audio_url) return;
+    setResyncing(true);
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- GET with refresh, re-runs the aligner
+      const res = await fetch(`/api/shorts/${encodeURIComponent(row.id)}/alignment?refresh=1`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setAlignment(data.alignment as ForcedAlignmentResponse);
+      toast.success(`Re-synced to ${data.alignment?.words?.length ?? 0} word boundaries.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Re-sync failed');
+    } finally {
+      setResyncing(false);
+    }
+  }, [row?.id, row?.voiceover_audio_url]);
+
   // ── PATCH helper for the editable fields ───────────────────────────
   const savePatch = useCallback(
     async (patch: Record<string, unknown>) => {
@@ -739,6 +758,31 @@ export function ShortEditor({ shortId }: { shortId: string }) {
             : 'Timing falls back to proportional WPM until the voiceover lands and the aligner runs. Edit text + style now; timing locks once the voiceover is ready.'
         }
       >
+        {row.voiceover_audio_url && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <button
+              type="button"
+              onClick={resyncAlignment}
+              disabled={resyncing}
+              title="Re-run the aligner against the voiceover. Use after editing the script."
+              style={{
+                padding: '5px 12px',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#c4b5fd',
+                background: 'rgba(167,139,250,0.12)',
+                border: '1px solid rgba(167,139,250,0.4)',
+                borderRadius: 6,
+                cursor: resyncing ? 'default' : 'pointer',
+              }}
+            >
+              {resyncing ? 'Re-syncing…' : '↻ Re-sync timing'}
+            </button>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              {alignment ? 'Snapped to the voiceover' : 'Not yet aligned'}
+            </span>
+          </div>
+        )}
         <CaptionsEditorPanel
           previewChunks={previewChunks}
           overrides={chunkOverrides}
