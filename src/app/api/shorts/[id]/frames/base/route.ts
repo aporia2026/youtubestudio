@@ -10,6 +10,31 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
 import { regenerateBaseFrame } from '@/lib/shorts-frame-ops';
+import { getUserSettings } from '@/lib/user-settings';
+import {
+  DEFAULT_BASE_T2I_MODEL_ID,
+  resolveBaseT2iModelId,
+  type ShortsBaseT2iModelId,
+} from '@/lib/shorts-base-t2i';
+
+/** Resolve the base T2I model for one call. Precedence:
+ *    1. body `model_id` (per-call dropdown override)
+ *    2. user setting `shorts_base_t2i_model_id` (workspace default)
+ *    3. DEFAULT_BASE_T2I_MODEL_ID ('atlas-gpt-image-2', cost-optimal). */
+async function resolveModel(
+  bodyOverride: unknown,
+  userId: string,
+): Promise<ShortsBaseT2iModelId> {
+  if (typeof bodyOverride === 'string' && bodyOverride.length > 0) {
+    return resolveBaseT2iModelId(bodyOverride);
+  }
+  try {
+    const settings = await getUserSettings(userId);
+    return resolveBaseT2iModelId(settings.shorts_base_t2i_model_id ?? DEFAULT_BASE_T2I_MODEL_ID);
+  } catch {
+    return DEFAULT_BASE_T2I_MODEL_ID;
+  }
+}
 
 /**
  * POST /api/shorts/[id]/frames/base
@@ -26,7 +51,7 @@ import { regenerateBaseFrame } from '@/lib/shorts-frame-ops';
 export const POST = apiRoute.authed(
   async (session, req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const { id } = await ctx.params;
-    let body: { prompt?: unknown } = {};
+    let body: { prompt?: unknown; model_id?: unknown } = {};
     try {
       body = await req.json();
     } catch {
@@ -47,7 +72,8 @@ export const POST = apiRoute.authed(
       const row = await getShort(id, session.ws);
       if (!row) return NextResponse.json({ error: 'Short not found' }, { status: 404 });
 
-      const result = await regenerateBaseFrame(row, { prompt });
+      const modelId = await resolveModel(body.model_id, session.uid);
+      const result = await regenerateBaseFrame(row, { prompt, modelId });
 
       await sql`
         UPDATE shorts
@@ -59,6 +85,8 @@ export const POST = apiRoute.authed(
       logger.info('[shorts frames/base] persisted', {
         workspaceId: session.ws,
         shortId: row.id,
+        modelId: result.modelId,
+        vendorUsed: result.vendorUsed,
         costUsd: result.costUsd,
         durationMs: result.durationMs,
       });

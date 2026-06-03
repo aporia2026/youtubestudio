@@ -34,13 +34,14 @@
  */
 
 import { logger } from './logger';
-import { generateAtlasT2I } from './atlas-cloud-images';
 import { generateGptImage2Edit, type Gpt2EditVendor } from './gpt-image-2-edit';
+import {
+  DEFAULT_BASE_T2I_MODEL_ID,
+  generateShortsBaseT2I,
+  resolveBaseT2iModelId,
+  type ShortsBaseT2iModelId,
+} from './shorts-base-t2i';
 import type { ShortRow, ShortStyleAssets } from './shorts-types';
-
-const VERTICAL_BASE_SIZE = '1024x1536';
-const VERTICAL_QUALITY = 'high';
-const ATLAS_T2I_COST_USD = 0.04;
 
 /** The two styles whose `style_assets` carry a base+variants shape.
  *  `minimal_gradient_v1` has no assets so the Shots panel doesn't apply
@@ -100,20 +101,30 @@ function mergeBlock(
 // ---------------------------------------------------------------------------
 
 export interface RegenerateBaseOptions {
-  /** Full prompt to send to Atlas T2I. The UI textarea is pre-populated
-   *  with the previously stored `base_prompt` so the user can edit and
-   *  resubmit verbatim. No style-suffix wrapping happens here — the
-   *  stored prompt already includes the suffix from when the pipeline
-   *  first generated it (see `buildBasePromptFull` in the pipelines). */
+  /** Full prompt to send to the chosen T2I model. The UI textarea is
+   *  pre-populated with the previously stored `base_prompt` so the
+   *  user can edit and resubmit verbatim. No style-suffix wrapping
+   *  happens here — the stored prompt already includes the suffix
+   *  from when the pipeline first generated it (see
+   *  `buildBasePromptFull` in the pipelines). */
   prompt: string;
+  /** Phase 15.15 — model to use for this call. Falls back to
+   *  `DEFAULT_BASE_T2I_MODEL_ID` (atlas-gpt-image-2) when omitted.
+   *  The route resolves precedence: body override > UserSettings
+   *  > default. */
+  modelId?: ShortsBaseT2iModelId;
 }
 
 export interface RegenerateBaseResult {
   style_assets: ShortStyleAssets;
-  /** Flat Atlas T2I cost ($0.04 per call). Returned so the API can log
-   *  to ai_spend_log and surface the running total in the UI. */
+  /** Per-model flat cost USD. The dispatcher tracks the value off the
+   *  model spec — caller logs to ai_spend_log + surfaces in the UI. */
   costUsd: number;
   durationMs: number;
+  /** Which model + vendor actually served the call. Useful for the
+   *  route's persistence log and for surfacing in the UI strip. */
+  modelId: ShortsBaseT2iModelId;
+  vendorUsed: 'atlas' | 'kie';
 }
 
 /**
@@ -133,20 +144,21 @@ export async function regenerateBaseFrame(
   const tStart = Date.now();
   const key = resolveStyleKey(row);
   const prevBlock = requireBlock(row, key);
+  const modelId = resolveBaseT2iModelId(opts.modelId ?? DEFAULT_BASE_T2I_MODEL_ID);
 
   console.info('[shorts frame-ops regenerate-base] start', {
     shortId: row.id,
     workspaceId: row.workspace_id,
     styleKey: key,
+    modelId,
     promptChars: opts.prompt.length,
     prevBaseUrl: prevBlock.base_url,
     variantCount: prevBlock.variants.length,
   });
 
-  const result = await generateAtlasT2I({
+  const result = await generateShortsBaseT2I({
     prompt: opts.prompt,
-    size: VERTICAL_BASE_SIZE,
-    quality: VERTICAL_QUALITY,
+    modelId,
   });
 
   const newBlock: FrameAssetsBlock = {
@@ -160,14 +172,21 @@ export async function regenerateBaseFrame(
   logger.info('[shorts frame-ops regenerate-base] done', {
     shortId: row.id,
     styleKey: key,
+    modelId: result.modelId,
+    vendorUsed: result.vendorUsed,
     newBaseUrl: newBlock.base_url,
-    predictionId: result.predictionId,
-    predictTimeMs: result.predictTimeMs,
-    costUsd: ATLAS_T2I_COST_USD,
+    providerRequestId: result.providerRequestId,
+    costUsd: result.costUsd,
     durationMs,
   });
 
-  return { style_assets, costUsd: ATLAS_T2I_COST_USD, durationMs };
+  return {
+    style_assets,
+    costUsd: result.costUsd,
+    durationMs,
+    modelId: result.modelId,
+    vendorUsed: result.vendorUsed,
+  };
 }
 
 // ---------------------------------------------------------------------------

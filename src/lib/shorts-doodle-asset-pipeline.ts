@@ -25,8 +25,13 @@
  */
 
 import { logger } from './logger';
-import { generateAtlasT2I } from './atlas-cloud-images';
 import { generateGptImage2Edit, type Gpt2EditVendor } from './gpt-image-2-edit';
+import {
+  DEFAULT_BASE_T2I_MODEL_ID,
+  generateShortsBaseT2I,
+  getBaseT2iModelSpec,
+  type ShortsBaseT2iModelId,
+} from './shorts-base-t2i';
 import { generateText } from './ai';
 import { type AiSpendContext } from './ai-spend';
 import { getEffectiveModelId } from './model-defaults';
@@ -40,17 +45,10 @@ import type { ShortCaptionChunk } from './shorts-render-types';
 import type { GenerationProgressState } from './shorts-types';
 
 const MAX_VARIANTS = 8;
-// Atlas T2I supports four enum sizes: 1024x1024, 1024x1536, 1536x1024,
-// 2560x1440. There is no native 1080x1920 — 1024x1536 (2:3, ~0.667
-// aspect) is the closest portrait. The renderer uses `object-fit:
-// cover` so 2:3 fits into 9:16 (0.5625) with a small horizontal crop;
-// keeps the base + variants all at the same Atlas-native dimensions
-// instead of forcing a stretch.
-const VERTICAL_BASE_SIZE = '1024x1536';
-const VERTICAL_QUALITY = 'high';
-// Atlas T2I flat-rate per call (per atlas-cloud-images.ts; mirrors
-// the audit-row accounting in the dispatcher).
-const ATLAS_T2I_COST_USD = 0.04;
+// Per-model base-frame T2I lives in `shorts-base-t2i.ts`. The pipeline
+// asks the dispatcher for the cost-optimal default unless the caller
+// passes `baseT2iModelId`. Aspect handling moves into the dispatcher
+// (Atlas takes 1024x1536; Kie family takes aspect_ratio: '9:16').
 
 export interface DoodleAssetPipelineInput {
   workspaceId: string;
@@ -72,6 +70,10 @@ export interface DoodleAssetPipelineInput {
    *  cost-optimal vendor). The route layer reads this from the user's
    *  `gpt_image_2_edit_primary` setting. */
   variantEditPrimary?: Gpt2EditVendor;
+  /** Phase 15.15 — model for the base T2I call. Defaults to
+   *  `DEFAULT_BASE_T2I_MODEL_ID` (atlas-gpt-image-2). The route reads
+   *  this from `UserSettings.shorts_base_t2i_model_id`. */
+  baseT2iModelId?: ShortsBaseT2iModelId;
   /** Phase 15.13 — per-step progress hook. The caller (the API route)
    *  implements this by writing to `shorts.generation_progress` so the
    *  editor's poll picks it up. Awaited so DB writes serialise with the
@@ -198,31 +200,34 @@ export async function generateDoodleAssets(
     chunkIndexes: variantPlan.map((v) => v.caption_chunk_start_index),
   });
 
-  // ---- 2. Atlas Image t2i for the BASE frame -----------------------------
+  // ---- 2. Base T2I (user-picked model) ----------------------------------
+  const baseModelId = input.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID;
+  const baseSpec = getBaseT2iModelSpec(baseModelId);
   await safeProgress(input.onProgress, {
     phase: 'base',
-    label: 'Generating base frame (Atlas T2I, ~30-60s)…',
+    label: `Generating base frame (${baseSpec.label}, ~30-60s)…`,
     style_id: 'doodle_explainer_2_short',
     total: variantPlan.length,
   });
   const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
-  const baseResult = await generateAtlasT2I({
+  const baseResult = await generateShortsBaseT2I({
     prompt: fullBasePrompt,
-    size: VERTICAL_BASE_SIZE,
-    quality: VERTICAL_QUALITY,
+    modelId: baseModelId,
   });
   const baseUrl = baseResult.url;
   logger.info('[shorts doodle pipeline] base ready', {
     shortId: input.shortId,
-    basePredictionId: baseResult.predictionId,
+    baseModelId: baseResult.modelId,
+    baseVendor: baseResult.vendorUsed,
+    providerRequestId: baseResult.providerRequestId,
     baseUrl,
-    predictTimeMs: baseResult.predictTimeMs,
+    baseDurationMs: baseResult.durationMs,
     durationMsSoFar: Date.now() - tStart,
   });
 
   // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
   const variants: DoodleAssetPipelineResult['variants'] = [];
-  let estimatedCostUsd = ATLAS_T2I_COST_USD;
+  let estimatedCostUsd = baseResult.costUsd;
   for (let i = 0; i < variantPlan.length; i++) {
     const v = variantPlan[i];
     await safeProgress(input.onProgress, {

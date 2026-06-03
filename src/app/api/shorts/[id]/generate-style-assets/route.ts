@@ -18,6 +18,11 @@ import { WORDS_PER_SECOND, type GenerationProgressState } from '@/lib/shorts-typ
 import { getShortStyle } from '@/lib/short-styles';
 import { getUserSettings } from '@/lib/user-settings';
 import type { Gpt2EditVendor } from '@/lib/gpt-image-2-edit';
+import {
+  DEFAULT_BASE_T2I_MODEL_ID,
+  resolveBaseT2iModelId,
+  type ShortsBaseT2iModelId,
+} from '@/lib/shorts-base-t2i';
 
 /** Persist a progress phase to the row. Tagged `updated_at` so the
  *  client's elapsed-per-phase math has a fresh anchor. Workspace-scoped
@@ -82,6 +87,8 @@ export const POST = apiRoute.authed(
       /** Phase 15.14 — per-call vendor override. Body wins over the
        *  workspace default; both override the hardcoded 'atlas' floor. */
       gpt_image_2_edit_primary?: 'atlas' | 'kie';
+      /** Phase 15.15 — per-call base T2I model override. */
+      shorts_base_t2i_model_id?: string;
     } = {};
     try {
       body = await req.json();
@@ -89,20 +96,30 @@ export const POST = apiRoute.authed(
       // No body → infer style from the row (or default to minimal).
     }
 
-    // Vendor resolution mirrors the per-frame routes: body override >
-    // UserSettings.gpt_image_2_edit_primary > 'atlas'. Pulled OUTSIDE
-    // the row-loading try/catch because a failed settings read should
-    // fail soft to 'atlas' rather than fail the whole asset run.
+    // Vendor + model resolution mirrors the per-frame routes: body
+    // override > UserSettings > default. Pulled OUTSIDE the row-loading
+    // try/catch because a failed settings read should fail soft to
+    // the cost-optimal defaults rather than fail the whole asset run.
+    // One settings fetch covers both fields.
     let variantEditPrimary: Gpt2EditVendor = 'atlas';
-    if (body.gpt_image_2_edit_primary === 'atlas' || body.gpt_image_2_edit_primary === 'kie') {
-      variantEditPrimary = body.gpt_image_2_edit_primary;
-    } else {
-      try {
-        const settings = await getUserSettings(session.uid);
-        variantEditPrimary = settings.gpt_image_2_edit_primary ?? 'atlas';
-      } catch {
-        variantEditPrimary = 'atlas';
-      }
+    let baseT2iModelId: ShortsBaseT2iModelId = DEFAULT_BASE_T2I_MODEL_ID;
+    try {
+      const settings = await getUserSettings(session.uid);
+      variantEditPrimary =
+        body.gpt_image_2_edit_primary === 'atlas' || body.gpt_image_2_edit_primary === 'kie'
+          ? body.gpt_image_2_edit_primary
+          : settings.gpt_image_2_edit_primary ?? 'atlas';
+      baseT2iModelId = resolveBaseT2iModelId(
+        body.shorts_base_t2i_model_id ?? settings.shorts_base_t2i_model_id ?? DEFAULT_BASE_T2I_MODEL_ID,
+      );
+    } catch {
+      variantEditPrimary =
+        body.gpt_image_2_edit_primary === 'atlas' || body.gpt_image_2_edit_primary === 'kie'
+          ? body.gpt_image_2_edit_primary
+          : 'atlas';
+      baseT2iModelId = resolveBaseT2iModelId(
+        body.shorts_base_t2i_model_id ?? DEFAULT_BASE_T2I_MODEL_ID,
+      );
     }
 
     try {
@@ -191,6 +208,7 @@ export const POST = apiRoute.authed(
           captions,
           maxVariants: body.maxVariants,
           variantEditPrimary,
+          baseT2iModelId,
           onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
         }).catch(async (err) => {
           await writeProgress(row.id, session.ws, jobStartedAt, {
@@ -225,6 +243,7 @@ export const POST = apiRoute.authed(
           baseUrl: assets.base_url,
           variantCount: assets.variants.length,
           variantEditPrimary,
+          baseT2iModelId,
           estimatedCostUsd: assets.estimatedCostUsd,
         });
 
@@ -276,6 +295,7 @@ export const POST = apiRoute.authed(
           captions,
           maxVariants: body.maxVariants,
           variantEditPrimary,
+          baseT2iModelId,
           onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
         }).catch(async (err) => {
           await writeProgress(row.id, session.ws, jobStartedAt, {
@@ -310,6 +330,7 @@ export const POST = apiRoute.authed(
           baseUrl: assets.base_url,
           variantCount: assets.variants.length,
           variantEditPrimary,
+          baseT2iModelId,
           estimatedCostUsd: assets.estimatedCostUsd,
         });
 

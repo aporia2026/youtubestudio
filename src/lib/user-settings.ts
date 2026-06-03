@@ -65,6 +65,14 @@ export interface UserSettings {
    *  `null` or absent ⇒ `'atlas'`. See
    *  `_plans/2026-05-29-gpt-image-2-edit-provider-fallback.md`. */
   gpt_image_2_edit_primary?: 'atlas' | 'kie' | null;
+  /** Phase 15.15 — per-user default base-frame T2I model for the
+   *  Shorts asset pipeline + Shots panel base regen. Stored as a
+   *  `ShortsBaseT2iModelId` string (see `shorts-base-t2i.ts`); the
+   *  consumer narrows via `resolveBaseT2iModelId` so a stale or
+   *  retired model id never crashes. `null` or absent ⇒
+   *  DEFAULT_BASE_T2I_MODEL_ID ('atlas-gpt-image-2', the cost-optimal
+   *  default). */
+  shorts_base_t2i_model_id?: string | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -133,6 +141,11 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.gpt_image_2_edit_primary = obj.gpt_image_2_edit_primary;
   } else if (obj.gpt_image_2_edit_primary === null) {
     out.gpt_image_2_edit_primary = null;
+  }
+  if (typeof obj.shorts_base_t2i_model_id === 'string') {
+    out.shorts_base_t2i_model_id = obj.shorts_base_t2i_model_id;
+  } else if (obj.shorts_base_t2i_model_id === null) {
+    out.shorts_base_t2i_model_id = null;
   }
   return out;
 }

@@ -95,7 +95,11 @@ describe('regenerateBaseFrame', () => {
     expect(result.style_assets.doodle?.base_url).toBe('https://r2.test/new-base.png');
     expect(result.style_assets.doodle?.base_prompt).toBe('A character in a hat.');
     expect(result.style_assets.doodle?.variants).toEqual(row.style_assets.doodle?.variants);
-    expect(result.costUsd).toBe(0.04);
+    // Phase 15.15 — default base model is atlas-gpt-image-2 at $0.009
+    // (was $0.04 from the legacy ATLAS_T2I_COST_USD constant).
+    expect(result.costUsd).toBe(0.009);
+    expect(result.modelId).toBe('atlas-gpt-image-2');
+    expect(result.vendorUsed).toBe('atlas');
   });
 
   it('routes Paint shorts to the paint sub-block', async () => {
@@ -129,6 +133,35 @@ describe('regenerateBaseFrame', () => {
     await expect(regenerateBaseFrame(row, { prompt: 'whatever' })).rejects.toThrow(
       /no style_assets\.doodle block/,
     );
+  });
+
+  it('routes through the user-picked model and uses its cost (Phase 15.15)', async () => {
+    // The frame-ops imports `generateShortsBaseT2I` which routes Atlas
+    // via the same mocked generateAtlasT2I. For Kie branches the
+    // dispatcher tests cover the routing; here we just confirm the
+    // modelId + cost surface through.
+    mockedT2I.mockResolvedValue({
+      url: 'https://r2.test/atlas2.png',
+      predictionId: 'pred-100',
+    });
+    const row = doodleRow();
+    const result = await regenerateBaseFrame(row, {
+      prompt: 'A new scene',
+      modelId: 'atlas-gpt-image-2',
+    });
+    expect(result.modelId).toBe('atlas-gpt-image-2');
+    expect(result.costUsd).toBe(0.009);
+  });
+
+  it('falls back to default model when given an unknown id (defensive)', async () => {
+    mockedT2I.mockResolvedValue({
+      url: 'https://r2.test/atlas3.png',
+      predictionId: 'pred-101',
+    });
+    const row = doodleRow();
+    // @ts-expect-error — deliberately pass a string outside the union
+    const result = await regenerateBaseFrame(row, { prompt: 'A', modelId: 'made-up' });
+    expect(result.modelId).toBe('atlas-gpt-image-2');
   });
 });
 

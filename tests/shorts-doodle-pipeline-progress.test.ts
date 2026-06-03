@@ -189,6 +189,39 @@ describe('generateDoodleAssets — onProgress contract', () => {
     expect(result.variants).toHaveLength(1);
   });
 
+  it('threads baseT2iModelId into the base T2I dispatcher (Phase 15.15)', async () => {
+    mockedGenerateText.mockResolvedValue(plannerResponse(1));
+    mockedT2I.mockResolvedValue({ url: 'https://r2.test/base.png', predictionId: 'p-b1' });
+    mockedEdit.mockResolvedValue({
+      url: 'https://r2.test/v.png',
+      vendorUsed: 'atlas',
+      fallbackUsed: false,
+      costUsd: 0.011,
+      durationMs: 0,
+      providerRequestId: 'e',
+    });
+
+    // The dispatcher routes 'atlas-gpt-image-2' through generateAtlasT2I
+    // — the same mock the pipeline uses for the legacy direct path.
+    // We confirm the call site invoked Atlas with the portrait size.
+    await generateDoodleAssets({
+      workspaceId: 'ws-1',
+      projectId: null,
+      shortId: 'short-1',
+      shortScript: 'A.',
+      niche: 'general',
+      captions: [{ text: 'a', start_ms: 0, end_ms: 500 }],
+      maxVariants: 1,
+      baseT2iModelId: 'atlas-gpt-image-2',
+    });
+
+    expect(mockedT2I).toHaveBeenCalledOnce();
+    expect(mockedT2I.mock.calls[0][0]).toMatchObject({
+      size: '1024x1536',
+      quality: 'high',
+    });
+  });
+
   it('threads variantEditPrimary into every variant Edit call (Phase 15.14)', async () => {
     mockedGenerateText.mockResolvedValue(plannerResponse(2));
     mockedT2I.mockResolvedValue({ url: 'https://r2.test/base.png', predictionId: 'p-5' });

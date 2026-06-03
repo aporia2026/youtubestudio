@@ -16,8 +16,13 @@
  */
 
 import { logger } from './logger';
-import { generateAtlasT2I } from './atlas-cloud-images';
 import { generateGptImage2Edit, type Gpt2EditVendor } from './gpt-image-2-edit';
+import {
+  DEFAULT_BASE_T2I_MODEL_ID,
+  generateShortsBaseT2I,
+  getBaseT2iModelSpec,
+  type ShortsBaseT2iModelId,
+} from './shorts-base-t2i';
 import { generateText } from './ai';
 import { type AiSpendContext } from './ai-spend';
 import { getEffectiveModelId } from './model-defaults';
@@ -31,9 +36,8 @@ import type { ShortCaptionChunk } from './shorts-render-types';
 import type { GenerationProgressState } from './shorts-types';
 
 const MAX_VARIANTS = 8;
-const VERTICAL_BASE_SIZE = '1024x1536';
-const VERTICAL_QUALITY = 'high';
-const ATLAS_T2I_COST_USD = 0.04;
+// Per-model base-frame T2I handled by `shorts-base-t2i.ts`. See the
+// doodle pipeline for the rationale; the paint pipeline mirrors it.
 
 export interface PaintAssetPipelineInput {
   workspaceId: string;
@@ -49,6 +53,9 @@ export interface PaintAssetPipelineInput {
   /** Phase 15.14 — vendor for the variant Edit calls. Mirrors the
    *  doodle pipeline; see its docstring. */
   variantEditPrimary?: Gpt2EditVendor;
+  /** Phase 15.15 — model for the base T2I call. Mirrors the doodle
+   *  pipeline; see its docstring. */
+  baseT2iModelId?: ShortsBaseT2iModelId;
   /** Phase 15.13 — per-step progress hook. Same contract as the Doodle
    *  pipeline; see `shorts-doodle-asset-pipeline.ts` for the rationale. */
   onProgress?: (state: GenerationProgressState) => Promise<void> | void;
@@ -161,31 +168,34 @@ export async function generatePaintAssets(
     chunkIndexes: variantPlan.map((v) => v.caption_chunk_start_index),
   });
 
-  // ---- 2. Atlas Image t2i for the BASE frame -----------------------------
+  // ---- 2. Base T2I (user-picked model) ----------------------------------
+  const baseModelId = input.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID;
+  const baseSpec = getBaseT2iModelSpec(baseModelId);
   await safeProgress(input.onProgress, {
     phase: 'base',
-    label: 'Generating base frame (Atlas T2I, ~30-60s)…',
+    label: `Generating base frame (${baseSpec.label}, ~30-60s)…`,
     style_id: 'paint_explainer_v1_short',
     total: variantPlan.length,
   });
   const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
-  const baseResult = await generateAtlasT2I({
+  const baseResult = await generateShortsBaseT2I({
     prompt: fullBasePrompt,
-    size: VERTICAL_BASE_SIZE,
-    quality: VERTICAL_QUALITY,
+    modelId: baseModelId,
   });
   const baseUrl = baseResult.url;
   logger.info('[shorts paint pipeline] base ready', {
     shortId: input.shortId,
-    basePredictionId: baseResult.predictionId,
+    baseModelId: baseResult.modelId,
+    baseVendor: baseResult.vendorUsed,
+    providerRequestId: baseResult.providerRequestId,
     baseUrl,
-    predictTimeMs: baseResult.predictTimeMs,
+    baseDurationMs: baseResult.durationMs,
     durationMsSoFar: Date.now() - tStart,
   });
 
   // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
   const variants: PaintAssetPipelineResult['variants'] = [];
-  let estimatedCostUsd = ATLAS_T2I_COST_USD;
+  let estimatedCostUsd = baseResult.costUsd;
   for (let i = 0; i < variantPlan.length; i++) {
     const v = variantPlan[i];
     await safeProgress(input.onProgress, {

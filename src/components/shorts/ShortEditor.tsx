@@ -1321,6 +1321,18 @@ function pickShotsBlock(row: ShortRow): { key: 'doodle' | 'paint'; block: ShotsP
  *  which vendor IS the primary. */
 type VendorChoice = 'atlas' | 'kie';
 
+/** Phase 15.15 — base T2I model registry shape returned by the
+ *  settings endpoint. Mirrors `ShortsBaseT2iModelSpec` server-side but
+ *  uses plain strings so we don't drag the full type into the client
+ *  bundle. */
+interface BaseT2iModelOption {
+  id: string;
+  label: string;
+  vendor: 'atlas' | 'kie';
+  costUsd: number;
+  hint: string;
+}
+
 const VARIANT_VENDOR_LABELS: Record<VendorChoice, { label: string; cost: string; note: string }> = {
   atlas: {
     label: 'Atlas',
@@ -1349,6 +1361,51 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
   // on toggle, and persisted server-side so it sticks for next session.
   const [vendor, setVendor] = useState<VendorChoice>('atlas');
   const [vendorSaving, setVendorSaving] = useState(false);
+
+  // Base T2I model — same UserSettings pattern as the variant vendor.
+  // The available-models list ships with the GET response so the UI
+  // dropdown doesn't need a second fetch.
+  const [baseModelId, setBaseModelId] = useState<string>('atlas-gpt-image-2');
+  const [baseModelOptions, setBaseModelOptions] = useState<BaseT2iModelOption[]>([]);
+  const [baseModelSaving, setBaseModelSaving] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads base model setting
+        const res = await fetch('/api/user/settings/shorts-base-t2i-model');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (Array.isArray(data.models)) {
+          setBaseModelOptions(data.models as BaseT2iModelOption[]);
+        }
+        if (typeof data.shorts_base_t2i_model_id === 'string') {
+          setBaseModelId(data.shorts_base_t2i_model_id);
+        }
+      } catch {
+        /* swallow — stay on the 'atlas-gpt-image-2' default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const setBaseModelPersisted = useCallback(async (next: string) => {
+    setBaseModelId(next);
+    setBaseModelSaving(true);
+    try {
+      await fetch('/api/user/settings/shorts-base-t2i-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: next }),
+      });
+    } catch {
+      toast.error('Could not save your model choice (still applied for this session).');
+    } finally {
+      setBaseModelSaving(false);
+    }
+  }, []);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1433,7 +1490,7 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, model_id: baseModelId }),
         },
       );
       const data = await res.json();
@@ -1540,6 +1597,45 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
           1 base + {picked.block.variants.length} variants. Edit the prompt and click Regenerate to
           re-mint any single frame (15-90s each).
         </p>
+        {baseModelOptions.length > 0 && (
+          <div
+            style={{
+              marginTop: 8,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Base model:</span>
+            <select
+              value={baseModelId}
+              onChange={(e) => setBaseModelPersisted(e.target.value)}
+              disabled={baseModelSaving}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 6,
+                background: 'rgba(0,0,0,0.2)',
+                color: 'inherit',
+                border: '1px solid rgba(255,255,255,0.15)',
+                fontSize: 11,
+              }}
+              title={
+                baseModelOptions.find((m) => m.id === baseModelId)?.hint
+                ?? 'Base T2I model used when you click "Regenerate base"'
+              }
+            >
+              {baseModelOptions.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label} — ${m.costUsd.toFixed(3)}
+                </option>
+              ))}
+            </select>
+            {baseModelSaving && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>saving…</span>
+            )}
+          </div>
+        )}
         <div
           style={{
             marginTop: 8,
@@ -1587,7 +1683,12 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
 
       <ShotFrameCard
         title="Base frame"
-        subtitle="Atlas T2I · 1024×1536 portrait"
+        subtitle={(() => {
+          const meta = baseModelOptions.find((m) => m.id === baseModelId);
+          return meta
+            ? `Regen uses ${meta.label} ($${meta.costUsd.toFixed(3)}) · portrait 9:16`
+            : 'Base T2I · portrait 9:16';
+        })()}
         imageUrl={picked.block.base_url}
         prompt={basePromptDraft}
         onPromptChange={setBasePromptDraft}
