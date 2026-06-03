@@ -2247,7 +2247,7 @@ function ShotFrameCard({
                 Generated {new Date(animation.generated_at).toLocaleString()}
               </span>
               <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                Renderer integration coming in Phase 15.17 — for now the still is what plays in the Short.
+                Plays in place of the still during this frame's caption window.
               </span>
             </div>
           </div>
