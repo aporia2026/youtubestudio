@@ -14,8 +14,43 @@ import { getShort } from '@/lib/shorts';
 import { generateDoodleAssets } from '@/lib/shorts-doodle-asset-pipeline';
 import { generatePaintAssets } from '@/lib/shorts-paint-asset-pipeline';
 import { splitScriptIntoCaptions } from '@/lib/shorts-render';
-import { WORDS_PER_SECOND } from '@/lib/shorts-types';
+import { WORDS_PER_SECOND, type GenerationProgressState } from '@/lib/shorts-types';
 import { getShortStyle } from '@/lib/short-styles';
+
+/** Persist a progress phase to the row. Tagged `updated_at` so the
+ *  client's elapsed-per-phase math has a fresh anchor. Workspace-scoped
+ *  so a stale id from somewhere else can't poison another tenant's
+ *  progress strip. */
+async function writeProgress(
+  shortId: string,
+  workspaceId: string,
+  startedAt: string,
+  state: GenerationProgressState,
+): Promise<void> {
+  const merged: GenerationProgressState = {
+    ...state,
+    started_at: startedAt,
+    updated_at: new Date().toISOString(),
+  };
+  await sql`
+    UPDATE shorts
+       SET generation_progress = ${JSON.stringify(merged)}::jsonb,
+           updated_at = NOW()
+     WHERE id = ${shortId}::uuid AND workspace_id = ${workspaceId}::uuid
+  `;
+}
+
+/** Clear the progress field. Called on terminal success (after the
+ *  final style_assets write lands) so the editor's poll stops the fast
+ *  cadence. */
+async function clearProgress(shortId: string, workspaceId: string): Promise<void> {
+  await sql`
+    UPDATE shorts
+       SET generation_progress = '{}'::jsonb,
+           updated_at = NOW()
+     WHERE id = ${shortId}::uuid AND workspace_id = ${workspaceId}::uuid
+  `;
+}
 
 /**
  * POST /api/shorts/[id]/generate-style-assets
@@ -118,6 +153,7 @@ export const POST = apiRoute.authed(
           );
         }
 
+        const jobStartedAt = new Date().toISOString();
         const assets = await generateDoodleAssets({
           workspaceId: session.ws,
           projectId: row.project_id,
@@ -129,6 +165,15 @@ export const POST = apiRoute.authed(
           niche,
           captions,
           maxVariants: body.maxVariants,
+          onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
+        }).catch(async (err) => {
+          await writeProgress(row.id, session.ws, jobStartedAt, {
+            phase: 'error',
+            label: 'Doodle pipeline failed.',
+            error_message: err instanceof Error ? err.message : String(err),
+            style_id: 'doodle_explainer_2_short',
+          });
+          throw err;
         });
 
         const styleAssetsBlob = {
@@ -146,6 +191,7 @@ export const POST = apiRoute.authed(
                  updated_at = NOW()
            WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
         `;
+        await clearProgress(row.id, session.ws);
 
         logger.info('[shorts style-assets] doodle persisted', {
           workspaceId: session.ws,
@@ -190,6 +236,7 @@ export const POST = apiRoute.authed(
           );
         }
 
+        const jobStartedAt = new Date().toISOString();
         const assets = await generatePaintAssets({
           workspaceId: session.ws,
           projectId: row.project_id,
@@ -201,6 +248,15 @@ export const POST = apiRoute.authed(
           niche,
           captions,
           maxVariants: body.maxVariants,
+          onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
+        }).catch(async (err) => {
+          await writeProgress(row.id, session.ws, jobStartedAt, {
+            phase: 'error',
+            label: 'Paint pipeline failed.',
+            error_message: err instanceof Error ? err.message : String(err),
+            style_id: 'paint_explainer_v1_short',
+          });
+          throw err;
         });
 
         const styleAssetsBlob = {
@@ -218,6 +274,7 @@ export const POST = apiRoute.authed(
                  updated_at = NOW()
            WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
         `;
+        await clearProgress(row.id, session.ws);
 
         logger.info('[shorts style-assets] paint persisted', {
           workspaceId: session.ws,

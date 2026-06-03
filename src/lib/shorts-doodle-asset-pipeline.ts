@@ -37,6 +37,7 @@ import {
   type DoodleVariantResult,
 } from './shorts-doodle-prompt';
 import type { ShortCaptionChunk } from './shorts-render-types';
+import type { GenerationProgressState } from './shorts-types';
 
 const MAX_VARIANTS = 8;
 // Atlas T2I supports four enum sizes: 1024x1024, 1024x1536, 1536x1024,
@@ -66,6 +67,13 @@ export interface DoodleAssetPipelineInput {
   captions: ShortCaptionChunk[];
   /** Optional cap from the workspace setting / UI. Defaults to 6. */
   maxVariants?: number;
+  /** Phase 15.13 — per-step progress hook. The caller (the API route)
+   *  implements this by writing to `shorts.generation_progress` so the
+   *  editor's poll picks it up. Awaited so DB writes serialise with the
+   *  pipeline's vendor calls instead of racing. Errors thrown from
+   *  onProgress are caught + logged but do not fail the pipeline (the
+   *  progress strip is observability, not a critical path). */
+  onProgress?: (state: GenerationProgressState) => Promise<void> | void;
 }
 
 export interface DoodleAssetPipelineResult {
@@ -99,6 +107,26 @@ function buildBasePromptFull(scenePrompt: string): string {
   return `Vertical 9:16 composition. Subject placed in the middle 60% of the frame; top 10% and bottom 10% left intentionally empty for player UI / captions. ${scenePrompt} ${suffix}`;
 }
 
+/** Internal helper — fire onProgress without letting it kill the
+ *  pipeline. The progress hook is observability; a bad DB write here
+ *  should not lose us a $0.04 base + N × $0.011 variant run.
+ *  Errors are logged to `[shorts doodle pipeline] progress hook
+ *  failed` so the operator still sees them. */
+async function safeProgress(
+  cb: DoodleAssetPipelineInput['onProgress'],
+  state: GenerationProgressState,
+): Promise<void> {
+  if (!cb) return;
+  try {
+    await cb(state);
+  } catch (err) {
+    logger.warn('[shorts doodle pipeline] progress hook failed', {
+      phase: state.phase,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export async function generateDoodleAssets(
   input: DoodleAssetPipelineInput,
 ): Promise<DoodleAssetPipelineResult> {
@@ -108,6 +136,12 @@ export async function generateDoodleAssets(
     shortId: input.shortId,
     captionCount: input.captions.length,
     requestedVariants: input.maxVariants,
+  });
+
+  await safeProgress(input.onProgress, {
+    phase: 'planning',
+    label: 'Planning base + variant prompts…',
+    style_id: 'doodle_explainer_2_short',
   });
 
   // ---- 1. LLM call to plan base + variant prompts ------------------------
@@ -160,6 +194,12 @@ export async function generateDoodleAssets(
   });
 
   // ---- 2. Atlas Image t2i for the BASE frame -----------------------------
+  await safeProgress(input.onProgress, {
+    phase: 'base',
+    label: 'Generating base frame (Atlas T2I, ~30-60s)…',
+    style_id: 'doodle_explainer_2_short',
+    total: variantPlan.length,
+  });
   const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
   const baseResult = await generateAtlasT2I({
     prompt: fullBasePrompt,
@@ -178,7 +218,15 @@ export async function generateDoodleAssets(
   // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
   const variants: DoodleAssetPipelineResult['variants'] = [];
   let estimatedCostUsd = ATLAS_T2I_COST_USD;
-  for (const v of variantPlan) {
+  for (let i = 0; i < variantPlan.length; i++) {
+    const v = variantPlan[i];
+    await safeProgress(input.onProgress, {
+      phase: 'variant',
+      current: i + 1,
+      total: variantPlan.length,
+      label: `Generating variant ${i + 1} of ${variantPlan.length} (Atlas Edit, ~15-25s)…`,
+      style_id: 'doodle_explainer_2_short',
+    });
     try {
       const result = await generateGptImage2Edit({
         prompt: v.edit_prompt,

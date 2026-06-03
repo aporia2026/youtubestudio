@@ -107,8 +107,64 @@ export interface ShortRow {
   // optional `style` + per-chunk `chunks` overrides. See
   // `ShortsCaptionsConfig` in shorts-render-types.ts. Defaults to {}.
   captions_config: import('./shorts-render-types').ShortsCaptionsConfig;
+  // Phase 15.13 (migration 0114): live asset-pipeline progress. Empty
+  // `{}` means no job in flight. The asset route writes phase updates
+  // here; the editor polls fast (~2s) while populated and renders a
+  // progress strip. Cleared back to `{}` on success OR after a 60s
+  // grace period so a stale row from a crashed function gets
+  // garbage-collected by the next read.
+  generation_progress: GenerationProgressState;
   created_at: string;
   updated_at: string;
+}
+
+/** Per-step state the Doodle/Paint asset pipeline writes to
+ *  `shorts.generation_progress` while running. The editor uses this to
+ *  surface "what's happening right now" instead of a silent spinner.
+ *
+ *  Phases:
+ *    - 'planning'  → LLM call to plan the base + variant prompts (~15s)
+ *    - 'base'      → Atlas T2I for the base frame (~30-60s)
+ *    - 'variant'   → Atlas Edit for one variant, current/total set
+ *    - 'done'      → success terminal; row's `style_assets` carries the
+ *                    real result. The route clears this back to `{}`
+ *                    right after the final UPDATE so the editor stops
+ *                    polling fast.
+ *    - 'error'     → failure terminal; `error_message` carries a
+ *                    human-readable summary. Cleared by the route after
+ *                    a 60s grace so the user can read it before the
+ *                    strip disappears.
+ *
+ *  All fields are optional past the phase so a partial blob (e.g. an
+ *  old function crashing mid-step) never breaks the renderer. */
+export type GenerationProgressPhase = 'planning' | 'base' | 'variant' | 'done' | 'error';
+
+export interface GenerationProgressState {
+  /** Empty object = no in-flight job. The state below applies only when
+   *  `phase` is set. */
+  phase?: GenerationProgressPhase;
+  /** Variant index currently being generated (0-based) for the
+   *  'variant' phase. Undefined for other phases. */
+  current?: number;
+  /** Total variants the planner returned for the 'variant' phase.
+   *  Undefined for other phases. */
+  total?: number;
+  /** Short human-readable label for the strip ("Planning shots…",
+   *  "Generating variant 3 of 6…"). */
+  label?: string;
+  /** ISO timestamp the job started. Used to render elapsed time
+   *  client-side. */
+  started_at?: string;
+  /** ISO timestamp of the latest phase update. Lets the editor compute
+   *  per-phase elapsed time too. */
+  updated_at?: string;
+  /** Set only on 'error'. Plain string with the vendor / planner error
+   *  message; the namespaced log line is the source of truth on the
+   *  server, this is the user-facing summary. */
+  error_message?: string;
+  /** Optional: which style the job was minting assets for. Used by the
+   *  strip to render "Doodle pipeline" vs "Paint pipeline". */
+  style_id?: string;
 }
 
 /** Per-style assets persisted on `shorts.style_assets` JSONB.

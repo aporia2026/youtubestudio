@@ -28,6 +28,7 @@ import {
   type DoodleVariantResult,
 } from './shorts-doodle-prompt';
 import type { ShortCaptionChunk } from './shorts-render-types';
+import type { GenerationProgressState } from './shorts-types';
 
 const MAX_VARIANTS = 8;
 const VERTICAL_BASE_SIZE = '1024x1536';
@@ -45,6 +46,9 @@ export interface PaintAssetPipelineInput {
   niche: string;
   captions: ShortCaptionChunk[];
   maxVariants?: number;
+  /** Phase 15.13 — per-step progress hook. Same contract as the Doodle
+   *  pipeline; see `shorts-doodle-asset-pipeline.ts` for the rationale. */
+  onProgress?: (state: GenerationProgressState) => Promise<void> | void;
 }
 
 export interface PaintAssetPipelineResult {
@@ -71,6 +75,23 @@ function buildBasePromptFull(scenePrompt: string): string {
   return `Vertical 9:16 composition. Subject placed in the middle 60% of the frame; top 10% and bottom 10% left intentionally empty for player UI / captions. ${scenePrompt} ${suffix}`;
 }
 
+/** Mirror of `safeProgress` in shorts-doodle-asset-pipeline. Keeps
+ *  observability writes from killing the paint pipeline mid-run. */
+async function safeProgress(
+  cb: PaintAssetPipelineInput['onProgress'],
+  state: GenerationProgressState,
+): Promise<void> {
+  if (!cb) return;
+  try {
+    await cb(state);
+  } catch (err) {
+    logger.warn('[shorts paint pipeline] progress hook failed', {
+      phase: state.phase,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export async function generatePaintAssets(
   input: PaintAssetPipelineInput,
 ): Promise<PaintAssetPipelineResult> {
@@ -80,6 +101,12 @@ export async function generatePaintAssets(
     shortId: input.shortId,
     captionCount: input.captions.length,
     requestedVariants: input.maxVariants,
+  });
+
+  await safeProgress(input.onProgress, {
+    phase: 'planning',
+    label: 'Planning base + variant prompts…',
+    style_id: 'paint_explainer_v1_short',
   });
 
   // ---- 1. LLM call to plan base + variant prompts ------------------------
@@ -132,6 +159,12 @@ export async function generatePaintAssets(
   });
 
   // ---- 2. Atlas Image t2i for the BASE frame -----------------------------
+  await safeProgress(input.onProgress, {
+    phase: 'base',
+    label: 'Generating base frame (Atlas T2I, ~30-60s)…',
+    style_id: 'paint_explainer_v1_short',
+    total: variantPlan.length,
+  });
   const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
   const baseResult = await generateAtlasT2I({
     prompt: fullBasePrompt,
@@ -150,7 +183,15 @@ export async function generatePaintAssets(
   // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
   const variants: PaintAssetPipelineResult['variants'] = [];
   let estimatedCostUsd = ATLAS_T2I_COST_USD;
-  for (const v of variantPlan) {
+  for (let i = 0; i < variantPlan.length; i++) {
+    const v = variantPlan[i];
+    await safeProgress(input.onProgress, {
+      phase: 'variant',
+      current: i + 1,
+      total: variantPlan.length,
+      label: `Generating variant ${i + 1} of ${variantPlan.length} (Atlas Edit, ~15-25s)…`,
+      style_id: 'paint_explainer_v1_short',
+    });
     try {
       const result = await generateGptImage2Edit({
         prompt: v.edit_prompt,

@@ -37,7 +37,7 @@ import {
   SHORT_WIDTH,
   type ShortVideoConfig,
 } from '@/lib/shorts-render-types';
-import type { ShortRow } from '@/lib/shorts-types';
+import type { GenerationProgressState, ShortRow } from '@/lib/shorts-types';
 import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
 import { type ShortStyleId } from '@/lib/short-styles';
 import {
@@ -177,9 +177,21 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   }, []);
 
   // ── poll while style assets are generating ─────────────────────────
-  const POLL_INTERVAL_MS = 12_000;
+  // Two cadences (Phase 15.13):
+  //   - 2s while `generation_progress.phase` is in flight, so the strip
+  //     animates smoothly.
+  //   - 12s baseline for the existing `anyRowGenerating` heuristic that
+  //     covers older rows + the brief window between row update and the
+  //     progress field being cleared.
+  // The interval reruns when `pollCadenceMs` flips — useEffect tears
+  // down + restarts the setInterval so the new cadence takes effect on
+  // the next tick.
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const shouldPoll = row ? anyRowGenerating([row]) : false;
+  const progressPhase = row?.generation_progress?.phase;
+  const progressInFlight =
+    progressPhase === 'planning' || progressPhase === 'base' || progressPhase === 'variant';
+  const shouldPoll = row ? anyRowGenerating([row]) || progressInFlight : false;
+  const pollCadenceMs = progressInFlight ? 2_000 : 12_000;
   useEffect(() => {
     if (!shouldPoll) {
       if (intervalRef.current) {
@@ -188,17 +200,16 @@ export function ShortEditor({ shortId }: { shortId: string }) {
       }
       return;
     }
-    if (intervalRef.current) return;
     intervalRef.current = setInterval(() => {
       loadRow();
-    }, POLL_INTERVAL_MS);
+    }, pollCadenceMs);
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
     };
-  }, [shouldPoll, loadRow]);
+  }, [shouldPoll, pollCadenceMs, loadRow]);
 
   // ── derived preview config ─────────────────────────────────────────
   // The preview tries to build a ShortVideoConfig from the current row.
@@ -624,12 +635,13 @@ export function ShortEditor({ shortId }: { shortId: string }) {
                   ? 'Stamp style'
                   : `Generate ${styleAssetLabel(stylePick)} assets`}
           </button>
-          {assetStatus === 'generating' && (
+          {assetStatus === 'generating' && !progressInFlight && (
             <span style={{ fontSize: 12, color: '#fde68a' }}>
               ● {styleAssetLabel(row.style_id)} pipeline running on the server. Polling every 12s.
             </span>
           )}
         </div>
+        <GenerationProgressStrip progress={row.generation_progress} />
         <ShotsPanel row={row} onChange={loadRow} />
       </EditorSection>
 
@@ -1710,6 +1722,136 @@ function ShotFrameCard({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Generation progress strip — Phase 15.13. Renders the row's
+// `generation_progress` field as a "what's happening right now" bar with
+// phase label, sub-progress (variant N / M), elapsed time, and a sticky
+// error message on terminal failure. Nothing renders when no job is in
+// flight, so the strip is invisible on the happy path.
+// ────────────────────────────────────────────────────────────────────────────
+
+function GenerationProgressStrip({ progress }: { progress: GenerationProgressState }) {
+  // Re-render every second so the elapsed timer ticks even when the
+  // poll doesn't fire (the row only re-fetches every 2s in flight). The
+  // tick is cheap; one setInterval per editor instance.
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!progress.phase) return;
+    if (progress.phase === 'done') return;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [progress.phase]);
+
+  if (!progress.phase) return null;
+
+  const phase = progress.phase;
+  const startedAtMs = progress.started_at ? new Date(progress.started_at).getTime() : Date.now();
+  const elapsedSec = Math.max(0, Math.round((Date.now() - startedAtMs) / 1000));
+
+  // The progress bar uses two heuristics:
+  //   - planning: indeterminate (returns null → no bar fill ratio)
+  //   - base: ~30s budget; one segment
+  //   - variant: current/total against the variant range
+  // We weight: planning 0–15%, base 15–35%, variants 35–100%. Lets the
+  // bar advance steadily through the whole pipeline so users don't
+  // think it's stuck during the long Atlas T2I leg.
+  const ratio = (() => {
+    if (phase === 'planning') return 0.08;
+    if (phase === 'base') return 0.25;
+    if (phase === 'variant' && progress.current && progress.total) {
+      return 0.35 + (progress.current / progress.total) * 0.65;
+    }
+    if (phase === 'done') return 1;
+    if (phase === 'error') return 1;
+    return 0.5;
+  })();
+
+  const accent = phase === 'error' ? '#fca5a5' : '#a78bfa';
+  const trackBg =
+    phase === 'error' ? 'rgba(248,113,113,0.12)' : 'rgba(167,139,250,0.12)';
+
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: 12,
+        borderRadius: 10,
+        border: `1px solid ${phase === 'error' ? 'rgba(248,113,113,0.35)' : 'rgba(167,139,250,0.3)'}`,
+        background: phase === 'error' ? 'rgba(248,113,113,0.06)' : 'rgba(167,139,250,0.06)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          fontSize: 12,
+          color: phase === 'error' ? '#fca5a5' : 'inherit',
+          marginBottom: 8,
+        }}
+      >
+        <span style={{ fontSize: 13 }}>{phase === 'error' ? '⚠' : '●'}</span>
+        <span style={{ fontWeight: 600 }}>
+          {progress.label ?? (phase === 'error' ? 'Pipeline failed.' : 'Working…')}
+        </span>
+        <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
+          {elapsedSec}s elapsed
+        </span>
+      </div>
+      <div
+        style={{
+          height: 6,
+          borderRadius: 4,
+          background: trackBg,
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${Math.min(100, ratio * 100)}%`,
+            height: '100%',
+            background: accent,
+            transition: 'width 600ms ease-out',
+            // Animated stripe on indeterminate phases so the user sees
+            // motion even when the percentage doesn't advance for ~30s.
+            ...(phase === 'planning' || phase === 'base'
+              ? {
+                  backgroundImage:
+                    'linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.18) 50%, rgba(255,255,255,0) 100%)',
+                  backgroundSize: '200% 100%',
+                  animation: 'shortsProgressShimmer 1.6s linear infinite',
+                }
+              : {}),
+          }}
+        />
+      </div>
+      <style>{`
+        @keyframes shortsProgressShimmer {
+          0%   { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
+      {phase === 'error' && progress.error_message && (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 11,
+            color: '#fca5a5',
+            background: 'rgba(0,0,0,0.18)',
+            padding: '6px 8px',
+            borderRadius: 6,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {progress.error_message}
+        </div>
+      )}
     </div>
   );
 }
