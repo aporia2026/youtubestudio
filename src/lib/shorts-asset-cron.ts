@@ -60,7 +60,7 @@ const TICK_BUDGET_MS = 280_000;
  *  frame, and running them concurrently (rather than 3 at a time) roughly
  *  halves the wall-clock. A per-variant attempt cap + the Kie/Atlas fallback
  *  absorb the occasional 429 from the wider burst. */
-const MAX_VARIANTS_PER_BATCH = 6;
+const MAX_VARIANTS_PER_BATCH = 8;
 
 type StyleKey = 'doodle' | 'paint';
 

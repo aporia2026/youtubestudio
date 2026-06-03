@@ -45,7 +45,7 @@ import type { ShortCaptionChunk } from './shorts-render-types';
 import type { GenerationProgressState } from './shorts-types';
 import type { VariantPlanItem } from './shorts-asset-job';
 
-const MAX_VARIANTS = 8;
+const MAX_VARIANTS = 18;
 // Per-model base-frame T2I lives in `shorts-base-t2i.ts`. The pipeline
 // asks the dispatcher for the cost-optimal default unless the caller
 // passes `baseT2iModelId`. Aspect handling moves into the dispatcher
@@ -183,7 +183,7 @@ export async function planDoodleAssets(
     modelId,
     systemPrompt: system,
     prompt: user,
-    maxTokens: 1600,
+    maxTokens: 2600,
     temperature: 0.65,
     spend,
   });

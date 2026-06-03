@@ -39,6 +39,23 @@ export function countWords(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
 
+/** Target ~one distinct scene every this many seconds. Tuned for retention —
+ *  vertical shorts hold attention with frequent cuts, so ~2.8s/scene gives a
+ *  41s Short ~15 scenes instead of the old fixed 6 (a cut every ~6s, which
+ *  read as static). Each scene is an image generation, so this is also the
+ *  main cost/latency lever. */
+const SECONDS_PER_SCENE = 2.8;
+const MIN_SCENES = 6;
+const MAX_SCENES = 18;
+
+/** How many scene frames to generate for a Short of the given spoken length.
+ *  Scales with duration and clamps to a sane range so a 10s Short isn't
+ *  over-cut and a 90s Short doesn't balloon image cost. */
+export function sceneCountForDuration(seconds: number): number {
+  const n = Math.round((Number.isFinite(seconds) ? seconds : 0) / SECONDS_PER_SCENE);
+  return Math.max(MIN_SCENES, Math.min(MAX_SCENES, n));
+}
+
 /**
  * Split a script into N caption chunks of roughly equal word count, then
  * map each chunk's start/end onto the audio timeline proportionally.

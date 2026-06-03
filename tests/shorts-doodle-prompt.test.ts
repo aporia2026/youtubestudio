@@ -25,8 +25,8 @@ describe('clampVariantCount', () => {
     expect(clampVariantCount(0, 10)).toBe(6);
   });
 
-  it('clamps the request to the absolute max (10)', () => {
-    expect(clampVariantCount(50, 50)).toBe(10);
+  it('clamps the request to the absolute max (18)', () => {
+    expect(clampVariantCount(50, 50)).toBe(18);
   });
 
   it('clamps the request to the caption count when smaller than the max', () => {

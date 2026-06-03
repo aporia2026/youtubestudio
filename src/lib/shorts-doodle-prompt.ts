@@ -63,7 +63,10 @@ export interface DoodleVariantResult {
 }
 
 const DEFAULT_MAX_VARIANTS = 6;
-const ABSOLUTE_MAX_VARIANTS = 10;
+// Raised for the faster-cut pacing (Phase 15.16): a long Short can ask for
+// up to ~18 distinct scenes. Still hard-capped so a hallucinated request
+// can't fan out unbounded image gens.
+const ABSOLUTE_MAX_VARIANTS = 18;
 
 /** Clamps the desired variant count to [1, min(captions.length, MAX)]. */
 export function clampVariantCount(requested: number, captionCount: number): number {

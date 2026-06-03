@@ -959,6 +959,22 @@ const TEXT_TRANSFORMS: Array<NonNullable<ShortsCaptionsStyle['textTransform']>> 
   'capitalize',
 ];
 
+type CaptionPositionChoice = 'top' | 'center' | 'bottom';
+// Canonical positionY for the three presets. positionY is the caption band's
+// vertical CENTER (the renderer applies translateY(-50%)): 'top' clears the
+// title chip, 'bottom' sits above the channel pill, 'center' is the default.
+const CAPTION_POSITION_Y: Record<CaptionPositionChoice, number> = {
+  top: 0.16,
+  center: 0.5,
+  bottom: 0.82,
+};
+function positionToChoice(positionY: number | undefined): CaptionPositionChoice {
+  const y = typeof positionY === 'number' ? positionY : 0.5;
+  if (y <= 0.33) return 'top';
+  if (y >= 0.67) return 'bottom';
+  return 'center';
+}
+
 function formatMs(ms: number): string {
   const sec = ms / 1000;
   return `${sec.toFixed(2)}s`;
@@ -1028,6 +1044,16 @@ function CaptionsEditorPanel({
           options={TEXT_TRANSFORMS.map((t) => ({ value: t, label: t }))}
           onChange={(v) => onStyleChange({ textTransform: (v as ShortsCaptionsStyle['textTransform']) ?? undefined })}
         />
+        <StyleChipRow
+          label="Position"
+          value={positionToChoice(style.positionY)}
+          options={[
+            { value: 'top', label: 'Top' },
+            { value: 'center', label: 'Center' },
+            { value: 'bottom', label: 'Bottom' },
+          ]}
+          onChange={(v) => onStyleChange({ positionY: CAPTION_POSITION_Y[(v as CaptionPositionChoice) ?? 'center'] })}
+        />
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <NumberField
@@ -1039,7 +1065,7 @@ function CaptionsEditorPanel({
             onCommit={(v) => onStyleChange({ sizeScale: v })}
           />
           <NumberField
-            label="Position (0 top → 1 bottom)"
+            label="Position fine-tune (0 top → 1 bottom)"
             value={style.positionY ?? 0.5}
             min={0}
             max={1}

@@ -13,7 +13,7 @@ import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
-import { splitScriptIntoCaptions } from '@/lib/shorts-render';
+import { splitScriptIntoCaptions, sceneCountForDuration } from '@/lib/shorts-render';
 import { triggerShortsAssetDrain } from '@/lib/shorts-asset-cron';
 import { WORDS_PER_SECOND, type GenerationProgressState } from '@/lib/shorts-types';
 import { getShortStyle } from '@/lib/short-styles';
@@ -176,7 +176,9 @@ export const POST = apiRoute.authed(
             niche,
             base_t2i_model_id: baseT2iModelId,
             variant_edit_primary: variantEditPrimary,
-            max_variants: body.maxVariants,
+            // Scale the scene count to the Short's length (faster cuts retain
+            // viewers) unless the caller pinned an explicit count.
+            max_variants: body.maxVariants ?? sceneCountForDuration(seconds),
           },
         };
 
