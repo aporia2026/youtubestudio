@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { withCronLock, CRON_LOCK_KEYS } from '@/lib/cron-lock';
-import { runShortsAssetDrain } from '@/lib/shorts-asset-cron';
+import { triggerShortsAssetDrain } from '@/lib/shorts-asset-cron';
 import { logger } from '@/lib/logger';
 
 /**
@@ -36,22 +35,16 @@ export async function POST(req: NextRequest) {
   }
 
   const startedAt = Date.now();
-  // Tick id used as the claim owner + log correlation. Date.now()+random is
-  // fine here (not a workflow script); it just needs to be unique per tick.
-  const tickId = `sa_${startedAt}_${Math.random().toString(36).slice(2, 8)}`;
-  logger.info('cron run-shorts-assets: start', { tickId });
+  logger.info('cron run-shorts-assets: start');
 
-  const outcome = await withCronLock(CRON_LOCK_KEYS.shortsAssetRunner, async () => {
-    return runShortsAssetDrain(tickId);
-  });
+  const outcome = await triggerShortsAssetDrain('cron');
 
   if (!outcome.ran) {
-    logger.info('cron run-shorts-assets: skipped (another tick in flight)', { tickId });
+    logger.info('cron run-shorts-assets: skipped (another tick in flight)');
     return NextResponse.json({ ran: false, reason: 'busy' });
   }
 
   logger.info('cron run-shorts-assets: done', {
-    tickId,
     duration_ms: Date.now() - startedAt,
     ...outcome.result,
   });

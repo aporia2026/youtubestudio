@@ -26,6 +26,7 @@
 
 import { sql } from './db';
 import { logger } from './logger';
+import { withCronLock, CRON_LOCK_KEYS, type CronLockOutcome } from './cron-lock';
 import { splitScriptIntoCaptions } from './shorts-render';
 import {
   WORDS_PER_SECOND,
@@ -522,4 +523,28 @@ export async function runShortsAssetDrain(tickId: string): Promise<ShortsAssetDr
   }
 
   return result;
+}
+
+// Monotonic-ish suffix so two triggers in the same millisecond get distinct
+// tick ids. Process-local; only needs to be unique for log correlation.
+let tickSeq = 0;
+
+/**
+ * Single-flight entry point used by BOTH the cron and the enqueue route's
+ * fire-and-forget kick. They share the advisory lock, so concurrent triggers
+ * (several auto-created Shorts firing at once, or a cron tick overlapping a
+ * kick) never run two drains together — which is what would fan out
+ * 3×N concurrent vendor calls and self-inflict the 429 storm we're trying to
+ * avoid.
+ *
+ * Why both callers exist: Vercel crons run ONLY on production deployments, so
+ * on preview / local deploys the enqueue kick is the only thing that drives
+ * the work. In production the cron is the steady backstop that also heals
+ * jobs whose kick died (lease reclaim).
+ */
+export async function triggerShortsAssetDrain(
+  reason: string,
+): Promise<CronLockOutcome<ShortsAssetDrainResult>> {
+  const tickId = `sa_${reason}_${Date.now()}_${(tickSeq++).toString(36)}`;
+  return withCronLock(CRON_LOCK_KEYS.shortsAssetRunner, () => runShortsAssetDrain(tickId));
 }

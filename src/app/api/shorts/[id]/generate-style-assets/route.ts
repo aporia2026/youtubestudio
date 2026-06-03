@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Phase 15.16 — this route no longer runs the pipeline. It validates +
-// enqueues, and the background cron (`/api/cron/run-shorts-assets`) does the
-// plan + base + variant work across ticks. So the request is fast and the
-// 300s function ceiling is no longer a factor for asset generation. See
+// Phase 15.16 — this route validates + enqueues, then kicks a background
+// drain (fire-and-forget, same pattern as the render route) so work starts
+// immediately without waiting for the next cron tick — and so it works on
+// preview / local deploys where Vercel crons don't run at all. The drain is
+// single-flight-locked; the production cron is the steady backstop + healer.
+// The response returns in ~1s; the drain runs in the background up to this
+// ceiling, persisting incrementally so a kill is never fatal. See
 // `_plans/2026-06-03-shorts-asset-generation-reliability.md`.
-export const maxDuration = 60;
+export const maxDuration = 300;
 import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
 import { splitScriptIntoCaptions } from '@/lib/shorts-render';
+import { triggerShortsAssetDrain } from '@/lib/shorts-asset-cron';
 import { WORDS_PER_SECOND, type GenerationProgressState } from '@/lib/shorts-types';
 import { getShortStyle } from '@/lib/short-styles';
 import { getUserSettings } from '@/lib/user-settings';
@@ -192,6 +196,20 @@ export const POST = apiRoute.authed(
           styleId: styleEntry.id,
           variantEditPrimary,
           baseT2iModelId,
+        });
+
+        // Kick the drain now (fire-and-forget) so the job starts without
+        // waiting on the cron — and so it runs at all on preview / local
+        // deploys where Vercel crons don't fire. Single-flight-locked, so
+        // concurrent kicks (e.g. a batch of auto-created Shorts) collapse to
+        // one drain rather than a vendor stampede. The function keeps running
+        // until the drain finishes or maxDuration; the response already
+        // returned. Mirrors the render route's background pattern.
+        void triggerShortsAssetDrain('enqueue').catch((err) => {
+          logger.warn('[shorts style-assets] background drain kick failed', {
+            shortId: row.id,
+            detail: err instanceof Error ? err.message : String(err),
+          });
         });
 
         return NextResponse.json({ status: 'queued', style_id: styleEntry.id }, { status: 202 });
