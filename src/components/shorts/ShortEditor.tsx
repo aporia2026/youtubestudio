@@ -37,7 +37,12 @@ import {
   SHORT_WIDTH,
   type ShortVideoConfig,
 } from '@/lib/shorts-render-types';
-import type { GenerationProgressState, ShortFrameAnimation, ShortRow } from '@/lib/shorts-types';
+import type {
+  GenerationProgressState,
+  ShortFrameAnimation,
+  ShortFrameCollage,
+  ShortRow,
+} from '@/lib/shorts-types';
 import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
 import { type ShortStyleId } from '@/lib/short-styles';
 import {
@@ -1299,6 +1304,8 @@ interface ShotsPanelFrameBlock {
     edit_prompt?: string;
     /** Phase 15.16 — i2v animation generated from this variant's `url`. */
     animation?: ShortFrameAnimation;
+    /** Phase 15.18 — when present, the variant is a 2×2 collage. */
+    collage?: ShortFrameCollage;
   }>;
 }
 
@@ -1516,6 +1523,19 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
   const [appendChunkDraft, setAppendChunkDraft] = useState<number>(0);
   const [appendOpen, setAppendOpen] = useState(false);
 
+  // Phase 15.18 — collage append form state. Four panel prompts +
+  // chunk index + an optional brief. Same pattern as the single-frame
+  // append form just with 4 prompts instead of 1.
+  const [collageOpen, setCollageOpen] = useState(false);
+  const [collageChunkDraft, setCollageChunkDraft] = useState<number>(0);
+  const [collagePanelDrafts, setCollagePanelDrafts] = useState<string[]>([
+    '',
+    '',
+    '',
+    '',
+  ]);
+  const [collageBriefDraft, setCollageBriefDraft] = useState('');
+
   // Re-sync drafts whenever the row's assets change (e.g., after a
   // regen lands). useEffect on the stable string content so we don't
   // clobber the user's in-flight edits when polling fires while they're
@@ -1630,6 +1650,49 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
       toast.error(e instanceof Error ? e.message : 'Append failed');
     } finally {
       setBusyFor('append', false);
+    }
+  };
+
+  const appendCollage = async () => {
+    const trimmedPanels = collagePanelDrafts.map((p) => p.trim());
+    for (let i = 0; i < trimmedPanels.length; i++) {
+      if (trimmedPanels[i].length < 12) {
+        toast.error(`Panel ${i + 1} prompt needs ≥12 characters.`);
+        return;
+      }
+    }
+    if (!Number.isFinite(collageChunkDraft) || collageChunkDraft < 0) {
+      toast.error('Caption chunk index must be ≥ 0.');
+      return;
+    }
+    setBusyFor('collage', true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/frames/variants/collage`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            caption_chunk_start_index: Math.floor(collageChunkDraft),
+            panel_prompts: trimmedPanels,
+            brief: collageBriefDraft.trim() || undefined,
+            model_id: baseModelId || undefined,
+          }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(
+        `Collage variant added at chunk ${Math.floor(collageChunkDraft)} (cost ~$${(data.estimated_cost_usd ?? 0).toFixed(3)}).`,
+      );
+      setCollagePanelDrafts(['', '', '', '']);
+      setCollageBriefDraft('');
+      setCollageOpen(false);
+      await onChange();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Collage failed');
+    } finally {
+      setBusyFor('collage', false);
     }
   };
 
@@ -1910,9 +1973,14 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
       {picked.block.variants.map((v, i) => (
         <ShotFrameCard
           key={`${v.url}-${i}`}
-          title={`Variant ${i}`}
-          subtitle={`Swaps in at caption chunk ${v.caption_chunk_start_index} · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`}
+          title={v.collage ? `Variant ${i} · 2×2 collage` : `Variant ${i}`}
+          subtitle={
+            v.collage
+              ? `Swaps in at caption chunk ${v.caption_chunk_start_index} · ${v.collage.panels.length}-panel collage · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`
+              : `Swaps in at caption chunk ${v.caption_chunk_start_index} · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`
+          }
           imageUrl={v.url}
+          collage={v.collage}
           animation={v.animation}
           prompt={variantPromptDrafts[i] ?? ''}
           onPromptChange={(s) =>
@@ -1939,24 +2007,41 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
         />
       ))}
 
-      {!appendOpen ? (
-        <button
-          type="button"
-          onClick={() => setAppendOpen(true)}
-          style={{
-            marginTop: 10,
-            padding: '8px 14px',
-            borderRadius: 8,
-            border: '1px dashed rgba(255,255,255,0.2)',
-            background: 'transparent',
-            color: 'inherit',
-            fontSize: 12,
-            cursor: 'pointer',
-          }}
-        >
-          + Append new variant
-        </button>
-      ) : (
+      {!appendOpen && !collageOpen ? (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button
+            type="button"
+            onClick={() => setAppendOpen(true)}
+            style={{
+              padding: '8px 14px',
+              borderRadius: 8,
+              border: '1px dashed rgba(255,255,255,0.2)',
+              background: 'transparent',
+              color: 'inherit',
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            + Append new variant
+          </button>
+          <button
+            type="button"
+            onClick={() => setCollageOpen(true)}
+            style={{
+              padding: '8px 14px',
+              borderRadius: 8,
+              border: '1px dashed rgba(167,139,250,0.4)',
+              background: 'transparent',
+              color: '#c4b5fd',
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+            title="Generate a 2×2 collage variant — 4 independent panels composed into one frame."
+          >
+            + Append 2×2 collage variant
+          </button>
+        </div>
+      ) : appendOpen ? (
         <div
           style={{
             marginTop: 10,
@@ -2028,6 +2113,121 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
             </button>
           </div>
         </div>
+      ) : (
+        <div
+          style={{
+            marginTop: 10,
+            padding: 12,
+            borderRadius: 10,
+            border: '1px solid rgba(167,139,250,0.3)',
+            background: 'rgba(167,139,250,0.05)',
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+            New 2×2 collage variant
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+            4 independent panels composed server-side into one portrait frame. Each panel uses
+            your selected base model (currently {baseModelOptions.find((m) => m.id === baseModelId)?.label ?? baseModelId}).
+            Total cost ≈ 4× the per-call price.
+          </div>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Caption chunk to swap in at
+            </span>
+            <input
+              type="number"
+              min={0}
+              value={collageChunkDraft}
+              onChange={(e) => setCollageChunkDraft(parseInt(e.target.value, 10) || 0)}
+              style={{ ...inputStyle, width: 100 }}
+              disabled={!!busy.collage}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Brief (optional — shown on the variant card)
+            </span>
+            <input
+              type="text"
+              value={collageBriefDraft}
+              onChange={(e) => setCollageBriefDraft(e.target.value)}
+              placeholder="e.g. 4 emotional stages of the character"
+              style={inputStyle}
+              disabled={!!busy.collage}
+            />
+          </label>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 8,
+              marginBottom: 10,
+            }}
+          >
+            {(['Top-left', 'Top-right', 'Bottom-left', 'Bottom-right'] as const).map(
+              (label, i) => (
+                <label
+                  key={label}
+                  style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                >
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    Panel {i + 1}: {label}
+                  </span>
+                  <textarea
+                    rows={3}
+                    value={collagePanelDrafts[i]}
+                    onChange={(e) =>
+                      setCollagePanelDrafts((prev) => {
+                        const next = prev.slice();
+                        next[i] = e.target.value;
+                        return next;
+                      })
+                    }
+                    placeholder="Describe this panel's scene (≥12 chars)"
+                    style={{
+                      ...inputStyle,
+                      resize: 'vertical',
+                      fontFamily: 'inherit',
+                      fontSize: 12,
+                    }}
+                    disabled={!!busy.collage}
+                  />
+                </label>
+              ),
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              onClick={appendCollage}
+              disabled={!!busy.collage}
+              style={primaryButton(!!busy.collage)}
+            >
+              {busy.collage ? 'Generating 4 panels…' : 'Create collage variant'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCollageOpen(false);
+                setCollagePanelDrafts(['', '', '', '']);
+                setCollageBriefDraft('');
+              }}
+              disabled={!!busy.collage}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 8,
+                border: '1px solid rgba(255,255,255,0.15)',
+                background: 'transparent',
+                color: 'inherit',
+                fontSize: 12,
+                cursor: busy.collage ? 'wait' : 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2038,6 +2238,7 @@ function ShotFrameCard({
   subtitle,
   imageUrl,
   animation,
+  collage,
   prompt,
   onPromptChange,
   promptPlaceholder,
@@ -2051,6 +2252,7 @@ function ShotFrameCard({
   subtitle: string;
   imageUrl: string;
   animation?: ShortFrameAnimation;
+  collage?: ShortFrameCollage;
   prompt: string;
   onPromptChange: (s: string) => void;
   promptPlaceholder?: string;
@@ -2210,6 +2412,72 @@ function ShotFrameCard({
             </button>
           )}
         </div>
+        {collage && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: 8,
+              borderRadius: 8,
+              border: '1px solid rgba(167,139,250,0.25)',
+              background: 'rgba(167,139,250,0.05)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#c4b5fd' }}>
+              Composed from {collage.grid.cols}×{collage.grid.rows} panels
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 4,
+                fontSize: 10,
+                color: 'var(--text-muted)',
+              }}
+            >
+              {collage.panels.map((p, i) => (
+                <div
+                  key={`${p.url}-${i}`}
+                  style={{
+                    padding: '4px 6px',
+                    borderRadius: 4,
+                    background: 'rgba(0,0,0,0.18)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                    overflow: 'hidden',
+                  }}
+                  title={p.prompt}
+                >
+                  <span style={{ fontWeight: 600, color: '#c4b5fd' }}>
+                    Panel {i + 1}
+                  </span>
+                  <span
+                    style={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    {p.prompt}
+                  </span>
+                  <a
+                    href={p.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: '#a78bfa', textDecoration: 'none', fontSize: 9 }}
+                  >
+                    open raw →
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {animation && (
           <div
             style={{

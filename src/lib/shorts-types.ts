@@ -194,14 +194,7 @@ export interface ShortStyleAssets {
     base_animation?: ShortFrameAnimation;
     /** Variant frames, ordered. Each carries the caption chunk it lines
      *  up with so the renderer can swap frames at chunk boundaries. */
-    variants: Array<{
-      url: string;
-      caption_chunk_start_index: number;
-      /** Phase 15.12 — the edit prompt that produced this variant. */
-      edit_prompt?: string;
-      /** Phase 15.16 — i2v animation generated from `url`. */
-      animation?: ShortFrameAnimation;
-    }>;
+    variants: ShortFrameVariant[];
   };
   /** Paint vertical (`paint_explainer_v1_short`) — same asset shape as
    *  Doodle, different visual language (paint_explainer_v1 ai_image_suffix). */
@@ -209,13 +202,59 @@ export interface ShortStyleAssets {
     base_url: string;
     base_prompt?: string;
     base_animation?: ShortFrameAnimation;
-    variants: Array<{
-      url: string;
-      caption_chunk_start_index: number;
-      edit_prompt?: string;
-      animation?: ShortFrameAnimation;
-    }>;
+    variants: ShortFrameVariant[];
   };
+}
+
+/** Shared variant shape across the Doodle + Paint sub-blocks. Lives as
+ *  its own export so callers (orchestrators, route helpers, tests) can
+ *  reference it without restating the literal. Per Phase 15.18 (motion
+ *  collage), `collage` is the optional sibling of the per-frame
+ *  animation field. */
+export interface ShortFrameVariant {
+  /** Composed image URL — for single-image variants this is the Atlas
+   *  Edit output; for collage variants this is the 2×2 grid composed
+   *  server-side and uploaded to R2. The renderer is collage-agnostic
+   *  (just treats it as an image), so this field is the source of
+   *  truth for what gets rendered. */
+  url: string;
+  caption_chunk_start_index: number;
+  /** Phase 15.12 — the edit prompt that produced this variant (single)
+   *  or the brief that planned the collage (multi-panel). */
+  edit_prompt?: string;
+  /** Phase 15.16 — i2v animation generated from `url`. */
+  animation?: ShortFrameAnimation;
+  /** Phase 15.18 — multi-panel collage metadata. When present, the
+   *  variant is a 2×2 grid whose per-panel prompts + source URLs are
+   *  tracked so a future per-panel-regen surface can rebuild a single
+   *  cell instead of the whole composition. The composed grid lives at
+   *  `url` (renderer-facing); the per-panel pieces live here. */
+  collage?: ShortFrameCollage;
+}
+
+/** Phase 15.18 — per-frame motion collage metadata. The composed image
+ *  lives on the parent variant's `url`. */
+export interface ShortFrameCollage {
+  /** Grid dimensions. v1 ships only `{ cols: 2, rows: 2 }`; the field
+   *  exists so a future commit can expand to 3×3 / 1×4 / 2×1 without a
+   *  type churn. */
+  grid: { cols: number; rows: number };
+  /** Per-panel source images, ordered row-major (panel 0 = top-left,
+   *  panel 1 = top-right, panel 2 = bottom-left, panel 3 =
+   *  bottom-right for the canonical 2×2). */
+  panels: Array<{
+    url: string;
+    prompt: string;
+    /** Underlying base-T2I model id the panel was generated with.
+     *  Lets the UI surface "this panel cost $X" without a side lookup. */
+    model_id: string;
+    cost_usd: number;
+  }>;
+  /** Composed image dimensions, useful for debugging + future tooling. */
+  composed_width: number;
+  composed_height: number;
+  /** ISO timestamp the composition completed. */
+  generated_at: string;
 }
 
 /** Phase 15.16 — per-frame image-to-video animation metadata. Every
