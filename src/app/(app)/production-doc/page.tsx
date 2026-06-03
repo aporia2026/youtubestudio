@@ -2715,6 +2715,21 @@ function ProductionDocPage() {
     DoodleExplainer2MotionCollageSettings | undefined
   >(undefined);
 
+  // Pre-generation pacing pick. Same lifetime pattern as
+  // `pendingMotionCollageSettings` above: the PacingProfilePanel writes
+  // here while `doc === null` so the user can choose pace BEFORE clicking
+  // Generate. The value flows into the doc-gen API body so the LLM uses
+  // the right per-row word budget on the first run, and gets stamped onto
+  // the resulting `doc.pacing_profile` so the panel stays in sync. After
+  // a doc exists, the panel writes directly to doc.pacing_profile and
+  // this state becomes a no-op fallback. Default: undefined — the panel
+  // visually shows 'fast' as the recommendation but doesn't claim the
+  // user picked it, so post-doc edits to the default still flow through
+  // for unedited docs.
+  const [pendingPacingProfile, setPendingPacingProfile] = useState<
+    'standard' | 'fast' | 'very_fast' | undefined
+  >(undefined);
+
   // Row indices whose motion_collage panel prompts are currently being
   // auto-filled (one LLM call via /motion-collage/panels). Drives the
   // editor's "✨ Filling…" spinner and the in-flight guard that drops
@@ -8515,6 +8530,12 @@ function ProductionDocPage() {
             // style other than doodle_explainer_2.
             motionCollageSettings:
               doc?.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings,
+            // Pacing profile chosen pre-generation in the PacingProfilePanel.
+            // Doc-level value wins on regenerate; pending state wins on
+            // fresh gen; route falls back to 'fast' when the field is
+            // missing or unrecognized.
+            pacingProfile:
+              doc?.pacing_profile ?? pendingPacingProfile ?? 'fast',
             // Pre-flight title overrides — only meaningful for chunk 0,
             // since continuation chunks suppress Title Cards in the
             // prompt anyway. When the user never opened the review
@@ -8607,6 +8628,15 @@ function ProductionDocPage() {
         // when the user never touched the panel (state stays undefined).
         ...(stylePreset === 'doodle_explainer_2' && pendingMotionCollageSettings
           ? { doodle_explainer_2_motion_collage_settings: pendingMotionCollageSettings }
+          : {}),
+        // Pre-generation pacing pick lands on the new doc so the panel
+        // shows the user's choice as the active pill after generation
+        // (otherwise it would fall back to the visual default and look
+        // like the pick was lost). Server-side `applyPacingPostProcess`
+        // also stamps `pacing_profile` based on the request, so this is
+        // a redundancy that survives older route revisions.
+        ...(pendingPacingProfile
+          ? { pacing_profile: pendingPacingProfile }
           : {}),
       };
 
@@ -10018,26 +10048,30 @@ function ProductionDocPage() {
               to preview against; the inputs panel still cleanly
               communicates "pick style → generate → tune settings."
               See §14 of the architecture plan. */}
-          {/* PR3 (2026-06-03) doc-level pacing-profile picker. Mounts on
-              EVERY doc regardless of style preset — pacing is a doc-level
-              concern, not a style-specific one. Default-renders 'fast'
-              when the doc has no stored value (matches the server-side
-              default in productionDocPrompt + the post-processor).
-              Persists via the same persistDoc helper PR1 introduced so
-              the change syncs across tabs + survives refresh. */}
-          {doc && (
-            <PacingProfilePanel
-              value={doc.pacing_profile}
-              onChange={(next) => {
+          {/* Doc-level pacing-profile picker. Mounts on EVERY render —
+              pre-doc edits land in `pendingPacingProfile` and flow into
+              the doc-gen API body so the LLM honours the user's chosen
+              pace on the first run; post-doc edits land directly on
+              `doc.pacing_profile`. Mirrors the same pre/post pattern the
+              doodle motion-collage panel uses below. Pacing is a
+              doc-level concern, not a style-specific one, so this panel
+              is unconditional on style. */}
+          <PacingProfilePanel
+            value={doc?.pacing_profile ?? pendingPacingProfile}
+            onChange={(next) => {
+              if (doc) {
                 setDoc((prev) => {
                   if (!prev) return prev;
                   const nextDoc = { ...prev, pacing_profile: next };
                   persistDoc(nextDoc);
                   return nextDoc;
                 });
-              }}
-            />
-          )}
+              } else {
+                setPendingPacingProfile(next);
+              }
+            }}
+          />
+
 
           {doc && stylePreset === 'paint_explainer_v1' && (
             <PaintExplainerV1SettingsPanel

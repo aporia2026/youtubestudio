@@ -59,6 +59,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     overlaysDisabled,
     motionCollageSettings,
     userTitles,
+    pacingProfile: pacingProfileRaw,
   } = body as {
     modelId?: string; script?: string; niche?: string; topic?: string;
     speakingPaceWpm?: number;
@@ -93,7 +94,22 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
      *  list arrives here. Undefined ⇒ the route uses the raw extractor
      *  output unchanged (backwards-compatible). */
     userTitles?: UserTitleSpec[];
+    /** Pre-generation pacing pick from the page's PacingProfilePanel.
+     *  Drives per-row word budgets in `productionDocPrompt` and the
+     *  opening-hook enforcement in `applyPacingPostProcess`. Undefined
+     *  or an unknown value ⇒ falls back to 'fast' (the new default). */
+    pacingProfile?: string;
   };
+
+  // Whitelist the pacing profile so an out-of-spec string from a stale
+  // client doesn't trip the downstream switch statements. Default 'fast'
+  // matches the previously-hardcoded server-side value.
+  const pacingProfile: 'standard' | 'fast' | 'very_fast' =
+    pacingProfileRaw === 'standard'
+    || pacingProfileRaw === 'fast'
+    || pacingProfileRaw === 'very_fast'
+      ? pacingProfileRaw
+      : 'fast';
 
   if (!script || !niche) {
     return NextResponse.json({ error: 'script and niche are required' }, { status: 400 });
@@ -186,11 +202,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     });
   }
 
-  // PR3 (2026-06-03): pacing profile. Client-driven generation gets
-  // the same 'fast' default as the auto-pipeline so opening-hook
-  // directive + denser per-row word budget apply uniformly. The
-  // request body doesn't yet carry pacing_profile — when the Settings
-  // panel UI lands, plumb it through here and into the body validator.
+  // Pacing profile flows in from the page's PacingProfilePanel via the
+  // request body (validated above). 'fast' remains the default when the
+  // client omits it or sends an unknown value, matching the previous
+  // server-side hardcode and the auto-pipeline default.
   const { system, user } = productionDocPrompt({
     script: effectiveStripped,
     titles: effectiveTitles,
@@ -199,7 +214,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     startTimecodeSeconds: typeof startTimecodeSeconds === 'number' ? startTimecodeSeconds : 0,
     overlaysDisabled: overlaysDisabled === true,
     motionCollageSettings,
-    pacingProfile: 'fast',
+    pacingProfile,
   });
 
   const effectiveModelId = modelId || (await getEffectiveModelId(session.ws, 'production-doc'));
@@ -801,7 +816,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   // niche / total_duration). Same for the row-array round-trip.
   const pacing = applyPacingPostProcess({
     ...(result as unknown as ProductionDoc),
-    pacing_profile: 'fast',
+    pacing_profile: pacingProfile,
   });
   result.rows = pacing.doc.rows as unknown as ProductionDocRowLike[];
   (result as { pacing_profile?: string }).pacing_profile = pacing.diagnostics.profile;
