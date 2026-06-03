@@ -58,8 +58,8 @@ describe('buildDoodleVariantPrompt', () => {
       niche: 'x',
       maxVariants: 4,
     });
-    expect(system).toMatch(/ONE base scene \+ 4 sibling variants/);
-    expect(user).toContain('4 sibling variants');
+    expect(system).toMatch(/ONE base scene \+ 4 distinct scene frames/);
+    expect(user).toContain('4 DISTINCT scene frames');
   });
 
   it('clamps maxVariants to the caption count', () => {
@@ -69,7 +69,7 @@ describe('buildDoodleVariantPrompt', () => {
       niche: 'x',
       maxVariants: 50,
     });
-    expect(system).toMatch(/ONE base scene \+ 3 sibling variants/);
+    expect(system).toMatch(/ONE base scene \+ 3 distinct scene frames/);
   });
 
   it('shows the caption chunks with their indices so the model can ground variants', () => {
@@ -97,9 +97,11 @@ describe('buildDoodleVariantPrompt', () => {
     // if a future rewrite drops it.
     expect(system).toMatch(/MIDDLE 60%|middle 60%/);
     expect(system).toMatch(/stick-figure|hand-drawn/);
+    // Distinct scene per beat, but ONE consistent character + style is the
+    // load-bearing constraint that keeps it coherent.
+    expect(system).toMatch(/SAME character|consistent character|same character/);
     // No motion within a frame — comes from the user's "Atlas Edit
     // variants from a base, NEVER Remotion motion on a static image" memory.
-    expect(system).toMatch(/sibling-frame|sibling/);
     expect(system).toMatch(/NO motion within a frame|NEVER ask for camera moves/);
   });
 

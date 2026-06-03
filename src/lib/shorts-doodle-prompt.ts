@@ -5,17 +5,22 @@
  *   - a BASE-SCENE PROMPT describing what the opening Doodle frame
  *     shows (composed for vertical 9:16 with subject placement in the
  *     middle-60% safe zone)
- *   - N VARIANT EDIT PROMPTS describing tiny scene changes that pair
- *     with caption-chunk transitions
+ *   - N VARIANT SCENE PROMPTS — each a DISTINCT scene that illustrates its
+ *     caption beat, paired with a caption-chunk transition
  *
  * The result feeds the Doodle asset pipeline which:
- *   1. Calls Atlas Image (one t2i call) for the BASE frame
- *   2. Calls Atlas Edit (one i2i call per variant) for each variant
+ *   1. Calls Atlas Image (one t2i call) for the BASE frame — it defines the
+ *      recurring character + the style
+ *   2. Calls Atlas Edit (one i2i call per variant) for each variant, using
+ *      the base as the character/style reference and the variant prompt to
+ *      compose a NEW scene
  *
- * Per the user's memory: animation is sibling-frame variants from the
- * base. We never ask the image model to introduce motion within a frame.
- * Each variant frame is a stand-alone still that's near-identical to
- * the base except for the described change.
+ * Design (Phase 15.16): each variant is a stand-alone still that advances the
+ * story — a new setting / composition / action that visualises what the
+ * caption at that beat is saying — while keeping the SAME character and the
+ * hand-drawn style as the base. We never ask the image model to introduce
+ * motion within a frame (no camera moves, no motion blur); the variety comes
+ * from cutting between distinct scenes, not from animating one.
  *
  * Output shape:
  *   {
@@ -76,29 +81,29 @@ export function buildDoodleVariantPrompt(input: DoodleVariantInput): { system: s
     .map((c, i) => `[${i}] ${c.text}`)
     .join('\n');
   return {
-    system: `You are an art director for a hand-drawn Doodle Explainer 2 Short — 9:16 vertical, ~30-60 seconds, voiceover-driven, near-static animation (sibling-frame variants from a single base scene; NO motion within a frame, NO labels with arrows, NO text overlays — captions are rendered separately by the player).
+    system: `You are an art director for a hand-drawn Doodle Explainer Short — 9:16 vertical, ~30-60 seconds, voiceover-driven. The Short is a sequence of distinct STILL scenes that cut on the beat (NO motion within a frame, NO camera moves, NO labels with arrows, NO text overlays — captions are rendered separately by the player). The whole point is visual VARIETY held together by ONE consistent character + ONE consistent hand-drawn style.
 
-Given a Short's script + the pre-chunked captions, design ONE base scene + ${targetVariants} sibling variants.
+Given a Short's script + the pre-chunked captions, design ONE base scene + ${targetVariants} distinct scene frames.
 
-**BASE SCENE (one scene, opening frame):**
+**BASE SCENE (the opening frame — and the character/style anchor):**
 - Composed for 9:16 vertical canvas. SUBJECT(S) live in the MIDDLE 60% (vertical) of the frame — top 10% and bottom 10% are reserved for YouTube UI chrome and the player's caption band.
-- Anchored to the Doodle Explainer 2 visual language: stick-figure-style characters, slightly imperfect hand-drawn lines, light clothing detail, varied accent colors, white default background but can be a colored sky / real-photo backdrop / etc. NEVER textbook-style labels with arrows.
-- The base scene is the WIDEST and most general scene of the whole Short — it sets the stage. Specific dramatic beats belong in the variants.
-- Length: 60-180 chars.
+- It clearly establishes the MAIN CHARACTER (who recurs in every later frame) and the visual language: stick-figure-style character with a couple of memorable, repeatable traits (e.g. "round glasses, green hoodie"), slightly imperfect hand-drawn lines, varied accent colors, simple backgrounds. NEVER textbook-style labels with arrows.
+- Name those character traits explicitly in the base prompt so the later scenes can keep them consistent.
+- Length: 60-200 chars.
 
-**VARIANTS (${targetVariants} variants, each a small change from the base):**
-- Each variant is a SIBLING of the base: the camera, the subjects, and the composition stay the same. ONLY ONE OR TWO elements change — a character's expression, a prop appears or disappears, a color shifts, a small new subject enters.
-- Each variant is timed to a caption-chunk transition. Pick the caption-chunk index where this variant should swap in. Pick FAIRLY EVENLY spread chunk indices (don't bunch variants in the first 3 chunks).
-- Each variant's edit prompt is ONE clean sentence describing the change. Examples: "The character's eyebrows raise in surprise and a yellow exclamation mark appears beside their head.", "A small red flame appears on the brown scroll the character is holding.", "The background turns from white to a soft blue sky with a single sun."
-- NEVER ask for camera moves, motion blur, animation lines, or dynamic gestures — the still must read as a stand-alone Doodle Explainer frame.
-- Length per variant prompt: 40-160 chars.
+**SCENE FRAMES (${targetVariants} frames — each a DIFFERENT scene):**
+- Each frame is a brand-new scene that VISUALISES what the caption at its beat is saying — a different setting, composition, action, or angle from every other frame. Cut hard between them; do NOT keep the same composition. This is what stops the Short looking static.
+- CRITICAL for consistency: every frame keeps the SAME character (same repeatable traits from the base) and the SAME hand-drawn doodle style. Only the SCENE changes. Write each prompt as a self-contained scene description that re-states the character so the editor preserves them, e.g. "The same round-glasses character now sits slumped at a messy desk, head in hands, a red overdue bill in front of them." / "Wide shot: the character stands tiny at the foot of a giant glowing server tower, looking up."
+- Each frame is timed to a caption-chunk transition. Pick the caption-chunk index where it swaps in, FAIRLY EVENLY spread across the whole script (don't bunch them in the first 3 chunks).
+- NEVER ask for camera moves, motion blur, animation lines, or split-screens — each must read as one clean stand-alone still.
+- Length per scene prompt: 60-220 chars.
 
 Output STRICTLY this JSON shape:
 
 {
-  "base_prompt": "<60-180 char base scene description>",
+  "base_prompt": "<60-200 char base scene description naming the recurring character traits>",
   "variants": [
-    { "caption_chunk_start_index": <integer 0-${Math.max(0, input.captions.length - 1)}>, "edit_prompt": "<40-160 char change>" }
+    { "caption_chunk_start_index": <integer 0-${Math.max(0, input.captions.length - 1)}>, "edit_prompt": "<60-220 char distinct scene that keeps the same character + style>" }
   ]
 }
 
@@ -113,7 +118,7 @@ ${input.shortScript.trim().slice(0, 2400)}
 Pre-chunked captions (use these indices for variant placement):
 ${captionLines}
 
-Design ONE base scene + ${targetVariants} sibling variants. JSON only.`,
+Design ONE base scene + ${targetVariants} DISTINCT scene frames — each illustrating its caption beat, same character + style throughout. JSON only.`,
   };
 }
 
@@ -163,7 +168,7 @@ export function parseDoodleVariantResult(
     const editPrompt = typeof rv.edit_prompt === 'string' ? rv.edit_prompt.trim() : '';
     if (editPrompt.length < 10) continue;
     seenIndexes.add(idx);
-    out.push({ caption_chunk_start_index: idx, edit_prompt: editPrompt.slice(0, 220) });
+    out.push({ caption_chunk_start_index: idx, edit_prompt: editPrompt.slice(0, 280) });
   }
   if (out.length === 0) {
     throw new Error('Doodle variants response had no usable variants.');
