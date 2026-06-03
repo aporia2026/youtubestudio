@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
+import { parsePacingProfile } from '@/lib/pacing-profile';
 
 /**
  * GET  /api/auto-pipeline/presets — list workspace presets.
@@ -28,6 +29,7 @@ export const GET = apiRoute.authed(async (session) => {
     thumbnail_template_id: string | null;
     seo_template_id: string | null;
     production_doc_style_id: string | null;
+    pacing_profile: string | null;
     updated_at: string;
   }>(
     `
@@ -43,6 +45,7 @@ export const GET = apiRoute.authed(async (session) => {
            thumbnail_template_id::text AS thumbnail_template_id,
            seo_template_id::text AS seo_template_id,
            production_doc_style_id::text AS production_doc_style_id,
+           pacing_profile,
            updated_at::text AS updated_at
       FROM pipeline_presets
      WHERE workspace_id = $1::uuid
@@ -96,6 +99,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     typeof b.script_style_preset_id === 'string' && b.script_style_preset_id.length > 0
       ? b.script_style_preset_id
       : null;
+  // Pacing profile (migration 0116). Null when missing OR when the
+  // body sends an unknown value — the DB CHECK constraint enforces the
+  // same whitelist as a second line of defense.
+  const pacingProfile = parsePacingProfile(b.pacing_profile);
   const ideaContext = isObject(b.idea_context) ? b.idea_context : null;
   const scriptRules = isObject(b.script_rules) ? b.script_rules : null;
   const fallbackChains = isObject(b.fallback_chains) ? b.fallback_chains : null;
@@ -109,14 +116,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         qa_min_score, qa_max_iterations, script_gate_enabled,
         narration_deadline_days, fallback_chains_jsonb,
         video_editor_collaborator_id, thumbnail_template_id, seo_template_id,
-        production_doc_style_id, script_style_preset_id, created_by
+        production_doc_style_id, script_style_preset_id, pacing_profile, created_by
       ) VALUES (
         $1::uuid, $2, $3, $4,
         $5::jsonb, $6::jsonb, $7,
         $8, $9, $10,
         $11, $12::jsonb,
         $13::uuid, $14::uuid, $15::uuid,
-        $16::uuid, $17::uuid, $18::uuid
+        $16::uuid, $17::uuid, $18, $19::uuid
       )
       RETURNING id::text AS id
       `,
@@ -138,6 +145,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         seoTemplateId,
         productionDocStyleId,
         scriptStylePresetId,
+        pacingProfile,
         session.uid,
       ],
     );

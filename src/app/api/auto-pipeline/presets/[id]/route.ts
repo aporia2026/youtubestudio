@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
+import { parsePacingProfile } from '@/lib/pacing-profile';
 
 /**
  * GET / PATCH / DELETE for a single pipeline_preset row.
@@ -32,6 +33,10 @@ interface PresetFull {
   video_editor_collaborator_id: string | null;
   thumbnail_template_id: string | null;
   seo_template_id: string | null;
+  /** Migration 0116 — 'standard' | 'fast' | 'very_fast' | null. Null
+   *  reads as "no explicit pick" and the production-doc handler falls
+   *  back to 'fast'. */
+  pacing_profile: string | null;
   // ─── Feature-preset bundle FKs (migration 0097) ──────────────────
   script_preset_id: string | null;
   qa_preset_id: string | null;
@@ -61,6 +66,7 @@ const ROW_SHAPE = `
   video_editor_collaborator_id::text AS video_editor_collaborator_id,
   thumbnail_template_id::text AS thumbnail_template_id,
   seo_template_id::text AS seo_template_id,
+  pacing_profile,
   script_preset_id::text AS script_preset_id,
   qa_preset_id::text AS qa_preset_id,
   narration_preset_id::text AS narration_preset_id,
@@ -147,6 +153,21 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
     if (b.idea_preset_id !== undefined) {
       patch.idea_preset_id = b.idea_preset_id === null ? null : asUuidOrThrow(b.idea_preset_id, 'idea_preset_id');
     }
+    if (b.pacing_profile !== undefined) {
+      // null is a valid "clear" — preserves the "no explicit pick"
+      // state. Other inputs go through the shared whitelist parser;
+      // anything outside the three known values is rejected here so
+      // the DB CHECK never has to fire.
+      if (b.pacing_profile === null) {
+        patch.pacing_profile = null;
+      } else {
+        const parsed = parsePacingProfile(b.pacing_profile);
+        if (parsed === null) {
+          throw new Error("pacing_profile must be one of 'standard', 'fast', 'very_fast', or null");
+        }
+        patch.pacing_profile = parsed;
+      }
+    }
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Invalid input' }, { status: 400 });
   }
@@ -200,6 +221,7 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
              qa_preset_id = CASE WHEN $31::boolean THEN $32::uuid ELSE qa_preset_id END,
              narration_preset_id = CASE WHEN $33::boolean THEN $34::uuid ELSE narration_preset_id END,
              idea_preset_id = CASE WHEN $35::boolean THEN $36::uuid ELSE idea_preset_id END,
+             pacing_profile = CASE WHEN $37::boolean THEN $38 ELSE pacing_profile END,
              updated_at = NOW()
        WHERE id = $1::uuid AND workspace_id = $2::uuid
       RETURNING ${ROW_SHAPE}
@@ -227,6 +249,7 @@ export const PATCH = apiRoute.authed<{ id: string }>(async (session, req: NextRe
         patch.qa_preset_id !== undefined, patch.qa_preset_id ?? null,
         patch.narration_preset_id !== undefined, patch.narration_preset_id ?? null,
         patch.idea_preset_id !== undefined, patch.idea_preset_id ?? null,
+        patch.pacing_profile !== undefined, patch.pacing_profile ?? null,
       ],
     );
     if (rows.length === 0) return NextResponse.json({ error: 'Preset not found.' }, { status: 404 });

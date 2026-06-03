@@ -30,6 +30,7 @@ import {
   type UserTitleSpec,
 } from '@/lib/script-titles';
 import { normalizeTitleCards } from '@/lib/title-card-repair';
+import { parsePacingProfileWithDefault } from '@/lib/pacing-profile';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
 export const maxDuration = 300;
@@ -103,13 +104,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
   // Whitelist the pacing profile so an out-of-spec string from a stale
   // client doesn't trip the downstream switch statements. Default 'fast'
-  // matches the previously-hardcoded server-side value.
-  const pacingProfile: 'standard' | 'fast' | 'very_fast' =
-    pacingProfileRaw === 'standard'
-    || pacingProfileRaw === 'fast'
-    || pacingProfileRaw === 'very_fast'
-      ? pacingProfileRaw
-      : 'fast';
+  // matches the previously-hardcoded server-side value. Same parser the
+  // auto-pipeline uses, so both paths agree on what's accepted.
+  const pacingProfile = parsePacingProfileWithDefault(pacingProfileRaw);
 
   if (!script || !niche) {
     return NextResponse.json({ error: 'script and niche are required' }, { status: 400 });

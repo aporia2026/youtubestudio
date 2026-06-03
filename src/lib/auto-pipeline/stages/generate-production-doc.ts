@@ -25,6 +25,7 @@ import { extractScriptTitles } from '../../script-titles';
 import { normalizeTitleCards } from '../../title-card-repair';
 import { preprocessSsmlForProductionDoc } from '../../ssml-production-doc';
 import type { ProductionDocRowLike } from '../../production-doc-postprocess';
+import { parsePacingProfileWithDefault } from '../../pacing-profile';
 import { generateTextWithFallback } from '../../ai';
 import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
@@ -120,6 +121,12 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
   // have to detect them itself.
   const extracted = extractScriptTitles(scriptForPipeline);
 
+  // Pacing profile from the preset (migration 0116). Null / unknown
+  // values fall back to 'fast' — same default the manual /api/generate/
+  // production-doc route uses. See plan
+  // `_plans/2026-06-04-pipeline-preset-pacing-profile.md`.
+  const pacingProfile = parsePacingProfileWithDefault(preset.pacing_profile);
+
   // Build the call args once — both the first attempt and the strict
   // retry use the same prompt, just at different temperatures. Pulled
   // out so the retry path is a one-liner that flips temperature.
@@ -130,12 +137,10 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
       ssmlSections: ssmlPre.wasSsml ? ssmlPre.sections : undefined,
       niche,
       topic,
-      // PR3 (2026-06-03): default to 'fast' for the auto-pipeline so
-      // every new pipeline-generated doc lands with vivid pacing +
-      // the opening hook directive. Per-video / per-preset overrides
-      // are a future addition — when the pipeline preset gains a
-      // `pacing_profile` field, plumb it through here.
-      pacingProfile: 'fast',
+      // Preset-driven pacing (migration 0116). Null on the preset →
+      // `parsePacingProfileWithDefault` returns 'fast', preserving the
+      // pre-0116 behavior for every preset that doesn't carry a pick.
+      pacingProfile,
       style: style
         ? {
             id: style.id,
@@ -484,12 +489,13 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
   // so opt-out is a single-field change.
   const docWithProfile: ProductionDoc = {
     ...(parsedDoc as ProductionDoc),
-    pacing_profile: 'fast',
+    pacing_profile: pacingProfile,
   };
   const pacing = applyPacingPostProcess(docWithProfile);
   if (pacing.diagnostics.openingRowsSplit > 0 || pacing.diagnostics.openingFirstRowIsStaticBase) {
     logger.info('[pacing post-process]', {
       pipeline_video_id: video.id,
+      pacing_profile: pacingProfile,
       ...pacing.diagnostics,
     });
   }

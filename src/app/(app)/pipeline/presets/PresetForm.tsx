@@ -49,6 +49,10 @@ interface FullPreset {
    *  generation stage. Null = fall back to `production_doc_style_id`.
    *  Both null = no style preset injection. Migration 0093. */
   script_style_preset_id: string | null;
+  /** Pacing profile threaded into the production-doc generation stage
+   *  (migration 0116). Null = no explicit pick → server falls back to
+   *  the documented default ('fast'). */
+  pacing_profile: 'standard' | 'fast' | 'very_fast' | null;
   narration_deadline_days: number;
   fallback_chains: Record<string, string[]> | null;
   video_editor_collaborator_id: string | null;
@@ -113,6 +117,11 @@ export default function PresetForm({
   // script-generation stage only. Blank = inherit from
   // productionDocStyleId. Both blank = no style preset injection.
   const [scriptStylePresetId, setScriptStylePresetId] = useState<string>('');
+  // Pacing profile for the production-doc stage (migration 0116).
+  // '' (empty string) = no explicit pick → server falls back to 'fast'.
+  // Stored as a string so the <select> binds cleanly; coerced to
+  // 'standard'|'fast'|'very_fast'|null at save time.
+  const [pacingProfile, setPacingProfile] = useState<string>('');
   const [ideaContextJson, setIdeaContextJson] = useState('{}');
   // Script-rules state — broken out into structured fields per the
   // 2026-05-27 follow-up. The fields below cover the documented
@@ -215,6 +224,7 @@ export default function PresetForm({
           setSeoTemplateId(p.seo_template_id ?? '');
           setProductionDocStyleId(p.production_doc_style_id ?? '');
           setScriptStylePresetId(p.script_style_preset_id ?? '');
+          setPacingProfile(p.pacing_profile ?? '');
           setScriptPresetId(p.script_preset_id ?? '');
           setQaPresetId(p.qa_preset_id ?? '');
           setNarrationPresetId(p.narration_preset_id ?? '');
@@ -311,6 +321,10 @@ export default function PresetForm({
       seo_template_id: seoTemplateId || null,
       production_doc_style_id: productionDocStyleId || null,
       script_style_preset_id: scriptStylePresetId || null,
+      // '' on save = "no explicit pick" → DB stores NULL → handler
+      // falls back to 'fast'. Any other value flows through the route's
+      // whitelist parser as a second line of defense.
+      pacing_profile: pacingProfile || null,
       // Feature-preset bundle (migration 0097). Null = unbundled (the
       // stage handler falls back to the inline columns below).
       script_preset_id: scriptPresetId || null,
@@ -715,6 +729,22 @@ export default function PresetForm({
                 {s.origin === 'built-in' ? ' (built-in)' : ''}
               </option>
             ))}
+          </select>
+        </Field>
+
+        <Field
+          label="Pacing"
+          hint="Per-row shot length the production-doc stage targets. Standard = 4–6 s per shot (slow doc style). Fast = 3–4 s (the new default, opening hook enforced). Very Fast = 2–3 s (TikTok-tier, ~30% more shots = more image calls)."
+        >
+          <select
+            value={pacingProfile}
+            onChange={(e) => setPacingProfile(e.target.value)}
+            className="input-field"
+          >
+            <option value="">— Use default (Fast) —</option>
+            <option value="standard">Standard — 4–6 s per shot</option>
+            <option value="fast">Fast — 3–4 s per shot</option>
+            <option value="very_fast">Very Fast — 2–3 s per shot</option>
           </select>
         </Field>
 

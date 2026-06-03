@@ -49,6 +49,7 @@ function basePreset(overrides: Partial<PipelinePreset> = {}): PipelinePreset {
     qa_preset_id: null,
     narration_preset_id: null,
     idea_preset_id: null,
+    pacing_profile: null,
     script_preset: null,
     qa_preset: null,
     narration_preset: null,

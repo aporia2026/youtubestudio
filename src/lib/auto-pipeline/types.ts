@@ -225,6 +225,12 @@ export interface PipelinePreset {
    *  generating_seo handler. Null = skip the SEO step entirely
    *  (advance editor → done with no SEO generation). */
   seo_template_id: string | null;
+  /** Pacing profile for the production-doc stage (migration 0116).
+   *  Threaded into `productionDocPrompt` + `applyPacingPostProcess` by
+   *  the production-doc handler. Null = no explicit pick → handler
+   *  falls back to 'fast' (the documented default, matching the manual
+   *  /api/generate/production-doc route's whitelist). */
+  pacing_profile: 'standard' | 'fast' | 'very_fast' | null;
   // ─── Feature-preset bundle (migration 0097) ────────────────────────
   // Each FK points at a row in the per-feature preset table. Stage
   // handlers prefer the bundle; when an FK is null they fall back to
