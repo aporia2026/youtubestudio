@@ -47,6 +47,13 @@ const ATLAS_BASE = 'https://api.atlascloud.ai/api/v1/model';
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_ATTEMPTS = 95;
 
+/** Per-poll-request timeout. A single status check should answer in well
+ *  under this; the cap exists so a hung socket (connection open, no bytes)
+ *  can't block the loop forever and silently eat the function budget — the
+ *  exact failure mode behind the "stuck on variant N" hang. A timed-out
+ *  poll is treated as transient and retried on the next interval. */
+const POLL_REQUEST_TIMEOUT_MS = 20_000;
+
 /** Atlas's `size` enum for the GPT Image 2 family. Three are documented
  *  on atlascloud.ai/models/openai/gpt-image-2/text-to-image; `'2560x1440'`
  *  is exposed by the Atlas playground (verified via user screenshot
@@ -398,9 +405,22 @@ async function pollAtlasPrediction(
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 
-    const res = await fetch(`${ATLAS_BASE}/prediction/${encodeURIComponent(predictionId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${ATLAS_BASE}/prediction/${encodeURIComponent(predictionId)}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Timeout or network blip on a single poll — transient. Keep polling
+      // until the attempt ceiling rather than failing the whole prediction.
+      logger.warn(`[atlas-images ${label}] poll request errored (transient)`, {
+        predictionId,
+        attempt: i + 1,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
     if (!res.ok) {
       if (res.status === 429) continue;
       throw new Error(`[atlas-images ${label}] poll failed: ${res.status}`);

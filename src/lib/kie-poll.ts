@@ -21,6 +21,11 @@ const FLUX_KONTEXT_BASE = 'https://api.kie.ai/api/v1/flux/kontext';
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_ATTEMPTS = 95;
 
+/** Per-poll-request timeout. A single status check answers fast; this cap
+ *  only exists so a hung socket can't block the loop indefinitely and eat
+ *  the function budget. A timed-out poll is transient — retried next tick. */
+const POLL_REQUEST_TIMEOUT_MS = 20_000;
+
 /**
  * Strip HTML (Cloudflare gateway pages) from Kie.ai error responses so the
  * client sees something usable instead of a wall of HTML.
@@ -111,9 +116,16 @@ export async function pollKieResult(taskId: string, apiKey: string): Promise<str
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
 
-    const res = await fetch(`${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${KIE_BASE}/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      // Timeout or network blip on a single poll — transient, keep polling.
+      continue;
+    }
 
     if (!res.ok) {
       if (res.status === 429) continue;
@@ -246,9 +258,16 @@ export async function pollGpt4oImageResult(taskId: string, apiKey: string): Prom
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
 
-    const res = await fetch(`${GPT4O_BASE}/record-info?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${GPT4O_BASE}/record-info?taskId=${encodeURIComponent(taskId)}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      // Timeout or network blip on a single poll — transient, keep polling.
+      continue;
+    }
     if (!res.ok) {
       if (res.status === 429) continue;
       throw new Error(`GPT-4o poll failed: ${res.status}`);
@@ -357,9 +376,16 @@ export async function pollFluxKontextResult(taskId: string, apiKey: string): Pro
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
 
-    const res = await fetch(`${FLUX_KONTEXT_BASE}/record-info?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${FLUX_KONTEXT_BASE}/record-info?taskId=${encodeURIComponent(taskId)}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(POLL_REQUEST_TIMEOUT_MS),
+      });
+    } catch {
+      // Timeout or network blip on a single poll — transient, keep polling.
+      continue;
+    }
     if (!res.ok) {
       if (res.status === 429) continue;
       throw new Error(`Flux Kontext poll failed: ${res.status}`);
