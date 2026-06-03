@@ -15,6 +15,12 @@ import type { ForcedAlignmentResponse } from '@/lib/elevenlabs';
 import { logger } from '@/lib/logger';
 import { remotionWebpackOverride } from '@/lib/remotion-bundler';
 import {
+  kickOffLambdaRender,
+  pollLambdaProgress,
+  lambdaConfigured,
+} from '@/lib/remotion-lambda';
+import { getLambdaOutputDownloadUrl } from '@/lib/lambda-s3';
+import {
   buildRenderDownloadFilename,
   buildShortRenderKey,
   getDownloadUrlForBucket,
@@ -23,10 +29,28 @@ import {
   uploadToBucket,
 } from '@/lib/r2';
 
-// Vertical Shorts render — same Remotion bundler/renderer pattern as
-// /api/render/video. Vercel Pro 300s ceiling is enough for typical
-// 30-60s Shorts.
+// Vertical Shorts render. Two backends, same as /api/render/video:
+//   - 'lambda' (preferred): renders on AWS Lambda via the pre-deployed
+//     Remotion site. No in-function bundling, so it sidesteps the rspack /
+//     250MB / headless-Chrome walls that make in-function bundling unviable
+//     on Vercel.
+//   - 'vercel' (fallback): in-function bundle() + renderMedia(). Only works
+//     where the Remotion toolchain + a browser are available; on Vercel it
+//     fails to load @remotion/bundler. Kept for local/dev parity.
 export const maxDuration = 300;
+
+type RenderBackend = 'vercel' | 'lambda';
+
+/** RENDER_BACKEND env: 'lambda' when configured, else 'vercel'. Mirrors
+ *  /api/render/video so both render routes pick the same backend. */
+function selectRenderBackend(): RenderBackend {
+  const requested = (process.env.RENDER_BACKEND ?? '').toLowerCase();
+  if (requested === 'lambda' && lambdaConfigured()) return 'lambda';
+  if (requested === 'lambda') {
+    logger.warn('[short-render] RENDER_BACKEND=lambda requested but env incomplete; falling back to vercel');
+  }
+  return 'vercel';
+}
 
 // Reuses the existing render_jobs table from /api/render/video — no
 // separate schema. Job ids prefixed `short_` so we can tell them apart.
@@ -46,11 +70,27 @@ async function ensureTable() {
   // canonical column list. `title` here is the short's title (when set)
   // and feeds the user-facing Download filename.
   await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS title TEXT`;
+  // Lambda backend bookkeeping (shared columns, migration 0066) + the
+  // short_id / workspace_id needed to write rendered_video_url back onto
+  // the shorts row when a Lambda render finishes (the GET poll has no
+  // session, so it reads them off the job).
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS lambda_render_id TEXT`;
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS lambda_bucket    TEXT`;
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS short_id         TEXT`;
+  await sql`ALTER TABLE render_jobs ADD COLUMN IF NOT EXISTS workspace_id     TEXT`;
 }
 
 async function updateJob(
   renderId: string,
-  fields: { status?: string; progress?: number; output_url?: string; error?: string; finished_at?: number },
+  fields: {
+    status?: string;
+    progress?: number;
+    output_url?: string;
+    error?: string;
+    finished_at?: number;
+    lambda_render_id?: string;
+    lambda_bucket?: string;
+  },
 ) {
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -156,21 +196,40 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const title = short.title?.trim() ? short.title.trim().slice(0, 200) : null;
   try {
     await sql`
-      INSERT INTO render_jobs (id, status, progress, started_at, title)
-      VALUES (${renderId}, 'pending', 0, ${Date.now()}, ${title})
+      INSERT INTO render_jobs (id, status, progress, started_at, title, short_id, workspace_id)
+      VALUES (${renderId}, 'pending', 0, ${Date.now()}, ${title}, ${shortId}, ${session.ws})
     `;
   } catch (err) {
     logger.error('short-render: DB insert failed', { detail: err instanceof Error ? err.message : String(err) });
     return NextResponse.json({ error: 'Failed to create render job' }, { status: 500 });
   }
 
-  // Fire-and-forget. The function instance keeps running until the render
-  // finishes OR maxDuration kicks in. The client polls GET to watch progress.
+  const backend = selectRenderBackend();
+
+  // Lambda: kickoff returns in ~300ms; the render proceeds on AWS and the
+  // client watches it via the GET poll (which refreshes from Lambda).
+  if (backend === 'lambda') {
+    try {
+      await startLambdaRender(renderId, config);
+    } catch (err) {
+      logger.error('short-render: Lambda kickoff failed', { renderId, detail: err instanceof Error ? err.message : String(err) });
+      await updateJob(renderId, {
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+        finished_at: Date.now(),
+      }).catch(() => {});
+      return NextResponse.json({ error: 'Failed to start Lambda render' }, { status: 500 });
+    }
+    return NextResponse.json({ renderId, backend }, { status: 202 });
+  }
+
+  // Vercel (fallback): fire-and-forget in-function render. Keeps the
+  // function alive until the render finishes OR maxDuration kicks in.
   startRender(renderId, config, shortId, session.ws).catch((err) => {
     logger.error('short-render: fatal', { renderId, detail: err instanceof Error ? err.message : String(err) });
   });
 
-  return NextResponse.json({ renderId }, { status: 202 });
+  return NextResponse.json({ renderId, backend }, { status: 202 });
 });
 
 /**
@@ -182,7 +241,7 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
     return NextResponse.json({ error: 'Invalid renderId' }, { status: 400 });
   }
   await ensureTable();
-  const { rows } = await sql<{
+  type ShortRenderJobRow = {
     id: string;
     status: string;
     progress: number;
@@ -191,14 +250,57 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
     started_at: string;
     finished_at: string | null;
     title: string | null;
-  }>`SELECT * FROM render_jobs WHERE id = ${renderId} LIMIT 1`;
-  const job = rows[0];
+    lambda_render_id: string | null;
+    lambda_bucket: string | null;
+    short_id: string | null;
+    workspace_id: string | null;
+  };
+  const { rows } = await sql<ShortRenderJobRow>`SELECT * FROM render_jobs WHERE id = ${renderId} LIMIT 1`;
+  let job = rows[0];
   if (!job) return NextResponse.json({ error: 'Render not found' }, { status: 404 });
+
+  // Lambda-backed job mid-flight — refresh from Lambda so the client sees
+  // live progress, and on completion stamp the output + the shorts row.
+  if (
+    job.lambda_render_id && job.lambda_bucket &&
+    job.status !== 'done' && job.status !== 'error'
+  ) {
+    try {
+      const snap = await pollLambdaProgress({
+        lambdaRenderId: job.lambda_render_id,
+        bucketName: job.lambda_bucket,
+      });
+      const fields: Parameters<typeof updateJob>[1] = { progress: snap.overallProgress };
+      if (snap.fatalError) {
+        fields.status = 'error';
+        fields.error = snap.fatalError;
+        fields.finished_at = Date.now();
+      } else if (snap.done && snap.outputFile) {
+        fields.status = 'done';
+        fields.progress = 1;
+        fields.output_url = snap.outputFile;
+        fields.finished_at = Date.now();
+        // Mirror the in-function path: surface the result on the shorts row.
+        if (job.short_id && job.workspace_id) {
+          await sql`
+            UPDATE shorts SET rendered_video_url = ${snap.outputFile}, updated_at = NOW()
+             WHERE id = ${job.short_id}::uuid AND workspace_id = ${job.workspace_id}::uuid
+          `.catch(() => { /* row deleted mid-render — leave the job done */ });
+        }
+      }
+      await updateJob(renderId, fields);
+      const refreshed = await sql<ShortRenderJobRow>`SELECT * FROM render_jobs WHERE id = ${renderId} LIMIT 1`;
+      if (refreshed.rows.length > 0) job = refreshed.rows[0];
+    } catch (err) {
+      logger.warn('[short-render] Lambda poll failed', { renderId, detail: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // `output_url` backs the in-page <video> preview; `download_url` is a
-  // presigned R2 URL with `response-content-disposition: attachment`
-  // baked in so the browser saves the bytes direct from R2 — skipping
-  // /api/download-proxy and its 300s function timeout. Minted only once
-  // the render is done.
+  // presigned URL with `response-content-disposition: attachment` baked in
+  // so the browser saves the bytes direct from R2 / Lambda S3 — skipping
+  // /api/download-proxy and its 300s timeout. Minted only once the render
+  // is done.
   let download_url: string | null = null;
   if (job.status === 'done' && job.output_url) {
     const filename = buildRenderDownloadFilename(
@@ -207,7 +309,9 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
       `short-${job.id}`,
     );
     try {
-      download_url = await getShortRenderDownloadAttachmentUrl(job.id, filename);
+      download_url = job.lambda_render_id
+        ? await getLambdaOutputDownloadUrl(job.output_url, filename)
+        : await getShortRenderDownloadAttachmentUrl(job.id, filename);
     } catch (err) {
       logger.warn('[short-render] downloadUrl mint failed', {
         renderId: job.id,
@@ -226,6 +330,26 @@ export const GET = apiRoute.authed(async (_session, req: NextRequest) => {
     finished_at: job.finished_at ? Number(job.finished_at) : null,
   });
 });
+
+/**
+ * Lambda kickoff for the ShortVideo composition. Returns in ~100-300ms
+ * with the ids the GET poll needs; the render proceeds on AWS against the
+ * pre-deployed Remotion site (which registers ShortVideo). Throws if Lambda
+ * is misconfigured or AWS rejects — the POST handler marks the job 'error'.
+ */
+async function startLambdaRender(renderId: string, config: ShortVideoConfig) {
+  await updateJob(renderId, { status: 'rendering', progress: 0.01 });
+  const { lambdaRenderId, bucketName } = await kickOffLambdaRender({
+    compositionId: 'ShortVideo',
+    inputProps: { config },
+    codec: 'h264',
+  });
+  await updateJob(renderId, {
+    lambda_render_id: lambdaRenderId,
+    lambda_bucket: bucketName,
+    progress: 0.03,
+  });
+}
 
 async function startRender(
   renderId: string,
