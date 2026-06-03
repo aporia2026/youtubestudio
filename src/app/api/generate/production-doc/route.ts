@@ -29,6 +29,7 @@ import {
   TITLE_SENTINEL_LEAK_RE,
   type UserTitleSpec,
 } from '@/lib/script-titles';
+import { repairMissingTitleCards } from '@/lib/title-card-repair';
 import { preprocessSsmlForProductionDoc } from '@/lib/ssml-production-doc';
 
 export const maxDuration = 300;
@@ -363,6 +364,42 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       generation_warnings.push(
         `${demotedTitleCards.length} row${demotedTitleCards.length === 1 ? ' was' : 's were'} mistagged as Title Card by the AI — only "## headers" from your script are real title cards. Re-tagged as Animation.`,
       );
+    }
+  }
+
+  // Deterministic Title-Card repair. Walks the post-allowlist rows in script
+  // order and inserts a synthetic Title Card for any expected title the LLM
+  // dropped (or whose text drifted past the allowlist normalizer and got
+  // demoted to Animation above). Runs BEFORE the emission validator so
+  // `missing[]` reads zero after a successful repair — the LLM misbehavior
+  // is surfaced via a dedicated `[production-doc title-card-repair]` log
+  // line and a soft generation_warnings notice instead. See plan
+  // `_plans/2026-06-03-title-card-deterministic-repair.md`.
+  if (Array.isArray(result.rows) && effectiveTitles.length > 0) {
+    const emittedBefore = result.rows.filter(
+      (r) => r.visual_type === 'Title Card',
+    ).length;
+    const repair = repairMissingTitleCards(
+      result.rows,
+      effectiveTitles,
+      effectiveStripped,
+      { allowOverlay: resolved?.allow_overlay_stock === true },
+    );
+    if (repair.insertedCount > 0) {
+      logger.info('[production-doc title-card-repair]', {
+        modelId: effectiveModelId,
+        expected: effectiveTitles.length,
+        emittedBefore,
+        insertedCount: repair.insertedCount,
+        insertedTitles: repair.insertedTitles,
+      });
+      generation_warnings.push(
+        `${repair.insertedCount} title card${repair.insertedCount === 1 ? '' : 's'} ` +
+        `were auto-inserted because the model didn't emit one for: ` +
+        `${repair.insertedTitles.map((t) => `"${t}"`).join(', ')}. ` +
+        `Review the inserted card${repair.insertedCount === 1 ? '' : 's'} and edit position if needed.`,
+      );
+      result.rows = repair.rows as typeof result.rows;
     }
   }
 
