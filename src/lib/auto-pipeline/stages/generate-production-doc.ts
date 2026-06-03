@@ -22,7 +22,9 @@ import { productionDocPrompt } from '../../prompts';
 import { applyPacingPostProcess } from '../post-process-pacing';
 import type { ProductionDoc } from '../../../remotion/utils';
 import { extractScriptTitles } from '../../script-titles';
+import { normalizeTitleCards } from '../../title-card-repair';
 import { preprocessSsmlForProductionDoc } from '../../ssml-production-doc';
+import type { ProductionDocRowLike } from '../../production-doc-postprocess';
 import { generateTextWithFallback } from '../../ai';
 import { GenerateFailure } from '../../ai-fallback';
 import { resolveChain } from '../resolve-chain';
@@ -256,6 +258,64 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
     const docObj = parsedDoc as Record<string, unknown>;
     if (docObj.on_screen_text_mode_default === undefined) {
       docObj.on_screen_text_mode_default = 'overlay';
+    }
+  }
+
+  // Title-card normalization: same demote-then-repair pass the manual
+  // /api/generate/production-doc route runs. Demotes LLM-mistagged Title
+  // Cards (e.g. `[SFX:]` lines tagged as cards) to Animation, then inserts
+  // a synthetic Title Card for every `##` heading the LLM dropped. Without
+  // this, the auto-pipeline could persist a doc with fewer Title Cards
+  // than the script's headings — the soft-failure mode the manual route's
+  // pre-flight UI surfaced and that this fix closes. See plan
+  // `_plans/2026-06-03-title-card-deterministic-repair.md`.
+  if (
+    parsedDoc
+    && typeof parsedDoc === 'object'
+    && !Array.isArray(parsedDoc)
+    && extracted.titles.length > 0
+  ) {
+    const docObj = parsedDoc as Record<string, unknown>;
+    const rows = docObj.rows;
+    if (Array.isArray(rows)) {
+      const emittedBefore = rows.filter(
+        (r) => (r as ProductionDocRowLike).visual_type === 'Title Card',
+      ).length;
+      const normalized = normalizeTitleCards(
+        rows as ProductionDocRowLike[],
+        extracted.titles,
+        extracted.stripped,
+        // The auto-pipeline doesn't load `allow_overlay_stock` on `style`
+        // (only id/suffix/mixing_rules per the SELECT in this handler),
+        // so default to false. Synthesizing extra overlay_* fields on the
+        // few inserted cards is harmless (renderer ignores empty values).
+        { allowOverlay: false },
+      );
+      if (normalized.demotedCount > 0) {
+        logger.info('auto-pipeline: title-card-demoted', {
+          pipeline_video_id: video.id,
+          demoted_count: normalized.demotedCount,
+          allowed_count: extracted.titles.length,
+          samples: normalized.demotedSamples,
+        });
+      }
+      if (normalized.insertedCount > 0) {
+        logger.info('auto-pipeline: title-card-repair', {
+          pipeline_video_id: video.id,
+          model_used: result.modelUsed,
+          expected: extracted.titles.length,
+          emitted_before: emittedBefore,
+          inserted_count: normalized.insertedCount,
+          inserted_titles: normalized.insertedTitles,
+        });
+      }
+      if (normalized.demotedCount > 0 || normalized.insertedCount > 0) {
+        // Replace the in-place rows array contents so all downstream
+        // post-processors (suffix-attach, auto-group-variants, etc.) see
+        // the normalized list — they read `docObj.rows` by reference.
+        rows.length = 0;
+        rows.push(...normalized.rows);
+      }
     }
   }
 

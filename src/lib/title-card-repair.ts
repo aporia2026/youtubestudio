@@ -25,14 +25,14 @@
 import type { ProductionDocRowLike } from './production-doc-postprocess';
 import type { ExtractedTitle } from './script-titles';
 
-/** Same punctuation+whitespace+case tolerance as the route's strict-allowlist
- *  demoter at `src/app/api/generate/production-doc/route.ts:339-356`. Two
- *  texts that normalize to the same string are treated as the same title;
- *  this absorbs the most common LLM paraphrases ("Knight Capital." vs the
- *  extracted "Knight Capital") without letting genuinely different text
- *  through. Kept inline (not imported) so this module has zero coupling
- *  with the route file. */
-function normalizeTitleText(s: string): string {
+/** Punctuation+whitespace+case tolerance used by both the demote pass and
+ *  the repair pass. Two texts that normalize to the same string are treated
+ *  as the same title; this absorbs the most common LLM paraphrases
+ *  ("Knight Capital." vs the extracted "Knight Capital") without letting
+ *  genuinely different text through. Exported so the route's emission
+ *  validator can share the exact comparison rule and never disagree with
+ *  this module about what counts as a match. */
+export function normalizeTitleText(s: string): string {
   return s
     .trim()
     .toLowerCase()
@@ -194,6 +194,81 @@ export function repairMissingTitleCards<R extends ProductionDocRowLike>(
     rows: out,
     insertedCount: insertions.length,
     insertedTitles: insertions.map((ins) => ins.title.text),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Composed normalize pass: demote non-allowlisted Title Cards, then repair
+// missing ones. The route's strict-allowlist demoter catches Title Cards
+// the LLM emitted with wrong text (a full sentence mistagged as a card, a
+// `[SFX:]` cue, etc.) by checking each TC row's `script_text` against the
+// set of expected title texts and downgrading the visual_type to
+// "Animation" on mismatch. After that pass runs, the repair phase fills
+// in any expected title the LLM dropped.
+//
+// Used by both `src/app/api/generate/production-doc/route.ts` and
+// `src/lib/auto-pipeline/stages/generate-production-doc.ts` so both code
+// paths produce identical Title Card sets for the same input.
+// ---------------------------------------------------------------------------
+
+export interface NormalizeTitleCardsResult<R extends ProductionDocRowLike> {
+  /** Final rows after demotion + repair. */
+  rows: R[];
+  /** How many Title Card rows were demoted to Animation (LLM-mistagged). */
+  demotedCount: number;
+  /** Up to 4 `script_text` samples from demoted rows, for log readability. */
+  demotedSamples: string[];
+  /** How many synthetic Title Cards were inserted (LLM-dropped). */
+  insertedCount: number;
+  /** Title texts that needed synthesis, in script order. */
+  insertedTitles: string[];
+}
+
+/** Apply the strict-allowlist demoter, then the repair pass. The two
+ *  passes are deliberately ordered: demoting first prevents repair from
+ *  treating an LLM mistagged-as-Title-Card row as a "match" for an
+ *  expected title, which would leave the real title missing AND keep the
+ *  bad row in place. */
+export function normalizeTitleCards<R extends ProductionDocRowLike>(
+  rows: readonly R[],
+  expectedTitles: readonly ExtractedTitle[],
+  strippedScript: string,
+  options: RepairOptions,
+): NormalizeTitleCardsResult<R> {
+  // Step 1: demote. Build the allowlist of normalized title texts; any
+  // Title Card row whose script_text doesn't normalize-match an entry
+  // gets its visual_type rewritten to "Animation". Returns a new array
+  // so the caller can pass `result.rows` (a readonly view) without
+  // worrying about in-place mutation surprising downstream consumers.
+  const allowedNorm = new Set(
+    expectedTitles.map((t) => normalizeTitleText(t.text)),
+  );
+  const demotedSamples: string[] = [];
+  const afterDemote: R[] = rows.map((r) => {
+    if (r.visual_type !== 'Title Card') return r;
+    const script = typeof r.script_text === 'string' ? r.script_text.trim() : '';
+    if (!script) return r;
+    if (allowedNorm.has(normalizeTitleText(script))) return r;
+    demotedSamples.push(script);
+    return { ...r, visual_type: 'Animation' } as R;
+  });
+
+  // Step 2: repair. The demoted-row pass left script_text untouched, so
+  // the rows still anchor the repair's script-offset estimation
+  // correctly — only the visual_type label changed.
+  const repair = repairMissingTitleCards(
+    afterDemote,
+    expectedTitles,
+    strippedScript,
+    options,
+  );
+
+  return {
+    rows: repair.rows,
+    demotedCount: demotedSamples.length,
+    demotedSamples: demotedSamples.slice(0, 4),
+    insertedCount: repair.insertedCount,
+    insertedTitles: repair.insertedTitles,
   };
 }
 

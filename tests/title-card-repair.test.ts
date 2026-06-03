@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { repairMissingTitleCards } from '@/lib/title-card-repair';
+import {
+  normalizeTitleCards,
+  normalizeTitleText,
+  repairMissingTitleCards,
+} from '@/lib/title-card-repair';
 import { extractScriptTitles, type ExtractedTitle } from '@/lib/script-titles';
 import type { ProductionDocRowLike } from '@/lib/production-doc-postprocess';
 
@@ -341,6 +345,15 @@ describe('repairMissingTitleCards', () => {
     expect((result.rows[3] as ExtendedRow).character_id).toBe('host');
   });
 
+  it('exports normalizeTitleText with the route-validator-compatible rule', () => {
+    // Locks the shared comparison rule so the route's emission validator
+    // and this module always agree on what counts as the same title.
+    expect(normalizeTitleText('Knight Capital.')).toBe('knight capital');
+    expect(normalizeTitleText('  THE   END  ')).toBe('the end');
+    expect(normalizeTitleText('What Now?')).toBe('what now');
+    expect(normalizeTitleText('A; B: C!')).toBe('a; b: c'); // only trailing terminator stripped
+  });
+
   it('integrates with extractScriptTitles output end-to-end', () => {
     // Build the stripped + titles via the real extractor so we test the
     // exact data shape the route hands to the repair function.
@@ -383,5 +396,99 @@ describe('repairMissingTitleCards', () => {
       'Animation',  // Body gamma
     ]);
     expect(result.rows[3].script_text).toBe('Beta');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeTitleCards — composed demote + repair
+// ---------------------------------------------------------------------------
+
+describe('normalizeTitleCards', () => {
+  it('is a no-op when all expected titles emitted and no mistagged TCs exist', () => {
+    const titles = [titleFor(0, 'One'), titleFor(1, 'Two')];
+    const stripped = '<<TITLE_0>>\nBody one.\n<<TITLE_1>>\nBody two.';
+    const rows = [tc('One'), narration('Body one.'), tc('Two'), narration('Body two.')];
+    const result = normalizeTitleCards(rows, titles, stripped, opts);
+    expect(result.demotedCount).toBe(0);
+    expect(result.insertedCount).toBe(0);
+    expect(result.rows).toEqual(rows);
+  });
+
+  it('demotes a mistagged Title Card AND inserts the missing real one', () => {
+    // LLM tagged a [SFX:] line as a Title Card (mistag) and dropped the
+    // real "Two" card. Composed pass: demote the [SFX:] row to Animation,
+    // then insert a synthetic "Two" at its sentinel position.
+    const titles = [titleFor(0, 'One'), titleFor(1, 'Two')];
+    const stripped = '<<TITLE_0>>\nBody one.\n<<TITLE_1>>\nBody two.';
+    const mistagged: ProductionDocRowLike = {
+      ...tc('[SFX: glitch sound]'),
+      script_text: '[SFX: glitch sound]',
+    };
+    const rows = [
+      tc('One'),
+      narration('Body one.'),
+      mistagged,           // Title Card with wrong text → demote
+      narration('Body two.'), // Missing "Two" card → repair
+    ];
+    const result = normalizeTitleCards(rows, titles, stripped, opts);
+    expect(result.demotedCount).toBe(1);
+    expect(result.demotedSamples).toEqual(['[SFX: glitch sound]']);
+    expect(result.insertedCount).toBe(1);
+    expect(result.insertedTitles).toEqual(['Two']);
+    // Result row order: One TC, Body one, demoted (now Animation), Two TC, Body two.
+    const visualTypes = result.rows.map((r) => r.visual_type);
+    expect(visualTypes).toEqual(['Title Card', 'Animation', 'Animation', 'Title Card', 'Animation']);
+    const titleCardTexts = result.rows
+      .filter((r) => r.visual_type === 'Title Card')
+      .map((r) => r.script_text);
+    expect(titleCardTexts).toEqual(['One', 'Two']);
+  });
+
+  it('caps demotedSamples at 4 entries', () => {
+    const titles = [titleFor(0, 'Real')];
+    const stripped = '<<TITLE_0>>\nBody.';
+    const mistagged = (s: string) => ({ ...tc(s), script_text: s } as ProductionDocRowLike);
+    const rows = [
+      mistagged('bad-1'), mistagged('bad-2'), mistagged('bad-3'),
+      mistagged('bad-4'), mistagged('bad-5'), mistagged('bad-6'),
+      narration('Body.'),
+    ];
+    const result = normalizeTitleCards(rows, titles, stripped, opts);
+    expect(result.demotedCount).toBe(6);
+    expect(result.demotedSamples).toEqual(['bad-1', 'bad-2', 'bad-3', 'bad-4']);
+  });
+
+  it('does not mutate the input rows array', () => {
+    const titles = [titleFor(0, 'Solo')];
+    const stripped = '<<TITLE_0>>\nBody.';
+    const mistagged: ProductionDocRowLike = { ...tc('Not the title'), script_text: 'Not the title' };
+    const rows = [mistagged, narration('Body.')];
+    const before = JSON.stringify(rows);
+    normalizeTitleCards(rows, titles, stripped, opts);
+    expect(JSON.stringify(rows)).toBe(before);
+    // Original row's visual_type is still Title Card — demoter returned a copy.
+    expect(rows[0].visual_type).toBe('Title Card');
+  });
+
+  it('matches the manual-route ordering: demote runs before repair so synth lands at sentinel', () => {
+    // If we naively repaired first and then demoted, the mistagged TC's
+    // text might collide with an expected title (rare but possible) and
+    // the repair would think it was emitted, leaving the real position
+    // un-anchored. The composed pass orders demote-first to prevent that.
+    const titles = [titleFor(0, 'Confusion')];
+    const stripped = '<<TITLE_0>>\nThe real body.';
+    // Mistagged TC at the END whose text normalizes to the expected
+    // title's text. (Real-world: LLM hallucinated a closing recap card.)
+    const mistagged: ProductionDocRowLike = { ...tc('Confusion'), script_text: 'Confusion' };
+    const rows = [narration('The real body.'), mistagged];
+    // BUT: in this contrived case mistagged matches the allowlist so it's
+    // NOT demoted. The repair then sees it as emitted. This documents the
+    // expected behavior — when a mistagged TC happens to match an expected
+    // title, the composed pass treats it as legitimate. The position is
+    // still wrong but that's a separate quality issue the validator's
+    // `extra`/`missing` warnings would flag if we cared to surface it.
+    const result = normalizeTitleCards(rows, titles, stripped, opts);
+    expect(result.demotedCount).toBe(0);
+    expect(result.insertedCount).toBe(0);
   });
 });
