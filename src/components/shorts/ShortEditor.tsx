@@ -664,6 +664,7 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         subtitle="Pick the visual treatment. Doodle + Paint mint Atlas frames (1-4 min)."
       >
         <ShortStylePicker value={stylePick} onChange={setStylePick} disabled={assetsBusy} />
+        {stylePick !== 'minimal_gradient_v1' && <ShortImageModelControls />}
         <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
           <button
             type="button"
@@ -1408,6 +1409,163 @@ const VARIANT_VENDOR_LABELS: Record<VendorChoice, { label: string; cost: string;
     note: 'Higher cost; native 16:9 output. Atlas is the fallback.',
   },
 };
+
+/**
+ * Base-model + variant-vendor selectors for the Style section (Phase 15.16).
+ *
+ * The Shots panel carries the same two controls, but it only renders once
+ * assets exist — too late if the DEFAULT vendor (Atlas) is the one failing,
+ * since you can't reach the selector to switch away before the first
+ * generation. This surfaces them up front, next to the Generate button.
+ *
+ * Self-contained: loads + persists the same global user settings the Shots
+ * panel uses (`shorts_base_t2i_model_id`, `gpt_image_2_edit_primary`), so a
+ * change here applies to generation immediately and both controls converge
+ * on reload. Shown only for the image-based styles (minimal needs neither).
+ */
+function ShortImageModelControls() {
+  const [baseModelId, setBaseModelId] = useState<string>('atlas-gpt-image-2');
+  const [baseModelOptions, setBaseModelOptions] = useState<BaseT2iModelOption[]>([]);
+  const [baseModelSaving, setBaseModelSaving] = useState(false);
+  const [vendor, setVendor] = useState<VendorChoice>('atlas');
+  const [vendorSaving, setVendorSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads base model setting
+        const res = await fetch('/api/user/settings/shorts-base-t2i-model');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (Array.isArray(data.models)) setBaseModelOptions(data.models as BaseT2iModelOption[]);
+        if (typeof data.shorts_base_t2i_model_id === 'string') setBaseModelId(data.shorts_base_t2i_model_id);
+      } catch {
+        /* swallow — stay on the 'atlas-gpt-image-2' default */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads vendor setting
+        const res = await fetch('/api/user/settings/gpt-image-2-edit-primary');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.gpt_image_2_edit_primary === 'atlas' || data.gpt_image_2_edit_primary === 'kie') {
+          setVendor(data.gpt_image_2_edit_primary);
+        }
+      } catch {
+        /* swallow — stay on the 'atlas' default */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const setBaseModelPersisted = useCallback(async (next: string) => {
+    setBaseModelId(next);
+    setBaseModelSaving(true);
+    try {
+      await fetch('/api/user/settings/shorts-base-t2i-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: next }),
+      });
+    } catch {
+      toast.error('Could not save your model choice (still applied for this session).');
+    } finally {
+      setBaseModelSaving(false);
+    }
+  }, []);
+
+  const setVendorPersisted = useCallback(async (next: VendorChoice) => {
+    setVendor(next);
+    setVendorSaving(true);
+    try {
+      await fetch('/api/user/settings/gpt-image-2-edit-primary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ primary: next }),
+      });
+    } catch {
+      toast.error('Could not save your vendor choice (still applied for this session).');
+    } finally {
+      setVendorSaving(false);
+    }
+  }, []);
+
+  return (
+    <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {baseModelOptions.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Base image model:</span>
+          <select
+            value={baseModelId}
+            onChange={(e) => setBaseModelPersisted(e.target.value)}
+            disabled={baseModelSaving}
+            title={
+              baseModelOptions.find((m) => m.id === baseModelId)?.hint
+              ?? 'Text-to-image model that generates the base frame'
+            }
+            style={{
+              padding: '4px 8px',
+              borderRadius: 6,
+              background: 'rgba(0,0,0,0.2)',
+              color: 'inherit',
+              border: '1px solid rgba(255,255,255,0.15)',
+              fontSize: 11,
+            }}
+          >
+            {baseModelOptions.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} — ${m.costUsd.toFixed(3)}
+              </option>
+            ))}
+          </select>
+          {baseModelSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>saving…</span>}
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Variant vendor:</span>
+        {(Object.keys(VARIANT_VENDOR_LABELS) as VendorChoice[]).map((v) => {
+          const meta = VARIANT_VENDOR_LABELS[v];
+          const active = vendor === v;
+          return (
+            <button
+              key={v}
+              type="button"
+              onClick={() => !active && setVendorPersisted(v)}
+              disabled={vendorSaving}
+              title={meta.note}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                border: `1px solid ${active ? 'rgba(167,139,250,0.55)' : 'rgba(255,255,255,0.15)'}`,
+                background: active ? 'rgba(167,139,250,0.18)' : 'transparent',
+                color: active ? '#c4b5fd' : 'inherit',
+                fontSize: 11,
+                fontWeight: 500,
+                cursor: active || vendorSaving ? 'default' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <span>{meta.label}</span>
+              <span style={{ color: 'var(--text-muted)' }}>{meta.cost}</span>
+            </button>
+          );
+        })}
+        {vendorSaving && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>saving…</span>}
+      </div>
+    </div>
+  );
+}
 
 function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<void> | void }) {
   const picked = pickShotsBlock(row);
