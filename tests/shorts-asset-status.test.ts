@@ -3,7 +3,7 @@ import {
   anyRowGenerating,
   getStyleAssetStatus,
   isGenerationStale,
-  SHORTS_ASSET_DEADLINE_MS,
+  SHORTS_ASSET_STALE_MS,
   styleAssetLabel,
 } from '@/lib/shorts-asset-status';
 import type { GenerationProgressState, ShortRow } from '@/lib/shorts-types';
@@ -134,25 +134,38 @@ describe('isGenerationStale', () => {
     expect(isGenerationStale(undefined, NOW)).toBe(false);
     expect(isGenerationStale(null, NOW)).toBe(false);
     expect(isGenerationStale(prog({}), NOW)).toBe(false);
-    expect(isGenerationStale(prog({ phase: 'done', started_at: iso(0) }), NOW)).toBe(false);
-    expect(isGenerationStale(prog({ phase: 'error', started_at: iso(0) }), NOW)).toBe(false);
+    expect(isGenerationStale(prog({ phase: 'done', updated_at: iso(0) }), NOW)).toBe(false);
+    expect(isGenerationStale(prog({ phase: 'error', updated_at: iso(0) }), NOW)).toBe(false);
   });
 
-  it('returns false for an in-flight job still within the deadline', () => {
-    const startedAt = iso(NOW - (SHORTS_ASSET_DEADLINE_MS - 5_000));
-    expect(isGenerationStale(prog({ phase: 'variant', started_at: startedAt }), NOW)).toBe(false);
+  it('returns false for a job heartbeated within the stale window (cron alive)', () => {
+    const updatedAt = iso(NOW - (SHORTS_ASSET_STALE_MS - 5_000));
+    // Even with an ancient start, a fresh updated_at means the cron is
+    // actively advancing it — not stale.
+    expect(
+      isGenerationStale(prog({ phase: 'variant', started_at: iso(0), updated_at: updatedAt }), NOW),
+    ).toBe(false);
   });
 
-  it('returns true for an in-flight job past the deadline (dead function)', () => {
-    const startedAt = iso(NOW - (SHORTS_ASSET_DEADLINE_MS + 5_000));
-    expect(isGenerationStale(prog({ phase: 'variant', started_at: startedAt }), NOW)).toBe(true);
-    expect(isGenerationStale(prog({ phase: 'planning', started_at: startedAt }), NOW)).toBe(true);
-    expect(isGenerationStale(prog({ phase: 'base', started_at: startedAt }), NOW)).toBe(true);
+  it('returns true once no heartbeat has landed within the stale window', () => {
+    const updatedAt = iso(NOW - (SHORTS_ASSET_STALE_MS + 5_000));
+    expect(isGenerationStale(prog({ phase: 'variant', updated_at: updatedAt }), NOW)).toBe(true);
+    expect(isGenerationStale(prog({ phase: 'queued', updated_at: updatedAt }), NOW)).toBe(true);
+    expect(isGenerationStale(prog({ phase: 'base', updated_at: updatedAt }), NOW)).toBe(true);
   });
 
-  it('returns false when started_at is missing or unparseable', () => {
+  it('falls back to started_at when updated_at is absent (legacy rows)', () => {
+    expect(
+      isGenerationStale(prog({ phase: 'variant', started_at: iso(NOW - (SHORTS_ASSET_STALE_MS + 5_000)) }), NOW),
+    ).toBe(true);
+    expect(
+      isGenerationStale(prog({ phase: 'variant', started_at: iso(NOW - 1_000) }), NOW),
+    ).toBe(false);
+  });
+
+  it('returns false when no timestamp is present or it is unparseable', () => {
     expect(isGenerationStale(prog({ phase: 'variant' }), NOW)).toBe(false);
-    expect(isGenerationStale(prog({ phase: 'variant', started_at: 'not-a-date' }), NOW)).toBe(false);
+    expect(isGenerationStale(prog({ phase: 'variant', updated_at: 'not-a-date' }), NOW)).toBe(false);
   });
 });
 

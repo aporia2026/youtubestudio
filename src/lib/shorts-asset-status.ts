@@ -23,31 +23,38 @@ import type { GenerationProgressState, ShortRow } from './shorts-types';
 
 export type StyleAssetStatus = 'none' | 'generating' | 'ready';
 
-/** Hard ceiling on the synchronous generate-style-assets serverless
- *  function. Mirrors `maxDuration = 300` on that route plus 30s grace for
- *  Vercel teardown + clock skew. Past this, an in-flight progress row that
- *  never flipped to 'done' or 'error' is provably dead: Vercel hard-killed
- *  the function before its `.catch` could write a terminal state, so the
- *  row froze mid-phase. The UI uses this to stop polling a corpse and
- *  surface a Retry instead of a forever-climbing bar. */
-export const SHORTS_ASSET_DEADLINE_MS = 330_000;
+/** Max time an in-flight job may go WITHOUT any progress update before the
+ *  UI treats it as dead. Phase 15.16 moved generation to a background cron
+ *  that heartbeats `updated_at` on every step (plan / base / each variant
+ *  batch) and reclaims its own stalled jobs across ticks — so a healthy job
+ *  refreshes well within this window even across retries spread over a few
+ *  ticks. Exceeding it means nothing is advancing the row at all (cron down
+ *  / misconfigured, or the job was orphaned before the cron existed), so we
+ *  stop polling and surface a Retry instead of a forever-climbing bar.
+ *
+ *  Anchored on the LAST update, not the start, on purpose: under the cron a
+ *  job legitimately runs longer than any single-request deadline; only a
+ *  gap in heartbeats signals death. */
+export const SHORTS_ASSET_STALE_MS = 300_000;
 
 const IN_FLIGHT_PHASES: ReadonlySet<string> = new Set(['queued', 'planning', 'base', 'variant']);
 
 /** Pure helper — true when a generation_progress row is still "in flight"
- *  but has run past the function's hard deadline, i.e. the backend died
- *  without writing a terminal state. `nowMs` is injected so this stays
- *  pure + testable. Returns false for terminal ('done' / 'error') or empty
- *  progress, and for rows missing a parseable `started_at`. */
+ *  but hasn't been touched within `SHORTS_ASSET_STALE_MS`, i.e. nothing is
+ *  advancing it. `nowMs` is injected so this stays pure + testable. Returns
+ *  false for terminal ('done' / 'error') or empty progress, and for rows
+ *  with no parseable timestamp. Falls back to `started_at` when
+ *  `updated_at` is absent (legacy rows). */
 export function isGenerationStale(
-  progress: Pick<GenerationProgressState, 'phase' | 'started_at'> | null | undefined,
+  progress: Pick<GenerationProgressState, 'phase' | 'started_at' | 'updated_at'> | null | undefined,
   nowMs: number,
 ): boolean {
   if (!progress?.phase || !IN_FLIGHT_PHASES.has(progress.phase)) return false;
-  if (!progress.started_at) return false;
-  const startedMs = new Date(progress.started_at).getTime();
-  if (!Number.isFinite(startedMs)) return false;
-  return nowMs - startedMs > SHORTS_ASSET_DEADLINE_MS;
+  const anchor = progress.updated_at ?? progress.started_at;
+  if (!anchor) return false;
+  const anchorMs = new Date(anchor).getTime();
+  if (!Number.isFinite(anchorMs)) return false;
+  return nowMs - anchorMs > SHORTS_ASSET_STALE_MS;
 }
 
 /** Pure helper — given a row, decide which status the inbox should show.

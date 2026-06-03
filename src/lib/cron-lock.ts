@@ -49,6 +49,7 @@ import { logger } from './logger';
  */
 export const CRON_LOCK_KEYS = {
   pipelineRunner: 8201,
+  shortsAssetRunner: 8202,
 } as const;
 
 export type CronLockOutcome<T> = { ran: true; result: T } | { ran: false };

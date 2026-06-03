@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Doodle / Paint asset pipelines run sequentially: LLM planner (~15s) +
-// Atlas Image base (~30-60s) + N Atlas Edit variants (~15-25s each × 6
-// variants). Typical real-world runs land at 100-225s. The default
-// Vercel function timeout (60s on Hobby) was killing this mid-pipeline
-// and leaving the client hung. Match the render-route + Mode B
-// pattern of declaring 300s explicitly.
-export const maxDuration = 300;
+// Phase 15.16 — this route no longer runs the pipeline. It validates +
+// enqueues, and the background cron (`/api/cron/run-shorts-assets`) does the
+// plan + base + variant work across ticks. So the request is fast and the
+// 300s function ceiling is no longer a factor for asset generation. See
+// `_plans/2026-06-03-shorts-asset-generation-reliability.md`.
+export const maxDuration = 60;
 import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
-import { generateDoodleAssets } from '@/lib/shorts-doodle-asset-pipeline';
-import { generatePaintAssets } from '@/lib/shorts-paint-asset-pipeline';
 import { splitScriptIntoCaptions } from '@/lib/shorts-render';
 import { WORDS_PER_SECOND, type GenerationProgressState } from '@/lib/shorts-types';
 import { getShortStyle } from '@/lib/short-styles';
@@ -24,58 +21,19 @@ import {
   type ShortsBaseT2iModelId,
 } from '@/lib/shorts-base-t2i';
 
-/** Persist a progress phase to the row. Tagged `updated_at` so the
- *  client's elapsed-per-phase math has a fresh anchor. Workspace-scoped
- *  so a stale id from somewhere else can't poison another tenant's
- *  progress strip. */
-async function writeProgress(
-  shortId: string,
-  workspaceId: string,
-  startedAt: string,
-  state: GenerationProgressState,
-): Promise<void> {
-  const merged: GenerationProgressState = {
-    ...state,
-    started_at: startedAt,
-    updated_at: new Date().toISOString(),
-  };
-  await sql`
-    UPDATE shorts
-       SET generation_progress = ${JSON.stringify(merged)}::jsonb,
-           updated_at = NOW()
-     WHERE id = ${shortId}::uuid AND workspace_id = ${workspaceId}::uuid
-  `;
-}
-
-/** Clear the progress field. Called on terminal success (after the
- *  final style_assets write lands) so the editor's poll stops the fast
- *  cadence. */
-async function clearProgress(shortId: string, workspaceId: string): Promise<void> {
-  await sql`
-    UPDATE shorts
-       SET generation_progress = '{}'::jsonb,
-           updated_at = NOW()
-     WHERE id = ${shortId}::uuid AND workspace_id = ${workspaceId}::uuid
-  `;
-}
-
 /**
  * POST /api/shorts/[id]/generate-style-assets
  * Body: { style_id?: 'doodle_explainer_2_short' | 'paint_explainer_v1_short' | 'minimal_gradient_v1', maxVariants?: number }
  *
- * Phase 15.3 — generate the per-style render assets for a short_native
- * row. Routes to the right pipeline based on `style_id`:
- *   - 'minimal_gradient_v1'      → no-op (no assets needed); just stamps style_id.
- *   - 'doodle_explainer_2_short' → runs the Doodle asset pipeline.
- *   - 'paint_explainer_v1_short' → 501 until Phase 15.4.
+ * Phase 15.3 / 15.16 — set the per-style render assets for a short_native
+ * row. Routes by `style_id`:
+ *   - 'minimal_gradient_v1'      → no-op, stamps style_id synchronously.
+ *   - 'doodle_explainer_2_short' → enqueues for the background cron (202).
+ *   - 'paint_explainer_v1_short' → enqueues for the background cron (202).
  *
- * Returns the stored `style_assets` shape so the client can decide what
- * to render. Workspace-scoped (404 cross-tenant, no info leak).
- *
- * Expected duration:
- *   - minimal:  <1s
- *   - doodle:   30-120s (Atlas Image base + N variant edits)
- *   - paint:    n/a until Phase 15.4
+ * Enqueue stashes the resolved niche + vendor + model + variant cap into
+ * `generation_progress.job` so the cron (which has no user session) never
+ * has to re-resolve them. Workspace-scoped (404 cross-tenant, no info leak).
  */
 export const POST = apiRoute.authed(
   async (session, req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
@@ -156,6 +114,9 @@ export const POST = apiRoute.authed(
           UPDATE shorts
              SET style_id = ${styleEntry.id},
                  style_assets = '{}'::jsonb,
+                 generation_progress = '{}'::jsonb,
+                 generation_claimed_at = NULL,
+                 generation_claimed_by_tick = NULL,
                  updated_at = NOW()
            WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
         `;
@@ -166,8 +127,12 @@ export const POST = apiRoute.authed(
         return NextResponse.json({ style_id: styleEntry.id, style_assets: {} });
       }
 
-      // Doodle path — run the pipeline.
-      if (styleEntry.id === 'doodle_explainer_2_short') {
+      // Doodle / Paint — enqueue for the background cron. No vendor work on
+      // the request path.
+      if (
+        styleEntry.id === 'doodle_explainer_2_short' ||
+        styleEntry.id === 'paint_explainer_v1_short'
+      ) {
         // Niche resolution: explicit body > project's niche > 'general'.
         let niche = body.niche?.trim() ?? '';
         if (!niche && row.project_id) {
@@ -181,8 +146,9 @@ export const POST = apiRoute.authed(
         }
         if (!niche) niche = 'general';
 
-        // Build the same caption chunks the renderer will use so the
-        // variant indices line up with what gets rendered.
+        // Validate up front that the script chunks into captions, so the
+        // user gets immediate feedback instead of a queued job that errors
+        // a minute later. The cron recomputes these the same way.
         const seconds =
           row.voiceover_duration_seconds
           ?? row.estimated_duration_seconds
@@ -195,150 +161,40 @@ export const POST = apiRoute.authed(
           );
         }
 
-        const jobStartedAt = new Date().toISOString();
-        const assets = await generateDoodleAssets({
-          workspaceId: session.ws,
-          projectId: row.project_id,
-          shortId: row.id,
-          shortScript: row.short_script,
-          hook: row.hook ?? undefined,
-          payoff: row.payoff ?? undefined,
-          title: row.title ?? undefined,
-          niche,
-          captions,
-          maxVariants: body.maxVariants,
-          variantEditPrimary,
-          baseT2iModelId,
-          onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
-        }).catch(async (err) => {
-          await writeProgress(row.id, session.ws, jobStartedAt, {
-            phase: 'error',
-            label: 'Doodle pipeline failed.',
-            error_message: err instanceof Error ? err.message : String(err),
-            style_id: 'doodle_explainer_2_short',
-          });
-          throw err;
-        });
-
-        const styleAssetsBlob = {
-          doodle: {
-            base_url: assets.base_url,
-            base_prompt: assets.base_prompt,
-            variants: assets.variants,
+        const now = new Date().toISOString();
+        const queued: GenerationProgressState = {
+          phase: 'queued',
+          label: `Queued — ${styleEntry.id === 'paint_explainer_v1_short' ? 'Paint' : 'Doodle'} assets will start shortly…`,
+          style_id: styleEntry.id,
+          started_at: now,
+          updated_at: now,
+          job: {
+            niche,
+            base_t2i_model_id: baseT2iModelId,
+            variant_edit_primary: variantEditPrimary,
+            max_variants: body.maxVariants,
           },
         };
 
         await sql`
           UPDATE shorts
              SET style_id = ${styleEntry.id},
-                 style_assets = ${JSON.stringify(styleAssetsBlob)}::jsonb,
+                 generation_progress = ${JSON.stringify(queued)}::jsonb,
+                 generation_claimed_at = NULL,
+                 generation_claimed_by_tick = NULL,
                  updated_at = NOW()
            WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
         `;
-        await clearProgress(row.id, session.ws);
 
-        logger.info('[shorts style-assets] doodle persisted', {
+        logger.info('[shorts style-assets] enqueued', {
           workspaceId: session.ws,
           shortId: row.id,
-          baseUrl: assets.base_url,
-          variantCount: assets.variants.length,
+          styleId: styleEntry.id,
           variantEditPrimary,
           baseT2iModelId,
-          estimatedCostUsd: assets.estimatedCostUsd,
         });
 
-        return NextResponse.json({
-          style_id: styleEntry.id,
-          style_assets: styleAssetsBlob,
-          estimated_cost_usd: assets.estimatedCostUsd,
-        });
-      }
-
-      // Paint path — mirrors Doodle. Same caption-chunk plumbing, same
-      // assets shape (just stored under `style_assets.paint` so the two
-      // styles never overwrite each other on the row).
-      if (styleEntry.id === 'paint_explainer_v1_short') {
-        let niche = body.niche?.trim() ?? '';
-        if (!niche && row.project_id) {
-          const { rows } = await sql<{ niche: string | null }>`
-            SELECT niche FROM projects
-             WHERE id = ${row.project_id}::uuid
-               AND workspace_id = ${session.ws}::uuid
-             LIMIT 1
-          `;
-          if (rows[0]?.niche) niche = rows[0].niche;
-        }
-        if (!niche) niche = 'general';
-
-        const seconds =
-          row.voiceover_duration_seconds
-          ?? row.estimated_duration_seconds
-          ?? Math.max(15, Math.round((row.word_count ?? 0) / WORDS_PER_SECOND));
-        const captions = splitScriptIntoCaptions(row.short_script, seconds * 1000);
-        if (captions.length === 0) {
-          return NextResponse.json(
-            { error: 'Could not chunk the script into captions — needs a non-trivial script.' },
-            { status: 422 },
-          );
-        }
-
-        const jobStartedAt = new Date().toISOString();
-        const assets = await generatePaintAssets({
-          workspaceId: session.ws,
-          projectId: row.project_id,
-          shortId: row.id,
-          shortScript: row.short_script,
-          hook: row.hook ?? undefined,
-          payoff: row.payoff ?? undefined,
-          title: row.title ?? undefined,
-          niche,
-          captions,
-          maxVariants: body.maxVariants,
-          variantEditPrimary,
-          baseT2iModelId,
-          onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
-        }).catch(async (err) => {
-          await writeProgress(row.id, session.ws, jobStartedAt, {
-            phase: 'error',
-            label: 'Paint pipeline failed.',
-            error_message: err instanceof Error ? err.message : String(err),
-            style_id: 'paint_explainer_v1_short',
-          });
-          throw err;
-        });
-
-        const styleAssetsBlob = {
-          paint: {
-            base_url: assets.base_url,
-            base_prompt: assets.base_prompt,
-            variants: assets.variants,
-          },
-        };
-
-        await sql`
-          UPDATE shorts
-             SET style_id = ${styleEntry.id},
-                 style_assets = ${JSON.stringify(styleAssetsBlob)}::jsonb,
-                 updated_at = NOW()
-           WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
-        `;
-        await clearProgress(row.id, session.ws);
-
-        logger.info('[shorts style-assets] paint persisted', {
-          workspaceId: session.ws,
-          shortId: row.id,
-          baseUrl: assets.base_url,
-          variantCount: assets.variants.length,
-          variantEditPrimary,
-          baseT2iModelId,
-          estimatedCostUsd: assets.estimatedCostUsd,
-        });
-
-        return NextResponse.json({
-          style_id: styleEntry.id,
-          style_assets: styleAssetsBlob,
-          estimated_cost_usd: assets.estimatedCostUsd,
-        });
+        return NextResponse.json({ status: 'queued', style_id: styleEntry.id }, { status: 202 });
       }
 
       return NextResponse.json(
@@ -348,7 +204,7 @@ export const POST = apiRoute.authed(
     } catch (err) {
       return domainErrorResponse(err, {
         op: 'shorts: generate style assets',
-        fallbackMessage: 'Failed to generate the Short style assets.',
+        fallbackMessage: 'Failed to enqueue the Short style assets.',
       });
     }
   },

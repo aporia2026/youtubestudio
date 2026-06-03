@@ -105,6 +105,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/cron/run-shorts-assets",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/reconcile-orphan-generations",
       "schedule": "23 * * * *"
     }

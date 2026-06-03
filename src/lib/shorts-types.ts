@@ -170,9 +170,13 @@ export interface ShortsAssetJobState {
   variant_errors?: Record<string, string>;
   /** Resolved niche, carried so re-planning (if ever needed) is stable. */
   niche?: string;
-  /** Resolved vendor/model choices, carried across ticks. */
+  /** Resolved vendor/model choices, carried across ticks. Stashed by the
+   *  enqueue route (which has the user session for settings) so the cron
+   *  never needs to re-resolve them. */
   base_t2i_model_id?: string;
   variant_edit_primary?: 'atlas' | 'kie';
+  /** Variant count cap requested at enqueue time. */
+  max_variants?: number;
   /** Running cost tally across ticks, informational. */
   cost_usd?: number;
 }

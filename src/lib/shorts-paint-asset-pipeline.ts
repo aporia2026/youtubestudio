@@ -34,6 +34,7 @@ import {
 } from './shorts-doodle-prompt';
 import type { ShortCaptionChunk } from './shorts-render-types';
 import type { GenerationProgressState } from './shorts-types';
+import type { VariantPlanItem } from './shorts-asset-job';
 
 const MAX_VARIANTS = 8;
 // Per-model base-frame T2I handled by `shorts-base-t2i.ts`. See the
@@ -102,25 +103,28 @@ async function safeProgress(
   }
 }
 
-export async function generatePaintAssets(
-  input: PaintAssetPipelineInput,
-): Promise<PaintAssetPipelineResult> {
-  const tStart = Date.now();
-  logger.info('[shorts paint pipeline] start', {
-    workspaceId: input.workspaceId,
-    shortId: input.shortId,
-    captionCount: input.captions.length,
-    requestedVariants: input.maxVariants,
-  });
+// ── Decomposed pipeline steps (Phase 15.16) ──────────────────────────────
+// Mirror of the doodle pipeline's decomposition; see its docstrings. The
+// background cron drives these one bounded step per tick.
 
-  await safeProgress(input.onProgress, {
-    phase: 'planning',
-    label: 'Planning base + variant prompts…',
-    style_id: 'paint_explainer_v1_short',
-  });
+export interface PlanPaintAssetsInput {
+  workspaceId: string;
+  projectId: string | null;
+  shortId: string;
+  shortScript: string;
+  hook?: string;
+  payoff?: string;
+  title?: string;
+  niche: string;
+  captions: ShortCaptionChunk[];
+  maxVariants?: number;
+}
 
-  // ---- 1. LLM call to plan base + variant prompts ------------------------
-  // Reuses the Doodle prompt builder — same input-output contract.
+/** Step 1 — plan the base scene prompt + per-chunk variant edit prompts.
+ *  Reuses the shared Doodle prompt builder (identical contract). */
+export async function planPaintAssets(
+  input: PlanPaintAssetsInput,
+): Promise<{ basePrompt: string; variantPlan: VariantPlanItem[] }> {
   const modelId = await getEffectiveModelId(input.workspaceId, 'shorts-doodle-prompt');
   const requestedMax = input.maxVariants ?? 6;
   const cappedMax = Math.min(MAX_VARIANTS, Math.max(1, requestedMax));
@@ -167,35 +171,110 @@ export async function generatePaintAssets(
     variantCount: variantPlan.length,
     chunkIndexes: variantPlan.map((v) => v.caption_chunk_start_index),
   });
+  return { basePrompt: plan.base_prompt, variantPlan };
+}
 
-  // ---- 2. Base T2I (user-picked model) ----------------------------------
-  const baseModelId = input.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID;
-  const baseSpec = getBaseT2iModelSpec(baseModelId);
+/** Step 2 — render the 9:16 base frame. Returns the full prompt sent. */
+export async function generatePaintBaseFrame(args: {
+  basePrompt: string;
+  baseT2iModelId?: ShortsBaseT2iModelId;
+  shortId?: string;
+}): Promise<{ baseUrl: string; basePromptFull: string; costUsd: number; modelId: string; vendorUsed: string }> {
+  const baseModelId = args.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID;
+  const fullBasePrompt = buildBasePromptFull(args.basePrompt);
+  const baseResult = await generateShortsBaseT2I({ prompt: fullBasePrompt, modelId: baseModelId });
+  logger.info('[shorts paint pipeline] base ready', {
+    shortId: args.shortId,
+    baseModelId: baseResult.modelId,
+    baseVendor: baseResult.vendorUsed,
+    providerRequestId: baseResult.providerRequestId,
+    baseUrl: baseResult.url,
+    baseDurationMs: baseResult.durationMs,
+  });
+  return {
+    baseUrl: baseResult.url,
+    basePromptFull: fullBasePrompt,
+    costUsd: baseResult.costUsd,
+    modelId: baseResult.modelId,
+    vendorUsed: baseResult.vendorUsed,
+  };
+}
+
+/** Step 3 — one variant edit off the base frame. Throws on failure. */
+export async function generatePaintVariantFrame(args: {
+  baseUrl: string;
+  item: VariantPlanItem;
+  variantEditPrimary?: Gpt2EditVendor;
+  shortId?: string;
+}): Promise<{
+  url: string;
+  caption_chunk_start_index: number;
+  edit_prompt: string;
+  costUsd: number;
+  vendorUsed: Gpt2EditVendor;
+  fallbackUsed: boolean;
+}> {
+  const result = await generateGptImage2Edit({
+    prompt: args.item.edit_prompt,
+    sourceImageUrl: args.baseUrl,
+    primary: args.variantEditPrimary ?? 'atlas',
+  });
+  logger.info('[shorts paint pipeline] variant ready', {
+    shortId: args.shortId,
+    chunkIndex: args.item.caption_chunk_start_index,
+    vendorUsed: result.vendorUsed,
+    fallbackUsed: result.fallbackUsed,
+    costUsd: result.costUsd,
+    url: result.url,
+  });
+  return {
+    url: result.url,
+    caption_chunk_start_index: args.item.caption_chunk_start_index,
+    edit_prompt: args.item.edit_prompt,
+    costUsd: result.costUsd,
+    vendorUsed: result.vendorUsed,
+    fallbackUsed: result.fallbackUsed,
+  };
+}
+
+/**
+ * All-in-one sequential pipeline — back-compat entry point. The cron drives
+ * the three steps above directly; this wrapper preserves the legacy
+ * planning → base → variant(1..N) onProgress order.
+ */
+export async function generatePaintAssets(
+  input: PaintAssetPipelineInput,
+): Promise<PaintAssetPipelineResult> {
+  const tStart = Date.now();
+  logger.info('[shorts paint pipeline] start', {
+    workspaceId: input.workspaceId,
+    shortId: input.shortId,
+    captionCount: input.captions.length,
+    requestedVariants: input.maxVariants,
+  });
+
+  await safeProgress(input.onProgress, {
+    phase: 'planning',
+    label: 'Planning base + variant prompts…',
+    style_id: 'paint_explainer_v1_short',
+  });
+  const { basePrompt, variantPlan } = await planPaintAssets(input);
+
+  const baseSpec = getBaseT2iModelSpec(input.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID);
   await safeProgress(input.onProgress, {
     phase: 'base',
     label: `Generating base frame (${baseSpec.label}, ~30-60s)…`,
     style_id: 'paint_explainer_v1_short',
     total: variantPlan.length,
   });
-  const fullBasePrompt = buildBasePromptFull(plan.base_prompt);
-  const baseResult = await generateShortsBaseT2I({
-    prompt: fullBasePrompt,
-    modelId: baseModelId,
-  });
-  const baseUrl = baseResult.url;
-  logger.info('[shorts paint pipeline] base ready', {
+  const base = await generatePaintBaseFrame({
+    basePrompt,
+    baseT2iModelId: input.baseT2iModelId,
     shortId: input.shortId,
-    baseModelId: baseResult.modelId,
-    baseVendor: baseResult.vendorUsed,
-    providerRequestId: baseResult.providerRequestId,
-    baseUrl,
-    baseDurationMs: baseResult.durationMs,
-    durationMsSoFar: Date.now() - tStart,
   });
 
-  // ---- 3. Atlas Edit (with Kie fallback) for each VARIANT ----------------
   const variants: PaintAssetPipelineResult['variants'] = [];
-  let estimatedCostUsd = baseResult.costUsd;
+  let estimatedCostUsd = base.costUsd;
   for (let i = 0; i < variantPlan.length; i++) {
     const v = variantPlan[i];
     await safeProgress(input.onProgress, {
@@ -206,25 +285,18 @@ export async function generatePaintAssets(
       style_id: 'paint_explainer_v1_short',
     });
     try {
-      const result = await generateGptImage2Edit({
-        prompt: v.edit_prompt,
-        sourceImageUrl: baseUrl,
-        primary: input.variantEditPrimary ?? 'atlas',
+      const result = await generatePaintVariantFrame({
+        baseUrl: base.baseUrl,
+        item: v,
+        variantEditPrimary: input.variantEditPrimary,
+        shortId: input.shortId,
       });
       variants.push({
         url: result.url,
-        caption_chunk_start_index: v.caption_chunk_start_index,
-        edit_prompt: v.edit_prompt,
+        caption_chunk_start_index: result.caption_chunk_start_index,
+        edit_prompt: result.edit_prompt,
       });
       estimatedCostUsd += result.costUsd;
-      logger.info('[shorts paint pipeline] variant ready', {
-        shortId: input.shortId,
-        chunkIndex: v.caption_chunk_start_index,
-        vendorUsed: result.vendorUsed,
-        fallbackUsed: result.fallbackUsed,
-        costUsd: result.costUsd,
-        url: result.url,
-      });
     } catch (err) {
       logger.warn('[shorts paint pipeline] variant failed (skipping)', {
         shortId: input.shortId,
@@ -242,15 +314,15 @@ export async function generatePaintAssets(
 
   logger.info('[shorts paint pipeline] done', {
     shortId: input.shortId,
-    baseUrl,
+    baseUrl: base.baseUrl,
     variantCount: variants.length,
     estimatedCostUsd,
     totalDurationMs: Date.now() - tStart,
   });
 
   return {
-    base_url: baseUrl,
-    base_prompt: fullBasePrompt,
+    base_url: base.baseUrl,
+    base_prompt: base.basePromptFull,
     variants,
     estimatedCostUsd,
   };
