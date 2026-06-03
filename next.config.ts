@@ -19,6 +19,17 @@ const nextConfig: NextConfig = {
     // externalizing leaves the require to run via native Node at runtime.
     '@ffmpeg-installer/ffmpeg',
   ],
+  // @remotion/bundler (4.0.460) bundles with rspack, whose native binding is
+  // loaded via a runtime require of '@rspack/binding' (which in turn requires
+  // the per-platform '@rspack/binding-linux-x64-gnu' on Vercel). Next's file
+  // tracing can't follow that native require, so the render function shipped
+  // WITHOUT the @rspack tree and died with "Cannot find module '@rspack/binding'".
+  // Force the whole @rspack tree into the render functions so the linux binary
+  // is present at runtime. Keep this in sync with any new in-function render route.
+  outputFileTracingIncludes: {
+    '/api/render/short': ['./node_modules/@rspack/**/*'],
+    '/api/render/video': ['./node_modules/@rspack/**/*'],
+  },
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '*.ytimg.com' },
