@@ -8,6 +8,18 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
 import { appendVariantFrame } from '@/lib/shorts-frame-ops';
+import { getUserSettings } from '@/lib/user-settings';
+import type { Gpt2EditVendor } from '@/lib/gpt-image-2-edit';
+
+/** See sibling [index]/route.ts for the precedence rationale. */
+async function resolveVendor(
+  bodyOverride: unknown,
+  userId: string,
+): Promise<Gpt2EditVendor> {
+  if (bodyOverride === 'atlas' || bodyOverride === 'kie') return bodyOverride;
+  const settings = await getUserSettings(userId);
+  return settings.gpt_image_2_edit_primary ?? 'atlas';
+}
 
 /**
  * POST /api/shorts/[id]/frames/variants
@@ -24,7 +36,11 @@ import { appendVariantFrame } from '@/lib/shorts-frame-ops';
 export const POST = apiRoute.authed(
   async (session, req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const { id } = await ctx.params;
-    let body: { prompt?: unknown; caption_chunk_start_index?: unknown } = {};
+    let body: {
+      prompt?: unknown;
+      caption_chunk_start_index?: unknown;
+      gpt_image_2_edit_primary?: unknown;
+    } = {};
     try {
       body = await req.json();
     } catch {
@@ -53,9 +69,11 @@ export const POST = apiRoute.authed(
       const row = await getShort(id, session.ws);
       if (!row) return NextResponse.json({ error: 'Short not found' }, { status: 404 });
 
+      const vendor = await resolveVendor(body.gpt_image_2_edit_primary, session.uid);
       const result = await appendVariantFrame(row, {
         prompt,
         captionChunkStartIndex,
+        vendor,
       });
 
       await sql`
@@ -70,6 +88,7 @@ export const POST = apiRoute.authed(
         shortId: row.id,
         chunkIndex: captionChunkStartIndex,
         newIndex: result.newIndex,
+        vendor,
         costUsd: result.costUsd,
         durationMs: result.durationMs,
       });

@@ -16,6 +16,8 @@ import { generatePaintAssets } from '@/lib/shorts-paint-asset-pipeline';
 import { splitScriptIntoCaptions } from '@/lib/shorts-render';
 import { WORDS_PER_SECOND, type GenerationProgressState } from '@/lib/shorts-types';
 import { getShortStyle } from '@/lib/short-styles';
+import { getUserSettings } from '@/lib/user-settings';
+import type { Gpt2EditVendor } from '@/lib/gpt-image-2-edit';
 
 /** Persist a progress phase to the row. Tagged `updated_at` so the
  *  client's elapsed-per-phase math has a fresh anchor. Workspace-scoped
@@ -73,11 +75,34 @@ async function clearProgress(shortId: string, workspaceId: string): Promise<void
 export const POST = apiRoute.authed(
   async (session, req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const { id } = await ctx.params;
-    let body: { style_id?: string; maxVariants?: number; niche?: string } = {};
+    let body: {
+      style_id?: string;
+      maxVariants?: number;
+      niche?: string;
+      /** Phase 15.14 — per-call vendor override. Body wins over the
+       *  workspace default; both override the hardcoded 'atlas' floor. */
+      gpt_image_2_edit_primary?: 'atlas' | 'kie';
+    } = {};
     try {
       body = await req.json();
     } catch {
       // No body → infer style from the row (or default to minimal).
+    }
+
+    // Vendor resolution mirrors the per-frame routes: body override >
+    // UserSettings.gpt_image_2_edit_primary > 'atlas'. Pulled OUTSIDE
+    // the row-loading try/catch because a failed settings read should
+    // fail soft to 'atlas' rather than fail the whole asset run.
+    let variantEditPrimary: Gpt2EditVendor = 'atlas';
+    if (body.gpt_image_2_edit_primary === 'atlas' || body.gpt_image_2_edit_primary === 'kie') {
+      variantEditPrimary = body.gpt_image_2_edit_primary;
+    } else {
+      try {
+        const settings = await getUserSettings(session.uid);
+        variantEditPrimary = settings.gpt_image_2_edit_primary ?? 'atlas';
+      } catch {
+        variantEditPrimary = 'atlas';
+      }
     }
 
     try {
@@ -165,6 +190,7 @@ export const POST = apiRoute.authed(
           niche,
           captions,
           maxVariants: body.maxVariants,
+          variantEditPrimary,
           onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
         }).catch(async (err) => {
           await writeProgress(row.id, session.ws, jobStartedAt, {
@@ -198,6 +224,7 @@ export const POST = apiRoute.authed(
           shortId: row.id,
           baseUrl: assets.base_url,
           variantCount: assets.variants.length,
+          variantEditPrimary,
           estimatedCostUsd: assets.estimatedCostUsd,
         });
 
@@ -248,6 +275,7 @@ export const POST = apiRoute.authed(
           niche,
           captions,
           maxVariants: body.maxVariants,
+          variantEditPrimary,
           onProgress: (state) => writeProgress(row.id, session.ws, jobStartedAt, state),
         }).catch(async (err) => {
           await writeProgress(row.id, session.ws, jobStartedAt, {
@@ -281,6 +309,7 @@ export const POST = apiRoute.authed(
           shortId: row.id,
           baseUrl: assets.base_url,
           variantCount: assets.variants.length,
+          variantEditPrimary,
           estimatedCostUsd: assets.estimatedCostUsd,
         });
 

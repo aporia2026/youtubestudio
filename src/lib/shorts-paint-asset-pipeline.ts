@@ -17,7 +17,7 @@
 
 import { logger } from './logger';
 import { generateAtlasT2I } from './atlas-cloud-images';
-import { generateGptImage2Edit } from './gpt-image-2-edit';
+import { generateGptImage2Edit, type Gpt2EditVendor } from './gpt-image-2-edit';
 import { generateText } from './ai';
 import { type AiSpendContext } from './ai-spend';
 import { getEffectiveModelId } from './model-defaults';
@@ -46,6 +46,9 @@ export interface PaintAssetPipelineInput {
   niche: string;
   captions: ShortCaptionChunk[];
   maxVariants?: number;
+  /** Phase 15.14 — vendor for the variant Edit calls. Mirrors the
+   *  doodle pipeline; see its docstring. */
+  variantEditPrimary?: Gpt2EditVendor;
   /** Phase 15.13 — per-step progress hook. Same contract as the Doodle
    *  pipeline; see `shorts-doodle-asset-pipeline.ts` for the rationale. */
   onProgress?: (state: GenerationProgressState) => Promise<void> | void;
@@ -196,7 +199,7 @@ export async function generatePaintAssets(
       const result = await generateGptImage2Edit({
         prompt: v.edit_prompt,
         sourceImageUrl: baseUrl,
-        primary: 'atlas',
+        primary: input.variantEditPrimary ?? 'atlas',
       });
       variants.push({
         url: result.url,

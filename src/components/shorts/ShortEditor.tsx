@@ -1311,6 +1311,29 @@ function pickShotsBlock(row: ShortRow): { key: 'doodle' | 'paint'; block: ShotsP
   return null;
 }
 
+/** Phase 15.14 — vendor for GPT Image 2 Edit calls (variant frames).
+ *  Stored on the user's `gpt_image_2_edit_primary` setting; persisted
+ *  via `POST /api/user/settings/gpt-image-2-edit-primary`.
+ *
+ *  Atlas is the cost-optimal default (~$0.011/call); Kie is the richer
+ *  + slower fallback (~$0.05/call). The dispatcher already does
+ *  primary-then-other fallback at the vendor layer — this toggle picks
+ *  which vendor IS the primary. */
+type VendorChoice = 'atlas' | 'kie';
+
+const VARIANT_VENDOR_LABELS: Record<VendorChoice, { label: string; cost: string; note: string }> = {
+  atlas: {
+    label: 'Atlas',
+    cost: '$0.011',
+    note: 'Cost-optimal. Kie kicks in automatically if Atlas fails.',
+  },
+  kie: {
+    label: 'Kie',
+    cost: '$0.05',
+    note: 'Higher cost; native 16:9 output. Atlas is the fallback.',
+  },
+};
+
 function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<void> | void }) {
   const picked = pickShotsBlock(row);
 
@@ -1320,6 +1343,46 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const setBusyFor = useCallback((key: string, v: boolean) => {
     setBusy((prev) => ({ ...prev, [key]: v }));
+  }, []);
+
+  // Variant-edit vendor — loaded from UserSettings on mount, updated
+  // on toggle, and persisted server-side so it sticks for next session.
+  const [vendor, setVendor] = useState<VendorChoice>('atlas');
+  const [vendorSaving, setVendorSaving] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads vendor setting
+        const res = await fetch('/api/user/settings/gpt-image-2-edit-primary');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.gpt_image_2_edit_primary === 'atlas' || data.gpt_image_2_edit_primary === 'kie') {
+          setVendor(data.gpt_image_2_edit_primary);
+        }
+      } catch {
+        /* swallow — stay on the 'atlas' default */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const setVendorPersisted = useCallback(async (next: VendorChoice) => {
+    setVendor(next);
+    setVendorSaving(true);
+    try {
+      await fetch('/api/user/settings/gpt-image-2-edit-primary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ primary: next }),
+      });
+    } catch {
+      toast.error('Could not save your vendor choice (still applied for this session).');
+    } finally {
+      setVendorSaving(false);
+    }
   }, []);
 
   // Per-frame prompt drafts. Initialised from the stored prompt when the
@@ -1397,7 +1460,7 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, gpt_image_2_edit_primary: vendor }),
         },
       );
       const data = await res.json();
@@ -1431,6 +1494,7 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
           body: JSON.stringify({
             prompt,
             caption_chunk_start_index: Math.floor(appendChunkDraft),
+            gpt_image_2_edit_primary: vendor,
           }),
         },
       );
@@ -1474,8 +1538,51 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
         </h3>
         <p style={{ margin: 0, marginTop: 4, fontSize: 11, color: 'var(--text-muted)' }}>
           1 base + {picked.block.variants.length} variants. Edit the prompt and click Regenerate to
-          re-mint any single frame (15-90s each, ~$0.04 base / ~$0.011 variant).
+          re-mint any single frame (15-90s each).
         </p>
+        <div
+          style={{
+            marginTop: 8,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Variant vendor:</span>
+          {(Object.keys(VARIANT_VENDOR_LABELS) as VendorChoice[]).map((v) => {
+            const meta = VARIANT_VENDOR_LABELS[v];
+            const active = vendor === v;
+            return (
+              <button
+                key={v}
+                type="button"
+                onClick={() => !active && setVendorPersisted(v)}
+                disabled={vendorSaving}
+                title={meta.note}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: 999,
+                  border: `1px solid ${active ? 'rgba(167,139,250,0.55)' : 'rgba(255,255,255,0.15)'}`,
+                  background: active ? 'rgba(167,139,250,0.18)' : 'transparent',
+                  color: active ? '#c4b5fd' : 'inherit',
+                  fontSize: 11,
+                  fontWeight: 500,
+                  cursor: active || vendorSaving ? 'default' : 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+              >
+                <span>{meta.label}</span>
+                <span style={{ color: 'var(--text-muted)' }}>{meta.cost}</span>
+              </button>
+            );
+          })}
+          {vendorSaving && (
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>saving…</span>
+          )}
+        </div>
       </header>
 
       <ShotFrameCard
@@ -1498,7 +1605,7 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
         <ShotFrameCard
           key={`${v.url}-${i}`}
           title={`Variant ${i}`}
-          subtitle={`Atlas Edit · swaps in at caption chunk ${v.caption_chunk_start_index}`}
+          subtitle={`Swaps in at caption chunk ${v.caption_chunk_start_index} · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`}
           imageUrl={v.url}
           prompt={variantPromptDrafts[i] ?? ''}
           onPromptChange={(s) =>

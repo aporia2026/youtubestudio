@@ -26,7 +26,7 @@
 
 import { logger } from './logger';
 import { generateAtlasT2I } from './atlas-cloud-images';
-import { generateGptImage2Edit } from './gpt-image-2-edit';
+import { generateGptImage2Edit, type Gpt2EditVendor } from './gpt-image-2-edit';
 import { generateText } from './ai';
 import { type AiSpendContext } from './ai-spend';
 import { getEffectiveModelId } from './model-defaults';
@@ -67,6 +67,11 @@ export interface DoodleAssetPipelineInput {
   captions: ShortCaptionChunk[];
   /** Optional cap from the workspace setting / UI. Defaults to 6. */
   maxVariants?: number;
+  /** Phase 15.14 — vendor for the variant Edit calls. Threads through
+   *  to `generateGptImage2Edit`'s primary. Defaults to 'atlas' (the
+   *  cost-optimal vendor). The route layer reads this from the user's
+   *  `gpt_image_2_edit_primary` setting. */
+  variantEditPrimary?: Gpt2EditVendor;
   /** Phase 15.13 — per-step progress hook. The caller (the API route)
    *  implements this by writing to `shorts.generation_progress` so the
    *  editor's poll picks it up. Awaited so DB writes serialise with the
@@ -231,7 +236,7 @@ export async function generateDoodleAssets(
       const result = await generateGptImage2Edit({
         prompt: v.edit_prompt,
         sourceImageUrl: baseUrl,
-        primary: 'atlas',
+        primary: input.variantEditPrimary ?? 'atlas',
       });
       variants.push({
         url: result.url,

@@ -151,7 +151,7 @@ describe('regenerateVariantFrame', () => {
     expect(mockedEdit.mock.calls[0][0]).toMatchObject({
       prompt: 'jump higher',
       sourceImageUrl: 'https://r2.test/base.png',
-      primary: 'atlas',
+      primary: 'atlas', // defaults to atlas when vendor is unspecified
     });
     const variants = result.style_assets.doodle?.variants ?? [];
     expect(variants).toHaveLength(3);
@@ -179,6 +179,20 @@ describe('regenerateVariantFrame', () => {
     await expect(
       regenerateVariantFrame(row, { index: -1, prompt: 'x' }),
     ).rejects.toThrow(/out of range/);
+  });
+
+  it('passes the supplied vendor through to the dispatcher (Phase 15.14)', async () => {
+    mockedEdit.mockResolvedValue({
+      url: 'https://r2.test/kie.png',
+      vendorUsed: 'kie',
+      fallbackUsed: false,
+      costUsd: 0.05,
+      durationMs: 5000,
+      providerRequestId: 'k-1',
+    });
+    const row = doodleRow();
+    await regenerateVariantFrame(row, { index: 0, prompt: 'x', vendor: 'kie' });
+    expect(mockedEdit.mock.calls[0][0]).toMatchObject({ primary: 'kie' });
   });
 });
 
@@ -254,6 +268,24 @@ describe('appendVariantFrame', () => {
       appendVariantFrame(row, { prompt: 'x', captionChunkStartIndex: -1 }),
     ).rejects.toThrow(/non-negative integer/);
     expect(mockedEdit).not.toHaveBeenCalled();
+  });
+
+  it('passes the supplied vendor through to the dispatcher (Phase 15.14)', async () => {
+    mockedEdit.mockResolvedValue({
+      url: 'https://r2.test/kie.png',
+      vendorUsed: 'kie',
+      fallbackUsed: false,
+      costUsd: 0.05,
+      durationMs: 0,
+      providerRequestId: 'k-2',
+    });
+    const row = doodleRow();
+    await appendVariantFrame(row, {
+      prompt: 'kie variant',
+      captionChunkStartIndex: 1,
+      vendor: 'kie',
+    });
+    expect(mockedEdit.mock.calls[0][0]).toMatchObject({ primary: 'kie' });
   });
 });
 

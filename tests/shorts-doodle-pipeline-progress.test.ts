@@ -188,4 +188,36 @@ describe('generateDoodleAssets — onProgress contract', () => {
 
     expect(result.variants).toHaveLength(1);
   });
+
+  it('threads variantEditPrimary into every variant Edit call (Phase 15.14)', async () => {
+    mockedGenerateText.mockResolvedValue(plannerResponse(2));
+    mockedT2I.mockResolvedValue({ url: 'https://r2.test/base.png', predictionId: 'p-5' });
+    mockedEdit.mockResolvedValue({
+      url: 'https://r2.test/k.png',
+      vendorUsed: 'kie',
+      fallbackUsed: false,
+      costUsd: 0.05,
+      durationMs: 0,
+      providerRequestId: 'k',
+    });
+
+    await generateDoodleAssets({
+      workspaceId: 'ws-1',
+      projectId: null,
+      shortId: 'short-1',
+      shortScript: 'A.',
+      niche: 'general',
+      captions: [
+        { text: 'a', start_ms: 0, end_ms: 500 },
+        { text: 'b', start_ms: 500, end_ms: 1000 },
+      ],
+      maxVariants: 2,
+      variantEditPrimary: 'kie',
+    });
+
+    expect(mockedEdit).toHaveBeenCalledTimes(2);
+    for (const call of mockedEdit.mock.calls) {
+      expect(call[0]).toMatchObject({ primary: 'kie' });
+    }
+  });
 });

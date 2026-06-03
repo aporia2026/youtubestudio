@@ -35,7 +35,7 @@
 
 import { logger } from './logger';
 import { generateAtlasT2I } from './atlas-cloud-images';
-import { generateGptImage2Edit } from './gpt-image-2-edit';
+import { generateGptImage2Edit, type Gpt2EditVendor } from './gpt-image-2-edit';
 import type { ShortRow, ShortStyleAssets } from './shorts-types';
 
 const VERTICAL_BASE_SIZE = '1024x1536';
@@ -180,6 +180,11 @@ export interface RegenerateVariantOptions {
   /** The new edit prompt. The UI pre-populates with the stored
    *  `edit_prompt` so the user can tweak and resubmit. */
   prompt: string;
+  /** Phase 15.14 — vendor to use for this call. Falls back to 'atlas'
+   *  when omitted, matching the dispatcher's pre-existing default. The
+   *  route layer resolves precedence: body override > UserSettings >
+   *  'atlas'. The orchestrator just takes what it's given. */
+  vendor?: Gpt2EditVendor;
 }
 
 export interface RegenerateVariantResult {
@@ -222,7 +227,7 @@ export async function regenerateVariantFrame(
   const result = await generateGptImage2Edit({
     prompt: opts.prompt,
     sourceImageUrl: prevBlock.base_url,
-    primary: 'atlas',
+    primary: opts.vendor ?? 'atlas',
   });
 
   const nextVariants = prevBlock.variants.slice();
@@ -265,6 +270,8 @@ export interface AppendVariantOptions {
    *  picks the variant whose `caption_chunk_start_index` is ≤ the
    *  current chunk, so this controls when the new frame swaps in. */
   captionChunkStartIndex: number;
+  /** Phase 15.14 — vendor for this call. See `RegenerateVariantOptions`. */
+  vendor?: Gpt2EditVendor;
 }
 
 export interface AppendVariantResult {
@@ -310,7 +317,7 @@ export async function appendVariantFrame(
   const result = await generateGptImage2Edit({
     prompt: opts.prompt,
     sourceImageUrl: prevBlock.base_url,
-    primary: 'atlas',
+    primary: opts.vendor ?? 'atlas',
   });
 
   const newVariant = {

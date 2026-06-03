@@ -9,6 +9,23 @@ import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
 import { regenerateVariantFrame, deleteVariantFrame } from '@/lib/shorts-frame-ops';
+import { getUserSettings } from '@/lib/user-settings';
+import type { Gpt2EditVendor } from '@/lib/gpt-image-2-edit';
+
+/** Resolve the GPT-2 Edit vendor for one variant call. Precedence:
+ *    1. body `gpt_image_2_edit_primary` (per-call override from the
+ *       Shots panel vendor toggle).
+ *    2. user setting `gpt_image_2_edit_primary` (workspace default).
+ *    3. `'atlas'` (cost-optimal fallback).
+ *  Mirrors the precedence used in the production-doc edit route. */
+async function resolveVendor(
+  bodyOverride: unknown,
+  userId: string,
+): Promise<Gpt2EditVendor> {
+  if (bodyOverride === 'atlas' || bodyOverride === 'kie') return bodyOverride;
+  const settings = await getUserSettings(userId);
+  return settings.gpt_image_2_edit_primary ?? 'atlas';
+}
 
 interface Params {
   id: string;
@@ -43,7 +60,7 @@ export const POST = apiRoute.authed(
       );
     }
 
-    let body: { prompt?: unknown } = {};
+    let body: { prompt?: unknown; gpt_image_2_edit_primary?: unknown } = {};
     try {
       body = await req.json();
     } catch {
@@ -64,7 +81,8 @@ export const POST = apiRoute.authed(
       const row = await getShort(id, session.ws);
       if (!row) return NextResponse.json({ error: 'Short not found' }, { status: 404 });
 
-      const result = await regenerateVariantFrame(row, { index, prompt });
+      const vendor = await resolveVendor(body.gpt_image_2_edit_primary, session.uid);
+      const result = await regenerateVariantFrame(row, { index, prompt, vendor });
 
       await sql`
         UPDATE shorts
@@ -77,6 +95,7 @@ export const POST = apiRoute.authed(
         workspaceId: session.ws,
         shortId: row.id,
         index,
+        vendor,
         costUsd: result.costUsd,
         durationMs: result.durationMs,
       });
