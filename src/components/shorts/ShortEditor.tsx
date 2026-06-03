@@ -48,6 +48,7 @@ import { type ShortStyleId } from '@/lib/short-styles';
 import {
   anyRowGenerating,
   getStyleAssetStatus,
+  isGenerationStale,
   styleAssetLabel,
 } from '@/lib/shorts-asset-status';
 import { buildShortVideoConfig, splitScriptIntoCaptions } from '@/lib/shorts-render';
@@ -124,6 +125,11 @@ export function ShortEditor({ shortId }: { shortId: string }) {
 
   // Style asset generation state.
   const [assetsBusy, setAssetsBusy] = useState(false);
+  // Epoch ms of the last (re)start of asset generation. Used to keep
+  // polling through the brief window after a kick — before the server
+  // writes its first fresh progress row — so a Retry on a stalled job
+  // isn't silently dropped by the staleness gate below.
+  const [assetsKickedAt, setAssetsKickedAt] = useState<number | null>(null);
 
   // Render state.
   const [renderJob, setRenderJob] = useState<RenderJob | null>(null);
@@ -195,7 +201,19 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   const progressPhase = row?.generation_progress?.phase;
   const progressInFlight =
     progressPhase === 'planning' || progressPhase === 'base' || progressPhase === 'variant';
-  const shouldPoll = row ? anyRowGenerating([row]) || progressInFlight : false;
+  // A job still "in flight" past the function's hard deadline is dead (the
+  // serverless function was killed before it could write a terminal state).
+  // Stop the fast poll — there's nothing left to advance it — and let the
+  // strip surface a Retry. Phase 1 has no cron to heal it; Phase 2 will.
+  const progressStale = isGenerationStale(row?.generation_progress, Date.now());
+  // After a (re)start, keep polling for a grace window even if the row's
+  // progress still looks stale — the server hasn't reset started_at yet.
+  // Without this, retrying a stalled job would re-arm the staleness gate
+  // before the fresh run's first progress write lands, dropping the poll.
+  const inKickGrace = assetsKickedAt !== null && Date.now() - assetsKickedAt < 30_000;
+  const shouldPoll = row
+    ? (anyRowGenerating([row]) || progressInFlight) && (!progressStale || inKickGrace)
+    : false;
   const pollCadenceMs = progressInFlight ? 2_000 : 12_000;
   useEffect(() => {
     if (!shouldPoll) {
@@ -356,6 +374,24 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         setTimeout(() => loadRow(), 1500);
         toast.success('Style stamped as Minimal.');
       } else {
+        // Open the kick grace window and optimistically show a fresh
+        // in-flight strip, so the user sees feedback immediately (and a
+        // Retry of a stalled job clears the stale state) before the server
+        // writes its first progress row.
+        setAssetsKickedAt(Date.now());
+        setRow((prev) =>
+          prev
+            ? {
+                ...prev,
+                generation_progress: {
+                  phase: 'planning',
+                  label: 'Starting…',
+                  started_at: new Date().toISOString(),
+                  style_id: stylePick,
+                },
+              }
+            : prev,
+        );
         toast.success(
           `${styleAssetLabel(stylePick)} assets generating (1-4 min). The preview will update when they land.`,
         );
@@ -646,7 +682,7 @@ export function ShortEditor({ shortId }: { shortId: string }) {
             </span>
           )}
         </div>
-        <GenerationProgressStrip progress={row.generation_progress} />
+        <GenerationProgressStrip progress={row.generation_progress} onRetry={generateAssets} />
         <ShotsPanel row={row} onChange={loadRow} />
       </EditorSection>
 
@@ -2533,7 +2569,13 @@ function ShotFrameCard({
 // flight, so the strip is invisible on the happy path.
 // ────────────────────────────────────────────────────────────────────────────
 
-function GenerationProgressStrip({ progress }: { progress: GenerationProgressState }) {
+function GenerationProgressStrip({
+  progress,
+  onRetry,
+}: {
+  progress: GenerationProgressState;
+  onRetry?: () => void;
+}) {
   // Re-render every second so the elapsed timer ticks even when the
   // poll doesn't fire (the row only re-fetches every 2s in flight). The
   // tick is cheap; one setInterval per editor instance.
@@ -2551,6 +2593,14 @@ function GenerationProgressStrip({ progress }: { progress: GenerationProgressSta
   const startedAtMs = progress.started_at ? new Date(progress.started_at).getTime() : Date.now();
   const elapsedSec = Math.max(0, Math.round((Date.now() - startedAtMs) / 1000));
 
+  // A job still mid-phase past the function's hard deadline is dead — the
+  // serverless function was killed before its `.catch` could write an
+  // error state, so the row froze. Render it as a recoverable failure
+  // (Retry) rather than a bar that climbs forever. `danger` unifies the
+  // styling for genuine errors and stalls.
+  const stalled = isGenerationStale(progress, Date.now());
+  const danger = phase === 'error' || stalled;
+
   // The progress bar uses two heuristics:
   //   - planning: indeterminate (returns null → no bar fill ratio)
   //   - base: ~30s budget; one segment
@@ -2566,12 +2616,13 @@ function GenerationProgressStrip({ progress }: { progress: GenerationProgressSta
     }
     if (phase === 'done') return 1;
     if (phase === 'error') return 1;
+    if (stalled) return 1;
     return 0.5;
   })();
 
-  const accent = phase === 'error' ? '#fca5a5' : '#a78bfa';
+  const accent = danger ? '#fca5a5' : '#a78bfa';
   const trackBg =
-    phase === 'error' ? 'rgba(248,113,113,0.12)' : 'rgba(167,139,250,0.12)';
+    danger ? 'rgba(248,113,113,0.12)' : 'rgba(167,139,250,0.12)';
 
   return (
     <div
@@ -2579,8 +2630,8 @@ function GenerationProgressStrip({ progress }: { progress: GenerationProgressSta
         marginTop: 12,
         padding: 12,
         borderRadius: 10,
-        border: `1px solid ${phase === 'error' ? 'rgba(248,113,113,0.35)' : 'rgba(167,139,250,0.3)'}`,
-        background: phase === 'error' ? 'rgba(248,113,113,0.06)' : 'rgba(167,139,250,0.06)',
+        border: `1px solid ${danger ? 'rgba(248,113,113,0.35)' : 'rgba(167,139,250,0.3)'}`,
+        background: danger ? 'rgba(248,113,113,0.06)' : 'rgba(167,139,250,0.06)',
       }}
     >
       <div
@@ -2589,13 +2640,15 @@ function GenerationProgressStrip({ progress }: { progress: GenerationProgressSta
           alignItems: 'center',
           gap: 10,
           fontSize: 12,
-          color: phase === 'error' ? '#fca5a5' : 'inherit',
+          color: danger ? '#fca5a5' : 'inherit',
           marginBottom: 8,
         }}
       >
-        <span style={{ fontSize: 13 }}>{phase === 'error' ? '⚠' : '●'}</span>
+        <span style={{ fontSize: 13 }}>{danger ? '⚠' : '●'}</span>
         <span style={{ fontWeight: 600 }}>
-          {progress.label ?? (phase === 'error' ? 'Pipeline failed.' : 'Working…')}
+          {stalled
+            ? 'Generation stalled'
+            : progress.label ?? (phase === 'error' ? 'Pipeline failed.' : 'Working…')}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
           {elapsedSec}s elapsed
@@ -2634,6 +2687,12 @@ function GenerationProgressStrip({ progress }: { progress: GenerationProgressSta
           100% { background-position: -200% 0; }
         }
       `}</style>
+      {stalled && (
+        <div style={{ marginTop: 8, fontSize: 11, color: '#fca5a5', lineHeight: 1.5 }}>
+          It ran past the time limit and didn&apos;t finish. This usually means the image
+          service was slow or rate-limited. Retry to start it again.
+        </div>
+      )}
       {phase === 'error' && progress.error_message && (
         <div
           style={{
@@ -2650,6 +2709,25 @@ function GenerationProgressStrip({ progress }: { progress: GenerationProgressSta
         >
           {progress.error_message}
         </div>
+      )}
+      {danger && onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          style={{
+            marginTop: 10,
+            padding: '6px 14px',
+            fontSize: 12,
+            fontWeight: 600,
+            color: '#fff',
+            background: '#7c3aed',
+            border: 'none',
+            borderRadius: 6,
+            cursor: 'pointer',
+          }}
+        >
+          Retry generation
+        </button>
       )}
     </div>
   );

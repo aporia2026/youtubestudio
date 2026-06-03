@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   anyRowGenerating,
   getStyleAssetStatus,
+  isGenerationStale,
+  SHORTS_ASSET_DEADLINE_MS,
   styleAssetLabel,
 } from '@/lib/shorts-asset-status';
-import type { ShortRow } from '@/lib/shorts-types';
+import type { GenerationProgressState, ShortRow } from '@/lib/shorts-types';
 
 function row(overrides: Partial<ShortRow>): Pick<ShortRow, 'medium' | 'style_id' | 'style_assets'> {
   return {
@@ -120,6 +122,37 @@ describe('styleAssetLabel', () => {
     expect(styleAssetLabel(null)).toBe('Style');
     expect(styleAssetLabel(undefined)).toBe('Style');
     expect(styleAssetLabel('made_up')).toBe('Style');
+  });
+});
+
+describe('isGenerationStale', () => {
+  const NOW = 1_900_000_000_000; // fixed epoch so the helper stays pure
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const prog = (o: Partial<GenerationProgressState>): GenerationProgressState => ({ ...o });
+
+  it('returns false for empty / terminal progress', () => {
+    expect(isGenerationStale(undefined, NOW)).toBe(false);
+    expect(isGenerationStale(null, NOW)).toBe(false);
+    expect(isGenerationStale(prog({}), NOW)).toBe(false);
+    expect(isGenerationStale(prog({ phase: 'done', started_at: iso(0) }), NOW)).toBe(false);
+    expect(isGenerationStale(prog({ phase: 'error', started_at: iso(0) }), NOW)).toBe(false);
+  });
+
+  it('returns false for an in-flight job still within the deadline', () => {
+    const startedAt = iso(NOW - (SHORTS_ASSET_DEADLINE_MS - 5_000));
+    expect(isGenerationStale(prog({ phase: 'variant', started_at: startedAt }), NOW)).toBe(false);
+  });
+
+  it('returns true for an in-flight job past the deadline (dead function)', () => {
+    const startedAt = iso(NOW - (SHORTS_ASSET_DEADLINE_MS + 5_000));
+    expect(isGenerationStale(prog({ phase: 'variant', started_at: startedAt }), NOW)).toBe(true);
+    expect(isGenerationStale(prog({ phase: 'planning', started_at: startedAt }), NOW)).toBe(true);
+    expect(isGenerationStale(prog({ phase: 'base', started_at: startedAt }), NOW)).toBe(true);
+  });
+
+  it('returns false when started_at is missing or unparseable', () => {
+    expect(isGenerationStale(prog({ phase: 'variant' }), NOW)).toBe(false);
+    expect(isGenerationStale(prog({ phase: 'variant', started_at: 'not-a-date' }), NOW)).toBe(false);
   });
 });
 

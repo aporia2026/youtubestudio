@@ -19,9 +19,36 @@
  *                    style block with a base_url. Render is unblocked.
  */
 
-import type { ShortRow } from './shorts-types';
+import type { GenerationProgressState, ShortRow } from './shorts-types';
 
 export type StyleAssetStatus = 'none' | 'generating' | 'ready';
+
+/** Hard ceiling on the synchronous generate-style-assets serverless
+ *  function. Mirrors `maxDuration = 300` on that route plus 30s grace for
+ *  Vercel teardown + clock skew. Past this, an in-flight progress row that
+ *  never flipped to 'done' or 'error' is provably dead: Vercel hard-killed
+ *  the function before its `.catch` could write a terminal state, so the
+ *  row froze mid-phase. The UI uses this to stop polling a corpse and
+ *  surface a Retry instead of a forever-climbing bar. */
+export const SHORTS_ASSET_DEADLINE_MS = 330_000;
+
+const IN_FLIGHT_PHASES: ReadonlySet<string> = new Set(['planning', 'base', 'variant']);
+
+/** Pure helper — true when a generation_progress row is still "in flight"
+ *  but has run past the function's hard deadline, i.e. the backend died
+ *  without writing a terminal state. `nowMs` is injected so this stays
+ *  pure + testable. Returns false for terminal ('done' / 'error') or empty
+ *  progress, and for rows missing a parseable `started_at`. */
+export function isGenerationStale(
+  progress: Pick<GenerationProgressState, 'phase' | 'started_at'> | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!progress?.phase || !IN_FLIGHT_PHASES.has(progress.phase)) return false;
+  if (!progress.started_at) return false;
+  const startedMs = new Date(progress.started_at).getTime();
+  if (!Number.isFinite(startedMs)) return false;
+  return nowMs - startedMs > SHORTS_ASSET_DEADLINE_MS;
+}
 
 /** Pure helper — given a row, decide which status the inbox should show.
  *  Exported for tests so badge logic + polling loop + retry button all
