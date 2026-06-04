@@ -225,7 +225,7 @@ export const AI_MODELS: AIModel[] = [
   { id: 'kie-gemini-3-flash', name: 'Gemini 3 Flash', provider: 'kie', contextWindow: '1M', description: 'Latest fast Gemini via Kie.ai', tier: 'fast', inputCostPerMTok: 0.1, outputCostPerMTok: 0.4, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-gemini-3-pro', name: 'Gemini 3 Pro', provider: 'kie', contextWindow: '1M', description: 'Latest pro Gemini via Kie.ai', tier: 'flagship', inputCostPerMTok: 1.5, outputCostPerMTok: 6, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-gemini-3.1-pro', name: 'Gemini 3.1 Pro', provider: 'kie', contextWindow: '1M', description: 'Newest Gemini reasoning via Kie.ai', tier: 'flagship', inputCostPerMTok: 1.5, outputCostPerMTok: 6, pricingNote: 'approx — verify on kie.ai' },
-  { id: 'kie-gemini-3-5-flash', name: 'Gemini 3.5 Flash', provider: 'kie', contextWindow: '1M', description: 'Latest fast Gemini (3.5 generation) via Kie.ai', tier: 'fast', inputCostPerMTok: 0.1, outputCostPerMTok: 0.4, pricingNote: 'approx — verify on kie.ai' },
+  { id: 'kie-gemini-3-5-flash', name: 'Gemini 3.5 Flash', provider: 'kie', contextWindow: '1M', description: 'Latest fast Gemini (3.5 generation) via Kie.ai', tier: 'fast', inputCostPerMTok: 0.45, outputCostPerMTok: 2.7, pricingNote: '90/540 credits per 1M (≈$0.45/$2.70) per kie.ai listing' },
   // Kie.ai — Claude models
   { id: 'kie-claude-opus-4-7', name: 'Claude Opus 4.7 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Newest Anthropic flagship via Kie.ai', tier: 'flagship', inputCostPerMTok: 12, outputCostPerMTok: 60, pricingNote: 'approx — verify on kie.ai' },
   { id: 'kie-claude-opus-4-6', name: 'Claude Opus 4.6 (Kie)', provider: 'kie', contextWindow: '1M', description: 'Claude Opus via Kie.ai', tier: 'flagship', inputCostPerMTok: 12, outputCostPerMTok: 60, pricingNote: 'approx — verify on kie.ai' },
@@ -265,7 +265,11 @@ export const KIE_MODEL_MAP: Record<string, KieModelConfig> = {
   'kie-gemini-3-flash': { kieModelId: 'gemini-3-flash', endpointType: 'gemini' },
   'kie-gemini-3-pro': { kieModelId: 'gemini-3-pro', endpointType: 'gemini' },
   'kie-gemini-3.1-pro': { kieModelId: 'gemini-3.1-pro', endpointType: 'gemini' },
-  'kie-gemini-3-5-flash': { kieModelId: 'gemini-3-5-flash', endpointType: 'gemini' },
+  // Kie exposes 3.5 Flash in two variants: the Google-native streaming surface
+  // ('gemini-3-5-flash') and an OpenAI-compatible alias ('gemini-3-5-flash-openai').
+  // Only the latter works on /{model}/v1/chat/completions; the bare slug 422s with
+  // "The model is not supported". Verified live 2026-06-04.
+  'kie-gemini-3-5-flash': { kieModelId: 'gemini-3-5-flash-openai', endpointType: 'gemini' },
   'kie-claude-opus-4-7': { kieModelId: 'claude-opus-4-7', endpointType: 'claude' },
   'kie-claude-opus-4-6': { kieModelId: 'claude-opus-4-6', endpointType: 'claude' },
   'kie-claude-sonnet-4-6': { kieModelId: 'claude-sonnet-4-6', endpointType: 'claude' },
