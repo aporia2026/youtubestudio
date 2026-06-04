@@ -1,7 +1,27 @@
 ---
 date: 2026-06-04
-status: approved
+status: phases-1-4-shipped — Phase 5 manual QA pending
 owner: yoavm7-code
+phases_shipped:
+  - phase: 1 — flat-bottom bug fix (browser + server) + black-border invariant
+    commit: 8ff30e8
+  - phase: 2a — data model + 6 presets
+    commit: d9fe452
+  - phase: 2b — browser renderer honours all 5 axes
+    commit: acbe4bd
+  - phase: 2c — `/api/thumbnails/grid-rmbg` route + Replicate wrapper
+    commit: d6a29cc
+  - phase: 2d — TopicCardGridPanel UI (preset row + 5 per-axis controls + cutout-on-upload wiring)
+    commit: 11d898a
+  - phase: 3 — server Sharp composite parity (all 5 axes + cutouts in buildCircleCellOverlay)
+    commit: 177498a
+  - phase: 4 — snapshot fixtures (6 combos) + grid-bg-removal mocked fetch tests
+    commit: b397615
+phase_5_remaining:
+  - Spin up dev server, click each of the 6 presets in the editor, confirm the export PNG matches the preview.
+  - Verify the cutout-on-upload flow on a real JPEG upload (no alpha → Replicate call → cutout reuse).
+  - Decide whether to enable the `'icon'` fillStyle's icon composite (needs `TopicCard.iconSlug` plumbing).
+  - Decide whether to extend axis support into pure-prompt circle mode (composite currently only fires when an upload exists).
 ---
 
 # Topic Card Grid — Circle Parity & Variation Axes
