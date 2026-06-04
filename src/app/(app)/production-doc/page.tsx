@@ -14381,6 +14381,29 @@ function ProductionDocPage() {
       // `useStudioSubMode`.
       subMode={studioSubMode}
       onToggleSubMode={toggleStudioSubMode}
+      // R5 PR1: pinned-bottom render dock. Surfaces media counters
+      // and the primary Render CTA so the user can ship from any
+      // tab / sub-mode without scrolling to the legacy section.
+      renderDock={
+        doc
+          ? {
+              imageStats: {
+                ready: imageStats.succeeded,
+                failed: imageStats.failed,
+                total: doc.rows.length,
+              },
+              videoStats: {
+                ready: videoStats.succeeded,
+                failed: videoStats.failed,
+                total: doc.rows.length,
+              },
+              status: renderStatus,
+              progress: renderProgress,
+              downloadUrl: renderDownloadUrl ?? undefined,
+              onStartRender: () => { void startVideoRender(); },
+            }
+          : undefined
+      }
     >
       {pageContent}
     </ProductionDocShell>

@@ -8,6 +8,7 @@ import type {
 } from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import type { StudioSubMode } from './StudioTopBar';
+import type { RenderDockProps } from './RenderDock';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
@@ -85,6 +86,9 @@ export interface ProductionDocShellProps {
   subMode?: StudioSubMode;
   /** Controlled toggle handler. Paired with `subMode`. R4 PR3. */
   onToggleSubMode?: () => void;
+  /** Render-dock state + actions. When provided, the pinned-bottom
+   *  dock renders in Studio Mode. Ignored in Brief Mode. R5 PR1. */
+  renderDock?: RenderDockProps;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -115,6 +119,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   onSelectRow,
   subMode,
   onToggleSubMode,
+  renderDock,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -161,6 +166,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       onSelectRow={onSelectRow}
       subMode={subMode}
       onToggleSubMode={onToggleSubMode}
+      renderDock={renderDock}
     >
       {children}
     </StudioMode>

@@ -18,6 +18,7 @@ import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
 import { SceneStrip } from './SceneStrip';
+import { RenderDock, type RenderDockProps } from './RenderDock';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
@@ -102,6 +103,9 @@ export interface StudioModeProps {
    *  variant management, section bulk-apply, overlay edits, etc.
    *  R3 (Variants editable). */
   editorWriters?: EditorWriters;
+  /** Render-dock state + actions. When provided, the pinned-bottom
+   *  dock renders with media counters + Start Render CTA. R5 PR1. */
+  renderDock?: RenderDockProps;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -123,6 +127,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   onToggleSubMode: controlledOnToggleSubMode,
   onSelectRow,
   editorWriters,
+  renderDock,
 }) => {
   // R3 PR6 + R4 PR3: Studio sub-mode toggle. When the caller passes
   // controlled `subMode` + `onToggleSubMode` we defer to them (so
@@ -170,6 +175,10 @@ export const StudioMode: React.FC<StudioModeProps> = ({
         sceneStripOrientation={sceneStripOrientation}
         onToggleSceneStripOrientation={toggleSceneStripOrientation}
       />
+      {/* When the render dock is wired the layout reserves bottom
+          space so its content isn't covered by the fixed-position
+          dock. Math: 56px dock-height + 16px breathing room. */}
+      <div style={renderDock ? { paddingBottom: 72 } : undefined}>
       {subMode === 'bulk-grid' ? (
         // Bulk Grid sub-mode: skip the 3-column StudioLayout entirely.
         // Children (today's grid table) take the full width — the
@@ -210,6 +219,8 @@ export const StudioMode: React.FC<StudioModeProps> = ({
           }
         />
       )}
+      </div>
+      {renderDock && <RenderDock {...renderDock} />}
     </>
   );
 };
