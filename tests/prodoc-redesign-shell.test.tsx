@@ -138,6 +138,28 @@ describe('ProductionDocShell — Brief Mode header injection (R1)', () => {
     expect(html).not.toContain('Production Doc');
     expect(html).not.toContain('New session');
   });
+
+  it('Brief Mode also renders the four-step BriefSteps chrome (R1b)', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={null}>
+        <span>inputs</span>
+      </ProductionDocShell>,
+    );
+    // The nav landmark identifies BriefSteps unambiguously — easier to
+    // check than the label text (which could collide with content).
+    expect(html).toMatch(/<nav[^>]*aria-label="Production doc workflow"/);
+    // First step is current by default.
+    expect(html).toMatch(/aria-current="step"/);
+  });
+
+  it('Studio Mode does NOT render the BriefSteps chrome', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC}>
+        <span>studio</span>
+      </ProductionDocShell>,
+    );
+    expect(html).not.toMatch(/aria-label="Production doc workflow"/);
+  });
 });
 
 describe('PROD_DOC_REDESIGN_V1_PUBLIC — feature flag export', () => {

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { BriefHeader } from './BriefHeader';
+import { BriefSteps } from './BriefSteps';
 
 /**
  * Brief Mode — the pre-generation Notebook surface.
@@ -11,11 +12,11 @@ import { BriefHeader } from './BriefHeader';
  * Script, Generate; sticky-bottom CTA; generation log expands above
  * the button).
  *
- * Phase R1 (first PR): the new `BriefHeader` is mounted above the
- * legacy input panel (passed in via `children`). The legacy header
- * is hidden in `page.tsx` when the flag is on, so the user sees the
- * new title bar instead. The four-step Notebook restructuring of the
- * inputs themselves is the work of R1b/c.
+ * Phase R1a shipped `BriefHeader`. Phase R1b (this PR) adds
+ * `BriefSteps` — the four-step progress chrome — below the header.
+ * The legacy input panel still renders untouched as `children`.
+ * R1c will migrate the input chunks into BriefStepCard wrappers
+ * anchored to each step.
  */
 export interface BriefModeProps {
   children: React.ReactNode;
@@ -26,6 +27,7 @@ export const BriefMode: React.FC<BriefModeProps> = ({ children, onNewSession }) 
   return (
     <>
       <BriefHeader onNewSession={onNewSession} />
+      <BriefSteps current={1} />
       {children}
     </>
   );
