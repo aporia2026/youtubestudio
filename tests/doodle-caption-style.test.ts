@@ -28,6 +28,24 @@ describe('resolveDoodleCaptionStyle', () => {
     expect(r.fontWeight).toBe(900);
     expect(r.entryEffect).toBe('fade');
     expect(r.background).toBe('none');
+    // Karaoke is the marquee word-highlight for Doodle (2026-06-05).
+    expect(r.wordHighlight).toBe('karaoke');
+    expect(r.activeWordColor).toBe('#ffffff');
+    expect(r.spokenWordColor).toBe('rgba(250, 204, 21, 0.45)');
+  });
+
+  it('honors word-highlight overrides without touching other fields', () => {
+    const r = resolveDoodleCaptionStyle({
+      wordHighlight: 'scale',
+      activeWordColor: '#ff00ff',
+      spokenWordColor: '#888',
+    });
+    expect(r.wordHighlight).toBe('scale');
+    expect(r.activeWordColor).toBe('#ff00ff');
+    expect(r.spokenWordColor).toBe('#888');
+    // Other fields keep their doodle defaults.
+    expect(r.color).toBe('#facc15');
+    expect(r.outlineWidth).toBe(6);
   });
 
   it('returns the doodle defaults when given an empty object', () => {
@@ -84,6 +102,9 @@ describe('resolveDoodleCaptionStyle', () => {
       entryEffect: 'pop',
       background: 'solid',
       backgroundColor: '#222',
+      wordHighlight: 'background',
+      activeWordColor: '#abcdef',
+      spokenWordColor: '#444',
     };
     const r = resolveDoodleCaptionStyle(cfg);
     expect(r.fontFamily).toBe('Anton');
@@ -102,6 +123,9 @@ describe('resolveDoodleCaptionStyle', () => {
     expect(r.entryEffect).toBe('pop');
     expect(r.background).toBe('solid');
     expect(r.backgroundColor).toBe('#222');
+    expect(r.wordHighlight).toBe('background');
+    expect(r.activeWordColor).toBe('#abcdef');
+    expect(r.spokenWordColor).toBe('#444');
   });
 });
 

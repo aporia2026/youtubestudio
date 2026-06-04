@@ -15,6 +15,15 @@ export interface ShortCaptionChunk {
   end_ms: number;
   /** The chunk's spoken text — typically 1-3 short phrases. */
   text: string;
+  /** Per-word boundaries within the chunk. Attached by
+   *  `attachWordTimingsToChunks` when ElevenLabs forced-alignment is
+   *  available. Drives the karaoke / word-highlight effects in the
+   *  renderer; when undefined the renderer falls back to chunk-level
+   *  styling (the pre-word-highlight behavior).
+   *
+   *  Each word's start/end is in ms relative to the audio track, same
+   *  reference frame as `start_ms` / `end_ms`. */
+  words?: Array<{ text: string; start_ms: number; end_ms: number }>;
 }
 
 /** Phase 15.11 — caption style + per-chunk overrides.
@@ -60,6 +69,27 @@ export interface ShortsCaptionsStyle {
   backgroundColor?: string;
   /** Effect applied on chunk change. */
   entryEffect?: 'none' | 'fade' | 'pop' | 'slide-up';
+  /** Per-word highlight strategy as the audio plays. Requires word
+   *  boundaries on the caption chunk (attached when ElevenLabs
+   *  forced-alignment is available). When alignment isn't available,
+   *  the renderer falls back to chunk-level styling regardless of this
+   *  value.
+   *
+   *  - `'none'` — every word renders identically (pre-2026-06-05 default).
+   *  - `'color'` — current word switches to `activeWordColor` only.
+   *  - `'scale'` — current word scales 1.15× briefly.
+   *  - `'background'` — current word gets a colored background pill.
+   *  - `'karaoke'` — past words dim to `spokenWordColor`, current word
+   *    pops to `activeWordColor`, future words stay in `color`.
+   *    Classic TikTok / Reels caption look. Default for Doodle + Paint. */
+  wordHighlight?: 'none' | 'color' | 'scale' | 'background' | 'karaoke';
+  /** Color applied to the currently-spoken word when `wordHighlight`
+   *  uses color (i.e. `'color'` or `'karaoke'`). Defaults to
+   *  `highlightColor`. */
+  activeWordColor?: string;
+  /** Color for already-spoken words in `'karaoke'` mode (dimmed past
+   *  text). Defaults to a desaturated variant of `color`. */
+  spokenWordColor?: string;
 }
 
 /** Per-chunk override. When the user edits a chunk's text or timing in the

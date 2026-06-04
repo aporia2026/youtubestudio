@@ -1160,6 +1160,14 @@ const TEXT_TRANSFORMS: Array<NonNullable<ShortsCaptionsStyle['textTransform']>> 
   'capitalize',
 ];
 
+const WORD_HIGHLIGHTS: Array<NonNullable<ShortsCaptionsStyle['wordHighlight']>> = [
+  'none',
+  'karaoke',
+  'color',
+  'scale',
+  'background',
+];
+
 type CaptionPositionChoice = 'top' | 'center' | 'bottom';
 // Canonical positionY for the three presets. positionY is the caption band's
 // vertical CENTER (the renderer applies translateY(-50%)): 'top' clears the
@@ -1257,6 +1265,14 @@ function CaptionsEditorPanel({
           onChange={(v) => onStyleChange({ textTransform: (v as ShortsCaptionsStyle['textTransform']) ?? undefined })}
         />
         <StyleChipRow
+          label="Word highlight"
+          value={style.wordHighlight ?? null}
+          options={WORD_HIGHLIGHTS.map((w) => ({ value: w, label: w }))}
+          onChange={(v) =>
+            onStyleChange({ wordHighlight: (v as ShortsCaptionsStyle['wordHighlight']) ?? undefined })
+          }
+        />
+        <StyleChipRow
           label="Position"
           value={positionToChoice(style.positionY)}
           options={[
@@ -1330,6 +1346,16 @@ function CaptionsEditorPanel({
             label="Outline"
             value={style.outlineColor ?? '#000000'}
             onCommit={(v) => onStyleChange({ outlineColor: v })}
+          />
+          <ColorField
+            label="Active word"
+            value={style.activeWordColor ?? '#ffffff'}
+            onCommit={(v) => onStyleChange({ activeWordColor: v })}
+          />
+          <ColorField
+            label="Spoken word"
+            value={style.spokenWordColor ?? 'rgba(255,255,255,0.45)'}
+            onCommit={(v) => onStyleChange({ spokenWordColor: v })}
           />
         </div>
 

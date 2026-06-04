@@ -8,12 +8,13 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
-import type { ShortVideoConfig } from '@/lib/shorts-render-types';
+import type { ShortVideoConfig, ShortCaptionChunk } from '@/lib/shorts-render-types';
 import {
   resolveDoodleCaptionStyle,
   entryEffectTransform,
   type ResolvedDoodleCaptionStyle,
 } from '../doodle-caption-style';
+import { findActiveWordIndex } from '@/lib/shorts-caption-words';
 
 /**
  * Vertical 1080×1920 Short composition.
@@ -151,7 +152,7 @@ function CaptionChunk({
   accent,
   style: cfg,
 }: {
-  caption: { start_ms: number; end_ms: number; text: string };
+  caption: ShortCaptionChunk;
   elapsedMs: number;
   accent: string;
   /** Phase 15.11 — optional caption style overrides. When undefined the
@@ -169,7 +170,8 @@ function CaptionChunk({
 
   // Scale font down for longer chunks so they always fit. Empirical:
   // 5 words = 96px is comfortable; 8 words = 72px.
-  const wordCount = caption.text.split(/\s+/).filter(Boolean).length;
+  const words = caption.words ?? proportionalWordsForRender(caption);
+  const wordCount = words.length;
   const autoFontSize = wordCount <= 4 ? 110 : wordCount <= 6 ? 92 : wordCount <= 8 ? 76 : 64;
   const sizeScale = typeof cfg?.sizeScale === 'number' && cfg.sizeScale > 0 ? cfg.sizeScale : 1;
   const fontSize = Math.round(autoFontSize * sizeScale);
@@ -252,15 +254,78 @@ function CaptionChunk({
           backdropFilter: background === 'blur' ? 'blur(20px)' : undefined,
         }}
       >
-        {caption.text.split(/\s+/).map((word, i, arr) => (
-          <React.Fragment key={i}>
-            <span style={i === arr.length - 1 ? { color: highlightColor } : undefined}>{word}</span>
-            {i < arr.length - 1 ? ' ' : ''}
-          </React.Fragment>
-        ))}
+        {renderMinimalWords({ words, elapsedMs, cfg, highlightColor, outlineColor })}
       </div>
     </div>
   );
+}
+
+/** Word-loop for the Minimal style. Back-compat: when `wordHighlight`
+ *  is undefined or 'none', preserves the original Phase 5.5 behavior of
+ *  highlighting only the LAST word in `highlightColor`. When set to a
+ *  new mode ('color' / 'scale' / 'background' / 'karaoke'), runs the
+ *  same per-word active-index logic the Doodle renderer uses. */
+function renderMinimalWords({
+  words,
+  elapsedMs,
+  cfg,
+  highlightColor,
+  outlineColor,
+}: {
+  words: Array<{ text: string; start_ms: number; end_ms: number }>;
+  elapsedMs: number;
+  cfg: import('@/lib/shorts-render-types').ShortsCaptionsStyle | undefined;
+  highlightColor: string;
+  outlineColor: string;
+}) {
+  const mode = cfg?.wordHighlight ?? 'none';
+  // Back-compat path: old behavior was "last word in highlight color".
+  // Keep it for `mode === 'none'` so existing rendered Shorts don't
+  // visually change.
+  if (mode === 'none') {
+    return words.map((word, i, arr) => (
+      <React.Fragment key={i}>
+        <span style={i === arr.length - 1 ? { color: highlightColor } : undefined}>{word.text}</span>
+        {i < arr.length - 1 ? ' ' : ''}
+      </React.Fragment>
+    ));
+  }
+  const activeIndex = findActiveWordIndex(words, elapsedMs);
+  const activeColor = cfg?.activeWordColor ?? highlightColor;
+  const spokenColor = cfg?.spokenWordColor ?? 'rgba(255,255,255,0.45)';
+  return words.map((word, i) => {
+    const isActive = i === activeIndex;
+    const isPast = activeIndex !== -1 && i < activeIndex;
+    let style: React.CSSProperties | undefined;
+    if (mode === 'color') {
+      style = isActive ? { color: activeColor } : undefined;
+    } else if (mode === 'scale') {
+      style = {
+        display: 'inline-block',
+        transform: isActive ? 'scale(1.15)' : 'scale(1)',
+        transformOrigin: 'center bottom',
+        transition: 'transform 60ms ease-out',
+      };
+    } else if (mode === 'background') {
+      style = isActive
+        ? {
+            backgroundColor: activeColor,
+            color: outlineColor || '#000',
+            padding: '0 8px',
+            borderRadius: 8,
+          }
+        : undefined;
+    } else if (mode === 'karaoke') {
+      if (isActive) style = { color: activeColor };
+      else if (isPast) style = { color: spokenColor };
+    }
+    return (
+      <React.Fragment key={i}>
+        <span style={style}>{word.text}</span>
+        {i < words.length - 1 ? ' ' : ''}
+      </React.Fragment>
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +520,7 @@ function DoodleCaptionChunk({
   elapsedMs,
   style,
 }: {
-  caption: { start_ms: number; end_ms: number; text: string };
+  caption: ShortCaptionChunk;
   elapsedMs: number;
   style: ResolvedDoodleCaptionStyle;
 }) {
@@ -467,9 +532,17 @@ function DoodleCaptionChunk({
   const fadeOut = Math.min(1, Math.max(0, untilEnd / outDur));
   const opacity = Math.min(fadeIn, fadeOut);
 
-  const wordCount = caption.text.split(/\s+/).filter(Boolean).length;
-  // Auto-size by word count, then scale by the user-configured sizeScale
-  // so a creator can bump captions up/down without recomputing per chunk.
+  // Build the per-word list. Prefer real word boundaries from the
+  // alignment payload (set by `attachWordTimingsToChunks`); fall back
+  // to evenly-distributed tokens so the highlight effects still have
+  // SOMETHING to track when alignment is missing.
+  const words = caption.words ?? proportionalWordsForRender(caption);
+  const activeIndex =
+    style.wordHighlight === 'none'
+      ? -1
+      : findActiveWordIndex(words, elapsedMs);
+
+  const wordCount = words.length;
   const autoFontSize = wordCount <= 4 ? 96 : wordCount <= 6 ? 80 : wordCount <= 8 ? 64 : 54;
   const fontSize = Math.round(autoFontSize * style.sizeScale);
 
@@ -519,21 +592,87 @@ function DoodleCaptionChunk({
           backdropFilter: style.background === 'blur' ? 'blur(20px)' : undefined,
         }}
       >
-        {caption.text.split(/\s+/).map((word, i, arr) => (
-          <React.Fragment key={i}>
-            <span
-              style={
-                i === arr.length - 1 && style.highlightColor !== style.color
-                  ? { color: style.highlightColor }
-                  : undefined
-              }
-            >
-              {word}
-            </span>
-            {i < arr.length - 1 ? ' ' : ''}
-          </React.Fragment>
-        ))}
+        {words.map((word, i) => {
+          const wordStyle = wordHighlightStyle(style, i, activeIndex);
+          return (
+            <React.Fragment key={i}>
+              <span style={wordStyle}>{word.text}</span>
+              {i < words.length - 1 ? ' ' : ''}
+            </React.Fragment>
+          );
+        })}
       </div>
     </div>
   );
+}
+
+/** Compute the CSS for one word based on its position relative to the
+ *  active word + the chosen highlight strategy. Returns an inline-style
+ *  object so React can diff cheaply on each frame. */
+function wordHighlightStyle(
+  style: ResolvedDoodleCaptionStyle,
+  wordIndex: number,
+  activeIndex: number,
+): React.CSSProperties | undefined {
+  if (style.wordHighlight === 'none') return undefined;
+  // No active word right now (silent gap, pre-first, post-last). For
+  // karaoke we still want past words dimmed + future words at body
+  // color; for the other modes there's nothing to do.
+  if (activeIndex === -1) {
+    if (style.wordHighlight === 'karaoke') {
+      // Without an active index we can't tell past from future. Default
+      // to body color — the active word will paint over this on the
+      // very next frame anyway.
+      return undefined;
+    }
+    return undefined;
+  }
+  const isActive = wordIndex === activeIndex;
+  const isPast = wordIndex < activeIndex;
+
+  if (style.wordHighlight === 'color') {
+    return isActive ? { color: style.activeWordColor } : undefined;
+  }
+  if (style.wordHighlight === 'scale') {
+    // Inline-block so transform actually applies. 1.15× pop on the
+    // active word; everything else stays at 1.0.
+    return {
+      display: 'inline-block',
+      transform: isActive ? 'scale(1.15)' : 'scale(1)',
+      transformOrigin: 'center bottom',
+      transition: 'transform 60ms ease-out',
+    };
+  }
+  if (style.wordHighlight === 'background') {
+    return isActive
+      ? {
+          backgroundColor: style.activeWordColor,
+          color: style.outlineColor, // contrast against the pill
+          padding: '0 8px',
+          borderRadius: 8,
+        }
+      : undefined;
+  }
+  // karaoke: past = spokenWordColor, active = activeWordColor, future = body
+  if (isActive) return { color: style.activeWordColor };
+  if (isPast) return { color: style.spokenWordColor };
+  return undefined;
+}
+
+/** When alignment isn't available the chunk still carries text. Build
+ *  proportional word records so the highlight effects have data to
+ *  drive. Identical math to `proportionalWordTimings` in
+ *  `shorts-caption-words.ts` — duplicated here so the renderer doesn't
+ *  pull in the server-only module graph. */
+function proportionalWordsForRender(
+  caption: ShortCaptionChunk,
+): Array<{ text: string; start_ms: number; end_ms: number }> {
+  const tokens = caption.text.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return [];
+  const chunkDurMs = Math.max(1, caption.end_ms - caption.start_ms);
+  return tokens.map((text, i) => ({
+    text,
+    start_ms: Math.round(caption.start_ms + (chunkDurMs * i) / tokens.length),
+    end_ms: Math.round(caption.start_ms + (chunkDurMs * (i + 1)) / tokens.length),
+  }));
 }

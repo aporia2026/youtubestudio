@@ -35,6 +35,12 @@ export const DOODLE_CAPTION_DEFAULTS = Object.freeze({
   entryEffect: 'fade' as const,
   background: 'none' as const,
   backgroundColor: 'rgba(0,0,0,0.6)',
+  // Karaoke is the marquee word-highlight for Doodle: past words dim,
+  // current word pops to active color, future words stay yellow. Reads
+  // as the classic TikTok / Reels caption style.
+  wordHighlight: 'karaoke' as const,
+  activeWordColor: '#ffffff', // bright white pops against the yellow body
+  spokenWordColor: 'rgba(250, 204, 21, 0.45)', // dimmed yellow
 });
 
 export interface ResolvedDoodleCaptionStyle {
@@ -54,6 +60,9 @@ export interface ResolvedDoodleCaptionStyle {
   entryEffect: 'none' | 'fade' | 'pop' | 'slide-up';
   background: 'none' | 'solid' | 'blur';
   backgroundColor: string;
+  wordHighlight: 'none' | 'color' | 'scale' | 'background' | 'karaoke';
+  activeWordColor: string;
+  spokenWordColor: string;
 }
 
 /** Merge a user's caption style on top of the Doodle defaults. Numeric
@@ -83,6 +92,9 @@ export function resolveDoodleCaptionStyle(
     entryEffect: cfg?.entryEffect ?? d.entryEffect,
     background: cfg?.background ?? d.background,
     backgroundColor: cfg?.backgroundColor ?? d.backgroundColor,
+    wordHighlight: cfg?.wordHighlight ?? d.wordHighlight,
+    activeWordColor: cfg?.activeWordColor ?? d.activeWordColor,
+    spokenWordColor: cfg?.spokenWordColor ?? d.spokenWordColor,
   };
 }
 

@@ -32,6 +32,7 @@ export type {
 // continue to work. New code should import `stripProductionMarkers`
 // directly from `./script-markers`.
 import { stripProductionMarkers } from './script-markers';
+import { attachWordTimingsToChunks } from './shorts-caption-words';
 export { stripProductionMarkers as stripScriptMarkers };
 
 /** Approximate word count. Used for proportional caption timing. */
@@ -294,6 +295,12 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
     })
     .filter((c): c is NonNullable<typeof c> => c !== null);
 
+  // Attach per-word timings so the renderer can drive karaoke /
+  // word-highlight effects. When alignment is missing we still attach
+  // proportional fallback timings — the renderer's highlight logic
+  // works either way, just less precisely.
+  const captionsWithWords = attachWordTimingsToChunks(captions, args.alignment);
+
   const styleId = short.style_id ?? undefined;
 
   // Image-style dispatch — both Doodle and Paint vertical use the same
@@ -356,7 +363,7 @@ export function buildShortVideoConfig(args: BuildShortVideoConfigArgs): ShortVid
     height: SHORT_HEIGHT,
     voiceover_url: short.voiceover_audio_url,
     duration_ms: durationMs,
-    captions,
+    captions: captionsWithWords,
     title: short.title?.trim() || undefined,
     background: args.background || DEFAULT_SHORT_BACKGROUND,
     accent_color: args.accentColor || DEFAULT_SHORT_ACCENT,
