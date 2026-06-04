@@ -1,30 +1,32 @@
 /**
  * POST /api/shorts/[id]/sync-duration
  *
- * One-click "make video length match the voiceover" + "re-sync captions
- * to actual word boundaries". Does both because they're driven by the
- * same underlying measurement.
+ * One-click "make video length match the voiceover" + best-effort
+ * "re-sync captions to actual word boundaries".
  *
- * Implementation:
- *   1. Force-refreshes the ElevenLabs Scribe alignment for the voiceover.
- *      That call returns word-perfect timing AND the audio's precise
- *      length — much more reliable than ffmpeg-probing the mp3 (which
- *      has been flaky on the Vercel function bundle: ffmpeg sometimes
- *      doesn't print a Duration line when reading certain MP3 streams
- *      from stdin).
- *   2. Writes the aligner's durationMs to `voiceover_duration_seconds`.
- *      The render path + the preview Player both read that column, so
- *      the composition now matches the audio exactly.
- *   3. Returns the new duration AND the alignment so the editor can
- *      apply it without a second roundtrip.
+ * Body: { seconds?: number }
  *
- * Why this exists as an explicit button:
- *   - The aligner runs automatically once per voiceover load to backfill
- *     timing. But back-catalog rows whose cached alignment is stale
- *     (script edited, voiceover regenerated, etc.) need a manual lever
- *     to re-measure right before render. That's this route.
+ * Strategy (after two failed attempts with ffmpeg + alignment-as-primary):
+ *   1. Duration source — CLIENT-MEASURED. The editor reads
+ *      `new Audio(url).duration` in the browser (the audio element
+ *      that's already loaded knows the real length) and POSTs it.
+ *      This bypasses every server-side flakiness we hit:
+ *      - ffmpeg's stdin probe returning "Duration: N/A" on some MP3s
+ *      - ElevenLabs Scribe failing on retry quotas / vendor 5xx
+ *      The browser is the source of truth for what the user actually
+ *      hears.
+ *   2. Captions — BEST-EFFORT. Try to force-refresh the alignment so
+ *      captions snap to the new word boundaries. If it fails, the
+ *      duration still saves; the failure is reported back to the
+ *      client so the toast can call out "duration synced, captions
+ *      didn't" without blocking the user.
  *
- * Workspace-scoped. 422 if no voiceover; 502 if the aligner fails.
+ * If `seconds` isn't in the body (defensive — shouldn't happen from
+ * the editor), the route falls back to running alignment for the
+ * measurement, same as before.
+ *
+ * Workspace-scoped. 422 if there's no voiceover or the seconds value
+ * is hostile.
  */
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
@@ -39,9 +41,23 @@ import {
 
 export const maxDuration = 60;
 
+/** Sanity bounds on the client-supplied seconds. A Short is between 5s
+ *  and 90s in practice; the 0.5–600 range is generous defensive. */
+function isReasonableSeconds(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0.5 && v <= 600;
+}
+
 export const POST = apiRoute.authed(
-  async (session, _req, ctx: { params: Promise<{ id: string }> }) => {
+  async (session, req, ctx: { params: Promise<{ id: string }> }) => {
     const { id } = await ctx.params;
+
+    let body: { seconds?: unknown } = {};
+    try {
+      body = await req.json();
+    } catch {
+      /* empty body is fine — the route falls back to alignment */
+    }
+
     try {
       const row = await getShort(id, session.ws);
       if (!row) {
@@ -53,34 +69,74 @@ export const POST = apiRoute.authed(
           { status: 422 },
         );
       }
-      if (!row.short_script) {
+
+      // Decide the duration source.
+      let measuredSeconds: number | null = null;
+      let durationSource: 'client' | 'alignment' = 'client';
+
+      if (isReasonableSeconds(body.seconds)) {
+        measuredSeconds = body.seconds;
+        durationSource = 'client';
+      } else if (body.seconds !== undefined) {
+        // Caller sent something invalid — surface it loudly rather
+        // than silently falling through to alignment.
         return NextResponse.json(
-          { error: 'This Short has no script to align against.' },
+          {
+            error:
+              'Invalid `seconds` in the request body — must be a finite number between 0.5 and 600.',
+          },
           { status: 422 },
         );
       }
 
-      // Force-refresh the aligner. Bypasses the cache so a stale row
-      // (script edited after the cached alignment was minted, voiceover
-      // regenerated, etc.) re-measures from scratch. ~$0.22/hr to
-      // ElevenLabs Scribe; pennies per Short.
-      const canonical = buildCanonicalScript([shortAlignmentScript(row.short_script)]);
-      const result = await ensureAlignmentForVoiceover(
-        row.voiceover_audio_url,
-        canonical,
-        { forceRefresh: true },
-      );
+      // Alignment refresh — best-effort. Wrap so a vendor 5xx / quota
+      // hit doesn't fail the whole sync. We capture the result so the
+      // toast can report what worked + what didn't.
+      let alignment: import('@/lib/voiceover-alignment-cache').EnsureAlignmentResult | null = null;
+      let alignmentError: string | null = null;
+      if (row.short_script) {
+        try {
+          const canonical = buildCanonicalScript([
+            shortAlignmentScript(row.short_script),
+          ]);
+          alignment = await ensureAlignmentForVoiceover(
+            row.voiceover_audio_url,
+            canonical,
+            { forceRefresh: true },
+          );
+          if (alignment.status === 'failed') {
+            alignmentError = alignment.reason;
+            logger.warn('[shorts sync-duration] alignment failed (continuing)', {
+              shortId: row.id,
+              reason: alignment.reason,
+            });
+          } else if (measuredSeconds === null) {
+            // Fallback path: no client measurement, use alignment.
+            measuredSeconds = alignment.durationMs / 1000;
+            durationSource = 'alignment';
+          }
+        } catch (err) {
+          alignmentError = err instanceof Error ? err.message : String(err);
+          logger.warn('[shorts sync-duration] alignment threw (continuing)', {
+            shortId: row.id,
+            detail: alignmentError,
+          });
+        }
+      }
 
-      if (result.status !== 'ready') {
+      // If we still have no duration, the client didn't send one AND
+      // alignment failed. Surface the real reason.
+      if (measuredSeconds === null) {
         return NextResponse.json(
           {
-            error: `Alignment failed — ${'reason' in result ? result.reason : 'unknown'}.`,
+            error: alignmentError
+              ? `Could not measure the voiceover. Alignment failed: ${alignmentError}. Try refreshing the page so the audio element re-loads, then click Sync again.`
+              : 'Could not measure the voiceover. The audio element may not have loaded yet — wait a second and click Sync again.',
           },
           { status: 502 },
         );
       }
 
-      const measuredSeconds = result.durationMs / 1000;
       const before = row.voiceover_duration_seconds ?? null;
       await sql`
         UPDATE shorts
@@ -90,26 +146,34 @@ export const POST = apiRoute.authed(
       `;
       logger.info('[shorts sync-duration] updated', {
         shortId: row.id,
+        source: durationSource,
         before_seconds: before,
         measured_seconds: measuredSeconds,
-        delta_seconds: before === null ? null : measuredSeconds - before,
-        words: result.alignment.words.length,
+        alignment_status: alignment?.status ?? 'not-attempted',
+        alignment_words:
+          alignment?.status === 'ready' ? alignment.alignment.words.length : null,
       });
 
       return NextResponse.json({
         ok: true,
+        source: durationSource,
         before_seconds: before,
         seconds: measuredSeconds,
-        // Return the fresh alignment so the editor can apply it without
-        // a second GET /alignment roundtrip — saves a re-fetch and means
-        // the captions snap to the new boundaries in the same click.
-        alignment: result.alignment,
-        durationMs: result.durationMs,
+        alignment:
+          alignment?.status === 'ready' ? alignment.alignment : null,
+        alignment_error: alignmentError,
       });
     } catch (err) {
+      // Keep the catch as a defensive net but surface the actual
+      // message so the user sees what's wrong instead of a generic 502.
+      const detail = err instanceof Error ? err.message : String(err);
+      logger.error('[shorts sync-duration] unexpected throw', {
+        shortId: id,
+        detail,
+      });
       return domainErrorResponse(err, {
         op: 'shorts: sync voiceover duration',
-        fallbackMessage: 'Failed to sync the voiceover duration.',
+        fallbackMessage: `Failed to sync the voiceover duration. ${detail.slice(0, 200)}`,
       });
     }
   },

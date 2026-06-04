@@ -516,28 +516,66 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   }, []);
 
   // ── action: sync video length + captions to the voiceover ────────
-  // One click, two effects:
-  //   1. Force-refreshes the ElevenLabs Scribe alignment (the server
-  //      route handles this), which returns word-perfect timing AND
-  //      the precise audio duration.
-  //   2. Server writes the duration to voiceover_duration_seconds; the
-  //      preview Player + the render route read it.
-  // The editor then applies the returned alignment so captions snap to
-  // the new word boundaries in the same click.
+  // The browser is the source of truth for the audio duration — it
+  // has the mp3 loaded and knows the exact length. We read it client-
+  // side (no ffmpeg, no vendor dependency), POST it to the server,
+  // which stores it AND triggers an alignment refresh as a best-effort
+  // side step so captions snap to the new word boundaries.
   const [syncDurationBusy, setSyncDurationBusy] = useState(false);
   const syncDuration = useCallback(async () => {
     if (!row?.voiceover_audio_url) return;
     setSyncDurationBusy(true);
     try {
+      // Measure the audio in the browser before hitting the server.
+      // `new Audio(url)` with preload='metadata' loads just enough of
+      // the file to know the duration — no full download, no decode.
+      const audioUrl = row.voiceover_audio_url;
+      const seconds = await new Promise<number>((resolve, reject) => {
+        const audio = new Audio();
+        audio.preload = 'metadata';
+        const cleanup = () => {
+          audio.removeEventListener('loadedmetadata', onLoaded);
+          audio.removeEventListener('error', onError);
+        };
+        const onLoaded = () => {
+          cleanup();
+          if (Number.isFinite(audio.duration) && audio.duration > 0) {
+            resolve(audio.duration);
+          } else {
+            reject(
+              new Error(
+                'Browser could not determine the audio duration. The mp3 may be corrupt.',
+              ),
+            );
+          }
+        };
+        const onError = () => {
+          cleanup();
+          reject(new Error('Browser could not load the voiceover audio.'));
+        };
+        audio.addEventListener('loadedmetadata', onLoaded);
+        audio.addEventListener('error', onError);
+        audio.src = audioUrl;
+        // Belt-and-suspenders timeout — if loadedmetadata never fires
+        // (rare, but flaky CDNs do this), bail at 12s.
+        window.setTimeout(() => {
+          cleanup();
+          reject(new Error('Timed out waiting for the audio to load.'));
+        }, 12_000);
+      });
+
       const res = await fetch(
         `/api/shorts/${encodeURIComponent(row.id)}/sync-duration`,
-        { method: 'POST' },
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seconds }),
+        },
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      // Apply the fresh alignment first so the captions update before
-      // the row reload re-renders the preview — keeps the perceived
-      // delay tight.
+      // Apply the fresh alignment first (when present) so captions
+      // update before the row reload re-renders the preview.
       if (data.alignment) {
         setAlignment(data.alignment as ForcedAlignmentResponse);
       }
@@ -548,7 +586,12 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         data.alignment && Array.isArray(data.alignment.words)
           ? data.alignment.words.length
           : null;
-      const captionSuffix = wordCount !== null ? ` Captions synced to ${wordCount} word boundaries.` : '';
+      const captionSuffix =
+        wordCount !== null
+          ? ` Captions synced to ${wordCount} word boundaries.`
+          : data.alignment_error
+            ? ' (Captions not re-aligned — the aligner is down; duration still synced.)'
+            : '';
       if (before !== null && after !== null) {
         const delta = after - before;
         const arrow = delta > 0 ? '+' : '';
