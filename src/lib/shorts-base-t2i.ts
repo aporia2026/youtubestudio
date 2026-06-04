@@ -41,7 +41,13 @@
 
 import { logger } from './logger';
 import { generateAtlasT2I } from './atlas-cloud-images';
+import { cropToAspectAndUpload } from './image-gen-dispatch';
 import { createKieTask, pollKieResult } from './kie-poll';
+
+/** R2 prefix for the 9:16-cropped Atlas T2I intermediate. Lives under
+ *  its own key so storage metrics can show how often the crop path runs
+ *  vs. the Kie native-9:16 path. */
+const ATLAS_BASE_CROP_PREFIX = 'shorts-base-atlas-crop';
 
 /** The set of base T2I models exposed in the picker. Each entry is a
  *  string id; the dispatcher routes off this. Add new entries here AND
@@ -158,13 +164,23 @@ export async function generateShortsBaseT2I(
   });
 
   if (spec.vendor === 'atlas') {
-    // Atlas takes the WxH `size` enum directly; 1024×1536 is the
-    // documented portrait choice on the GPT Image 2 family.
+    // Atlas's GPT Image 2 size enum doesn't include 9:16 — the closest
+    // portrait is 1024×1536 (2:3). We request that, then center-crop to
+    // 9:16 (864×1536) so the renderer's `object-fit: cover` is a
+    // no-op instead of trimming ~11% of the composition. The prompt
+    // already pushes the subject to the middle 60% so the trimmed
+    // ~16% of width is dead space.
     const result = await generateAtlasT2I({
       prompt: opts.prompt,
       size: '1024x1536',
       quality: 'high',
     });
+    const croppedUrl = await cropToAspectAndUpload(
+      result.url,
+      ATLAS_BASE_CROP_PREFIX,
+      9,
+      16,
+    );
     const durationMs = Date.now() - t0;
     logger.info('[shorts base-t2i] atlas done', {
       modelId: spec.id,
@@ -172,9 +188,10 @@ export async function generateShortsBaseT2I(
       predictTimeMs: result.predictTimeMs,
       durationMs,
       costUsd: spec.costUsd,
+      cropped_to_aspect: '9:16',
     });
     return {
-      url: result.url,
+      url: croppedUrl,
       modelId: spec.id,
       vendorUsed: 'atlas',
       costUsd: spec.costUsd,

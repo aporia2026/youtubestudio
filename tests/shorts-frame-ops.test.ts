@@ -9,6 +9,12 @@ vi.mock('@/lib/atlas-cloud-images', () => ({
 vi.mock('@/lib/gpt-image-2-edit', () => ({
   generateGptImage2Edit: vi.fn(),
 }));
+// Base T2I now post-processes Atlas's 2:3 output through a 9:16 crop
+// step (see _plans/2026-06-04-shorts-images-must-be-9-16.md). Mock the
+// crop so the unit test doesn't try to hit a real R2 / fetch.
+vi.mock('@/lib/image-gen-dispatch', () => ({
+  cropToAspectAndUpload: vi.fn(async (srcUrl: string) => `${srcUrl}#cropped`),
+}));
 
 import {
   regenerateBaseFrame,
@@ -93,7 +99,10 @@ describe('regenerateBaseFrame', () => {
     const result = await regenerateBaseFrame(row, { prompt: 'A character in a hat.' });
 
     expect(mockedT2I).toHaveBeenCalledOnce();
-    expect(result.style_assets.doodle?.base_url).toBe('https://r2.test/new-base.png');
+    // Atlas's 2:3 output gets center-cropped to 9:16 by
+    // `cropToAspectAndUpload` before it's stored on the row, so the
+    // persisted base_url is the cropped URL (mock appends '#cropped').
+    expect(result.style_assets.doodle?.base_url).toBe('https://r2.test/new-base.png#cropped');
     expect(result.style_assets.doodle?.base_prompt).toBe('A character in a hat.');
     expect(result.style_assets.doodle?.variants).toEqual(row.style_assets.doodle?.variants);
     // Phase 15.15 — default base model is atlas-gpt-image-2 at $0.009
@@ -116,7 +125,8 @@ describe('regenerateBaseFrame', () => {
       },
     });
     const result = await regenerateBaseFrame(row, { prompt: 'paint scene v2' });
-    expect(result.style_assets.paint?.base_url).toBe('https://r2.test/p.png');
+    // 9:16 crop step appends '#cropped' via the test mock.
+    expect(result.style_assets.paint?.base_url).toBe('https://r2.test/p.png#cropped');
     expect(result.style_assets.paint?.base_prompt).toBe('paint scene v2');
     expect(result.style_assets.doodle).toBeUndefined();
   });

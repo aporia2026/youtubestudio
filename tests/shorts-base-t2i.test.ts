@@ -7,6 +7,12 @@ vi.mock('@/lib/kie-poll', () => ({
   createKieTask: vi.fn(),
   pollKieResult: vi.fn(),
 }));
+vi.mock('@/lib/image-gen-dispatch', () => ({
+  cropToAspectAndUpload: vi.fn(
+    async (srcUrl: string, _prefix: string, aspectW: number, aspectH: number) =>
+      `${srcUrl}#cropped-${aspectW}x${aspectH}`,
+  ),
+}));
 
 import {
   BASE_T2I_MODELS,
@@ -17,15 +23,18 @@ import {
 } from '@/lib/shorts-base-t2i';
 import { generateAtlasT2I } from '@/lib/atlas-cloud-images';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { cropToAspectAndUpload } from '@/lib/image-gen-dispatch';
 
 const mockedAtlas = vi.mocked(generateAtlasT2I);
 const mockedCreateKie = vi.mocked(createKieTask);
 const mockedPollKie = vi.mocked(pollKieResult);
+const mockedCrop = vi.mocked(cropToAspectAndUpload);
 
 beforeEach(() => {
   mockedAtlas.mockReset();
   mockedCreateKie.mockReset();
   mockedPollKie.mockReset();
+  mockedCrop.mockClear();
   process.env.KIE_API_KEY = 'test-kie-key';
 });
 
@@ -57,7 +66,7 @@ describe('registry', () => {
 });
 
 describe('generateShortsBaseT2I — Atlas branch', () => {
-  it('routes to generateAtlasT2I with portrait size + high quality', async () => {
+  it('routes to generateAtlasT2I with portrait size + high quality, then crops to 9:16', async () => {
     mockedAtlas.mockResolvedValue({
       url: 'https://r2.test/atlas.png',
       predictionId: 'pred-1',
@@ -70,12 +79,23 @@ describe('generateShortsBaseT2I — Atlas branch', () => {
     expect(mockedAtlas).toHaveBeenCalledOnce();
     expect(mockedAtlas.mock.calls[0][0]).toMatchObject({
       prompt: 'A character on white canvas',
+      // Atlas's enum has no native 9:16; we request the closest portrait
+      // (1024×1536) and crop down.
       size: '1024x1536',
       quality: 'high',
     });
+    // The Atlas 2:3 output gets center-cropped to 9:16 (864×1536) before
+    // it's returned to the caller — see _plans/2026-06-04-shorts-images-must-be-9-16.md.
+    expect(mockedCrop).toHaveBeenCalledWith(
+      'https://r2.test/atlas.png',
+      expect.any(String),
+      9,
+      16,
+    );
     expect(mockedCreateKie).not.toHaveBeenCalled();
     expect(result).toMatchObject({
-      url: 'https://r2.test/atlas.png',
+      // URL points at the cropped intermediate, not the raw Atlas URL.
+      url: 'https://r2.test/atlas.png#cropped-9x16',
       modelId: 'atlas-gpt-image-2',
       vendorUsed: 'atlas',
       costUsd: 0.009,

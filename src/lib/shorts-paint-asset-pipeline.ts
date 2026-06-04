@@ -225,6 +225,9 @@ export async function generatePaintVariantFrame(args: {
     prompt: args.item.edit_prompt,
     sourceImageUrl: args.baseUrl,
     primary: args.variantEditPrimary ?? 'atlas',
+    // Shorts render in 9:16. See the doodle pipeline + the plan doc
+    // for the rationale.
+    aspectRatio: '9:16',
   });
   logger.info('[shorts paint pipeline] variant ready', {
     shortId: args.shortId,

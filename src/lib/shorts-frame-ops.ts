@@ -247,6 +247,8 @@ export async function regenerateVariantFrame(
     prompt: opts.prompt,
     sourceImageUrl: prevBlock.base_url,
     primary: opts.vendor ?? 'atlas',
+    // Shorts render in 9:16 — see _plans/2026-06-04-shorts-images-must-be-9-16.md.
+    aspectRatio: '9:16',
   });
 
   const nextVariants = prevBlock.variants.slice();
@@ -337,6 +339,8 @@ export async function appendVariantFrame(
     prompt: opts.prompt,
     sourceImageUrl: prevBlock.base_url,
     primary: opts.vendor ?? 'atlas',
+    // Shorts render in 9:16 — see _plans/2026-06-04-shorts-images-must-be-9-16.md.
+    aspectRatio: '9:16',
   });
 
   const newVariant = {

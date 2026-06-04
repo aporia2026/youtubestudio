@@ -8,6 +8,12 @@ vi.mock('@/lib/atlas-cloud-images', () => ({
 vi.mock('@/lib/gpt-image-2-edit', () => ({
   generateGptImage2Edit: vi.fn(),
 }));
+// The base T2I now post-processes Atlas's 2:3 output through a 9:16 crop
+// step (see _plans/2026-06-04-shorts-images-must-be-9-16.md). Mock the
+// crop so this test never touches a real R2.
+vi.mock('@/lib/image-gen-dispatch', () => ({
+  cropToAspectAndUpload: vi.fn(async (srcUrl: string) => `${srcUrl}#cropped`),
+}));
 vi.mock('@/lib/ai', () => ({
   generateText: vi.fn(),
 }));
@@ -161,7 +167,8 @@ describe('generateDoodleAssets — onProgress contract', () => {
     });
 
     expect(result.variants).toHaveLength(2);
-    expect(result.base_url).toBe('https://r2.test/base.png');
+    // Crop suffix added by the mock at the top of the file.
+    expect(result.base_url).toBe('https://r2.test/base.png#cropped');
   });
 
   it('works without an onProgress callback (back-compat)', async () => {

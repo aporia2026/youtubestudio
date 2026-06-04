@@ -192,8 +192,14 @@ describe('appendCollageVariant — happy path', () => {
       'https://r2.test/p2.png',
       'https://r2.test/p3.png',
     ]);
-    expect(collageVariant.collage?.composed_width).toBe(1024);
+    // Composed image is 864×1536 (9:16). Two 9:16 panels stacked
+    // horizontally + vertically preserve the aspect — matches the Shorts
+    // viewport so no crop. See _plans/2026-06-04-shorts-images-must-be-9-16.md.
+    expect(collageVariant.collage?.composed_width).toBe(864);
     expect(collageVariant.collage?.composed_height).toBe(1536);
+    expect(
+      collageVariant.collage!.composed_width / collageVariant.collage!.composed_height,
+    ).toBeCloseTo(9 / 16, 5);
 
     // url points at the R2-hosted composed image, not at panel 0.
     expect(collageVariant.url).toMatch(/^https:\/\/r2-test\.example\/shorts-collage\//);

@@ -48,10 +48,25 @@
  */
 import { generateAtlasEdit } from './atlas-cloud-images';
 import { createKieTask, pollKieResult } from './kie-poll';
-import { cropTo16x9AndUpload } from './image-gen-dispatch';
+import { cropToAspectAndUpload } from './image-gen-dispatch';
 import { logger } from './logger';
 
 export type Gpt2EditVendor = 'atlas' | 'kie';
+
+/** Target output aspect for the edit operation.
+ *
+ *  - `'16:9'` — long-form video pipeline default. Atlas requests
+ *    `1536×1024` (3:2) then center-crops to `1536×864`; Kie i2i
+ *    requests `aspect_ratio: '16:9'` natively.
+ *  - `'9:16'` — Shorts pipeline. Atlas requests `1024×1536` (2:3,
+ *    portrait) then center-crops to `864×1536`; Kie i2i requests
+ *    `aspect_ratio: '9:16'` natively.
+ *
+ *  Atlas's GPT Image 2 Edit `size` enum doesn't include native 9:16, so
+ *  the 9:16 path always pays for the crop step. The crop loss is ~16%
+ *  of width — acceptable since the planner prompt already places the
+ *  subject in the middle 60% safe zone. */
+export type Gpt2EditAspect = '16:9' | '9:16';
 
 export interface Gpt2EditOpts {
   /** The edit instruction. Vendor-neutral text — the dispatcher does
@@ -76,9 +91,15 @@ export interface Gpt2EditOpts {
    *  `UserSettings.gpt_image_2_edit_primary` server-side, or from the
    *  editor's localStorage mirror client-side. */
   primary: Gpt2EditVendor;
-  /** R2 key prefix for the 16:9-cropped Atlas intermediate. Only used
-   *  when Atlas served the call. Defaults to the same prefix the
-   *  legacy callers used so the R2 layout doesn't change. */
+  /** Target output aspect ratio. Defaults to `'16:9'` for back-compat
+   *  with the long-form video pipeline; Shorts callers pass `'9:16'`
+   *  so the variant frames don't get cropped 67% wider when dropped
+   *  into the 9:16 viewport. See `Gpt2EditAspect` for what each value
+   *  does per vendor. */
+  aspectRatio?: Gpt2EditAspect;
+  /** R2 key prefix for the cropped Atlas intermediate. Only used when
+   *  Atlas served the call. Defaults to the same prefix the legacy
+   *  callers used so the R2 layout doesn't change. */
   atlasCropR2Prefix?: string;
 }
 
@@ -134,12 +155,14 @@ export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2Edi
   const t0 = Date.now();
   const { prompt, sourceImageUrl, primary } = opts;
   const extraImageUrls = opts.extraImageUrls ?? [];
+  const aspectRatio: Gpt2EditAspect = opts.aspectRatio ?? '16:9';
   const atlasCropPrefix = opts.atlasCropR2Prefix ?? DEFAULT_ATLAS_CROP_PREFIX;
   const fallback: Gpt2EditVendor = primary === 'atlas' ? 'kie' : 'atlas';
 
   console.info('[gpt2-edit dispatch] start', {
     primary,
     fallback,
+    aspect_ratio: aspectRatio,
     prompt_chars: prompt.length,
     source_url_len: sourceImageUrl.length,
     extra_image_count: extraImageUrls.length,
@@ -147,7 +170,7 @@ export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2Edi
 
   let primaryError: string | null = null;
   try {
-    const result = await runVendor(primary, { prompt, sourceImageUrl, extraImageUrls, atlasCropPrefix });
+    const result = await runVendor(primary, { prompt, sourceImageUrl, extraImageUrls, aspectRatio, atlasCropPrefix });
     console.info('[gpt2-edit dispatch] primary-ok', {
       primary,
       duration_ms: Date.now() - t0,
@@ -174,7 +197,7 @@ export async function generateGptImage2Edit(opts: Gpt2EditOpts): Promise<Gpt2Edi
   }
 
   try {
-    const result = await runVendor(fallback, { prompt, sourceImageUrl, extraImageUrls, atlasCropPrefix });
+    const result = await runVendor(fallback, { prompt, sourceImageUrl, extraImageUrls, aspectRatio, atlasCropPrefix });
     console.info('[gpt2-edit fallback] fallback-ok', {
       fallback,
       duration_ms: Date.now() - t0,
@@ -210,6 +233,7 @@ interface VendorRunOpts {
   prompt: string;
   sourceImageUrl: string;
   extraImageUrls: readonly string[];
+  aspectRatio: Gpt2EditAspect;
   atlasCropPrefix: string;
 }
 
@@ -219,26 +243,35 @@ interface VendorRunResult {
   costUsd: number;
 }
 
-/** Execute a single vendor attempt. Atlas → generateAtlasEdit + 16:9
- *  crop. Kie → createKieTask('gpt-image-2-image-to-image') + poll.
- *  Throws on any vendor error; the dispatcher catches and decides
- *  whether to try the other side. */
+/** Execute a single vendor attempt. Atlas → generateAtlasEdit + aspect
+ *  crop. Kie → createKieTask('gpt-image-2-image-to-image') + poll with
+ *  native aspect_ratio. Throws on any vendor error; the dispatcher
+ *  catches and decides whether to try the other side. */
 async function runVendor(
   vendor: Gpt2EditVendor,
   opts: VendorRunOpts,
 ): Promise<VendorRunResult> {
   if (vendor === 'atlas') {
+    // Atlas Edit's documented size enum is 1024x1024 / 1024x1536 /
+    // 1536x1024 (see image-edit-pricing.ts for the 2026-05-27
+    // verification that wider sizes 404). For 16:9 we ask for the
+    // landscape 1536×1024 and crop. For 9:16 we ask for the portrait
+    // 1024×1536 — closer to target aspect (2:3 vs 3:2 was for 16:9),
+    // so the post-crop loss is ~16% of width instead of ~63%.
+    const atlasSize = opts.aspectRatio === '9:16' ? '1024x1536' : '1536x1024';
     const result = await generateAtlasEdit({
       prompt: opts.prompt,
       images: [opts.sourceImageUrl, ...opts.extraImageUrls],
-      // Atlas Edit's documented size enum is 1024x1024 / 1024x1536 /
-      // 1536x1024 — see image-edit-pricing.ts:259-264 for the 2026-05-27
-      // verification that 2560x1440 returns 404 on this endpoint.
-      // 1536x1024 is 3:2; the crop step below brings it to 16:9.
-      size: '1536x1024',
+      size: atlasSize,
       quality: 'low',
     });
-    const croppedUrl = await cropTo16x9AndUpload(result.url, opts.atlasCropPrefix);
+    const [aspectW, aspectH] = opts.aspectRatio === '9:16' ? [9, 16] : [16, 9];
+    const croppedUrl = await cropToAspectAndUpload(
+      result.url,
+      opts.atlasCropPrefix,
+      aspectW,
+      aspectH,
+    );
     return {
       url: croppedUrl,
       providerRequestId: result.predictionId ?? null,
@@ -253,7 +286,7 @@ async function runVendor(
   const taskId = await createKieTask(apiKey, 'gpt-image-2-image-to-image', {
     prompt: opts.prompt,
     input_urls: [opts.sourceImageUrl, ...opts.extraImageUrls],
-    aspect_ratio: '16:9',
+    aspect_ratio: opts.aspectRatio,
     resolution: '1K',
   });
   const url = await pollKieResult(taskId, apiKey);

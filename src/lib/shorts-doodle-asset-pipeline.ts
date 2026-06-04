@@ -266,6 +266,11 @@ export async function generateDoodleVariantFrame(args: {
     prompt: args.item.edit_prompt,
     sourceImageUrl: args.baseUrl,
     primary: args.variantEditPrimary ?? 'atlas',
+    // Shorts render in a 9:16 viewport. Without this, Atlas Edit
+    // returns 16:9 landscape and the renderer's object-fit: cover
+    // chops ~63% of the composition. See
+    // `_plans/2026-06-04-shorts-images-must-be-9-16.md`.
+    aspectRatio: '9:16',
   });
   logger.info('[shorts doodle pipeline] variant ready', {
     shortId: args.shortId,

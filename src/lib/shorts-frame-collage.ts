@@ -56,13 +56,16 @@ const GRID_COLS = 2;
 const GRID_ROWS = 2;
 const PANEL_COUNT = GRID_COLS * GRID_ROWS;
 
-/** Each panel rendered at 512×768 → composed image at 1024×1536, which
- *  matches the single-frame portrait size the renderer already
- *  consumes. The composition pads zero pixels between cells; a real
- *  border / gutter could land later as a UI knob. */
-const PANEL_WIDTH = 512;
+/** Each panel rendered at 432×768 (9:16 aspect) → composed image at
+ *  864×1536 (still 9:16 — two 9:16 panels stacked horizontally and
+ *  vertically preserve the ratio). The renderer drops the composed
+ *  image into a 9:16 viewport with object-fit: cover, so matching the
+ *  source aspect means zero crop instead of the ~11% trimmed when the
+ *  panels were 2:3. See
+ *  `_plans/2026-06-04-shorts-images-must-be-9-16.md`. */
+const PANEL_WIDTH = 432;
 const PANEL_HEIGHT = 768;
-const COMPOSED_WIDTH = PANEL_WIDTH * GRID_COLS; // 1024
+const COMPOSED_WIDTH = PANEL_WIDTH * GRID_COLS; // 864
 const COMPOSED_HEIGHT = PANEL_HEIGHT * GRID_ROWS; // 1536
 
 const R2_PREFIX = 'shorts-collage';

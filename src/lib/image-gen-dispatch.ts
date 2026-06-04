@@ -212,15 +212,28 @@ export async function generateImageWithUpscale(
 }
 
 /**
- * Center-crop a 3:2 (or wider-than-16:9, or any aspect) image to a strict
- * 16:9, upload the cropped bytes to R2, return the R2 URL. Caller-visible
- * for the Atlas path; exposed for tests + the (future) collage route's
- * Atlas branch.
+ * Center-crop an image to a target aspect ratio, upload the cropped
+ * bytes to R2, return the R2 URL. Caller-visible for the Atlas paths
+ * (long-form 16:9 video AND vertical 9:16 Shorts); exposed for tests +
+ * the collage route.
  *
- * Throws on fetch / sharp / upload failures — the Atlas branch can't pass
- * a 3:2 image downstream, so failing visible is the safer posture.
+ * Pass `aspectW`/`aspectH` for the target — 16/9 for the long-form
+ * pipeline, 9/16 for Shorts. The crop is always centered; whichever
+ * dimension is "extra" gets trimmed equally on both sides.
+ *
+ * Throws on fetch / sharp / upload failures — the Atlas branch can't
+ * pass an uncropped image downstream, so failing visible is the safer
+ * posture.
  */
-export async function cropTo16x9AndUpload(srcUrl: string, r2KeyPrefix: string): Promise<string> {
+export async function cropToAspectAndUpload(
+  srcUrl: string,
+  r2KeyPrefix: string,
+  aspectW: number,
+  aspectH: number,
+): Promise<string> {
+  if (aspectW <= 0 || aspectH <= 0 || !Number.isFinite(aspectW) || !Number.isFinite(aspectH)) {
+    throw new Error('[image-dispatch crop] aspectW/aspectH must be positive finite numbers');
+  }
   const t0 = Date.now();
   const res = await fetch(srcUrl);
   if (!res.ok) {
@@ -235,21 +248,23 @@ export async function cropTo16x9AndUpload(srcUrl: string, r2KeyPrefix: string): 
   const srcW = meta.width;
   const srcH = meta.height;
 
-  // Target geometry: keep full width, compute the 16:9 height. If the
-  // source is already taller than 16:9 (any landscape ratio < 1.778), we
-  // shrink height; if the source is wider than 16:9 (won't happen for
-  // Atlas's 1536×1024 but defensive for callers), we shrink width instead.
+  // Target geometry: keep the dimension that's already correct and
+  // trim the other. If the source is taller than target aspect (e.g.
+  // 2:3 source asked for 9:16 → source aspect 0.667 > target 0.5625),
+  // trim left + right; if it's wider (1536×1024 → 9:16), trim left +
+  // right more aggressively. If shorter (rare for these vendors), trim
+  // top + bottom.
   const srcAspect = srcW / srcH;
-  const targetAspect = 16 / 9;
+  const targetAspect = aspectW / aspectH;
 
   let cropW: number;
   let cropH: number;
   if (srcAspect < targetAspect) {
-    // Source is taller than 16:9 — trim top + bottom equally.
+    // Source is taller / narrower than target — trim top + bottom.
     cropW = srcW;
     cropH = Math.round(srcW / targetAspect);
   } else {
-    // Source is wider than (or exactly) 16:9 — trim left + right equally.
+    // Source is wider / shorter than target — trim left + right.
     cropW = Math.round(srcH * targetAspect);
     cropH = srcH;
   }
@@ -269,6 +284,8 @@ export async function cropTo16x9AndUpload(srcUrl: string, r2KeyPrefix: string): 
   logger.info('[image-dispatch] atlas crop', {
     source_w: srcW,
     source_h: srcH,
+    target_aspect_w: aspectW,
+    target_aspect_h: aspectH,
     target_w: cropW,
     target_h: cropH,
     trimmed_top_px: top,
@@ -276,6 +293,12 @@ export async function cropTo16x9AndUpload(srcUrl: string, r2KeyPrefix: string): 
     ms: Date.now() - t0,
   });
   return croppedUrl;
+}
+
+/** Back-compat alias for the long-form 16:9 video pipeline. New callers
+ *  should call `cropToAspectAndUpload` directly with their target. */
+export async function cropTo16x9AndUpload(srcUrl: string, r2KeyPrefix: string): Promise<string> {
+  return cropToAspectAndUpload(srcUrl, r2KeyPrefix, 16, 9);
 }
 
 /** 8-char alnum suffix matching the existing R2 key convention in the

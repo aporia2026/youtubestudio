@@ -22,7 +22,10 @@ vi.mock('@/lib/kie-poll', () => ({
   pollKieResult: vi.fn(),
 }));
 vi.mock('@/lib/image-gen-dispatch', () => ({
-  cropTo16x9AndUpload: vi.fn(async (srcUrl: string) => `${srcUrl}#cropped`),
+  cropToAspectAndUpload: vi.fn(
+    async (srcUrl: string, _prefix: string, aspectW: number, aspectH: number) =>
+      `${srcUrl}#cropped-${aspectW}x${aspectH}`,
+  ),
 }));
 vi.mock('@/lib/logger', () => ({
   logger: {
@@ -35,6 +38,9 @@ vi.mock('@/lib/logger', () => ({
 import { generateGptImage2Edit, ATLAS_EDIT_COST_USD, KIE_I2I_COST_USD } from '@/lib/gpt-image-2-edit';
 import { generateAtlasEdit } from '@/lib/atlas-cloud-images';
 import { createKieTask, pollKieResult } from '@/lib/kie-poll';
+import { cropToAspectAndUpload } from '@/lib/image-gen-dispatch';
+
+const mockedCropToAspect = vi.mocked(cropToAspectAndUpload);
 
 describe('generateGptImage2Edit dispatcher', () => {
   beforeEach(() => {
@@ -62,7 +68,7 @@ describe('generateGptImage2Edit dispatcher', () => {
     expect(result.vendorUsed).toBe('atlas');
     expect(result.fallbackUsed).toBe(false);
     expect(result.costUsd).toBe(ATLAS_EDIT_COST_USD);
-    expect(result.url).toBe('https://atlas.example/raw-1536x1024.png#cropped');
+    expect(result.url).toBe('https://atlas.example/raw-1536x1024.png#cropped-16x9');
     expect(result.providerRequestId).toBe('atlas-pred-123');
     expect(generateAtlasEdit).toHaveBeenCalledTimes(1);
     expect(createKieTask).not.toHaveBeenCalled();
@@ -125,7 +131,7 @@ describe('generateGptImage2Edit dispatcher', () => {
     expect(result.vendorUsed).toBe('atlas');
     expect(result.fallbackUsed).toBe(true);
     expect(result.costUsd).toBe(ATLAS_EDIT_COST_USD);
-    expect(result.url).toBe('https://atlas.example/fallback-3x2.png#cropped');
+    expect(result.url).toBe('https://atlas.example/fallback-3x2.png#cropped-16x9');
   });
 
   it('both vendors fail: throws with both error messages', async () => {
@@ -177,7 +183,7 @@ describe('generateGptImage2Edit dispatcher', () => {
       primary: 'kie',
     });
 
-    expect(result.url).toBe('https://atlas.example/raw.png#cropped');
+    expect(result.url).toBe('https://atlas.example/raw.png#cropped-16x9');
   });
 
   // ─── extraImageUrls (2026-06-02 fix B') ──────────────────────────────
@@ -249,6 +255,99 @@ describe('generateGptImage2Edit dispatcher', () => {
         expect.objectContaining({
           images: ['https://r2.example/only.png'],
         }),
+      );
+    });
+  });
+
+  // ─── aspectRatio (2026-06-04 — Shorts 9:16 fix) ──────────────────────
+  // The long-form pipeline keeps 16:9 as the default. Shorts callers
+  // pass aspectRatio: '9:16' so Atlas asks for a PORTRAIT size and the
+  // crop step finishes the job. Without this, Shorts variants come back
+  // as 16:9 landscape and the renderer's object-fit: cover trims ~63%.
+  describe('aspectRatio', () => {
+    it('defaults to 16:9 → Atlas requests 1536×1024 landscape', async () => {
+      vi.mocked(generateAtlasEdit).mockResolvedValue({
+        url: 'https://atlas.example/landscape.png',
+        predictionId: 'atlas-default',
+      });
+
+      await generateGptImage2Edit({
+        prompt: 'p',
+        sourceImageUrl: 'https://r2.example/src.png',
+        primary: 'atlas',
+      });
+
+      expect(generateAtlasEdit).toHaveBeenCalledWith(
+        expect.objectContaining({ size: '1536x1024' }),
+      );
+      // Crop helper called with 16:9 target.
+      expect(mockedCropToAspect).toHaveBeenCalledWith(
+        'https://atlas.example/landscape.png',
+        expect.any(String),
+        16,
+        9,
+      );
+    });
+
+    it("aspectRatio='9:16' → Atlas requests 1024×1536 portrait + crops to 9:16", async () => {
+      vi.mocked(generateAtlasEdit).mockResolvedValue({
+        url: 'https://atlas.example/portrait.png',
+        predictionId: 'atlas-shorts',
+      });
+
+      const result = await generateGptImage2Edit({
+        prompt: 'shorts variant scene',
+        sourceImageUrl: 'https://r2.example/short-base.png',
+        primary: 'atlas',
+        aspectRatio: '9:16',
+      });
+
+      // Atlas asked for the PORTRAIT size, not the default landscape.
+      expect(generateAtlasEdit).toHaveBeenCalledWith(
+        expect.objectContaining({ size: '1024x1536' }),
+      );
+      // Crop helper called with 9:16 target.
+      expect(mockedCropToAspect).toHaveBeenCalledWith(
+        'https://atlas.example/portrait.png',
+        expect.any(String),
+        9,
+        16,
+      );
+      expect(result.url).toBe('https://atlas.example/portrait.png#cropped-9x16');
+    });
+
+    it("aspectRatio='9:16' → Kie i2i requests aspect_ratio='9:16'", async () => {
+      vi.mocked(createKieTask).mockResolvedValue('kie-shorts');
+      vi.mocked(pollKieResult).mockResolvedValue('https://kie.example/9x16.png');
+
+      await generateGptImage2Edit({
+        prompt: 'shorts variant scene',
+        sourceImageUrl: 'https://r2.example/short-base.png',
+        primary: 'kie',
+        aspectRatio: '9:16',
+      });
+
+      expect(createKieTask).toHaveBeenCalledWith(
+        'test-kie-key',
+        'gpt-image-2-image-to-image',
+        expect.objectContaining({ aspect_ratio: '9:16', resolution: '1K' }),
+      );
+    });
+
+    it("aspectRatio default → Kie i2i still requests aspect_ratio='16:9'", async () => {
+      vi.mocked(createKieTask).mockResolvedValue('kie-default');
+      vi.mocked(pollKieResult).mockResolvedValue('https://kie.example/16x9.png');
+
+      await generateGptImage2Edit({
+        prompt: 'long-form variant',
+        sourceImageUrl: 'https://r2.example/base.png',
+        primary: 'kie',
+      });
+
+      expect(createKieTask).toHaveBeenCalledWith(
+        'test-kie-key',
+        'gpt-image-2-image-to-image',
+        expect.objectContaining({ aspect_ratio: '16:9' }),
       );
     });
   });
