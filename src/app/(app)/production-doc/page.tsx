@@ -14214,7 +14214,15 @@ function ProductionDocPage() {
   );
 
   return PROD_DOC_REDESIGN_V1_PUBLIC ? (
-    <ProductionDocShell doc={doc} onNewSession={resetSession}>
+    <ProductionDocShell
+      doc={doc}
+      onNewSession={resetSession}
+      // Reuse the existing `expandedRow` state as the redesign's
+      // selection signal — when the user opens a row via the chevron
+      // in the legacy grid, the Studio inspector populates with that
+      // row. R3 PR3 of `_plans/2026-06-04-production-doc-redesign.md`.
+      selectedRowIndex={expandedRow}
+    >
       {pageContent}
     </ProductionDocShell>
   ) : pageContent;

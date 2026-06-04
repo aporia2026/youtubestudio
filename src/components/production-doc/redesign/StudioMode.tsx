@@ -35,20 +35,44 @@ export interface StudioModeProps {
   doc: ProductionDoc;
   children: React.ReactNode;
   onNewSession?: () => void;
+  /** Selected row index — 0-based into `doc.rows`, or `null` for no
+   *  selection. R3 PR3 sources this from page.tsx's `expandedRow`
+   *  state so the inspector populates whenever a user expands a row
+   *  in the legacy grid. */
+  selectedRowIndex?: number | null;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
   doc,
   children,
   onNewSession,
+  selectedRowIndex = null,
 }) => {
+  const selectedRow =
+    selectedRowIndex !== null && selectedRowIndex >= 0
+      ? doc.rows[selectedRowIndex] ?? null
+      : null;
+  // Display index is 1-based to match the grid `#` column.
+  const displayIndex = selectedRow !== null && selectedRowIndex !== null
+    ? selectedRowIndex + 1
+    : null;
+  const displayLabel = selectedRow
+    ? selectedRow.timecode || selectedRow.visual_type || undefined
+    : undefined;
+
   return (
     <>
       <StudioTopBar doc={doc} onNewSession={onNewSession} />
       <StudioLayout
         leftRail={<StudioLeftRail doc={doc} />}
         mainContent={children}
-        inspector={<StudioInspector />}
+        inspector={
+          <StudioInspector
+            selectedRow={selectedRow}
+            selectedRowIndex={displayIndex}
+            selectedRowLabel={displayLabel}
+          />
+        }
       />
     </>
   );

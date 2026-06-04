@@ -166,15 +166,20 @@ describe('StudioInspector — empty state vs selection', () => {
   });
 
   it('shows the row meta line when a row is selected', () => {
+    // R3 PR3: hasSelection requires BOTH selectedRow and selectedRowIndex.
     const html = renderToStaticMarkup(
-      <StudioInspector selectedRowIndex={4} selectedRowLabel="Title Card" />,
+      <StudioInspector
+        selectedRow={makeRow({ visual_type: 'Title Card' })}
+        selectedRowIndex={4}
+        selectedRowLabel="Title Card"
+      />,
     );
     expect(html).toContain('Row 4');
     expect(html).toContain('Title Card');
     expect(html).not.toContain('Select a row');
   });
 
-  it('omits the row meta line when only the index is provided (label is required for human-readable context)', () => {
+  it('omits the row meta line when no selectedRow is provided (selection requires the row data)', () => {
     const html = renderToStaticMarkup(<StudioInspector selectedRowIndex={4} />);
     expect(html).not.toContain('Row 4');
   });

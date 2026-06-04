@@ -27,6 +27,11 @@ export interface ProductionDocShellProps {
    *  firing today's `resetSession` callback. Optional so the shell
    *  stays renderable in tests without setting up the full page state. */
   onNewSession?: () => void;
+  /** 0-based index into `doc.rows` for the currently-selected row, or
+   *  `null` if no row is selected. Studio Mode forwards this to the
+   *  inspector so the Content / Image / Video / Overlay / Section /
+   *  Variants tabs populate. Ignored in Brief Mode. */
+  selectedRowIndex?: number | null;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -44,6 +49,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   doc,
   children,
   onNewSession,
+  selectedRowIndex,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -74,7 +80,11 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   return mode === 'brief' ? (
     <BriefMode onNewSession={onNewSession}>{children}</BriefMode>
   ) : (
-    <StudioMode doc={doc!} onNewSession={onNewSession}>
+    <StudioMode
+      doc={doc!}
+      onNewSession={onNewSession}
+      selectedRowIndex={selectedRowIndex}
+    >
       {children}
     </StudioMode>
   );

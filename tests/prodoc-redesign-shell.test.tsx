@@ -136,6 +136,55 @@ describe('ProductionDocShell — children always rendered', () => {
     expect(html).toMatch(/aria-label="Row inspector tabs"/);
     expect(html).toContain('Select a row');
   });
+
+  it('Studio Mode inspector populates from selectedRowIndex (R3 PR3)', () => {
+    const docWithRows: typeof SAMPLE_DOC = {
+      ...SAMPLE_DOC,
+      rows: [
+        {
+          timecode: '0:00',
+          script_text: 'first row script',
+          visual_type: 'Title Card',
+          visual_description: '',
+          stock_search_terms: '',
+          ai_image_prompt: '',
+          on_screen_text: '',
+          notes: '',
+        } as ProductionRow,
+        {
+          timecode: '0:42',
+          script_text: 'second row script wired correctly',
+          visual_type: 'B-Roll',
+          visual_description: '',
+          stock_search_terms: '',
+          ai_image_prompt: '',
+          on_screen_text: '',
+          notes: '',
+        } as ProductionRow,
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={docWithRows} selectedRowIndex={1}>
+        <span>grid</span>
+      </ProductionDocShell>,
+    );
+    // Display index is 1-based — selectedRowIndex=1 (0-based) → "Row 2".
+    expect(html).toContain('Row 2');
+    expect(html).toContain('0:42');
+    expect(html).toContain('second row script wired correctly');
+    expect(html).not.toContain('Select a row');
+  });
+
+  it('Studio Mode inspector falls back to empty state when selectedRowIndex is out of range', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC} selectedRowIndex={42}>
+        <span>grid</span>
+      </ProductionDocShell>,
+    );
+    // SAMPLE_DOC has no rows; out-of-range index should not crash and
+    // should render the empty state.
+    expect(html).toContain('Select a row');
+  });
 });
 
 describe('ProductionDocShell — Brief Mode header injection (R1)', () => {
