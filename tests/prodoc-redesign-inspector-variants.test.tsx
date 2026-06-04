@@ -14,6 +14,37 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { StudioInspector } from '@/components/production-doc/redesign/StudioInspector';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import type { EditorWriters } from '@/components/production-doc/editor/types';
+
+/** Minimal no-op EditorWriters stub — every callback is a function
+ *  that does nothing, which is enough for the SSR test environment.
+ *  Real behaviour is exercised by the editor's own test suite. */
+const NOOP_WRITERS: EditorWriters = {
+  updateRow: () => {},
+  applyTitleToRange: () => {},
+  applyPillarboxColorToAll: () => {},
+  clearPillarboxOverrides: () => {},
+  applyStripeLayoutToAll: () => {},
+  clearStripeLayoutOverrides: () => {},
+  applySceneZoomToAll: () => {},
+  clearSceneZoomOverrides: () => {},
+  applyRegionZoomPaddingToAll: () => {},
+  applyTitleCardAsSectionTitle: () => {},
+  fetchOverlayForRow: () => {},
+  generateImageForRow: () => {},
+  uploadImageForRow: () => {},
+  importImageUrlForRow: () => {},
+  openEditPanelForRow: () => {},
+  openOverlayPositionEditorForRow: () => {},
+  handleBrollClipChange: () => {},
+  toggleRowLock: () => {},
+  computeRowSceneDurationMs: () => 0,
+  addVariantRow: () => {},
+  generateVariantImage: () => Promise.resolve(),
+  generateAllVariantsInGroup: () => Promise.resolve(),
+  deleteVariantRow: () => {},
+  moveVariantRow: () => {},
+};
 
 function makeRow(overrides: Partial<ProductionRow> = {}): ProductionRow {
   return {
@@ -109,5 +140,58 @@ describe('StudioInspector — tab routing for Variants (R3 PR4d)', () => {
       />,
     );
     expect(html).toContain('Select a row');
+  });
+});
+
+describe('StudioInspector — Variants tab editable (writers wired)', () => {
+  it('omits the "Switch to edit mode" hint when editorWriters is provided', () => {
+    const row = makeRow();
+    const doc = makeDoc([row]);
+    const html = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={row}
+        selectedRowIndex={1}
+        selectedRowLabel="0:00"
+        initialTab="variants"
+        doc={doc}
+        rowImagesByIndex={[undefined]}
+        editorWriters={NOOP_WRITERS}
+      />,
+    );
+    expect(html).not.toContain('Switch to edit mode to manage variants');
+  });
+
+  it('shows the "+ Add variant" affordance for a standalone row when editable', () => {
+    const row = makeRow();
+    const doc = makeDoc([row]);
+    const html = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={row}
+        selectedRowIndex={1}
+        selectedRowLabel="0:00"
+        initialTab="variants"
+        doc={doc}
+        rowImagesByIndex={[undefined]}
+        editorWriters={NOOP_WRITERS}
+      />,
+    );
+    // Standalone branch in editable mode shows the Add affordance.
+    expect(html).toMatch(/Add variant/i);
+  });
+
+  it('keeps the read-only branch when editorWriters is not provided', () => {
+    const row = makeRow();
+    const doc = makeDoc([row]);
+    const html = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={row}
+        selectedRowIndex={1}
+        selectedRowLabel="0:00"
+        initialTab="variants"
+        doc={doc}
+        rowImagesByIndex={[undefined]}
+      />,
+    );
+    expect(html).toContain('Switch to edit mode to manage variants');
   });
 });

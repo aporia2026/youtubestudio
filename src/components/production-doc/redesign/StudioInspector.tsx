@@ -2,7 +2,10 @@
 
 import React, { useEffect, useState } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
-import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type {
+  EditorWriters,
+  RowImageStateView,
+} from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { InspectorTabBar, type InspectorTabId } from './InspectorTabBar';
 import { StudioInspectorContent } from './StudioInspectorContent';
@@ -69,6 +72,11 @@ export interface StudioInspectorProps {
   /** Image state per row, indexed by 0-based row index. Used by the
    *  Variants tab to render the mini-strip thumbnails. R3 PR4d. */
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
+  /** Full writer bundle for the inspector to drive variant
+   *  management, section bulk apply / clear, and (in later PRs) the
+   *  overlay and B-roll editing flows. Same shape EditorView already
+   *  uses — page.tsx exposes a single useMemo'd bundle that we share. */
+  editorWriters?: EditorWriters;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -83,6 +91,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   selectedRowOverlay = null,
   doc = null,
   rowImagesByIndex,
+  editorWriters,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -170,6 +179,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             doc={doc}
             activeSection={writerRowIndex}
             rowImages={rowImagesByIndex ?? []}
+            writers={editorWriters}
           />
         ) : (
           <p

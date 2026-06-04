@@ -2,7 +2,10 @@
 
 import React, { useEffect, useRef } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
-import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type {
+  EditorWriters,
+  RowImageStateView,
+} from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
@@ -56,6 +59,10 @@ export interface ProductionDocShellProps {
    *  Variants tab to render mini-strip thumbnails for the row's
    *  variant group. Ignored in Brief Mode. R3 PR4d. */
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
+  /** Full editor-writer bundle. When provided, makes Variants
+   *  (and, in later PRs, Section / Overlay / Video) tabs editable.
+   *  Ignored in Brief Mode. */
+  editorWriters?: EditorWriters;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -80,6 +87,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowVideoClip,
   selectedRowOverlay,
   rowImagesByIndex,
+  editorWriters,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -120,6 +128,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowVideoClip={selectedRowVideoClip}
       selectedRowOverlay={selectedRowOverlay}
       rowImagesByIndex={rowImagesByIndex}
+      editorWriters={editorWriters}
     >
       {children}
     </StudioMode>

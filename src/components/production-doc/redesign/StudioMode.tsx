@@ -2,7 +2,10 @@
 
 import React, { useCallback, useState } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
-import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type {
+  EditorWriters,
+  RowImageStateView,
+} from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { getPref, setPref } from '@/lib/user-prefs';
 import { StudioTopBar, type StudioSubMode } from './StudioTopBar';
@@ -67,6 +70,10 @@ export interface StudioModeProps {
    *  state hydrates from `getPref(STUDIO_SUB_MODE_PREF_KEY)` so the
    *  user's last choice survives reloads. R3 PR6. */
   initialSubMode?: StudioSubMode;
+  /** Full writer bundle used by the inspector tabs that need to drive
+   *  variant management, section bulk-apply, overlay edits, etc.
+   *  R3 (Variants editable). */
+  editorWriters?: EditorWriters;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -81,6 +88,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowOverlay = null,
   rowImagesByIndex,
   initialSubMode,
+  editorWriters,
 }) => {
   // R3 PR6: Studio sub-mode toggle. Default 'scene-strip' (per §15.2
   // of the plan). Persisted via getPref/setPref so the user's choice
@@ -138,6 +146,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
               selectedRowOverlay={selectedRowOverlay}
               doc={doc}
               rowImagesByIndex={rowImagesByIndex}
+              editorWriters={editorWriters}
             />
           }
         />

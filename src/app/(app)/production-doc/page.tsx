@@ -14290,6 +14290,11 @@ function ProductionDocPage() {
       // `rowImages` is `RowImageState[]`, structurally compatible
       // with the editor's `RowImageStateView[]`.
       rowImagesByIndex={rowImages}
+      // R3 Variants editable: feed the same EditorWriters bundle the
+      // EditorView uses. The inspector's VariantPanel switches to its
+      // editable branch (chip + mini-strip + Add / Generate / Move /
+      // Delete actions) when this is non-undefined.
+      editorWriters={editorWriters}
     >
       {pageContent}
     </ProductionDocShell>
