@@ -65,6 +65,46 @@ describe('looksLikePlainTextHeading — positive cases', () => {
       ),
     ).toBe(true);
   });
+
+  it('detects "Knight Capital." — short title-card with trailing period', () => {
+    expect(
+      looksLikePlainTextHeading(
+        'Knight Capital.',
+        '',
+        'August 1st, 2012. Inside Knight Capital Group, a newly deployed trading algorithm goes rogue.',
+      ),
+    ).toBe(true);
+  });
+
+  it('detects "Mars Climate Orbiter." — three-word title-card with period', () => {
+    expect(
+      looksLikePlainTextHeading(
+        'Mars Climate Orbiter.',
+        '',
+        'September 1999. NASA engineers crowd around monitors at the Jet Propulsion Laboratory.',
+      ),
+    ).toBe(true);
+  });
+
+  it('detects "Ariane 5." — alphanumeric title-card with period', () => {
+    expect(
+      looksLikePlainTextHeading(
+        'Ariane 5.',
+        '',
+        'June 4, 1996. The European Space Agency launches the Ariane 5, an unmanned rocket.',
+      ),
+    ).toBe(true);
+  });
+
+  it('detects "AWS Typo." — all-caps acronym + word, with period', () => {
+    expect(
+      looksLikePlainTextHeading(
+        'AWS Typo.',
+        '',
+        'February 28, 2017. Massive chunks of global infrastructure vanish from the internet.',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('looksLikePlainTextHeading — negative cases', () => {
@@ -141,6 +181,59 @@ describe('looksLikePlainTextHeading — negative cases', () => {
       looksLikePlainTextHeading('Final Section', '', null),
     ).toBe(false);
   });
+
+  it('rejects bracket-wrapped production cues like `[SFX: ...]`', () => {
+    expect(
+      looksLikePlainTextHeading(
+        '[SFX: Sharp Keyboard Clack / Glitch]',
+        '',
+        '[VISUAL CUE: ON-SCREEN TEXT - KNIGHT CAPITAL]',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects bracket-wrapped `[VISUAL CUE: ...]` lines', () => {
+    expect(
+      looksLikePlainTextHeading(
+        '[VISUAL CUE: ON-SCREEN TEXT - KNIGHT CAPITAL]',
+        '',
+        'Knight Capital is a real holding company that operated as a market maker.',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects long prose ending in a period (>4 words rules out the period exception)', () => {
+    // "Cargo mostly intact." has 3 words but fails title-case (mostly/intact lowercase).
+    // This case proves the >4-words gate: a long line ending in a period is never a title-card.
+    expect(
+      looksLikePlainTextHeading(
+        'A Long Sentence Ending With A Period.',
+        '',
+        'And then the narrative continues with another full paragraph of prose.',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects sentence-case lines ending in a period even when short', () => {
+    // "Cargo mostly intact." — only first word capitalized, ratio < 1.0, single-period rule rejects.
+    expect(
+      looksLikePlainTextHeading(
+        'Cargo mostly intact.',
+        '',
+        'No crew was ever found aboard the abandoned vessel that day.',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects lines ending in `...` (ellipsis is not a title-card period)', () => {
+    expect(
+      looksLikePlainTextHeading(
+        'And Then...',
+        '',
+        'The story takes a strange and unexpected turn after that point.',
+      ),
+    ).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -208,5 +301,44 @@ Then everything changed.`;
     const withFence = '```\nDyatlov Pass\nNot a heading inside code.\n```';
     const out = extractScriptTitles(withFence);
     expect(out.titles).toEqual([]);
+  });
+
+  // Regression: the "Software Disasters" script — SFX/VISUAL CUE blocks
+  // wrap every section, and the actual titles are short noun phrases
+  // ending with a period. Pre-fix the heuristic detected the SFX lines
+  // as titles and missed the real ones.
+  it('extracts title-card-with-period titles and skips bracketed cues', () => {
+    const script = `[SFX: Sharp Keyboard Clack / Glitch]
+[VISUAL CUE: ON-SCREEN TEXT - KNIGHT CAPITAL]
+
+Knight Capital.
+
+[VISUAL CUE: Blinding fluorescent lights flick on. A chaotic stock trading floor.]
+
+August 1st, 2012. Inside Knight Capital Group, a newly deployed trading algorithm goes rogue.
+
+[SFX: Jet Thruster / Vacuum WHOOSH]
+[VISUAL CUE: ON-SCREEN TEXT - MARS CLIMATE ORBITER]
+
+Mars Climate Orbiter.
+
+[VISUAL CUE: A slick 3D animation of a satellite orbiting Earth.]
+
+September 1999. NASA engineers crowd around monitors at the Jet Propulsion Laboratory.
+
+[SFX: Massive Rocket Ignition / Static Crackle]
+[VISUAL CUE: ON-SCREEN TEXT - ARIANE 5]
+
+Ariane 5.
+
+[VISUAL CUE: A massive European space rocket sits on a launchpad.]
+
+June 4, 1996. The European Space Agency launches the Ariane 5, an unmanned rocket.`;
+    const out = extractScriptTitles(script);
+    expect(out.titles.map(t => t.text)).toEqual([
+      'Knight Capital.',
+      'Mars Climate Orbiter.',
+      'Ariane 5.',
+    ]);
   });
 });

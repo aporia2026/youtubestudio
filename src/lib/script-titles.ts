@@ -74,10 +74,15 @@ const TITLE_CASE_STOPWORDS = new Set<string>([
 /** Heuristic title detection for plain-text scripts. Matches lines that
  *  LOOK like a section heading even without a `##` prefix:
  *
+ *   - NOT wholly wrapped in `[...]` (rejects production cues like
+ *     `[SFX: ...]` and `[VISUAL CUE: ...]`)
  *   - blank line above (or beginning of file)
  *   - 3-60 characters
  *   - 1-10 words
- *   - no sentence-terminating punctuation at the end
+ *   - no sentence-terminating punctuation at the end, EXCEPT a single
+ *     trailing `.` is allowed for short (≤4-word) lines where every
+ *     non-stopword word is capitalized — the YouTube title-card
+ *     pattern ("Knight Capital.", "Ariane 5.")
  *   - at least half the words (ignoring stopwords) start uppercase, OR
  *     the whole line is upper-case
  *   - the line below is non-blank prose of at least 25 chars (a real
@@ -92,6 +97,24 @@ const HEURISTIC_MAX_WORDS = 10;
 const HEURISTIC_NEXT_LINE_MIN_CHARS = 25;
 const SENTENCE_END_CHARS = new Set<string>(['.', '!', '?', ',', ';', ':']);
 
+/** Title-card-with-period exception: a line ending in a single `.` is allowed
+ *  if it is at most this many words. Catches the YouTube-style title-card
+ *  pattern ("Knight Capital.", "Mars Climate Orbiter.", "Ariane 5.") without
+ *  swallowing real prose sentences ("Cargo mostly intact.", which fails the
+ *  title-case ratio anyway, but this gives us a tight extra guard). */
+const TITLE_CARD_PERIOD_MAX_WORDS = 4;
+
+/** Detects a line that is wholly wrapped in square brackets, like
+ *  `[SFX: ...]` or `[VISUAL CUE: ...]`. These are production cues, not
+ *  section titles, and must never be promoted to Title Cards. */
+const BRACKET_WRAPPED_RE = /^\[.*\]$/;
+
+/** When the immediate line below a candidate heading is blank, look at
+ *  most this many lines further down for the section body. Catches the
+ *  common `Title.\n\nBody paragraph...` shape without scanning the
+ *  whole script for a distant non-blank line. */
+const LINE_BELOW_LOOKAHEAD = 3;
+
 export function looksLikePlainTextHeading(
   current: string,
   lineAbove: string | null,
@@ -99,6 +122,11 @@ export function looksLikePlainTextHeading(
 ): boolean {
   const trimmed = current.trim();
   if (trimmed.length < HEURISTIC_MIN_CHARS || trimmed.length > HEURISTIC_MAX_CHARS) return false;
+
+  // Production cues like `[SFX: ...]` or `[VISUAL CUE: ...]` look
+  // title-shaped (short, no terminator, lots of capitals) but are not
+  // titles. Reject deterministically before any other test.
+  if (BRACKET_WRAPPED_RE.test(trimmed)) return false;
 
   // Isolation: previous line must be blank or BOF. A heading sits in
   // its own paragraph — adjacent prose above means this is just a line
@@ -112,12 +140,23 @@ export function looksLikePlainTextHeading(
   const belowTrimmed = lineBelow.trim();
   if (belowTrimmed.length < HEURISTIC_NEXT_LINE_MIN_CHARS) return false;
 
-  // Cannot end in sentence-terminating punctuation.
-  const lastChar = trimmed[trimmed.length - 1];
-  if (SENTENCE_END_CHARS.has(lastChar)) return false;
-
   const words = trimmed.split(/\s+/).filter(Boolean);
   if (words.length < 1 || words.length > HEURISTIC_MAX_WORDS) return false;
+
+  // Terminator rule: lines ending in `, ; : ! ?` or in `..`/`...` are
+  // never headings. A single trailing `.` is allowed ONLY for the
+  // title-card-with-period exception below — short noun-phrase titles
+  // like "Knight Capital." that creators conventionally punctuate.
+  const lastChar = trimmed[trimmed.length - 1];
+  const endsWithSinglePeriod =
+    lastChar === '.' && trimmed[trimmed.length - 2] !== '.';
+  const endsWithOtherSentenceChar =
+    SENTENCE_END_CHARS.has(lastChar) && lastChar !== '.';
+  const endsWithMultiPeriod = lastChar === '.' && !endsWithSinglePeriod;
+  if (endsWithOtherSentenceChar || endsWithMultiPeriod) return false;
+  if (endsWithSinglePeriod && words.length > TITLE_CARD_PERIOD_MAX_WORDS) {
+    return false;
+  }
 
   // All-caps shortcut: "WANNACRY" / "UVB-76" / "BERMUDA TRIANGLE"
   // (any alphabetic, no lowercase letters).
@@ -141,6 +180,11 @@ export function looksLikePlainTextHeading(
     if (firstAlpha === firstAlpha.toUpperCase()) capCount++;
   }
   if (evaluated === 0) return false;
+  // Single-period title cards demand stricter title-case: every
+  // evaluated word must be capitalized. Without this, the period
+  // exception would let "Cargo mostly intact." through if the ratio
+  // ever wobbled.
+  if (endsWithSinglePeriod) return capCount === evaluated;
   return capCount / evaluated >= 0.5;
 }
 
@@ -209,8 +253,20 @@ export function extractScriptTitles(script: string): ExtractedScript {
     //    so a one-line aside in the middle of a paragraph won't get
     //    promoted to a title. See looksLikePlainTextHeading() for the
     //    detailed rules.
+    //
+    //    `lineBelow` is the next NON-BLANK line within a short
+    //    lookahead window — a heading is often followed by a blank
+    //    paragraph break before the body ("Knight Capital.\n\nAugust
+    //    1st, 2012..."). Without the lookahead we miss every such
+    //    title.
     const lineAbove = i > 0 ? lines[i - 1] : null;
-    const lineBelow = i + 1 < lines.length ? lines[i + 1] : null;
+    let lineBelow: string | null = null;
+    for (let j = i + 1; j < Math.min(i + 1 + LINE_BELOW_LOOKAHEAD, lines.length); j++) {
+      if (lines[j].trim().length > 0) {
+        lineBelow = lines[j];
+        break;
+      }
+    }
     if (looksLikePlainTextHeading(line, lineAbove, lineBelow)) {
       if (titles.length >= MAX_TITLES) {
         warnings.push(
