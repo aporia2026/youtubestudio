@@ -1040,13 +1040,16 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
     cardShape === 'circle'
       ? `LAYOUT (strict):
 - A WHITE canvas with an evenly-spaced ${gridRows} rows × ${gridCols} columns grid of ${total} discs (circles) total.
-- WHITE outer margin around the entire grid on all four sides (top, bottom, left, right) — same width as the gutters between discs.
-- Each disc sits in its own equal-size cell. The disc fills most of the cell width and the top ~75% of the cell height; the bottom strip of the cell holds the label.
+- WHITE outer margin on all four sides (top, bottom, left, right). Outer margin width matches the horizontal gutter between columns.
+- VERTICAL SPACING IS GENEROUS — NOT UNIFORM WITH HORIZONTAL:
+  • Horizontal gap between two discs in the same row: the standard gutter (~3-4% of canvas width).
+  • Vertical gap between two rows (measured from the BOTTOM of the upper row's LABEL to the TOP of the lower row's DISC): roughly 1.8–2× the horizontal gap, so labels never visually touch the next row's discs. This is the single most common rendering failure in this format — err generous on vertical space.
+- Each disc sits in its own equal-size cell. The disc occupies the top ~65% of the cell height (NOT 75% — leave a clearly visible WHITE GAP between the label and the bottom edge of the cell so the next row's disc has breathing room). Disc fills most of the cell width.
 - NO rectangular borders around the cells. NO black frame around each disc. NO hairline divider. The discs sit directly on the white canvas; the label sits in the white canvas beneath each disc.
 - Each disc's edge is a single clean circular outline (no shadow, no bevel) — or the disc is borderless if its illustration's natural background bleeds to the disc edge.
 - Each disc is split into two regions:
-  • The disc itself (top ~75% of the cell): the illustration, framed by the circular crop. Anything in the corners of the source illustration is CLIPPED by the disc — frame each subject centred and tight.
-  • A short label strip BELOW the disc (bottom ~25% of the cell): white background, label text centred.`
+  • The disc itself (top ~65% of the cell): the illustration, framed by the circular crop. Anything in the corners of the source illustration is CLIPPED by the disc — frame each subject centred and tight.
+  • A short label strip BELOW the disc (next ~20% of the cell): white background, label text centred. The remaining ~15% of the cell is WHITE breathing room beneath the label — do NOT extend the label into this region, do NOT push the next row up into it.`
       : `LAYOUT (strict):
 - An evenly-spaced ${gridRows} rows × ${gridCols} columns grid of identical-size cards = ${total} cards total.
 - A WHITE outer margin around the entire grid on all four sides of the canvas (top, bottom, left, right) — same width as the inter-card gutter.
