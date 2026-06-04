@@ -47,6 +47,13 @@ export interface TopicCard {
    *  `cutout` fill style on this card. Cached so toggling fillStyle is free
    *  after the first call. */
   cutoutImageUrl?: string;
+  /** Optional Lucide-icon slug from the shared `ICON_REGISTRY` (see
+   *  `flex-icon-grid-icons.ts`). When set AND the layout's
+   *  `fillStyle === 'icon'`, the composite paints a flat accent disc
+   *  plus the inline icon SVG at ~50 % disc diameter. When unset and
+   *  `fillStyle === 'icon'`, the composite degrades to a plain accent
+   *  disc with a console warning so the gap surfaces in logs. */
+  iconSlug?: string;
 }
 
 /**
@@ -646,6 +653,22 @@ export function validateCardList(
         reason: `Card ${i + 1} label "${label}" is a negative concept (scam/attack/threat) but its accent_color "${c.accent_color}" reads as safe/trusted. Pick a red, orange, or warning-yellow accent instead.`,
         offending_card_index: i,
       };
+    }
+    // Optional iconSlug sanity: kebab-case, ≤ 64 chars. We can't check
+    // against ICON_REGISTRY here without a circular import (the registry
+    // pulls in lucide-static), so we restrict to slug-shape characters
+    // and let the composite handle unknown slugs gracefully (logs a
+    // warning, falls back to plain accent disc). Empty / undefined
+    // passes through silently — the field is optional.
+    if (c.iconSlug !== undefined && c.iconSlug !== '') {
+      const slug = String(c.iconSlug).trim();
+      if (slug.length > 64 || !/^[a-z0-9-]+$/.test(slug)) {
+        return {
+          ok: false,
+          reason: `Card ${i + 1} iconSlug "${c.iconSlug}" is malformed. Must be kebab-case (lowercase letters, digits, hyphens) and at most 64 characters.`,
+          offending_card_index: i,
+        };
+      }
     }
   }
   return { ok: true };

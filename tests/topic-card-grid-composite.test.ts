@@ -12,6 +12,7 @@ import {
   detectAiLabelTop,
   escapePangoText,
   fitCover,
+  isAccentDark,
   renderLabelPng,
   renderStrokedLabelPng,
   LABEL_FONT_FAMILY,
@@ -1411,5 +1412,308 @@ describe('applyCellUploads — Phase 3 axes', () => {
     const baselineHash = createHash('sha256').update(baseline).digest('hex');
     const withAxesHash = createHash('sha256').update(withAxes).digest('hex');
     expect(withAxesHash).toBe(baselineHash);
+  });
+});
+
+// ─── Phase 5: icon fillStyle + pure-prompt circle axes ──────────────────────
+
+describe('isAccentDark', () => {
+  // Drives the icon-colour pick on a flat accent disc. Lower bar than
+  // a full WCAG contrast check — just dark / light so the Lucide icon
+  // doesn't disappear against the disc.
+  it('returns true for dark colours (luminance < 128)', () => {
+    expect(isAccentDark('#000000')).toBe(true);
+    expect(isAccentDark('#1a1a1a')).toBe(true);
+    expect(isAccentDark('#003366')).toBe(true); // navy
+    expect(isAccentDark('#7c0000')).toBe(true); // dark red
+  });
+  it('returns false for light colours (luminance ≥ 128)', () => {
+    expect(isAccentDark('#ffffff')).toBe(false);
+    expect(isAccentDark('#ffd400')).toBe(false); // bright yellow
+    // Test the boundary: any near-mid colour where the luminance
+    // formula sits above 128 should return false.
+    expect(isAccentDark('#cccccc')).toBe(false);
+  });
+  it('treats bright but red-dominant colours as DARK (perceptual luminance, not naïve max-channel)', () => {
+    // #ff3333: R=255 G=51 B=51. ITU-R BT.709 weights drop R to ~54,
+    // so total luminance is ~94 — below the 128 midpoint. Pinned here
+    // because a future "naïve max-channel" rewrite would silently
+    // change this branch and flip icon colour on every red accent.
+    expect(isAccentDark('#ff3333')).toBe(true);
+    expect(isAccentDark('#0000ff')).toBe(true); // pure blue, luminance ~18
+    expect(isAccentDark('#ff0000')).toBe(true); // pure red, luminance ~54
+  });
+  it('accepts #rgb shorthand', () => {
+    expect(isAccentDark('#000')).toBe(true);
+    expect(isAccentDark('#fff')).toBe(false);
+  });
+  it('accepts #rrggbbaa (alpha ignored for luminance)', () => {
+    expect(isAccentDark('#000000ff')).toBe(true);
+    expect(isAccentDark('#ffffff00')).toBe(false);
+  });
+  it('returns false for malformed input (safer fallback — default to black icon)', () => {
+    // Empty, wrong length, non-hex chars, non-string — all hit the
+    // safer "assume light" fallback so the icon defaults to black
+    // (which reads on white, matching the pre-Phase-3 cards that
+    // had no accent_color at all).
+    expect(isAccentDark('')).toBe(false);
+    expect(isAccentDark('#12')).toBe(false);
+    expect(isAccentDark('#zzzzzz')).toBe(false);
+    expect(isAccentDark('not a hex')).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(isAccentDark(null as any)).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(isAccentDark(undefined as any)).toBe(false);
+  });
+});
+
+describe('applyCellUploads — fillStyle: icon with iconSlug', () => {
+  // Verifies the icon branch actually composites a Lucide icon over
+  // the accent disc when a valid slug is provided. The fallback path
+  // (no slug / unknown slug) is already pinned by the Phase 3 test
+  // suite above; this group covers the success path the Phase 5 work
+  // unlocked.
+  const CANVAS_W = 600;
+  const CANVAS_H = 400;
+
+  it('composites the Lucide icon over the accent disc when iconSlug is valid', async () => {
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards: [
+        // White accent so the icon falls back to black (the high-contrast
+        // pick from `isAccentDark`). Without the icon, the disc centre
+        // would be pure white; WITH the icon, at least one pixel inside
+        // the disc should be the icon's black stroke.
+        { index: 1, label: 'Shield', icon_concept: 'shield', accent_color: '#ffffff', iconSlug: 'shield' },
+      ],
+      cardShape: 'circle',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      fillStyle: 'icon',
+    });
+    // Scan the disc area for any dark pixel — proves the icon SVG
+    // landed. Looking for any pixel where all RGB channels are < 60
+    // (i.e. near-black, which is the icon stroke on the white accent).
+    const rect = cellRect(layout, 1);
+    const { data, info } = await sharp(out).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    let foundIconStroke = false;
+    // Scan a 60 % box centred on the disc — well inside the disc,
+    // outside the border ring (which is black on its own).
+    const xStart = rect.x + Math.round(rect.w * 0.3);
+    const xEnd = rect.x + Math.round(rect.w * 0.7);
+    const yStart = rect.y + Math.round(rect.h * 0.15);
+    const yEnd = rect.y + Math.round(rect.h * 0.45);
+    for (let y = yStart; y < yEnd && !foundIconStroke; y++) {
+      for (let x = xStart; x < xEnd && !foundIconStroke; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        if (r < 60 && g < 60 && b < 60) foundIconStroke = true;
+      }
+    }
+    expect(foundIconStroke).toBe(true);
+  });
+
+  it('picks a white icon on a dark accent (luminance-driven contrast pick)', async () => {
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards: [
+        // Black accent — icon should render in WHITE to stay readable.
+        { index: 1, label: 'Lock', icon_concept: 'lock', accent_color: '#000000', iconSlug: 'lock' },
+      ],
+      cardShape: 'circle',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      fillStyle: 'icon',
+    });
+    // Scan for any near-white pixel inside the disc. The disc itself
+    // is black, the icon is white, the border is black again.
+    const rect = cellRect(layout, 1);
+    const { data, info } = await sharp(out).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    let foundWhiteIcon = false;
+    const xStart = rect.x + Math.round(rect.w * 0.3);
+    const xEnd = rect.x + Math.round(rect.w * 0.7);
+    const yStart = rect.y + Math.round(rect.h * 0.15);
+    const yEnd = rect.y + Math.round(rect.h * 0.45);
+    for (let y = yStart; y < yEnd && !foundWhiteIcon; y++) {
+      for (let x = xStart; x < xEnd && !foundWhiteIcon; x++) {
+        const idx = (y * info.width + x) * info.channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        if (r > 200 && g > 200 && b > 200) foundWhiteIcon = true;
+      }
+    }
+    expect(foundWhiteIcon).toBe(true);
+  });
+
+  it('falls back to plain accent disc when iconSlug is unknown (not in ICON_REGISTRY)', async () => {
+    // The composite logs a warn + paints a plain accent disc rather
+    // than throwing — proves a stale client sending a removed slug
+    // can't crash the render.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards: [
+        { index: 1, label: 'X', icon_concept: 'x', accent_color: '#ff0000', iconSlug: 'this-slug-does-not-exist' },
+      ],
+      cardShape: 'circle',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      fillStyle: 'icon',
+    });
+    const rect = cellRect(layout, 1);
+    // Disc centre should be the accent (red), NOT any icon-shape pixel.
+    const [r, g, b] = await pixelAt(out, rect.x + rect.w / 2, rect.y + rect.h * 0.28);
+    expect(r).toBeGreaterThan(200);
+    expect(g).toBeLessThan(60);
+    expect(b).toBeLessThan(60);
+  });
+});
+
+describe('applyCellUploads — pure-prompt circle mode, label axes', () => {
+  // Verifies the Phase 5 promotion: when circle mode has NO uploads
+  // AND the user picked a non-default label axis, the composite paints
+  // a label-only overlay (wipes the AI's below-disc label band,
+  // re-renders the label at the chosen position/case/stroke).
+  const CANVAS_W = 600;
+  const CANVAS_H = 400;
+  const cards: TopicCard[] = [
+    { index: 1, label: 'one', icon_concept: 'A', accent_color: '#ff0000' },
+    { index: 2, label: 'two', icon_concept: 'B', accent_color: '#3366ff' },
+  ];
+
+  async function aiBaseWithLabelBands(): Promise<Buffer> {
+    // Synthetic "AI render": cyan label band beneath each disc so we
+    // can tell whether the wipe actually fired. The disc area is left
+    // white so the label-overlay branch has a clear, untouched space
+    // to leave alone.
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const r1 = cellRect(layout, 1);
+    const r2 = cellRect(layout, 2);
+    // Cyan band rendered as an SVG so we get exact pixel coordinates.
+    const bandY1 = r1.y + Math.round(r1.h * 0.78);
+    const bandY2 = r2.y + Math.round(r2.h * 0.78);
+    const bandH = Math.round(r1.h * 0.22);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CANVAS_W}" height="${CANVAS_H}">
+      <rect width="${CANVAS_W}" height="${CANVAS_H}" fill="white"/>
+      <rect x="${r1.x}" y="${bandY1}" width="${r1.w}" height="${bandH}" fill="cyan"/>
+      <rect x="${r2.x}" y="${bandY2}" width="${r2.w}" height="${bandH}" fill="cyan"/>
+    </svg>`;
+    return await sharp(Buffer.from(svg)).png().toBuffer();
+  }
+
+  it('leaves the base unchanged when all label axes are at their defaults (legacy parity)', async () => {
+    // Critical regression guard: the Phase 5 promotion only fires
+    // when a label axis is non-default. With all defaults, the
+    // pre-Phase-5 behaviour (skip circle mode in pure-prompt) must
+    // hold, so the output is byte-identical to the input.
+    const base = await aiBaseWithLabelBands();
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+      // All defaults — should be a no-op except for the PNG re-encode.
+      borderWeight: 'thin',
+      labelPosition: 'below',
+      labelCase: 'title',
+      overlapLabelStroke: 'white-on-black',
+    });
+    // Sample the cyan band — must still be cyan if we didn't wipe.
+    const rect = cellRect(layout, 1);
+    const sampleY = rect.y + Math.round(rect.h * 0.88);
+    const [r, g, b] = await pixelAt(out, rect.x + rect.w / 2, sampleY);
+    expect(r).toBeLessThan(60);
+    expect(g).toBeGreaterThan(200); // cyan
+    expect(b).toBeGreaterThan(200);
+  });
+
+  it('wipes the AI label band when labelPosition = overlap', async () => {
+    const base = await aiBaseWithLabelBands();
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+      labelPosition: 'overlap',
+    });
+    // The cyan band sat at ~78% down the cell. After the Phase 5
+    // overlay paints, that area should now be wiped white (and
+    // potentially have our overlap label on top, but we sample a
+    // horizontal strip OFF the label centre so the assertion is
+    // about the wipe, not the label itself).
+    const rect = cellRect(layout, 1);
+    const sampleY = rect.y + Math.round(rect.h * 0.88);
+    // Sample near the right edge of the cell, where the overlap
+    // label won't reach (labels are centred and short).
+    const sampleX = rect.x + Math.round(rect.w * 0.95);
+    const [r, g, b] = await pixelAt(out, sampleX, sampleY);
+    expect(r).toBeGreaterThan(240);
+    expect(g).toBeGreaterThan(240);
+    expect(b).toBeGreaterThan(240);
+  });
+
+  it('wipes the AI label band and re-paints uppercase when labelCase = upper', async () => {
+    const base = await aiBaseWithLabelBands();
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+      labelCase: 'upper',
+    });
+    // Cyan band should be wiped (Phase 5 promotion fires because
+    // labelCase is non-default). Sample at the cell horizontal centre
+    // far enough below the disc that we're inside the band.
+    const rect = cellRect(layout, 1);
+    const sampleY = rect.y + Math.round(rect.h * 0.95);
+    const sampleX = rect.x + Math.round(rect.w * 0.95);
+    const [r, g, b] = await pixelAt(out, sampleX, sampleY);
+    expect(r).toBeGreaterThan(240);
+    expect(g).toBeGreaterThan(240);
+    expect(b).toBeGreaterThan(240);
+  });
+
+  it('does NOT touch the disc area (geom-based wipe stays below the disc, no clipping)', async () => {
+    // Paint the disc area red — if the wipe area drifts into the disc,
+    // some red pixels become white. Strong regression guard against a
+    // future bug where the wipe rect grows past geom.labelY.
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const r1 = cellRect(layout, 1);
+    // Paint a red disc inside cell 1's disc area.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${CANVAS_W}" height="${CANVAS_H}">
+      <rect width="${CANVAS_W}" height="${CANVAS_H}" fill="white"/>
+      <circle cx="${r1.x + r1.w / 2}" cy="${r1.y + r1.h * 0.38}" r="${r1.w * 0.4}" fill="red"/>
+    </svg>`;
+    const base = await sharp(Buffer.from(svg)).png().toBuffer();
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+      labelPosition: 'overlap',
+    });
+    // Disc centre — must still be red. Wipe should never reach this far up.
+    const [r, g, b] = await pixelAt(out, r1.x + r1.w / 2, r1.y + Math.round(r1.h * 0.38));
+    expect(r).toBeGreaterThan(200);
+    expect(g).toBeLessThan(60);
+    expect(b).toBeLessThan(60);
   });
 });

@@ -82,6 +82,11 @@ export interface FormatCard {
   label: string;
   icon_concept: string;
   accent_color?: string;
+  /** Optional Lucide-icon slug from `ICON_REGISTRY`. Only consumed
+   *  when the layout's `fillStyle === 'icon'` — otherwise stored
+   *  alongside the card for free in case the user toggles fillStyle
+   *  later. See `TopicCard.iconSlug` for the canonical definition. */
+  iconSlug?: string;
 }
 
 export interface FormatPalette {
@@ -4676,6 +4681,7 @@ export function TopicCardGridPanel({
             onClearUpload={clearCellUpload}
             onUploadFitChange={updateUploadFit}
             onUploadFilterChange={updateUploadFilter}
+            showIconSlugInput={cardShape === 'circle' && fillStyle === 'icon'}
             onRender={() => runStep2()}
             onRegenerate={() => { setCards(null); runStep1(); }}
           />
@@ -4859,6 +4865,12 @@ interface CardTableProps {
   onUploadFitChange: (cardIndex: number, fit: PanelUploadFit) => void;
   /** Set or clear (with `null`) the filter for an uploaded cell. */
   onUploadFilterChange: (cardIndex: number, filter: PanelImageFilter | null) => void;
+  /** Surface the per-card iconSlug input. Only true when the layout is
+   *  in circle mode AND `fillStyle === 'icon'` — outside that combo
+   *  the slug isn't read by the renderer so showing the input would
+   *  be confusing per rule 16 (intuitive). The input writes to
+   *  `card.iconSlug` via `onUpdate`. */
+  showIconSlugInput: boolean;
   onRender: () => void;
   onRegenerate: () => void;
 }
@@ -5037,21 +5049,45 @@ function CardTableState(props: CardTableProps) {
                       </div>
                     </div>
                   ) : (
-                    <textarea
-                      className="input-field flex-1 text-xs"
-                      placeholder="Icon concept — one bold central symbol, no text, no scene"
-                      value={card.icon_concept}
-                      onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
-                      maxLength={200}
-                      rows={3}
-                      // Fixed 3-row preview (covers most icon concepts) with
-                      // an inner scrollbar for longer text, and a vertical
-                      // resize grip so the user can drag taller when they
-                      // need to read all 200 chars at once. Avoids the
-                      // `field-sizing: content` trap where narrow columns
-                      // would balloon the row to 10+ lines.
-                      style={ICON_CONCEPT_TEXTAREA_STYLE(false)}
-                    />
+                    <div className="flex-1 flex flex-col gap-1.5">
+                      <textarea
+                        className="input-field text-xs"
+                        placeholder="Icon concept — one bold central symbol, no text, no scene"
+                        value={card.icon_concept}
+                        onChange={(e) => props.onUpdate(i, { icon_concept: e.target.value })}
+                        maxLength={200}
+                        rows={3}
+                        // Fixed 3-row preview (covers most icon concepts) with
+                        // an inner scrollbar for longer text, and a vertical
+                        // resize grip so the user can drag taller when they
+                        // need to read all 200 chars at once. Avoids the
+                        // `field-sizing: content` trap where narrow columns
+                        // would balloon the row to 10+ lines.
+                        style={ICON_CONCEPT_TEXTAREA_STYLE(false)}
+                      />
+                      {/* Icon slug input — only visible when the layout is
+                          in circle mode AND fillStyle is `'icon'`. The
+                          server composite paints the matching Lucide
+                          icon over the accent disc when set; an unset
+                          slug degrades to a plain coloured disc plus
+                          a server-side warning. Kept as a free-text
+                          input rather than a dropdown to avoid pulling
+                          the full ICON_REGISTRY into the panel bundle;
+                          power users can type known slugs (shield,
+                          rocket, …) and the route's allowlist-shape
+                          validation catches malformed entries before
+                          they reach the renderer. */}
+                      {props.showIconSlugInput && (
+                        <input
+                          type="text"
+                          className="input-field text-xs"
+                          placeholder="Icon slug (e.g. shield, rocket, lock) — see ICON_REGISTRY"
+                          value={card.iconSlug ?? ''}
+                          onChange={(e) => props.onUpdate(i, { iconSlug: e.target.value.trim() || undefined })}
+                          maxLength={64}
+                        />
+                      )}
+                    </div>
                   )}
                   <CellUploadControl
                     cardIndex={card.index}

@@ -40,6 +40,7 @@ import {
   type OverlapLabelStroke,
   type TopicCard,
 } from './topic-card-grid';
+import { getIconEntry, inlineIconSvg } from './flex-icon-grid-icons';
 import {
   DEFAULT_FONT_ID,
   findFontById,
@@ -404,6 +405,104 @@ export async function renderLabelPng(
  */
 export function escapePangoText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Quick luminance heuristic for picking icon / overlay text colour
+ * against an accent disc background. Uses the perceptual luminance
+ * formula (0.2126 R + 0.7152 G + 0.0722 B) and returns `true` when
+ * the colour is dark enough that a white foreground reads better
+ * than a black one.
+ *
+ * Accepts `#rgb`, `#rrggbb`, and `#rrggbbaa` hex strings. Unknown
+ * formats default to `false` (assume a light accent) — that's the
+ * safer fallback because pre-Phase-3 cards had no accent at all and
+ * defaulted to white, where black is correct.
+ */
+export function isAccentDark(hex: string): boolean {
+  if (typeof hex !== 'string') return false;
+  const cleaned = hex.startsWith('#') ? hex.slice(1) : hex;
+  let r: number;
+  let g: number;
+  let b: number;
+  if (cleaned.length === 3) {
+    r = parseInt(cleaned[0] + cleaned[0], 16);
+    g = parseInt(cleaned[1] + cleaned[1], 16);
+    b = parseInt(cleaned[2] + cleaned[2], 16);
+  } else if (cleaned.length === 6 || cleaned.length === 8) {
+    r = parseInt(cleaned.slice(0, 2), 16);
+    g = parseInt(cleaned.slice(2, 4), 16);
+    b = parseInt(cleaned.slice(4, 6), 16);
+  } else {
+    return false;
+  }
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return false;
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  // 128 is the standard luminance midpoint. The competitor references
+  // skew towards bold-saturated accents (#ff3333, #3366ff, etc.) where
+  // either choice reads; picking the perceptually-correct one keeps
+  // the icon legible against any user-picked colour.
+  return luminance < 128;
+}
+
+/**
+ * Render a circle-mode label PNG using only the label-related axes
+ * (labelPosition / labelCase / overlapLabelStroke). Shared between
+ * `buildCircleCellOverlay` (upload path) and the pure-prompt circle
+ * branch in `applyCellUploads`, so the visual treatment matches
+ * regardless of whether the user attached an image. Returns the
+ * rendered PNG buffer; the caller is responsible for positioning it.
+ *
+ * Sizing matches `buildCircleCellOverlay`'s internal logic:
+ *   - `'below'` mode → reuses the standard `renderLabelPng` band-
+ *     fit fontPt.
+ *   - `'overlap'` mode → 13 % of disc diameter, stroked at 6 % of
+ *     fontPt, white-on-black or black-on-white per the axis.
+ *
+ * Phase 5 (2026-06-04) — extracted from `buildCircleCellOverlay` so
+ * the pure-prompt circle branch can call it without depending on a
+ * full overlay build. See plan
+ * `_plans/2026-06-04-topic-card-grid-circle-parity.md` §"Renderer
+ * changes" + the Phase 5 follow-up notes.
+ */
+export async function renderCircleLabelForPurePromptMode(
+  label: string,
+  cellW: number,
+  discD: number,
+  labelPosition: LabelPosition,
+  labelCase: LabelCase,
+  overlapStroke: OverlapLabelStroke,
+  fontPt?: number,
+  font?: { family: string; filePath: string },
+): Promise<Buffer> {
+  const displayLabel = labelCase === 'upper' ? label.toUpperCase() : label;
+  const labelPad = Math.max(2, Math.round(cellW * 0.025));
+  if (labelPosition === 'overlap') {
+    const overlapFontPt = Math.max(12, Math.round(discD * 0.13));
+    const fillColor = overlapStroke === 'white-on-black' ? '#ffffff' : '#000000';
+    const strokeColor = overlapStroke === 'white-on-black' ? '#000000' : '#ffffff';
+    const strokeWidth = Math.max(1, Math.round(overlapFontPt * 0.06));
+    const labelW = Math.max(16, cellW - 2 * labelPad);
+    const resolvedFont = font ?? { family: LABEL_FONT_FAMILY, filePath: LABEL_FONT_PATH };
+    return await renderStrokedLabelPng(
+      displayLabel,
+      labelW,
+      overlapFontPt,
+      resolvedFont,
+      fillColor,
+      strokeColor,
+      strokeWidth,
+    );
+  }
+  // `'below'` mode — non-overlap label. Use the standard renderer at
+  // the band-derived size.
+  const labelW = Math.max(16, cellW - 2 * labelPad);
+  // Band height for 'below' mode mirrors `circleCellGeometry.labelH`'s
+  // typical value (~25 % of cellH). renderLabelPng's auto-scale path
+  // handles the actual fit since we pass fontPt when the caller has
+  // a canonical size.
+  const bandH = Math.max(8, Math.round(cellW * 0.22));
+  return await renderLabelPng(displayLabel, labelW, bandH, fontPt, font);
 }
 
 /**
@@ -1455,6 +1554,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
                 overlapLabelStroke: axisOverlapStroke,
                 accentColor: card.accent_color,
                 cutoutBytes: cutoutByIndex.get(card.index),
+                iconSlug: card.iconSlug,
               },
             )
           : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font, uploadFit, uploadFilter);
@@ -1462,11 +1562,75 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       continue;
     }
 
-    // Pure prompt mode (zero uploads in request): only paint a uniform-
-    // style label band in square mode. Skip for circle mode — the AI
-    // renders labels beneath the disc on white canvas and overpainting
-    // risks blanking the disc if the layout-derived band misses by a
-    // few pixels (the reference sample size for circle mode is small).
+    // Pure prompt mode (zero uploads in request). Square mode runs the
+    // band-overlay path below to uniformise label sizing. Circle mode
+    // got promoted in Phase 5 — when ANY label axis is non-default
+    // (labelPosition / labelCase / overlapLabelStroke), we now paint a
+    // label-only overlay so the user's axis picks actually reach the
+    // export. Default-axis circles still pass through untouched (the
+    // AI's render is honoured verbatim) so legacy renders are
+    // pixel-identical.
+    if (cardShape === 'circle') {
+      const hasNonDefaultLabelAxis =
+        axisLabelPosition !== 'below' ||
+        axisLabelCase !== 'title' ||
+        axisOverlapStroke !== 'white-on-black';
+      if (!hasNonDefaultLabelAxis) continue;
+      // Build a label-only overlay positioned via the layout's
+      // circleCellGeometry. We deliberately do NOT touch the disc
+      // itself — that's the AI's job in pure-prompt mode. The wipe
+      // area is strictly the strip BELOW the disc (geom.labelY ..
+      // geom.labelY + geom.labelH), so even a misaligned AI render
+      // can't have its disc accidentally erased.
+      const geom = circleCellGeometry(rect.x, rect.y, rect.w, rect.h);
+      const labelPng = await renderCircleLabelForPurePromptMode(
+        card.label,
+        rect.w,
+        Math.round(geom.discD),
+        axisLabelPosition,
+        axisLabelCase,
+        axisOverlapStroke,
+        fontPt,
+        font,
+      );
+      // Wipe the label band white before painting the new label so
+      // the AI's original label doesn't show through. For `'overlap'`
+      // mode the new label crosses into the disc — we still wipe the
+      // band so the AI's below-disc label (if any) doesn't sit
+      // beneath our overlap label.
+      const wipeY = Math.max(0, Math.round(geom.labelY));
+      const wipeH = Math.max(1, Math.round(geom.labelH));
+      const wipeW = Math.max(1, rect.w);
+      const wipePng = await sharp({
+        create: { width: wipeW, height: wipeH, channels: 4, background: WHITE },
+      })
+        .png()
+        .toBuffer();
+      wipeOverlays.push({ input: wipePng, top: wipeY, left: rect.x });
+      // Position the label overlay. Both branches centre the PNG
+      // horizontally within the cell. Vertical positioning matches
+      // the same logic buildCircleCellOverlay uses for uploaded
+      // cells — keeps preview / upload / no-upload renders visually
+      // consistent.
+      const labelMeta = await sharp(labelPng).metadata();
+      const labelTextW = labelMeta.width ?? 1;
+      const labelTextH = labelMeta.height ?? 1;
+      const discBottom = Math.round(geom.discCy + geom.discD / 2);
+      const labelLeft = Math.max(rect.x, rect.x + Math.round((rect.w - labelTextW) / 2));
+      const labelTop = axisLabelPosition === 'overlap'
+        ? Math.max(0, discBottom - Math.round(labelTextH / 2))
+        : Math.max(discBottom + 1, Math.round(geom.labelY + (geom.labelH - labelTextH) / 2));
+      overlays.push({ input: labelPng, top: labelTop, left: labelLeft });
+      console.info('[topic-card-grid composite circle-pure-prompt label]', {
+        card_index: card.index,
+        label_position: axisLabelPosition,
+        label_case: axisLabelCase,
+        overlap_stroke: axisOverlapStroke,
+        label_top: labelTop,
+        label_left: labelLeft,
+      });
+      continue;
+    }
     if (cardShape === 'square') {
       // Anchor everything (band overlay, side wipes, row gutter wipe)
       // to the AI's detected cell rectangle instead of our cellRect-
@@ -1749,6 +1913,11 @@ interface CircleCellAxes {
   /** Background-removed PNG bytes for this card. Only consumed when
    *  `fillStyle === 'cutout'`. */
   cutoutBytes?: Buffer;
+  /** Lucide icon slug from the shared `ICON_REGISTRY` (see
+   *  `flex-icon-grid-icons.ts`). Only consumed when `fillStyle ===
+   *  'icon'`. Unknown / missing slugs degrade to a plain accent disc
+   *  with a console warning. */
+  iconSlug?: string;
 }
 
 /**
@@ -1851,14 +2020,51 @@ async function buildCircleCellOverlay(
     if (filter) {
       discNoBorder = await applyFilter(discNoBorder, filter);
     }
+  } else if (fillStyle === 'icon' && axes.iconSlug && getIconEntry(axes.iconSlug)) {
+    // Icon: paint a flat accent disc, then composite the Lucide icon
+    // SVG at ~50 % disc diameter centred. Reuses the shared icon
+    // registry's server-safe `inlineIconSvg` helper so the icon set
+    // stays consistent with the flex-icon-grid format.
+    //
+    // Icon colour picks black on light accents and white on dark
+    // accents via a luminance heuristic so the icon stays readable on
+    // any accent the user picks. Stroke width matches the Lucide
+    // default of 2 px (scaled by inlineIconSvg internally so the
+    // visual weight stays consistent across cell sizes).
+    const iconSize = Math.max(16, Math.round(discD * 0.5));
+    const iconColour = isAccentDark(accentColor) ? '#ffffff' : '#000000';
+    const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${discD}" height="${discD}">${inlineIconSvg(
+      axes.iconSlug,
+      discD / 2,
+      discD / 2,
+      iconSize,
+      iconColour,
+      2,
+    )}</svg>`;
+    const iconPng = await sharp(Buffer.from(iconSvg)).png().toBuffer();
+    const flatDisc = await sharp({
+      create: { width: discD, height: discD, channels: 4, background: accentColor },
+    })
+      .composite([{ input: circularMaskSvg(discD), blend: 'dest-in' }])
+      .png()
+      .toBuffer();
+    discNoBorder = await sharp(flatDisc)
+      .composite([{ input: iconPng, top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+    if (filter) {
+      discNoBorder = await applyFilter(discNoBorder, filter);
+    }
   } else {
-    // `'icon'` OR `'cutout'` with no cutout bytes attached. Fall back
-    // to a plain accent disc + label. The icon-slug path needs
-    // `TopicCard.iconSlug` plumbing that doesn't exist yet — left as
-    // a Phase 4+ follow-up. Surface the gap in logs so it's not silent.
+    // `'icon'` with no iconSlug (or an unknown slug) OR `'cutout'` with
+    // no cutout bytes attached. Fall back to a plain accent disc and
+    // surface the gap in logs so a misconfigured request is visible
+    // without having to inspect the rendered PNG.
     if (fillStyle === 'icon') {
       console.warn('[topic-card-grid composite icon-fallback]', {
-        reason: 'icon fillStyle requested but TopicCard.iconSlug infrastructure not implemented',
+        reason: axes.iconSlug
+          ? `iconSlug "${axes.iconSlug}" is not in ICON_REGISTRY`
+          : 'icon fillStyle requested but no iconSlug set on card',
         cell_w: cellW,
       });
     } else if (fillStyle === 'cutout') {

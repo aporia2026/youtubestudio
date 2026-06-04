@@ -20,8 +20,9 @@ phases_shipped:
 phase_5_remaining:
   - Spin up dev server, click each of the 6 presets in the editor, confirm the export PNG matches the preview.
   - Verify the cutout-on-upload flow on a real JPEG upload (no alpha → Replicate call → cutout reuse).
-  - Decide whether to enable the `'icon'` fillStyle's icon composite (needs `TopicCard.iconSlug` plumbing).
-  - Decide whether to extend axis support into pure-prompt circle mode (composite currently only fires when an upload exists).
+phase_5_landed:
+  - `'icon'` fillStyle now actually composites a Lucide icon over the accent disc. `TopicCard.iconSlug` field added + validated; per-card iconSlug text input surfaced in the editor only when circle mode + icon fillStyle are both active. Icon colour picked via a perceptual-luminance check on the accent so light + dark accents both stay readable.
+  - Pure-prompt circle mode now applies the label axes (`labelPosition` / `labelCase` / `overlapLabelStroke`). When any of those is non-default, the composite wipes the AI's label band (strictly below the disc per `circleCellGeometry`) and re-paints the label at the chosen position with the chosen styling. Default-axis circles still pass through untouched so legacy renders are byte-identical.
 ---
 
 # Topic Card Grid — Circle Parity & Variation Axes
