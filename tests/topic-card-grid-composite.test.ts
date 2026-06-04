@@ -1690,6 +1690,36 @@ describe('applyCellUploads — pure-prompt circle mode, label axes', () => {
     expect(b).toBeGreaterThan(240);
   });
 
+  it('passes through unchanged when fillStyle=cutout, no uploads, no cutouts, default label axes', async () => {
+    // QA review #31 — the pure-prompt circle branch only fires when
+    // a LABEL axis is non-default. fillStyle alone (cutout, icon,
+    // borderWeight) doesn't trigger the overlay because the composite
+    // can't paint a cutout disc without the source bytes. Pin that
+    // the output equals the input PNG bytes-for-bytes (modulo the
+    // PNG re-encode round-trip).
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    // Synthetic AI render with a cyan band so we can confirm it
+    // wasn't wiped (since no label axis is non-default, the wipe
+    // doesn't fire).
+    const base = await aiBaseWithLabelBands();
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [],
+      fillStyle: 'cutout',
+      // All label axes at default — the gate (`hasNonDefaultLabelAxis`)
+      // returns false → branch continues without painting overlay.
+    });
+    // The cyan band should still be cyan if no wipe fired.
+    const rect = cellRect(layout, 1);
+    const [r, g, b] = await pixelAt(out, rect.x + rect.w / 2, rect.y + Math.round(rect.h * 0.88));
+    expect(r).toBeLessThan(60);
+    expect(g).toBeGreaterThan(200);
+    expect(b).toBeGreaterThan(200);
+  });
+
   it('does NOT touch the disc area (geom-based wipe stays below the disc, no clipping)', async () => {
     // Paint the disc area red — if the wipe area drifts into the disc,
     // some red pixels become white. Strong regression guard against a

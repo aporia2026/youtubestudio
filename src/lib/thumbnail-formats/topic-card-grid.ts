@@ -689,8 +689,12 @@ export function validateCardList(
  * slugs by falling back to a plain accent disc + console warning.
  */
 export function sanitizeCardIconSlug(raw: unknown): string {
-  if (raw === undefined || raw === null) return '';
-  const slug = String(raw).trim();
+  // Strict string check up front so callers don't accidentally pass
+  // numbers / booleans that String-coerce into something the kebab
+  // regex matches (e.g. `123` → `'123'` would otherwise be accepted).
+  // The only legitimate input is a string from JSON deserialisation.
+  if (typeof raw !== 'string') return '';
+  const slug = raw.trim();
   if (!slug) return '';
   if (slug.length > 64) return '';
   if (!/^[a-z0-9-]+$/.test(slug)) return '';

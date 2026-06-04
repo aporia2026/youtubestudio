@@ -447,25 +447,26 @@ export function isAccentDark(hex: string): boolean {
 
 /**
  * Render a circle-mode label PNG using only the label-related axes
- * (labelPosition / labelCase / overlapLabelStroke). Shared between
- * `buildCircleCellOverlay` (upload path) and the pure-prompt circle
- * branch in `applyCellUploads`, so the visual treatment matches
- * regardless of whether the user attached an image. Returns the
- * rendered PNG buffer; the caller is responsible for positioning it.
+ * (labelPosition / labelCase / overlapLabelStroke). The single source
+ * of truth for the circle-label rendering — both `buildCircleCellOverlay`
+ * (upload path) and the pure-prompt circle branch in `applyCellUploads`
+ * call this helper so the visual treatment matches regardless of
+ * whether the user attached an image. Returns the rendered PNG buffer;
+ * the caller is responsible for positioning it.
  *
- * Sizing matches `buildCircleCellOverlay`'s internal logic:
- *   - `'below'` mode → reuses the standard `renderLabelPng` band-
- *     fit fontPt.
+ * Sizing:
+ *   - `'below'` mode → reuses the standard `renderLabelPng` band-fit
+ *     fontPt, with a band height of ~22 % of cellW.
  *   - `'overlap'` mode → 13 % of disc diameter, stroked at 6 % of
  *     fontPt, white-on-black or black-on-white per the axis.
  *
- * Phase 5 (2026-06-04) — extracted from `buildCircleCellOverlay` so
- * the pure-prompt circle branch can call it without depending on a
- * full overlay build. See plan
+ * Extracted during the Phase 5 QA pass (2026-06-04) to remove the
+ * duplicated overlap-label math between the upload path and the
+ * pure-prompt branch. See plan
  * `_plans/2026-06-04-topic-card-grid-circle-parity.md` §"Renderer
- * changes" + the Phase 5 follow-up notes.
+ * changes".
  */
-export async function renderCircleLabelForPurePromptMode(
+export async function renderCircleLabelPng(
   label: string,
   cellW: number,
   discD: number,
@@ -1295,6 +1296,29 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
     cutouts_attached: cutoutByIndex.size,
   });
 
+  // Surface the pure-prompt circle gap from the QA review (Phase 5
+  // follow-up). Today the composite only honours LABEL axes in
+  // pure-prompt circle mode — the disc itself is the AI's job, so
+  // borderWeight / fillStyle don't apply. A user clicking the
+  // "Cutout Pop" or "Cartoon Bold" preset with no uploads would
+  // otherwise see no axis effect at all. Log it so the silent no-op
+  // becomes a visible signal in production logs / the editor's
+  // console. Per rule 14 (observability from day one).
+  if (cardShape === 'circle' && uploads.length === 0) {
+    const ignoredAxes: string[] = [];
+    if (axisBorderWeight !== 'thin') ignoredAxes.push('borderWeight');
+    if (axisFillStyle !== 'photo') ignoredAxes.push('fillStyle');
+    if (ignoredAxes.length > 0) {
+      console.warn('[topic-card-grid composite axes-ignored]', {
+        reason: 'pure-prompt circle mode (no uploads) only honours label axes',
+        ignored_axes: ignoredAxes,
+        border_weight: axisBorderWeight,
+        fill_style: axisFillStyle,
+        hint: 'attach at least one upload to make borderWeight + fillStyle apply, or pick a label-only axis (overlap / upper)',
+      });
+    }
+  }
+
   // Resolve the label font once per call. Unknown ids fall back to the
   // default silently — the route already validates against the
   // allowlist, this layer is belt-and-braces. `font` is undefined when
@@ -1583,7 +1607,7 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       // geom.labelY + geom.labelH), so even a misaligned AI render
       // can't have its disc accidentally erased.
       const geom = circleCellGeometry(rect.x, rect.y, rect.w, rect.h);
-      const labelPng = await renderCircleLabelForPurePromptMode(
+      const labelPng = await renderCircleLabelPng(
         card.label,
         rect.w,
         Math.round(geom.discD),
@@ -2089,54 +2113,37 @@ async function buildCircleCellOverlay(
     .png()
     .toBuffer();
 
-  // 3) Resolve the label string + render. Two branches:
-  //     - `'below'`  → renderLabelPng (existing path, fits in the
-  //       label band beneath the disc).
-  //     - `'overlap'` → renderStrokedLabelPng at a disc-relative font
-  //       size so the label reads at a comparable scale to the
-  //       browser preview's overlap mode.
-  const displayLabel = labelCase === 'upper' ? label.toUpperCase() : label;
+  // 3) Render the label via the shared circle-label helper so the
+  //    upload path and the pure-prompt branch in `applyCellUploads`
+  //    use one code path for the rendering. Positioning still happens
+  //    here because the upload path uses `circleCellGeometry`-derived
+  //    coordinates while the pure-prompt path uses cell-relative
+  //    coordinates — the positioning math is what differs, not the
+  //    label rendering.
   const isOverlap = labelPosition === 'overlap';
-  const labelPad = Math.max(2, Math.round(cellW * 0.025));
-  let labelPng: Buffer;
-  let labelTextW: number;
-  let labelTextH: number;
+  const labelPng = await renderCircleLabelPng(
+    label,
+    cellW,
+    discD,
+    labelPosition,
+    labelCase,
+    overlapStroke,
+    fontPt,
+    font,
+  );
+  const labelMeta = await sharp(labelPng).metadata();
+  const labelTextW = labelMeta.width ?? 1;
+  const labelTextH = labelMeta.height ?? 1;
   let labelTop: number;
   if (isOverlap) {
-    // Overlap mode renders at ~13 % of disc diameter — the band-derived
-    // size is tuned for the 20 % strip below, far too small when the
-    // label crosses the disc. Stroke width tracks the browser preview's
-    // 6 % of font size.
-    const overlapFontPt = Math.max(12, Math.round(discD * 0.13));
-    const fillColor = overlapStroke === 'white-on-black' ? '#ffffff' : '#000000';
-    const strokeColor = overlapStroke === 'white-on-black' ? '#000000' : '#ffffff';
-    const strokeWidth = Math.max(1, Math.round(overlapFontPt * 0.06));
-    const labelW = Math.max(16, cellW - 2 * labelPad);
-    const resolvedFont = font ?? { family: LABEL_FONT_FAMILY, filePath: LABEL_FONT_PATH };
-    labelPng = await renderStrokedLabelPng(
-      displayLabel,
-      labelW,
-      overlapFontPt,
-      resolvedFont,
-      fillColor,
-      strokeColor,
-      strokeWidth,
-    );
-    const meta = await sharp(labelPng).metadata();
-    labelTextW = meta.width ?? 1;
-    labelTextH = meta.height ?? 1;
     // Position so the label's vertical centre crosses the disc's
     // bottom edge — produces the "overlapping label" look from the
     // competitor references.
     const discTop = Math.round(geom.discCy - discD / 2);
     labelTop = Math.max(0, discTop + discD - Math.round(labelTextH / 2));
   } else {
-    const labelW = Math.max(16, Math.round(geom.labelW) - 2 * labelPad);
-    const labelH = Math.max(8, Math.round(geom.labelH) - 2);
-    labelPng = await renderLabelPng(displayLabel, labelW, labelH, fontPt, font);
-    const meta = await sharp(labelPng).metadata();
-    labelTextW = meta.width ?? 1;
-    labelTextH = meta.height ?? 1;
+    // 'below' mode: centre the label inside the band, with a 1 px
+    // floor below the disc to avoid kissing the border ring.
     const discTop = Math.round(geom.discCy - discD / 2);
     labelTop = Math.max(
       discTop + discD + 1,

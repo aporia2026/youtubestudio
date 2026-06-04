@@ -20,6 +20,7 @@ import {
   STYLE_FREE_FORM_MAX_CHARS,
   topicCardGridImagePrompt,
   topicCardGridLlmPrompt,
+  sanitizeCardIconSlug,
   validateCardList,
   type TopicCard,
 } from '@/lib/thumbnail-formats/topic-card-grid';
@@ -628,5 +629,78 @@ describe('validateCardList — caps & banlist (r2)', () => {
     // exported readonly array.
     expect(Array.isArray(ICON_CONCEPT_BANLIST)).toBe(true);
     expect(ICON_CONCEPT_BANLIST.length).toBeGreaterThan(0);
+  });
+});
+
+describe('validateCardList — iconSlug is NOT rejected here', () => {
+  // After QA review (Phase 5 follow-up) the validator deliberately
+  // ignores `iconSlug`. Rejection moved to the route layer's
+  // `sanitizeCardIconSlug` call, applied only when the request's
+  // `fillStyle === 'icon'`. These tests pin that the validator
+  // doesn't fail on malformed slugs — so a user with a stale slug
+  // on a card whose fillStyle was toggled off can still render.
+  function okCard(
+    index: number,
+    label: string,
+    icon: string,
+    color = '#000000',
+    iconSlug?: string,
+  ): TopicCard {
+    return { index, label, icon_concept: icon, accent_color: color, iconSlug };
+  }
+  it('passes when iconSlug is a valid kebab-case slug', () => {
+    const cards = [okCard(1, 'A', 'shield', '#000000', 'shield')];
+    expect(validateCardList(cards, 1)).toEqual({ ok: true });
+  });
+  it('passes when iconSlug is undefined', () => {
+    const cards = [okCard(1, 'A', 'shield')];
+    expect(validateCardList(cards, 1)).toEqual({ ok: true });
+  });
+  it('passes when iconSlug is the empty string', () => {
+    const cards = [okCard(1, 'A', 'shield', '#000000', '')];
+    expect(validateCardList(cards, 1)).toEqual({ ok: true });
+  });
+  it('passes when iconSlug is malformed (validation moved to the route layer)', () => {
+    // Spaces, uppercase, punctuation — all would be sanitised to ''
+    // at the route layer, but the validator no longer rejects them.
+    const cards = [okCard(1, 'A', 'shield', '#000000', 'Shield Icon!!!')];
+    expect(validateCardList(cards, 1)).toEqual({ ok: true });
+  });
+});
+
+describe('sanitizeCardIconSlug', () => {
+  it('returns the trimmed slug for well-formed kebab-case input', () => {
+    expect(sanitizeCardIconSlug('shield')).toBe('shield');
+    expect(sanitizeCardIconSlug('shield-alert')).toBe('shield-alert');
+    expect(sanitizeCardIconSlug('icon-123')).toBe('icon-123');
+    expect(sanitizeCardIconSlug('  rocket  ')).toBe('rocket'); // trims whitespace
+  });
+  it('returns empty string for empty / undefined / null input', () => {
+    expect(sanitizeCardIconSlug('')).toBe('');
+    expect(sanitizeCardIconSlug('   ')).toBe('');
+    expect(sanitizeCardIconSlug(undefined)).toBe('');
+    expect(sanitizeCardIconSlug(null)).toBe('');
+  });
+  it('returns empty string for malformed input (uppercase, punctuation, spaces)', () => {
+    expect(sanitizeCardIconSlug('Shield')).toBe('');
+    expect(sanitizeCardIconSlug('shield_icon')).toBe(''); // underscore not allowed
+    expect(sanitizeCardIconSlug('shield icon')).toBe(''); // space not allowed
+    expect(sanitizeCardIconSlug('shield!')).toBe('');
+    expect(sanitizeCardIconSlug('<script>')).toBe(''); // tagstyle XSS attempt
+  });
+  it('returns empty string for slugs over the 64-char cap', () => {
+    expect(sanitizeCardIconSlug('a'.repeat(64))).toBe('a'.repeat(64));
+    expect(sanitizeCardIconSlug('a'.repeat(65))).toBe('');
+  });
+  it('rejects non-string inputs (numbers, booleans, objects) without coercion', () => {
+    // Strict typeof check at the top of the function. Without it, a
+    // caller passing a number like `123` would silently get back
+    // `'123'` (passes the kebab regex). Same for `true` → `'true'`.
+    // JSON deserialisation only ever produces strings here, so the
+    // safe stance is "non-string in, empty out".
+    expect(sanitizeCardIconSlug(123)).toBe('');
+    expect(sanitizeCardIconSlug(true)).toBe('');
+    expect(sanitizeCardIconSlug({ slug: 'shield' })).toBe('');
+    expect(sanitizeCardIconSlug(['shield'])).toBe('');
   });
 });

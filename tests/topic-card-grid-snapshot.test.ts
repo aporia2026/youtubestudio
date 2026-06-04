@@ -44,8 +44,13 @@ const ALLOWED_DIFF_FRACTION = 0.01;
 const CANVAS_W = 600;
 const CANVAS_H = 400;
 const cards: TopicCard[] = [
-  { index: 1, label: 'Alpha', icon_concept: 'A', accent_color: '#ff3333' },
-  { index: 2, label: 'Beta', icon_concept: 'B', accent_color: '#3366ff' },
+  // iconSlug pinned to known ICON_REGISTRY entries so the icon-* fixtures
+  // exercise the REAL icon-on-disc composite path, not just the
+  // missing-slug fallback. QA review #23 — earlier fixtures only
+  // pinned the fallback, so a regression in inlineIconSvg would never
+  // trip the snapshot diff.
+  { index: 1, label: 'Alpha', icon_concept: 'A', accent_color: '#ff3333', iconSlug: 'shield' },
+  { index: 2, label: 'Beta', icon_concept: 'B', accent_color: '#3366ff', iconSlug: 'rocket' },
 ];
 
 async function makeSolidPng(w: number, h: number, r: number, g: number, b: number): Promise<Buffer> {
