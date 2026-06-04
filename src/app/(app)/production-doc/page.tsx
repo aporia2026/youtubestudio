@@ -35,6 +35,7 @@ import {
   getProductionDocHistoryCached,
   getVoiceoverHistory,
   updateProductionDocEntry,
+  updateProductionDocEntryCacheOnly,
   deleteProductionDocEntry,
   clearProductionDocHistory,
   getRecentNiches,
@@ -6246,15 +6247,17 @@ function ProductionDocPage() {
       if (Object.keys(overlayMap).length > 0) patch.rowOverlays = overlayMap;
       if (Object.keys(clipMap).length > 0) patch.rowVideoClips = clipMap;
       if (Object.keys(patch).length > 0) {
-        // Fire-and-forget — the lib updates the localStorage cache
-        // synchronously, then PATCHes the server in the background.
-        // Phase 2 parity refactor (2026-05-19): the legacy
-        // `/api/history/[id]` PATCH is kept here so the localStorage
-        // sidebar cache stays in sync. The canonical `ProjectPayload`
-        // PATCH lives in the next effect below and is the source of
-        // truth for the editor at `/edit/[projectId]`. Phase 3 will
-        // retire the legacy call entirely.
-        updateProductionDocEntry(historyEntryId, patch).catch(() => {});
+        // 2026-06-04: cache-only. The canonical save path
+        // (persistRowAsset → /api/edit/[id]/row-asset for assets;
+        // persistDoc → /api/edit/[id] for everything else) is the
+        // server source of truth. Routing this through the legacy
+        // /api/history/[id] PATCH would do `UPDATE payload = ${...
+        // cache[idx], ...patch}` and any stale fields in the cached
+        // entry (older doc snapshot, missing paint_explainer_v1
+        // settings, missing flags) would clobber the canonical row.
+        // That was the silent wipe behind the "I clicked Open in
+        // editor and my doc came back empty" report.
+        updateProductionDocEntryCacheOnly(historyEntryId, patch).catch(() => {});
       }
     }
   }, [doc, rowImages, rowOverlays, rowVideoClips, historyEntryId]);
@@ -6303,6 +6306,13 @@ function ProductionDocPage() {
   // (see _plans/2026-05-18-shot-graph-editor.md). Resets when a new
   // render starts so a fresh `done` shows the survey again.
   const [renderSurveyDismissed, setRenderSurveyDismissed] = useState(false);
+  // "Open in editor" navigation guard. The button awaits a `project.flush()`
+  // before pushing /edit/[id] so the editor's server-side `loadProject`
+  // can't race a pending debounced save. Without this, the user reported
+  // editor opening 404 / empty + the production-doc round-tripping to a
+  // wiped state. See useProject.beforeunload — its 64 KB keepalive cap
+  // can't carry full paint_explainer_v1 payloads.
+  const [openingEditor, setOpeningEditor] = useState(false);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // One-shot guard: surface the localStorage-quota toast at most once per
   // session so a tight render-typing-render loop doesn't spam the user.
@@ -6589,15 +6599,36 @@ function ProductionDocPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // ── Persist the per-doc override onto the history entry whenever it
-  //    changes. Mirrors how doc + rowImages are persisted. Fire-and-
-  //    forget — a stale override on disk is a soft failure.
+  // ── Persist the per-doc override onto the legacy history-entry cache
+  //    whenever it changes. Cache-only — server persistence runs through
+  //    the canonical path in `handleVisualKitOverrideChange` below, fired
+  //    only on real user mutations. NEVER PATCHes the server here; the
+  //    legacy /api/history/[id] PATCH would do `UPDATE payload = {...
+  //    cache[idx], ...patch}` and any stale cache field (older doc,
+  //    missing flags) would clobber the canonical row.
   useEffect(() => {
     if (!historyEntryId) return;
-    updateProductionDocEntry(historyEntryId, {
+    updateProductionDocEntryCacheOnly(historyEntryId, {
       visualBrandKitOverride: visualKitOverride,
     }).catch(() => { /* ignore */ });
   }, [historyEntryId, visualKitOverride]);
+
+  // Wraps `setVisualKitOverride` for the brand-kit panel's `onChange`.
+  // Routes the canonical save through `project.patch` so /edit/[projectId]
+  // reads the latest override on reload. Keeping this on the user-action
+  // path (instead of the [visualKitOverride] effect above) avoids the
+  // hydration setVisualKitOverride from triggering a redundant server
+  // save — the hydration path doesn't need a save round-trip because
+  // the server already has the value we just read.
+  const handleVisualKitOverrideChange = useCallback(
+    (next: ChannelVisualBrandKit): void => {
+      setVisualKitOverride(next);
+      if (projectRef.current.payload) {
+        projectRef.current.patch({ visualKitOverride: next });
+      }
+    },
+    [],
+  );
 
   // ── Compute the merged BrandKit for every render-time consumer.
   //    Order: DEFAULT_BRAND_KIT ← channel ← override ← legacy bar.
@@ -13083,7 +13114,7 @@ function ProductionDocPage() {
                   channelId={activeChannelId}
                   channelKit={channelVisualKit}
                   override={visualKitOverride}
-                  onChange={setVisualKitOverride}
+                  onChange={handleVisualKitOverrideChange}
                 />
 
                 {/* Phase 7 — per-doc style sheet for cross-shot visual consistency.
@@ -13146,14 +13177,46 @@ function ProductionDocPage() {
                     once (we need a historyEntryId to route against). */}
                 {EDITOR_V1_PUBLIC && (
                   historyEntryId ? (
-                    <a
-                      href={`/edit/${encodeURIComponent(historyEntryId)}`}
-                      className="w-full text-xs px-3 py-2 rounded border hover:bg-white/5 transition-colors flex items-center justify-center gap-1.5"
+                    <button
+                      type="button"
+                      disabled={openingEditor}
+                      onClick={async () => {
+                        if (openingEditor) return;
+                        setOpeningEditor(true);
+                        console.info('[production-doc open-editor] flush before navigate', {
+                          historyEntryId,
+                          isDirty: project.isDirty,
+                          saveStatus: project.saveStatus.kind,
+                        });
+                        try {
+                          // Flush any pending debounced save. useProject's
+                          // beforeunload keepalive PATCH normally covers this,
+                          // but it skips at >64 KB AND races the editor's
+                          // server-side loadProject GET — both confirmed
+                          // failure modes that opened the editor against stale
+                          // / missing data, which then round-tripped a wipe
+                          // back into production-doc. Awaiting flush here
+                          // closes the race for any payload up to the
+                          // canonical 10 MB cap.
+                          const result = await project.flush();
+                          console.info('[production-doc open-editor] flush result', {
+                            historyEntryId,
+                            kind: result.kind,
+                          });
+                        } catch (err) {
+                          console.warn('[production-doc open-editor] flush threw', {
+                            historyEntryId,
+                            detail: err instanceof Error ? err.message : String(err),
+                          });
+                        }
+                        router.push(`/edit/${encodeURIComponent(historyEntryId)}`);
+                      }}
+                      className="w-full text-xs px-3 py-2 rounded border hover:bg-white/5 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-progress"
                       style={{ borderColor: 'var(--accent-purple-bright, #a78bfa)', color: 'var(--accent-purple-bright, #a78bfa)' }}
                       title="Open the shot-graph editor for this production doc"
                     >
-                      Open in editor →
-                    </a>
+                      {openingEditor ? 'Saving…' : 'Open in editor →'}
+                    </button>
                   ) : (
                     <button
                       type="button"

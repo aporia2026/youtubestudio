@@ -3985,6 +3985,7 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             onOpenSwitcher={() =>
               window.dispatchEvent(new CustomEvent('editor:open-switcher'))
             }
+            projectId={projectId}
           />
         )}
         {/* Free-transform overlay — mounts when a shot is selected

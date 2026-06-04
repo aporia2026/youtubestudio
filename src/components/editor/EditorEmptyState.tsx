@@ -37,6 +37,12 @@ interface EditorEmptyStateProps {
   onReload: () => Promise<void> | void;
   /** Open the project switcher (history list). */
   onOpenSwitcher: () => void;
+  /** Production-doc history-entry id for the project the editor is
+   *  currently viewing. Threaded into the "Open in Production Doc"
+   *  link as `?h=<id>` so the user lands back on the SAME doc instead
+   *  of a blank production-doc page — the symptom that drove the
+   *  "everything I did is gone" report. */
+  projectId: string;
 }
 
 export function EditorEmptyState({
@@ -47,6 +53,7 @@ export function EditorEmptyState({
   hasVoiceover,
   onReload,
   onOpenSwitcher,
+  projectId,
 }: EditorEmptyStateProps): React.ReactElement {
   const [reloading, setReloading] = useState(false);
 
@@ -121,7 +128,7 @@ export function EditorEmptyState({
             <span>{reloading ? 'Reloading…' : 'Pull from production doc'}</span>
           </button>
           <Link
-            href="/production-doc"
+            href={`/production-doc?h=${encodeURIComponent(projectId)}`}
             className="editor-btn editor-btn-primary justify-center"
             style={{ width: '100%' }}
           >

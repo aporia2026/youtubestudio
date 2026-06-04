@@ -1197,6 +1197,44 @@ export async function updateProductionDocEntry(
   return updateOnServer(PROD_DOC, id, patch);
 }
 
+/**
+ * Update the localStorage cache row for a production-doc entry WITHOUT
+ * touching the server. Use this from the production-doc page where the
+ * canonical `useProject` save path is already the source of truth for
+ * the server, and the only reason to write here is to keep the
+ * history-sidebar thumbnails / shot counts visually fresh.
+ *
+ * Why this exists separately from `updateProductionDocEntry`: the full
+ * `updateOnServer` path PATCHes `/api/history/[id]`, which blindly
+ * overwrites `user_history.payload` with `{ ...cache[idx], ...patch }`.
+ * When the cache is stale (initial-save snapshot, cross-tab divergence)
+ * the legacy PATCH clobbers the canonical row's `doc.rows`,
+ * `paint_explainer_v1_settings`, `flags`, and every other field the
+ * canonical payload carries that the entry shape doesn't. That was the
+ * silent-data-loss path the user hit when opening the editor — see the
+ * 2026-06-04 fix at the call sites in `production-doc/page.tsx`.
+ *
+ * Cache miss is a no-op: the next `getProductionDocHistory()` GET will
+ * repopulate from the server. We don't refetch here because the goal
+ * is only sidebar liveness and a refetch is async / expensive.
+ */
+export async function updateProductionDocEntryCacheOnly(
+  id: string,
+  patch: Partial<ProductionDocHistoryEntry>,
+): Promise<void> {
+  const scope = await loadScope();
+  if (!scope) return;
+  const cache = readCache<ProductionDocHistoryEntry>(PROD_DOC_KEY, scope);
+  const idx = cache.findIndex((e) => e.id === id);
+  if (idx < 0) {
+    // Cache miss is the steady state right after a fresh save before
+    // the first list refresh — nothing to do locally.
+    return;
+  }
+  cache[idx] = { ...cache[idx], ...patch };
+  writeCache(PROD_DOC_KEY, scope, cache);
+}
+
 export async function deleteProductionDocEntry(id: string): Promise<void> {
   return deleteFromServer(PROD_DOC, id);
 }
