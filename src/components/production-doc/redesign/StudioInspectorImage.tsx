@@ -37,6 +37,21 @@ export interface StudioInspectorImageActions {
   /** Default true. When false, the Generate / Re-generate button is
    *  rendered but disabled with an explanation tooltip. */
   canGenerate?: boolean;
+  /** Whether this row is currently locked-as-still — meaning even if
+   *  a B-roll clip exists it's ignored at render time and the still
+   *  + Ken Burns path runs instead. Drives the lock toggle button. */
+  lockedAsStill?: boolean;
+  /** Toggle the lock-as-still state. Parent persists via the
+   *  signature → bool map (`rowLockSignatures`). */
+  onToggleLockedAsStill?: (next: boolean) => void;
+  /** When provided and the row is a doodle_explainer_2 candidate,
+   *  the inspector renders a "↯ Convert to motion collage" button
+   *  that converts the row's shot_kind and seeds an empty grid. */
+  onConvertToMotionCollage?: () => void;
+  /** True when this row's `shot_kind === 'motion_collage'`. Used to
+   *  hide the Convert button (already converted) and show the
+   *  "Re-fill panels" hint instead. */
+  isMotionCollage?: boolean;
 }
 
 export interface StudioInspectorImageProps extends StudioInspectorImageActions {
@@ -95,6 +110,10 @@ export const StudioInspectorImage: React.FC<StudioInspectorImageProps> = ({
   onEdit,
   onRetry,
   canGenerate = true,
+  lockedAsStill = false,
+  onToggleLockedAsStill,
+  onConvertToMotionCollage,
+  isMotionCollage = false,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [urlInputOpen, setUrlInputOpen] = useState(false);
@@ -274,6 +293,62 @@ export const StudioInspectorImage: React.FC<StudioInspectorImageProps> = ({
             title="Open the smart edit panel (prompt or brush mask)"
           >
             ✎ Edit
+          </button>
+        )}
+        {onConvertToMotionCollage && !isMotionCollage && !isBusy && (
+          <button
+            type="button"
+            onClick={onConvertToMotionCollage}
+            className="text-xs px-3 py-1.5 rounded"
+            style={{
+              background: 'rgba(124,58,237,0.12)',
+              color: 'var(--accent-purple-bright, #a78bfa)',
+              border: '1px solid rgba(124,58,237,0.35)',
+              cursor: 'pointer',
+            }}
+            title="Convert this row to a motion collage: one image with N keyframes that play hard-cut over the row's duration. Best for real motion (running, falling, transforming)."
+          >
+            ↯ Convert to motion collage
+          </button>
+        )}
+        {isMotionCollage && (
+          <span
+            className="text-[11px] px-2 py-0.5 rounded-full"
+            style={{
+              background: 'rgba(124,58,237,0.12)',
+              color: 'var(--accent-purple-bright, #a78bfa)',
+              border: '1px solid rgba(124,58,237,0.35)',
+            }}
+            title="This row renders as a motion collage. Edit panels via the legacy grid; full panel editor moves to a follow-up PR."
+          >
+            Motion collage
+          </span>
+        )}
+        {onToggleLockedAsStill && (
+          <button
+            type="button"
+            onClick={() => onToggleLockedAsStill(!lockedAsStill)}
+            aria-pressed={lockedAsStill}
+            className="text-xs px-3 py-1.5 rounded ms-auto"
+            style={{
+              background: lockedAsStill
+                ? 'rgba(124,58,237,0.18)'
+                : 'rgba(255,255,255,0.04)',
+              color: lockedAsStill
+                ? 'var(--accent-purple-bright, #a78bfa)'
+                : 'var(--text-secondary)',
+              border: lockedAsStill
+                ? '1px solid rgba(124,58,237,0.35)'
+                : '1px solid rgba(255,255,255,0.10)',
+              cursor: 'pointer',
+            }}
+            title={
+              lockedAsStill
+                ? 'Row is locked as a still — the renderer ignores any B-roll clip and uses the still + Ken Burns. Click to unlock.'
+                : 'Lock this row as a still — render uses the image + Ken Burns even if a B-roll clip exists. Click to lock.'
+            }
+          >
+            {lockedAsStill ? '🔒 Locked as still' : '🔓 Lock as still'}
           </button>
         )}
       </div>

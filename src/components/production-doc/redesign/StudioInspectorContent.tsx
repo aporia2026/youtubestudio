@@ -1,8 +1,12 @@
 'use client';
 
 import React from 'react';
-import type { ProductionRow } from '@/remotion/utils';
-import { getVisualTypeColor } from '@/lib/visual-type-colors';
+import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import {
+  getVisualTypeColor,
+  VISUAL_TYPE_COLORS,
+} from '@/lib/visual-type-colors';
+import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
 import { InspectorInlineField } from './InspectorInlineField';
 
 /**
@@ -27,15 +31,20 @@ export interface StudioInspectorContentProps {
   /** Optional. When provided the text fields become editable. Same
    *  signature as today's `updateRow(rowIndex, patch)` in page.tsx. */
   onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
+  /** Doc-level default for on-screen-text mode. Used to render the
+   *  inherited indicator + fallback value in `OstModeControl`. */
+  docOstModeDefault?: OstMode;
 }
 
 export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
   rowIndex,
   row,
   onUpdateRow,
+  docOstModeDefault,
 }) => {
   const visualType = row.visual_type?.trim() ?? '';
   const visualTypeColor = visualType ? getVisualTypeColor(visualType) : null;
+  const editable = !!onUpdateRow;
 
   const makeSaver = (field: keyof ProductionRow) => {
     if (!onUpdateRow) return undefined;
@@ -44,14 +53,38 @@ export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
 
   return (
     <div className="space-y-4">
-      {visualType && visualTypeColor && (
-        <div>
-          <div
-            className="text-[10px] uppercase tracking-wider font-semibold mb-1"
-            style={{ color: 'var(--text-muted)' }}
+      <div>
+        <div
+          className="text-[10px] uppercase tracking-wider font-semibold mb-1"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          Visual type
+        </div>
+        {editable ? (
+          <select
+            value={visualType}
+            onChange={(e) => onUpdateRow!(rowIndex, { visual_type: e.target.value })}
+            className="text-xs rounded px-2 py-1.5"
+            style={{
+              background: visualTypeColor?.bg ?? 'rgba(0,0,0,0.25)',
+              color: visualTypeColor?.color ?? 'var(--text-primary)',
+              border: '1px solid rgba(255,255,255,0.10)',
+              minWidth: 160,
+            }}
+            aria-label="Visual type"
           >
-            Visual type
-          </div>
+            {!visualType && <option value="">— pick a type —</option>}
+            {Object.keys(VISUAL_TYPE_COLORS).map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+            {/* Preserve custom / unknown types that came from old docs. */}
+            {visualType && !(visualType in VISUAL_TYPE_COLORS) && (
+              <option value={visualType}>{visualType}</option>
+            )}
+          </select>
+        ) : visualType && visualTypeColor ? (
           <span
             className="inline-flex items-center text-xs px-2.5 py-1 rounded-full"
             style={{
@@ -61,8 +94,10 @@ export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
           >
             {visualType}
           </span>
-        </div>
-      )}
+        ) : (
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>—</span>
+        )}
+      </div>
       <InspectorInlineField
         fieldId={`row-${rowIndex}-script`}
         label="Script"
@@ -91,6 +126,21 @@ export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
         onSave={makeSaver('on_screen_text')}
         multiline
       />
+      {editable && (
+        <div>
+          <div
+            className="text-[10px] uppercase tracking-wider font-semibold mb-1"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            On-screen text mode
+          </div>
+          <OstModeControl
+            value={row.on_screen_text_mode}
+            docDefault={docOstModeDefault}
+            onChange={(mode) => onUpdateRow!(rowIndex, { on_screen_text_mode: mode })}
+          />
+        </div>
+      )}
       {(row.stock_search_terms?.trim() || onUpdateRow) && (
         <InspectorInlineField
           fieldId={`row-${rowIndex}-stock-terms`}

@@ -93,12 +93,15 @@ describe('StudioInspectorContent — empty fields', () => {
   });
 });
 
-describe('StudioInspectorContent — visual type pill', () => {
-  it('omits the pill chrome when the row has no visual type', () => {
+describe('StudioInspectorContent — visual type', () => {
+  it('renders the "Visual type" label even when the row has no visual type (so the read-only display falls back to —)', () => {
     const html = renderToStaticMarkup(
       <StudioInspectorContent rowIndex={0} row={makeRow({ visual_type: '' })} />,
     );
-    expect(html).not.toContain('Visual type');
+    // Label always renders so the field is discoverable; value falls
+    // back to the "—" placeholder in read mode.
+    expect(html).toContain('Visual type');
+    expect(html).toContain('—');
   });
 
   it('uses a token-based color for known visual types', () => {

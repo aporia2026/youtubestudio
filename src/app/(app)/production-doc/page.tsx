@@ -14319,6 +14319,10 @@ function ProductionDocPage() {
               // returned `undefined` for those callbacks when the
               // prompt was empty, which made the button vanish
               // entirely on failed rows with no prompt.
+              const sig = brollRowSignatureInput({
+                timecode: row.timecode,
+                visual_description: row.visual_description,
+              });
               return {
                 canGenerate: !!prompt,
                 onGenerate: () => {
@@ -14330,6 +14334,42 @@ function ProductionDocPage() {
                 onRetry: () => {
                   if (prompt) void generateImageForRow(expandedRow, prompt);
                 },
+                // QA: lock-as-still toggle. Signature-keyed in
+                // `rowLockSignatures` so it survives reorder /
+                // re-generation. Drives the renderer's "use still +
+                // Ken Burns instead of any B-roll clip" path.
+                lockedAsStill: Boolean(rowLockSignatures[sig]),
+                onToggleLockedAsStill: (next: boolean) => toggleRowLock(sig, next),
+                // QA: motion-collage support. Convert button only
+                // surfaces for doodle_explainer_2 non-title rows
+                // that aren't already motion_collage. Same logic the
+                // legacy grid uses at ~line 12152.
+                isMotionCollage: row.shot_kind === 'motion_collage',
+                onConvertToMotionCollage:
+                  stylePreset === 'doodle_explainer_2'
+                  && row.visual_type !== 'Title Card'
+                  && row.shot_kind !== 'motion_collage'
+                    ? () => {
+                        const grid = { cols: 2, rows: 2 };
+                        const captured = {
+                          grid,
+                          scriptText: row.script_text ?? '',
+                          visualDescription: row.visual_description,
+                          baseImagePrompt: row.ai_image_prompt,
+                          existingPanels: ['', '', '', ''] as string[],
+                        };
+                        updateRow(expandedRow, {
+                          shot_kind: 'motion_collage',
+                          motion_collage_grid: grid,
+                          motion_collage_panel_prompts: ['', '', '', ''],
+                          ai_image_prompt: '',
+                          image_url: undefined,
+                          motion_collage_image_url: undefined,
+                          motion_collage_panel_urls: undefined,
+                        });
+                        void autoFillMotionCollagePanels(expandedRow, captured);
+                      }
+                    : undefined,
               };
             })()
           : undefined
@@ -14371,6 +14411,12 @@ function ProductionDocPage() {
                   overlay_stretched_height_pct: undefined,
                 }),
                 onRemove: () => removeOverlayFromRow(expandedRow),
+                // QA: undo edit. Pops the most recent URL off
+                // `overlay_edit_history` and swaps it back into the
+                // live overlay state. Same path the legacy
+                // OverlayCell uses.
+                editHistoryDepth: row.overlay_edit_history?.length ?? 0,
+                onUndoEdit: () => undoOverlayEdit(expandedRow),
               };
             })()
           : undefined

@@ -153,15 +153,28 @@ export const StudioInspectorSection: React.FC<StudioInspectorSectionProps> = ({
       {/* Section title */}
       <FieldShell label="Section title">
         {editable ? (
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => onUpdateRow!(rowIndex, { section_title: e.target.value })}
-            placeholder="Optional title for this scene"
-            className="w-full text-xs rounded px-2 py-1.5"
-            style={TEXT_INPUT_STYLE}
-            aria-label="Section title"
-          />
+          <div className="space-y-1.5">
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => onUpdateRow!(rowIndex, { section_title: e.target.value })}
+              placeholder="Optional title for this scene"
+              className="w-full text-xs rounded px-2 py-1.5"
+              style={TEXT_INPUT_STYLE}
+              aria-label="Section title"
+            />
+            {editorWriters && row.visual_type === 'Title Card' && (
+              <button
+                type="button"
+                onClick={() => editorWriters.applyTitleCardAsSectionTitle(rowIndex)}
+                className="text-[11px] px-2 py-0.5 rounded"
+                style={PILL_BUTTON_STYLE}
+                title="Copy this Title Card's text into the section title for every row in this section."
+              >
+                Apply title card as section title
+              </button>
+            )}
+          </div>
         ) : (
           <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
             {title.trim() || EMPTY_PLACEHOLDER}

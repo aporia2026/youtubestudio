@@ -30,6 +30,13 @@ export interface StudioInspectorOverlayActions {
   onEdit?: () => void;
   onReset?: () => void;
   onRemove?: () => void;
+  /** How many edits the row has stacked in `overlay_edit_history`.
+   *  When > 0, the Undo button is rendered with the count. Capped at
+   *  3 by the legacy `OVERLAY_EDIT_HISTORY_CAP`. */
+  editHistoryDepth?: number;
+  /** Pops the most recent overlay edit from history, restoring the
+   *  prior URL. */
+  onUndoEdit?: () => void;
 }
 
 export interface StudioInspectorOverlayProps extends StudioInspectorOverlayActions {
@@ -79,6 +86,8 @@ export const StudioInspectorOverlay: React.FC<StudioInspectorOverlayProps> = ({
   onEdit,
   onReset,
   onRemove,
+  editHistoryDepth = 0,
+  onUndoEdit,
 }) => {
   const trimmedTerms = stockTerms?.trim() ?? '';
   const hasTerms = !!trimmedTerms;
@@ -169,8 +178,19 @@ export const StudioInspectorOverlay: React.FC<StudioInspectorOverlayProps> = ({
         </div>
       )}
 
-      {(onRethink || onEdit || onReset || onRemove) && (
+      {(onRethink || onEdit || onReset || onRemove || onUndoEdit) && (
         <div className="flex flex-wrap items-center gap-2">
+          {onUndoEdit && editHistoryDepth > 0 && (
+            <button
+              type="button"
+              onClick={onUndoEdit}
+              className="text-xs px-3 py-1.5 rounded"
+              style={ACTION_BUTTON_STYLE}
+              title={`Restore the overlay state from before the most recent AI edit (${editHistoryDepth} undo step${editHistoryDepth === 1 ? '' : 's'} available).`}
+            >
+              ↶ Undo edit ({editHistoryDepth})
+            </button>
+          )}
           {onRethink && hasTerms && (
             <button
               type="button"

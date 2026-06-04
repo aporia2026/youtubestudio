@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import type { ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import { getVisualTypeColor } from '@/lib/visual-type-colors';
@@ -86,6 +86,51 @@ const VIDEO_BADGE_TITLE: Record<NonNullable<VideoBadgeState>, string> = {
   failed: 'B-roll generation failed',
 };
 
+/** Mini motion-collage grid preview rendered in place of the single
+ *  thumbnail when the row is a motion_collage row. Matches the
+ *  legacy ImageCell's grid preview semantics. */
+const MotionCollageMiniGrid: React.FC<{
+  panels: ReadonlyArray<string>;
+  grid: { cols: number; rows: number } | null;
+}> = ({ panels, grid }) => {
+  const cols = grid?.cols ?? Math.ceil(Math.sqrt(panels.length || 1));
+  const rows = grid?.rows ?? Math.ceil((panels.length || 1) / cols);
+  const cells = cols * rows;
+  return (
+    <div
+      className="absolute inset-0 grid"
+      style={{
+        gridTemplateColumns: `repeat(${cols}, 1fr)`,
+        gridTemplateRows: `repeat(${rows}, 1fr)`,
+        gap: 1,
+        background: 'rgba(0,0,0,0.5)',
+      }}
+      aria-label="Motion collage panels preview"
+    >
+      {Array.from({ length: cells }, (_, i) => {
+        const url = panels[i];
+        return (
+          <div
+            key={i}
+            className="overflow-hidden"
+            style={{ background: 'rgba(255,255,255,0.04)' }}
+          >
+            {url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={url}
+                alt=""
+                className="w-full h-full object-cover"
+                loading="lazy"
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 export const SceneCard: React.FC<SceneCardProps> = ({
   rowIndex,
   row,
@@ -102,9 +147,28 @@ export const SceneCard: React.FC<SceneCardProps> = ({
     imageState?.status === 'done' && imageState.imageUrl
       ? imageState.imageUrl
       : null;
+  // Motion collage cards show the row's per-panel keyframes as a
+  // mini grid (NEW) — matches the legacy ImageCell's collage preview.
+  const isMotionCollage = row.shot_kind === 'motion_collage';
+  const motionPanels = isMotionCollage && row.motion_collage_panel_urls?.length
+    ? row.motion_collage_panel_urls
+    : null;
+  const motionGrid = row.motion_collage_grid ?? null;
   const hasOverlay = !!row.overlay_stock_terms?.trim();
   const hasOst = !!row.on_screen_text?.trim();
   const videoBadge = videoBadgeState(videoState);
+  // Thumbnail zoom (NEW): clicking a magnifier icon on the thumbnail
+  // opens a fullscreen lightbox so the user can inspect the image
+  // without leaving the inspector. Esc closes; click outside closes.
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => {
+    if (!zoomed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setZoomed(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomed]);
 
   // QA fix: show in-flight image generation progress so cards aren't
   // just "no image" silent during long runs. Maps the underlying
@@ -124,14 +188,56 @@ export const SceneCard: React.FC<SceneCardProps> = ({
 
   const label = `Scene ${displayIndex}${row.timecode ? ` at ${row.timecode}` : ''}`;
 
+  // Render the zoom lightbox once, outside both layout branches.
+  const lightbox = zoomed && thumbnailUrl ? (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Zoomed image for ${label}`}
+      onClick={() => setZoomed(false)}
+      className="fixed inset-0 z-50 flex items-center justify-center p-8"
+      style={{
+        background: 'rgba(0,0,0,0.85)',
+        backdropFilter: 'blur(4px)',
+        cursor: 'zoom-out',
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={thumbnailUrl}
+        alt={`Scene ${displayIndex} image`}
+        className="max-w-full max-h-full object-contain"
+        style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setZoomed(false); }}
+        aria-label="Close zoom"
+        className="fixed top-4 right-4 text-2xl px-3 py-1 rounded"
+        style={{
+          background: 'rgba(255,255,255,0.08)',
+          color: '#fff',
+          border: '1px solid rgba(255,255,255,0.15)',
+          cursor: 'pointer',
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  ) : null;
+
   if (orientation === 'vertical') {
     return (
+      <>
       <button
         type="button"
         onClick={onSelect ? () => onSelect(rowIndex) : undefined}
+        onDoubleClick={thumbnailUrl ? () => setZoomed(true) : undefined}
         disabled={!onSelect}
         aria-pressed={onSelect ? selected : undefined}
         aria-label={label}
+        title={thumbnailUrl ? 'Double-click to zoom the image' : undefined}
         data-orientation="vertical"
         className="flex items-stretch w-full text-left rounded overflow-hidden transition-colors"
         style={{
@@ -271,16 +377,21 @@ export const SceneCard: React.FC<SceneCardProps> = ({
           )}
         </div>
       </button>
+      {lightbox}
+      </>
     );
   }
 
   return (
+    <>
     <button
       type="button"
       onClick={onSelect ? () => onSelect(rowIndex) : undefined}
+      onDoubleClick={thumbnailUrl ? () => setZoomed(true) : undefined}
       disabled={!onSelect}
       aria-pressed={onSelect ? selected : undefined}
       aria-label={label}
+      title={thumbnailUrl ? 'Double-click to zoom the image' : undefined}
       data-orientation="horizontal"
       className="flex flex-col text-left rounded overflow-hidden transition-colors"
       style={{
@@ -302,7 +413,9 @@ export const SceneCard: React.FC<SceneCardProps> = ({
           background: 'rgba(0,0,0,0.25)',
         }}
       >
-        {thumbnailUrl ? (
+        {motionPanels ? (
+          <MotionCollageMiniGrid panels={motionPanels} grid={motionGrid} />
+        ) : thumbnailUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={thumbnailUrl}
@@ -420,5 +533,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
         )}
       </div>
     </button>
+    {lightbox}
+    </>
   );
 };

@@ -137,23 +137,55 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
       }}
     >
       <header
-        className="px-3 py-2 flex items-baseline justify-between gap-3"
+        className="px-3 py-2 flex items-center justify-between gap-3 flex-wrap"
         style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
       >
         <h2
-          className="text-[10px] uppercase tracking-wider font-semibold"
+          className="text-[10px] uppercase tracking-wider font-semibold shrink-0"
           style={{ color: 'var(--text-muted)' }}
         >
           Inspector
         </h2>
-        {hasSelection && selectedRowLabel && (
-          <span
-            className="text-xs truncate"
-            style={{ color: 'var(--text-secondary)' }}
-            title={selectedRowLabel}
-          >
-            Row {selectedRowIndex} · {selectedRowLabel}
-          </span>
+        {hasSelection && selectedRow && (
+          <div className="flex items-center gap-2 flex-wrap min-w-0">
+            {/* Variant chip: shows the row's place in its variant
+                group ("Base · 3 vars" / "Variant 2 of 3"). Helps the
+                user understand what they're editing without scrolling
+                the grid. */}
+            {(() => {
+              const groupId = selectedRow.group_id;
+              if (!groupId || !doc) return null;
+              const groupRows = doc.rows.filter((r) => r.group_id === groupId);
+              if (groupRows.length <= 1) return null;
+              const variantIndex = selectedRow.variant_index ?? 0;
+              const total = groupRows.length;
+              const label = variantIndex === 0
+                ? `Base · ${total - 1} variant${total - 1 === 1 ? '' : 's'}`
+                : `Variant ${variantIndex} of ${total - 1}`;
+              return (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded-full"
+                  style={{
+                    background: 'rgba(34,211,238,0.15)',
+                    color: '#22d3ee',
+                    border: '1px solid rgba(34,211,238,0.35)',
+                  }}
+                  title={`This row is part of a ${total}-row variant group. Edit the base to update all variants' source image; edit a variant's prompt to tweak its individual look.`}
+                >
+                  {label}
+                </span>
+              );
+            })()}
+            {selectedRowLabel && (
+              <span
+                className="text-xs truncate"
+                style={{ color: 'var(--text-secondary)' }}
+                title={selectedRowLabel}
+              >
+                Row {selectedRowIndex} · {selectedRowLabel}
+              </span>
+            )}
+          </div>
         )}
       </header>
       <div className="px-3 pt-2">
@@ -177,6 +209,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             rowIndex={writerRowIndex}
             row={selectedRow}
             onUpdateRow={onUpdateRow}
+            docOstModeDefault={doc?.on_screen_text_mode_default}
           />
         ) : currentTab === 'image' ? (
           <StudioInspectorImage
