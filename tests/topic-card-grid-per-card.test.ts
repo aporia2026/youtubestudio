@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Buffer } from 'node:buffer';
 import {
   buildPerCardPrompt,
+  buildPerCardStyleHeader,
   runPerCardGeneration,
 } from '@/lib/thumbnail-formats/topic-card-grid-per-card';
 import type { TopicCard } from '@/lib/thumbnail-formats/topic-card-grid';
@@ -211,5 +212,62 @@ describe('runPerCardGeneration', () => {
       generate,
     });
     expect(seen[0]).toContain('#ff0000');
+  });
+});
+
+describe('buildPerCardStyleHeader', () => {
+  it('opens with the SHARED STYLE banner so the AI reads it as the cross-card contract', () => {
+    const out = buildPerCardStyleHeader({
+      style: 'cartoon',
+      brightness: 'bright',
+      detail: 'clean',
+    });
+    expect(out.startsWith('SHARED STYLE')).toBe(true);
+  });
+
+  it('includes the style, brightness, and detail directives verbatim', () => {
+    const out = buildPerCardStyleHeader({
+      style: 'sketch',
+      brightness: 'moody',
+      detail: 'detailed',
+    });
+    expect(out).toContain('STYLE — SKETCH');
+    expect(out).toContain('BRIGHTNESS — MOODY');
+    expect(out).toContain('DETAIL — DETAILED');
+  });
+
+  it('honours the free-form style sentence when style === "free-form"', () => {
+    const out = buildPerCardStyleHeader({
+      style: 'free-form',
+      styleFreeForm: 'risograph print, two-colour, halftone',
+      brightness: 'bright',
+      detail: 'clean',
+    });
+    expect(out).toContain('STYLE — CUSTOM');
+    expect(out).toContain('risograph print, two-colour, halftone');
+  });
+
+  it('falls back to the cartoon style when free-form is selected with no sentence', () => {
+    const out = buildPerCardStyleHeader({
+      style: 'free-form',
+      styleFreeForm: '   ',
+      brightness: 'bright',
+      detail: 'clean',
+    });
+    expect(out).toContain('STYLE — CARTOON / STICKER');
+  });
+
+  it('plugs into the per-card prompt builder as the styleHeader', () => {
+    const header = buildPerCardStyleHeader({
+      style: 'photoreal',
+      brightness: 'bright',
+      detail: 'clean',
+    });
+    const prompt = buildPerCardPrompt({
+      card: card(1, 'X', 'a vintage radio'),
+      styleHeader: header,
+      cardShape: 'circle',
+    });
+    expect(prompt.indexOf('STYLE — PHOTOREAL')).toBeLessThan(prompt.indexOf('SINGLE-CARD'));
   });
 });

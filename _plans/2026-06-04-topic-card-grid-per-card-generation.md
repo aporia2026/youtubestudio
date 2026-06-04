@@ -1,6 +1,6 @@
 ---
 date: 2026-06-04
-status: foundations-shipped — route wiring pending
+status: shipped — route + editor + tests wired
 branch: claude/video-creation-ui-pqXzS
 follows_up_on: _plans/2026-06-04-topic-card-grid-circle-parity.md
 ---

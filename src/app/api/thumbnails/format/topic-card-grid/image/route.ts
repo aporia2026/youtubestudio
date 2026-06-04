@@ -9,6 +9,7 @@ import { generateImageOpenAI } from '@/lib/openai-images';
 import { uploadToBucket, getImagesBucket, getImagesDownloadUrl } from '@/lib/r2';
 import {
   topicCardGridImagePrompt,
+  sanitizeCardIconSlug,
   validateCardList,
   makeDefaultLayout,
   computeRegionsFor,
@@ -35,6 +36,10 @@ import {
   type CellUpload,
   type UploadFit,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
+import {
+  buildPerCardStyleHeader,
+  runPerCardGeneration,
+} from '@/lib/thumbnail-formats/topic-card-grid-per-card';
 import {
   applySharedOverlays,
   parsePostProcessConfig,
@@ -239,6 +244,16 @@ interface ReqBody {
    *  server-side via `parseTitleBarRequestPayload`; fontId resolution
    *  happens locally below. */
   titleBar?: unknown;
+  /** Image-generation mode. `'one-shot'` (default) is the legacy
+   *  pipeline: ONE AI call renders the whole grid, all N cards in
+   *  a single mega-prompt. `'per-card'` swaps that for N parallel
+   *  AI calls — one square illustration per card — and lets the
+   *  composite paint the perfect-spacing layout from scratch. Per-card
+   *  mode is what fixes the crowded-row drift the user kept hitting
+   *  in circle mode at 3×3+ grids. Unknown / missing values fall back
+   *  to one-shot so older clients keep working unchanged. See
+   *  `_plans/2026-06-04-topic-card-grid-per-card-generation.md`. */
+  generationMode?: 'one-shot' | 'per-card';
 }
 
 /** Set of known style presets, used to validate `body.style` against
@@ -290,6 +305,11 @@ export async function POST(req: NextRequest) {
     const palette = body.globalPalette;
     let referenceImageUrl = (body.referenceImageUrl || '').trim();
     let usedBundledDefault = false;
+    // Generation mode. Default `'one-shot'` preserves the legacy pipeline
+    // for every existing client. Per-card mode is opt-in and gates the
+    // expensive N-call fan-out below.
+    const generationMode: 'one-shot' | 'per-card' =
+      body.generationMode === 'per-card' ? 'per-card' : 'one-shot';
 
     if (!Number.isInteger(gridRows) || gridRows < 1 || gridRows > MAX_GRID_DIM) {
       return NextResponse.json(
@@ -309,8 +329,11 @@ export async function POST(req: NextRequest) {
     if (!palette || typeof palette !== 'object') {
       return NextResponse.json({ error: 'globalPalette is required' }, { status: 400 });
     }
-    if (!referenceImageUrl) {
-      // Try the bundled curated default before failing.
+    if (!referenceImageUrl && generationMode !== 'per-card') {
+      // One-shot mode requires a reference image (the bundled curated
+      // default is fine). Per-card mode skips this — N independent
+      // single-card calls don't benefit from a grid reference and
+      // attaching one confuses the AI.
       const bundledUrl = await bundledReferenceUrlIfPresent();
       if (!bundledUrl) {
         return NextResponse.json(
@@ -339,16 +362,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Reference URL SSRF check (string-based; same rationale as the
-    // multimodal reference fetch in /api/thumbnails/generate).
-    let safeRefUrl: URL;
-    try {
-      safeRefUrl = assertSafePublicUrl(referenceImageUrl, { allowedProtocols: ['https:'] });
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      return NextResponse.json(
-        { error: `Reference image URL was rejected: ${reason}` },
-        { status: 400 },
-      );
+    // multimodal reference fetch in /api/thumbnails/generate). Only
+    // runs when we actually have a URL to fetch — per-card mode skips
+    // the reference entirely.
+    let safeRefUrl: URL | null = null;
+    if (referenceImageUrl) {
+      try {
+        safeRefUrl = assertSafePublicUrl(referenceImageUrl, { allowedProtocols: ['https:'] });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return NextResponse.json(
+          { error: `Reference image URL was rejected: ${reason}` },
+          { status: 400 },
+        );
+      }
     }
 
     // Card shape — defaults to 'square' so older clients that don't send
@@ -371,6 +398,73 @@ export async function POST(req: NextRequest) {
       body.fillStyle === 'cutout' || body.fillStyle === 'icon' ? body.fillStyle : 'photo';
     const overlapLabelStroke: 'white-on-black' | 'black-on-white' =
       body.overlapLabelStroke === 'black-on-white' ? 'black-on-white' : 'white-on-black';
+
+    // Warn (not fail) on unknown axis values. The route falls back to
+    // the documented default silently — a stale client sending an
+    // axis value the server has never heard of would otherwise have
+    // no visible signal anything went wrong. Per rule 14: log every
+    // deviation so debug stays cheap.
+    const KNOWN_BORDER_WEIGHTS = new Set(['thin', 'thick']);
+    const KNOWN_LABEL_POSITIONS = new Set(['below', 'overlap']);
+    const KNOWN_LABEL_CASES = new Set(['title', 'upper']);
+    const KNOWN_FILL_STYLES = new Set(['photo', 'cutout', 'icon']);
+    const KNOWN_OVERLAP_STROKES = new Set(['white-on-black', 'black-on-white']);
+    const axisWarnings: Array<{ field: string; received: unknown }> = [];
+    if (body.borderWeight !== undefined && !KNOWN_BORDER_WEIGHTS.has(body.borderWeight)) {
+      axisWarnings.push({ field: 'borderWeight', received: body.borderWeight });
+    }
+    if (body.labelPosition !== undefined && !KNOWN_LABEL_POSITIONS.has(body.labelPosition)) {
+      axisWarnings.push({ field: 'labelPosition', received: body.labelPosition });
+    }
+    if (body.labelCase !== undefined && !KNOWN_LABEL_CASES.has(body.labelCase)) {
+      axisWarnings.push({ field: 'labelCase', received: body.labelCase });
+    }
+    if (body.fillStyle !== undefined && !KNOWN_FILL_STYLES.has(body.fillStyle)) {
+      axisWarnings.push({ field: 'fillStyle', received: body.fillStyle });
+    }
+    if (body.overlapLabelStroke !== undefined && !KNOWN_OVERLAP_STROKES.has(body.overlapLabelStroke)) {
+      axisWarnings.push({ field: 'overlapLabelStroke', received: body.overlapLabelStroke });
+    }
+    if (axisWarnings.length > 0) {
+      logger.warn('[thumb-format-grid image] unknown axis values fell back to defaults', {
+        warnings: axisWarnings,
+      });
+    }
+
+    // Apply iconSlug sanitisation ONLY when the active fillStyle is
+    // `'icon'`. Otherwise a stale slug attached to a card whose
+    // fillStyle was toggled off would still flow through to the
+    // composite (which warns + falls back), but the route never
+    // rejects the request — see `sanitizeCardIconSlug`'s docstring.
+    // Mutates `cards` in place so downstream `applyCellUploads`
+    // sees the cleaned slug. Mutation is safe here because `cards`
+    // is the request-local validated copy from `body.cards`, not a
+    // shared reference.
+    if (fillStyle === 'icon') {
+      for (const card of cards) {
+        if (card.iconSlug !== undefined) {
+          const cleaned = sanitizeCardIconSlug(card.iconSlug);
+          if (cleaned !== card.iconSlug) {
+            logger.info('[thumb-format-grid image] iconSlug sanitised', {
+              card_index: card.index,
+              before: card.iconSlug,
+              after: cleaned || '(empty — falls back to plain disc)',
+            });
+          }
+          card.iconSlug = cleaned || undefined;
+        }
+      }
+    } else {
+      // fillStyle is not icon — strip iconSlug entirely so a stale
+      // value on the card can't accidentally surface in the composite's
+      // [icon-fallback] warnings, and so the bytes don't waste
+      // request body / log space.
+      for (const card of cards) {
+        if (card.iconSlug !== undefined) {
+          card.iconSlug = undefined;
+        }
+      }
+    }
 
     // Per-cell uploads. Each entry's URL passes the same SSRF guard the
     // reference URL passes; out-of-range cardIndex values are dropped
@@ -522,13 +616,14 @@ export async function POST(req: NextRequest) {
     logger.info('[thumb-format-grid image] start', {
       imageModelId,
       provider: config.provider,
+      generation_mode: generationMode,
       gridRows,
       gridCols,
       cards_count: cards.length,
       prompt_chars: prompt.length,
-      has_user_reference: !usedBundledDefault,
+      has_user_reference: !usedBundledDefault && !!safeRefUrl,
       used_bundled_default: usedBundledDefault,
-      ref_host: safeRefUrl.hostname,
+      ref_host: safeRefUrl?.hostname ?? null,
       card_shape: cardShape,
       uploads_count: uploadRequests.length,
       style,
@@ -566,6 +661,14 @@ export async function POST(req: NextRequest) {
     // intersection catches that case.
     const uploadedIndexSet = new Set(uploadRequests.map((u) => u.cardIndex));
     const allCellsUploaded = cards.every((c) => uploadedIndexSet.has(c.index));
+    // Per-card-mode AI illustrations land here and get merged into
+    // `cellUploads` after the user-upload fetch loop. Declared at this
+    // scope so the merge site below can see them regardless of which
+    // AI branch ran. See plan
+    // `_plans/2026-06-04-topic-card-grid-per-card-generation.md`.
+    const perCardSyntheticUploads: CellUpload[] = [];
+    let perCardSucceededCount = 0;
+    let perCardFailedCount = 0;
     if (allCellsUploaded) {
       const blankW = 2048;
       const blankH = 1152;
@@ -584,6 +687,129 @@ export async function POST(req: NextRequest) {
         cell_count: totalCards,
         blank_w: blankW,
         blank_h: blankH,
+      });
+    } else if (generationMode === 'per-card') {
+      // Per-card mode: fan out N parallel AI calls (one per non-uploaded
+      // card), each returning a 1024×1024 square illustration. The
+      // composite paints those onto a deterministic perfect-spacing
+      // canvas — same code path as user uploads. Set `aiBytes` to a
+      // blank white 2048×1152 PNG so the layout / composite math at
+      // line ~705 picks up the correct canvas dimensions; every cell
+      // ends up painted by the composite anyway.
+      const blankW = 2048;
+      const blankH = 1152;
+      aiBytes = await sharp({
+        create: {
+          width: blankW,
+          height: blankH,
+          channels: 4,
+          background: { r: 255, g: 255, b: 255, alpha: 1 },
+        },
+      })
+        .png()
+        .toBuffer();
+
+      const cardsToGenerate = cards.filter((c) => !uploadedIndexSet.has(c.index));
+      const styleHeader = buildPerCardStyleHeader({
+        style,
+        styleFreeForm: style === 'free-form' ? styleFreeFormRaw : undefined,
+        brightness,
+        detail,
+      });
+      logger.info('[topic-card-grid per-card] runner start', {
+        cards_to_generate: cardsToGenerate.length,
+        style,
+        brightness,
+        detail,
+        card_shape: cardShape,
+        style_header_chars: styleHeader.length,
+      });
+
+      const runnerStart = Date.now();
+      const results = await runPerCardGeneration({
+        cards: cardsToGenerate,
+        styleHeader,
+        cardShape,
+        concurrency: 4,
+        generate: async (perCardPrompt) => {
+          const out = await generateImageOpenAI({
+            prompt: perCardPrompt,
+            size: '1024x1024',
+            quality: 'medium',
+          });
+          return Buffer.from(out.base64, 'base64');
+        },
+      });
+
+      // Map results back into the synthetic-uploads queue. Successes
+      // pass the AI bytes through as a `fit: 'cover'` upload (already
+      // framed centred from the prompt). Failures get a solid
+      // accent-colour placeholder so the user sees a coloured disc +
+      // label instead of a white hole — matches Option A of the plan
+      // (partial-success delivery). The user can regenerate the failed
+      // card individually from the editor without re-running the whole
+      // batch.
+      for (let i = 0; i < results.length; i += 1) {
+        const r = results[i];
+        const c = cardsToGenerate[i];
+        if (r.bytes) {
+          perCardSucceededCount += 1;
+          perCardSyntheticUploads.push({
+            cardIndex: r.cardIndex,
+            bytes: r.bytes,
+            fit: 'cover',
+          });
+          logger.info('[topic-card-grid per-card] card delivered', {
+            card_index: r.cardIndex,
+            duration_ms: r.durationMs,
+            bytes: r.bytes.byteLength,
+          });
+        } else {
+          perCardFailedCount += 1;
+          logger.warn('[topic-card-grid per-card] card failed', {
+            card_index: r.cardIndex,
+            duration_ms: r.durationMs,
+            detail: r.error,
+          });
+          const placeholderColor = c.accent_color && /^#[0-9a-fA-F]{6}$/.test(c.accent_color)
+            ? c.accent_color
+            : '#cccccc';
+          // 1024×1024 solid colour PNG. Same dimensions as a successful
+          // per-card render so the composite scaling math is identical;
+          // a smaller placeholder would upscale awkwardly inside the
+          // composite.
+          const placeholderBytes = await sharp({
+            create: {
+              width: 1024,
+              height: 1024,
+              channels: 4,
+              background: placeholderColor,
+            },
+          })
+            .png()
+            .toBuffer();
+          perCardSyntheticUploads.push({
+            cardIndex: r.cardIndex,
+            bytes: placeholderBytes,
+            fit: 'cover',
+          });
+        }
+      }
+      providerDetailLog = {
+        ai_skipped: false,
+        per_card: true,
+        per_card_total: cardsToGenerate.length,
+        per_card_succeeded: perCardSucceededCount,
+        per_card_failed: perCardFailedCount,
+        per_card_runner_ms: Date.now() - runnerStart,
+        blank_w: blankW,
+        blank_h: blankH,
+      };
+      logger.info('[topic-card-grid per-card] runner done', {
+        succeeded: perCardSucceededCount,
+        failed: perCardFailedCount,
+        total: cardsToGenerate.length,
+        runner_ms: Date.now() - runnerStart,
       });
     } else if (config.provider === 'kie') {
       // Build Kie input. Match the existing /api/thumbnails/image patterns:
@@ -639,7 +865,13 @@ export async function POST(req: NextRequest) {
           referenceMime = 'image/png';
         } else {
           // User-supplied reference URL — HTTP fetch with the existing
-          // SSRF-guarded `safeRefUrl`.
+          // SSRF-guarded `safeRefUrl`. `safeRefUrl` is non-null in
+          // every code path that reaches here: per-card mode is the
+          // only mode that allows a null reference, and per-card mode
+          // branches above this point.
+          if (!safeRefUrl) {
+            throw new Error('Reference image URL missing for OpenAI edit path.');
+          }
           const refRes = await fetch(safeRefUrl);
           if (!refRes.ok) {
             throw new Error(`Failed to fetch reference image for OpenAI edit (HTTP ${refRes.status}).`);
@@ -743,6 +975,19 @@ export async function POST(req: NextRequest) {
           filter: req.filter,
         });
       }
+    }
+    // Per-card mode: merge the in-memory AI illustrations into the
+    // upload queue. The composite treats them identically to user
+    // uploads — same `fit: 'cover'` scaling, same circle clip, same
+    // uniform label rendering. A per-card cardIndex never collides
+    // with a user upload because the runner is only fed cards NOT in
+    // `uploadedIndexSet`.
+    if (perCardSyntheticUploads.length > 0) {
+      for (const u of perCardSyntheticUploads) cellUploads.push(u);
+      logger.info('[topic-card-grid per-card] merged into composite queue', {
+        per_card_count: perCardSyntheticUploads.length,
+        total_cell_uploads: cellUploads.length,
+      });
     }
     // Same fetch loop for cutout PNGs. Only meaningful when fillStyle
     // === 'cutout' but we always fetch what the client sent so a stale
@@ -906,13 +1151,16 @@ export async function POST(req: NextRequest) {
 
     // Single R2 upload — prefix records the AI provider and whether the
     // composite step ran so a future audit can tell the AI's raw output
-    // from a user-composited result by R2 key alone.
+    // from a user-composited result by R2 key alone. Per-card mode gets
+    // its own prefix so the spend report can isolate its N-call cost.
     const r2Prefix =
-      uploadsApplied > 0
-        ? 'thumbnails/format-grid-composite'
-        : config.provider === 'kie'
-          ? 'thumbnails/format-grid-kie'
-          : 'thumbnails/format-grid-openai';
+      generationMode === 'per-card'
+        ? 'thumbnails/format-grid-per-card'
+        : uploadsApplied > 0
+          ? 'thumbnails/format-grid-composite'
+          : config.provider === 'kie'
+            ? 'thumbnails/format-grid-kie'
+            : 'thumbnails/format-grid-openai';
     const r2Key = `${r2Prefix}/${randomUUID()}.png`;
     await uploadToBucket(getImagesBucket(), r2Key, finalBytes, 'image/png');
     const imageUrl = await getImagesDownloadUrl(r2Key);
@@ -929,6 +1177,9 @@ export async function POST(req: NextRequest) {
       duration_ms: Date.now() - startedAt,
       task_id: taskId,
       provider: config.provider,
+      generation_mode: generationMode,
+      per_card_succeeded: perCardSucceededCount,
+      per_card_failed: perCardFailedCount,
       uploads_applied: uploadsApplied,
       compositor_ms: compositorMs,
       card_shape: cardShape,
@@ -950,6 +1201,19 @@ export async function POST(req: NextRequest) {
       },
       cardShape,
       uploadsApplied,
+      generationMode,
+      // Per-card outcome — null in one-shot mode. Lets the editor show
+      // a "9 of 9 delivered" / "8 of 9 delivered, 1 placeholder" toast
+      // so the user knows when a card silently fell back to its accent
+      // colour after a content-policy refusal.
+      perCard:
+        generationMode === 'per-card'
+          ? {
+              succeeded: perCardSucceededCount,
+              failed: perCardFailedCount,
+              total: perCardSucceededCount + perCardFailedCount,
+            }
+          : null,
     });
   } catch (err) {
     logger.error('[thumb-format-grid image] error', {

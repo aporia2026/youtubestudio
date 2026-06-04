@@ -211,13 +211,20 @@ export function cardStylePresetAxes(preset: CardStylePreset): {
         overlapLabelStroke: 'white-on-black',
       };
     case 'mystery-doc':
+      // Visually distinct from `'caps-overlay'` (its sibling overlap+
+      // upper preset) by inverting the stroke pairing. caps-overlay
+      // = white fill on black outline (pops on coloured photos);
+      // mystery-doc = black fill on white outline (reads like a
+      // document caption stamped on the thumb, matches the doc-style
+      // reference the preset is named after). QA review #13 — before
+      // this change both presets produced byte-identical renders.
       return {
         cardShape: 'circle',
         borderWeight: 'thin',
         labelPosition: 'overlap',
         labelCase: 'upper',
         fillStyle: 'photo',
-        overlapLabelStroke: 'white-on-black',
+        overlapLabelStroke: 'black-on-white',
       };
     case 'cartoon-bold':
       return {
@@ -242,8 +249,8 @@ export const CARD_STYLE_PRESETS: Array<{
   { id: 'photo-tile', label: 'Photo Tile', description: 'Thin border, photo fill, label below.' },
   { id: 'cutout-pop', label: 'Cutout Pop', description: 'Thick border, subject on solid colour.' },
   { id: 'icon-grid', label: 'Icon Grid', description: 'Thick border, flat icon on solid colour.' },
-  { id: 'caps-overlay', label: 'Caps Overlay', description: 'Stroked uppercase label overlapping the disc.' },
-  { id: 'mystery-doc', label: 'Mystery Doc', description: 'Doc-style overlap labels; pair with a B&W filter.' },
+  { id: 'caps-overlay', label: 'Caps Overlay', description: 'White-on-black uppercase label overlapping the disc.' },
+  { id: 'mystery-doc', label: 'Mystery Doc', description: 'Black-on-white uppercase label overlapping the disc; pair with a B&W filter.' },
   { id: 'cartoon-bold', label: 'Cartoon Bold', description: 'Heavy cartoon outline, photo fill, title-case.' },
 ];
 
@@ -654,24 +661,40 @@ export function validateCardList(
         offending_card_index: i,
       };
     }
-    // Optional iconSlug sanity: kebab-case, ≤ 64 chars. We can't check
-    // against ICON_REGISTRY here without a circular import (the registry
-    // pulls in lucide-static), so we restrict to slug-shape characters
-    // and let the composite handle unknown slugs gracefully (logs a
-    // warning, falls back to plain accent disc). Empty / undefined
-    // passes through silently — the field is optional.
-    if (c.iconSlug !== undefined && c.iconSlug !== '') {
-      const slug = String(c.iconSlug).trim();
-      if (slug.length > 64 || !/^[a-z0-9-]+$/.test(slug)) {
-        return {
-          ok: false,
-          reason: `Card ${i + 1} iconSlug "${c.iconSlug}" is malformed. Must be kebab-case (lowercase letters, digits, hyphens) and at most 64 characters.`,
-          offending_card_index: i,
-        };
-      }
-    }
+    // iconSlug is sanitised lazily by `sanitizeCardIconSlug` from the
+    // route layer (only when the request's `fillStyle === 'icon'`).
+    // We deliberately do NOT reject malformed slugs here because the
+    // editor's icon-slug input is conditional on fillStyle, so a user
+    // can leave a malformed slug attached to a card after toggling
+    // fillStyle off — the render shouldn't fail in that case.
   }
   return { ok: true };
+}
+
+/**
+ * Sanitise a single `iconSlug` value to the canonical kebab-case shape
+ * the renderer expects. Returns the trimmed slug when valid, or the
+ * empty string when not. Empty / undefined / malformed input all
+ * collapse to the empty string, which the composite treats as
+ * "no icon, fall back to plain accent disc".
+ *
+ * Called from the `/image` route only when `fillStyle === 'icon'`, so
+ * a stale slug attached to a card whose fillStyle was toggled off
+ * can't fail the render with a 400.
+ *
+ * Kebab-case (`[a-z0-9-]+`) ≤ 64 chars matches the shape Lucide's
+ * registry uses. We can't validate against `ICON_REGISTRY` here
+ * without a circular import (the registry pulls in lucide-static),
+ * so the composite's icon branch handles unknown-but-well-formed
+ * slugs by falling back to a plain accent disc + console warning.
+ */
+export function sanitizeCardIconSlug(raw: unknown): string {
+  if (raw === undefined || raw === null) return '';
+  const slug = String(raw).trim();
+  if (!slug) return '';
+  if (slug.length > 64) return '';
+  if (!/^[a-z0-9-]+$/.test(slug)) return '';
+  return slug;
 }
 
 /**
@@ -1163,8 +1186,14 @@ ${safeNotes ? `STYLE NOTE: ${safeNotes}` : ''}`.trim();
  *  deliberately blunt — image models drift toward "moody / cinematic"
  *  on cybersecurity / horror / mystery topics unless told otherwise,
  *  and the analysis with the user showed that drift was the single
- *  biggest hit to CTR vs the reference channels. */
-function brightnessDirective(value: ThumbnailBrightness): string {
+ *  biggest hit to CTR vs the reference channels.
+ *
+ *  Exported so per-card mode
+ *  (`src/lib/thumbnail-formats/topic-card-grid-per-card.ts`) can
+ *  reuse the exact same wording in its shared style header — drift
+ *  between the mega-prompt and the per-card prompts would mean the
+ *  two modes produce visually different cards for the same axes. */
+export function brightnessDirective(value: ThumbnailBrightness): string {
   if (value === 'moody') {
     return `BRIGHTNESS — MOODY: cinematic, atmospheric, darker palettes are OK. Lean into the subject's natural mood.`;
   }
@@ -1183,8 +1212,12 @@ function brightnessDirective(value: ThumbnailBrightness): string {
  *  register before any of the layout / per-card rules — a head-of-prompt
  *  STYLE block reliably overrides Detail=Clean's "chunky iconic"
  *  wording in image-model practice. Unknown values fall back to the
- *  Cartoon default rather than emitting an empty block. */
-function styleDirective(value: ThumbnailStyle, freeForm: string | undefined): string {
+ *  Cartoon default rather than emitting an empty block.
+ *
+ *  Exported alongside `brightnessDirective` and `detailDirective` so
+ *  the per-card runner can share the exact same wording — see the
+ *  comment on `brightnessDirective`. */
+export function styleDirective(value: ThumbnailStyle, freeForm: string | undefined): string {
   switch (value) {
     case 'photoreal':
       return `STYLE — PHOTOREAL:
@@ -1230,8 +1263,9 @@ function styleDirective(value: ThumbnailStyle, freeForm: string | undefined): st
   }
 }
 
-/** Detail directive appended to the image prompt. */
-function detailDirective(value: ThumbnailDetail): string {
+/** Detail directive appended to the image prompt. Exported so per-card
+ *  mode shares the wording — see `brightnessDirective`. */
+export function detailDirective(value: ThumbnailDetail): string {
   if (value === 'detailed') {
     return `DETAIL — DETAILED: multi-element compositions and photoreal scenes are OK when the subject calls for them.`;
   }

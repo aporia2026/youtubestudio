@@ -442,6 +442,13 @@ const IMAGE_MODELS = [
 const REGION_OVERLAY_PREF_KEY = 'topic_card_grid_region_overlay';
 const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
 const CARD_SHAPE_PREF_KEY = 'topic_card_grid_default_card_shape';
+/** Per-card vs one-shot generation. Defaults to one-shot so existing
+ *  flows are unaffected. Per-card mode generates N square illustrations
+ *  in parallel (one per non-uploaded card) and lets the composite paint
+ *  the perfect-spacing layout — fixes the crowded-row drift the AI
+ *  produces in one-shot circle mode at 3×3+ grids. Plan:
+ *  `_plans/2026-06-04-topic-card-grid-per-card-generation.md`. */
+const GENERATION_MODE_PREF_KEY = 'topic_card_grid_default_generation_mode';
 /** Five new axes from the circle-parity work (2026-06-04). Each persists
  *  independently so a user who tweaks one stays on the others' defaults;
  *  the Preset row writes all five at once. See plan
@@ -1312,6 +1319,23 @@ export function TopicCardGridPanel({
     try { localStorage.setItem(IMAGE_MODEL_PREF_KEY, imageModelId); } catch { /* ignore */ }
   }, [imageModelId]);
 
+  // Generation mode — `'one-shot'` (default) is the legacy single-call
+  // pipeline. `'per-card'` fans out N parallel AI calls (one per non-
+  // uploaded card) so the composite — not the AI — controls the grid
+  // layout. Same lazy-localStorage + useEffect-writer pattern as the
+  // image-model preference above.
+  const [generationMode, setGenerationMode] = useState<'one-shot' | 'per-card'>(() => {
+    if (typeof window === 'undefined') return 'one-shot';
+    try {
+      const v = localStorage.getItem(GENERATION_MODE_PREF_KEY);
+      if (v === 'per-card' || v === 'one-shot') return v;
+    } catch { /* fall through */ }
+    return 'one-shot';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(GENERATION_MODE_PREF_KEY, generationMode); } catch { /* ignore */ }
+  }, [generationMode]);
+
   // Card shape — defaults to 'square', remembers the user's last pick in
   // localStorage so a repeat-user lands back in their preferred mode.
   // Same pattern as the image-model preference above (see plan rule 15
@@ -2020,6 +2044,21 @@ export function TopicCardGridPanel({
       });
       if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
       setUploads((prev) => ({ ...prev, [cardIndex]: downloadUrl }));
+      // Drop any stale cutout for this card BEFORE deciding whether to
+      // refetch. Two scenarios this guards: (a) user re-uploaded a
+      // different image while NOT in cutout mode — the prior cutout
+      // points to the previous source and would silently be sent to
+      // the server if they later flip to cutout mode; (b) user
+      // re-uploaded a NEW image while in cutout mode — without this
+      // clear, the backfill effect's `!cutouts[u.cardIndex]` filter
+      // would treat the stale cutout as "already cached" and skip
+      // refetching. Either way the cutout for the OLD source must go.
+      setCutouts((prev) => {
+        if (!(cardIndex in prev)) return prev;
+        const next = { ...prev };
+        delete next[cardIndex];
+        return next;
+      });
       console.info('[topic-card-grid panel] upload done', {
         cardIndex, durationMs: Date.now() - startedAt, hasAlpha,
       });
@@ -2036,7 +2075,7 @@ export function TopicCardGridPanel({
         if (hasAlpha) {
           setCutouts((prev) => ({ ...prev, [cardIndex]: downloadUrl }));
           console.info('[topic-card-grid panel cutout]', {
-            cardIndex, source: 'user-alpha', durationMs: 0, ok: true,
+            cardIndex, source: 'user-alpha', durationMs: Date.now() - startedAt, ok: true,
           });
         } else {
           void fetchCutoutForCard(cardIndex, downloadUrl);
@@ -2055,12 +2094,35 @@ export function TopicCardGridPanel({
     }
   }
 
+  /** Per-card AbortController map so two cutout fetches for the SAME
+   *  cardIndex can't stomp on each other. Concrete race the guard
+   *  prevents: user uploads imageA to card 1 → fetchCutoutForCard(1,
+   *  urlA) starts. Before it resolves, user re-uploads imageB to card
+   *  1 → fetchCutoutForCard(1, urlB) starts. Without the guard,
+   *  whichever Replicate call resolves last writes its `setCutouts`,
+   *  so the user could see imageA's cutout silently bound to imageB.
+   *  With the guard, the urlB call aborts urlA first, then takes the
+   *  slot. AbortError is caught silently so the aborted run doesn't
+   *  surface a toast. */
+  const cutoutAbortControllersRef = useRef<Map<number, AbortController>>(new Map());
+
   /** Fire-and-forget background-removal call for a single card. The
    *  upload is already attached by the time we run, so any failure
    *  here is purely about the cutout cache — never blocks the user.
    *  Same call also used by the fillStyle-becomes-cutout effect for
    *  cards uploaded under a different fill style. */
   async function fetchCutoutForCard(cardIndex: number, sourceImageUrl: string): Promise<void> {
+    // Abort any in-flight call for this same card. The fresh upload
+    // supersedes whatever was being processed before — see the
+    // `cutoutAbortControllersRef` docstring for the race the guard
+    // prevents.
+    const inFlight = cutoutAbortControllersRef.current.get(cardIndex);
+    if (inFlight) {
+      inFlight.abort();
+      console.info('[topic-card-grid panel cutout] aborted prior in-flight', { cardIndex });
+    }
+    const controller = new AbortController();
+    cutoutAbortControllersRef.current.set(cardIndex, controller);
     const startedAt = Date.now();
     try {
       // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
@@ -2068,6 +2130,7 @@ export function TopicCardGridPanel({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourceImageUrl, cardIndex }),
+        signal: controller.signal,
       });
       if (!res.ok) {
         const data: { error?: string } = await res.json().catch(() => ({}));
@@ -2077,11 +2140,23 @@ export function TopicCardGridPanel({
       if (typeof cutoutUrl !== 'string' || !cutoutUrl.trim()) {
         throw new Error('Background removal returned no URL');
       }
+      // Confirm we're still the current controller before writing.
+      // A super-fast subsequent abort+replace could land the writer
+      // for an aborted controller between fetch resolve and here.
+      if (cutoutAbortControllersRef.current.get(cardIndex) !== controller) {
+        console.info('[topic-card-grid panel cutout] discarded — superseded', { cardIndex });
+        return;
+      }
       setCutouts((prev) => ({ ...prev, [cardIndex]: cutoutUrl }));
       console.info('[topic-card-grid panel cutout]', {
         cardIndex, source: 'auto', durationMs: Date.now() - startedAt, ok: true,
       });
     } catch (err) {
+      // AbortError is the supersede signal — silent. Anything else is
+      // surfaced normally.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return;
+      }
       console.warn('[topic-card-grid panel cutout]', {
         cardIndex,
         source: 'auto',
@@ -2090,6 +2165,13 @@ export function TopicCardGridPanel({
         detail: err instanceof Error ? err.message : String(err),
       });
       toast.error(`Card ${cardIndex}: cutout failed — render will fall back to the original image.`);
+    } finally {
+      // Clear our slot only if we're still the current controller —
+      // a superseding call already replaced it, in which case we
+      // mustn't delete ITS controller from the map.
+      if (cutoutAbortControllersRef.current.get(cardIndex) === controller) {
+        cutoutAbortControllersRef.current.delete(cardIndex);
+      }
     }
   }
 
@@ -2285,6 +2367,7 @@ export function TopicCardGridPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageModelId,
+          generationMode,
           cards: cardsToUse,
           globalPalette: paletteToUse,
           notesForImageModel: notesToUse,
@@ -2318,6 +2401,8 @@ export function TopicCardGridPanel({
         regions: ThumbnailRegion[];
         layout: { width: number; height: number };
         uploadsApplied?: number;
+        generationMode?: 'one-shot' | 'per-card';
+        perCard?: { succeeded: number; failed: number; total: number } | null;
       } = await res.json();
       console.info('[thumbnails format-grid image] received', {
         imageUrl: data.imageUrl,
@@ -2329,6 +2414,8 @@ export function TopicCardGridPanel({
         // chase the gap on the server side. Without this we'd be guessing.
         uploadsApplied: data.uploadsApplied ?? 'absent',
         uploadsSent: liveUploadsPayload.length,
+        generationMode: data.generationMode ?? 'one-shot',
+        perCard: data.perCard ?? 'absent',
       });
       if (
         liveUploadsPayload.length > 0 &&
@@ -2368,7 +2455,15 @@ export function TopicCardGridPanel({
       };
       setResult(generation);
       onResultChange(generation);
-      toast.success('Thumbnail generated!');
+      if (data.perCard && data.perCard.failed > 0) {
+        toast.success(
+          `Thumbnail generated. ${data.perCard.succeeded} of ${data.perCard.total} cards delivered — ${data.perCard.failed} used a placeholder (re-generate that card to retry).`,
+        );
+      } else if (data.perCard) {
+        toast.success(`Thumbnail generated — all ${data.perCard.total} cards delivered.`);
+      } else {
+        toast.success('Thumbnail generated!');
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Image generation failed.');
     } finally {
@@ -2673,6 +2768,18 @@ export function TopicCardGridPanel({
                 <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                   One click sets all five axes below. Tweak any axis afterwards — the source of truth is the axes, not the preset.
                 </p>
+                {/* Surface the pure-prompt-circle limitation up-front
+                    per the QA review. Without this hint, picking
+                    "Cutout Pop" with no uploads attached would
+                    produce a render that visibly ignored the user's
+                    pick. Hidden when the user has at least one upload
+                    (because then every axis applies normally) so the
+                    note doesn't add noise. */}
+                {Object.keys(uploads).length === 0 && (
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--accent-yellow)' }}>
+                    Heads up: <strong>Border weight</strong> and <strong>Fill style</strong> only apply to cards with attached photo uploads. Label position / case / stroke apply to every card.
+                  </p>
+                )}
               </div>
 
               <div>
@@ -2839,6 +2946,52 @@ export function TopicCardGridPanel({
             {imageModelId !== 'gpt-image-2-i2i' && imageModelId !== 'gpt-image-2-openai-i2i' && (
               <p className="text-[10px] mt-1" style={{ color: 'var(--accent-yellow)' }}>
                 This format is calibrated for GPT Image 2. Other models will produce a different style and likely mangle the per-card typography.
+              </p>
+            )}
+          </div>
+
+          {/* Generation mode — one-shot (legacy single AI call) vs
+              per-card (N parallel calls, one per non-uploaded card).
+              Per-card produces sharper grid layout because our composite
+              — not the AI — paints the cell positions, but it costs N×
+              the per-call price. Cost note is shown live so the user
+              sees the trade-off before clicking Generate. */}
+          <div>
+            <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+              Generation mode
+            </label>
+            <div className="flex gap-1.5">
+              {(['one-shot', 'per-card'] as const).map((v) => {
+                const active = generationMode === v;
+                return (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setGenerationMode(v)}
+                    className="px-2.5 py-1 rounded text-xs"
+                    style={{
+                      background: active ? 'var(--accent-pink)' : 'var(--bg-secondary)',
+                      color: active ? '#fff' : 'var(--text-secondary)',
+                      border: '1px solid var(--border)',
+                    }}
+                    title={
+                      v === 'one-shot'
+                        ? 'One AI call renders the whole grid. Cheap, but the AI controls cell spacing and tends to crowd rows on circle grids.'
+                        : 'One AI call per non-uploaded card. Costs ~$0.04 × N cards, but our composite paints the spacing — no crowded rows.'
+                    }
+                  >
+                    {v === 'one-shot' ? 'One-shot' : 'Per-card (sharper layout)'}
+                  </button>
+                );
+              })}
+            </div>
+            {generationMode === 'per-card' ? (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--accent-yellow)' }}>
+                Generates each card separately for perfect spacing. Approx cost: {totalCards} cards × $0.04 ≈ ${(totalCards * 0.04).toFixed(2)}. Uploaded cells are skipped (no AI call).
+              </p>
+            ) : (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                One AI call for the whole grid (~$0.04). Use Per-card if rows look crowded.
               </p>
             )}
           </div>

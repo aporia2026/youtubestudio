@@ -36,7 +36,59 @@
  */
 
 import type { Buffer } from 'node:buffer';
-import type { CardShape, TopicCard } from './topic-card-grid';
+import {
+  brightnessDirective,
+  detailDirective,
+  styleDirective,
+  type CardShape,
+  type ThumbnailBrightness,
+  type ThumbnailDetail,
+  type ThumbnailStyle,
+  type TopicCard,
+} from './topic-card-grid';
+
+// ─── Shared style header ────────────────────────────────────────────────────
+
+export interface PerCardStyleHeaderInput {
+  /** Visual style register. Same union the mega-prompt accepts so the
+   *  two modes produce visually consistent output for the same axes. */
+  style: ThumbnailStyle;
+  /** Free-form style sentence. Only consulted when `style === 'free-form'`;
+   *  ignored otherwise (mirrors `topicCardGridImagePrompt`). */
+  styleFreeForm?: string;
+  /** Brightness register. Threaded into the header verbatim so a "Bright"
+   *  toggle in the editor produces the same vivid-palette wording in both
+   *  per-card prompts and the mega-prompt. */
+  brightness: ThumbnailBrightness;
+  /** Detail register — `clean` vs `detailed`. Carried through so per-card
+   *  illustrations don't drift into multi-element compositions when the
+   *  user picked Clean for the overall grid. */
+  detail: ThumbnailDetail;
+}
+
+/**
+ * Build the shared style header that prefixes every per-card prompt in a
+ * batch. The header carries the brand/style information that keeps the
+ * N independent AI calls visually coherent — without it the cards land
+ * looking like a yard sale.
+ *
+ * Reuses the exact same `styleDirective` / `brightnessDirective` /
+ * `detailDirective` wording the mega-prompt uses, so a user who toggles
+ * between one-shot and per-card modes for the same axes sees a
+ * consistent visual register across both modes.
+ */
+export function buildPerCardStyleHeader(input: PerCardStyleHeaderInput): string {
+  const { style, styleFreeForm, brightness, detail } = input;
+  return [
+    'SHARED STYLE (applies to this card and every other card in the set — DO NOT drift):',
+    '',
+    styleDirective(style, styleFreeForm),
+    '',
+    brightnessDirective(brightness),
+    '',
+    detailDirective(detail),
+  ].join('\n');
+}
 
 // ─── Per-card prompt builder ────────────────────────────────────────────────
 
