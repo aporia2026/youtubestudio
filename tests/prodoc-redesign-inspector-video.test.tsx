@@ -188,3 +188,87 @@ describe('StudioInspector — tab routing for Video (R3 PR4c)', () => {
     expect(html).toContain('No B-roll clip has been generated for this row yet.');
   });
 });
+
+describe('StudioInspector — Video tab editable via selectedRowBrollContext (R3 Video-editable)', () => {
+  it('mounts BrollCell when selectedRowBrollContext is provided, skipping the read-only StudioInspectorVideo', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={makeRow({
+          timecode: '0:42',
+          visual_description: 'Bob holds a piggy bank',
+        })}
+        selectedRowIndex={1}
+        selectedRowLabel="0:42"
+        initialTab="video"
+        selectedRowBrollContext={{
+          rowIndex: 0,
+          rowSignature: '0:42::bob holds a piggy bank',
+          visualDescription: 'Bob holds a piggy bank',
+        }}
+      />,
+    );
+    // BrollCell's read-only fallback line should NOT appear because
+    // BrollCell is mounted instead.
+    expect(html).not.toContain('No B-roll clip has been generated for this row yet.');
+    // BrollCell renders its own UI — at minimum, a Generate-related
+    // surface that doesn't say "lands in later" or the read-only
+    // fallback.
+    expect(html).not.toContain('lands in later R3 PRs');
+  });
+
+  it('falls back to read-only StudioInspectorVideo when selectedRowBrollContext is null', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={makeRow()}
+        selectedRowIndex={1}
+        selectedRowLabel="0:00"
+        initialTab="video"
+        selectedRowVideoClip={null}
+        selectedRowBrollContext={null}
+      />,
+    );
+    expect(html).toContain('No B-roll clip has been generated for this row yet.');
+  });
+
+  it('forwards selectedRowVideoClip only when no brollContext is provided', () => {
+    const withBoth = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={makeRow({
+          timecode: '0:42',
+          visual_description: 'Bob',
+        })}
+        selectedRowIndex={1}
+        selectedRowLabel="0:42"
+        initialTab="video"
+        selectedRowVideoClip={{
+          status: 'ready',
+          videoUrl: 'https://example.com/clip.mp4',
+        }}
+        selectedRowBrollContext={{
+          rowIndex: 0,
+          rowSignature: '0:42::bob',
+          visualDescription: 'Bob',
+        }}
+      />,
+    );
+    // BrollCell is the active branch, so the read-only video player
+    // backing src is NOT rendered.
+    expect(withBoth).not.toMatch(
+      /<video[^>]*src="https:\/\/example\.com\/clip\.mp4"/,
+    );
+
+    const onlyClip = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={makeRow()}
+        selectedRowIndex={1}
+        selectedRowLabel="0:00"
+        initialTab="video"
+        selectedRowVideoClip={{
+          status: 'ready',
+          videoUrl: 'https://example.com/clip.mp4',
+        }}
+      />,
+    );
+    expect(onlyClip).toMatch(/<video[^>]*src="https:\/\/example\.com\/clip\.mp4"/);
+  });
+});

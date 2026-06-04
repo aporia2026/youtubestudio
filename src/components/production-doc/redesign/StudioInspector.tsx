@@ -18,6 +18,10 @@ import {
   type StudioInspectorVideoClipSlice,
 } from './StudioInspectorVideo';
 import {
+  BrollCell,
+  type BrollCellProps,
+} from '@/components/production-doc/BrollCell';
+import {
   StudioInspectorOverlay,
   type StudioInspectorOverlayActions,
 } from './StudioInspectorOverlay';
@@ -65,6 +69,12 @@ export interface StudioInspectorProps {
   selectedRowImageActions?: StudioInspectorImageActions;
   /** B-roll clip for the selected row. R3 PR4c (read-only). */
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
+  /** Full BrollCell props bundle for the selected row. When provided
+   *  the Video tab mounts the existing `BrollCell` — Generate /
+   *  Re-generate buttons + model picker + polling + lock-as-still
+   *  all included. When omitted the tab falls back to the read-only
+   *  `StudioInspectorVideo` view. R3 Video-editable. */
+  selectedRowBrollContext?: BrollCellProps | null;
   /** Overlay state for the selected row. R3 PR5 (read-only). */
   selectedRowOverlay?: RowOverlayState | null;
   /** Overlay action callbacks — Rethink / Edit / Reset / Remove.
@@ -94,6 +104,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   selectedRowImageState = null,
   selectedRowImageActions,
   selectedRowVideoClip = null,
+  selectedRowBrollContext = null,
   selectedRowOverlay = null,
   selectedRowOverlayActions,
   doc = null,
@@ -173,7 +184,11 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             {...(selectedRowImageActions ?? {})}
           />
         ) : currentTab === 'video' ? (
-          <StudioInspectorVideo clip={selectedRowVideoClip} />
+          selectedRowBrollContext ? (
+            <BrollCell {...selectedRowBrollContext} />
+          ) : (
+            <StudioInspectorVideo clip={selectedRowVideoClip} />
+          )
         ) : currentTab === 'overlay' ? (
           <StudioInspectorOverlay
             overlay={selectedRowOverlay}

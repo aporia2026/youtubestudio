@@ -10,6 +10,7 @@ import type { RowOverlayState } from '@/components/production-doc/overlay-types'
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
+import type { BrollCellProps } from '@/components/production-doc/BrollCell';
 import { BriefMode } from './BriefMode';
 import { StudioMode } from './StudioMode';
 
@@ -53,6 +54,10 @@ export interface ProductionDocShellProps {
   /** B-roll clip for the currently-selected row. Drives the Video
    *  tab's read-only preview. Ignored in Brief Mode. R3 PR4c. */
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
+  /** Full BrollCell props bundle for the currently-selected row.
+   *  When provided, drives the editable Video tab (BrollCell mount).
+   *  Ignored in Brief Mode. R3 Video-editable. */
+  selectedRowBrollContext?: BrollCellProps | null;
   /** Overlay state for the currently-selected row. Drives the
    *  Overlay tab's read-only preview. Ignored in Brief Mode. R3 PR5. */
   selectedRowOverlay?: RowOverlayState | null;
@@ -90,6 +95,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowImageState,
   selectedRowImageActions,
   selectedRowVideoClip,
+  selectedRowBrollContext,
   selectedRowOverlay,
   selectedRowOverlayActions,
   rowImagesByIndex,
@@ -132,6 +138,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowImageState={selectedRowImageState}
       selectedRowImageActions={selectedRowImageActions}
       selectedRowVideoClip={selectedRowVideoClip}
+      selectedRowBrollContext={selectedRowBrollContext}
       selectedRowOverlay={selectedRowOverlay}
       selectedRowOverlayActions={selectedRowOverlayActions}
       rowImagesByIndex={rowImagesByIndex}

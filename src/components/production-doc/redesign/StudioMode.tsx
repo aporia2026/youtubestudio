@@ -15,6 +15,7 @@ import { StudioInspector } from './StudioInspector';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
+import type { BrollCellProps } from '@/components/production-doc/BrollCell';
 
 const STUDIO_SUB_MODE_PREF_KEY = 'prodoc_studio_sub_mode';
 
@@ -61,6 +62,9 @@ export interface StudioModeProps {
   selectedRowImageActions?: StudioInspectorImageActions;
   /** B-roll clip for the currently-selected row. R3 PR4c. */
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
+  /** BrollCell props bundle for the currently-selected row. Drives
+   *  the editable Video tab. R3 Video-editable. */
+  selectedRowBrollContext?: BrollCellProps | null;
   /** Overlay state for the currently-selected row. R3 PR5. */
   selectedRowOverlay?: RowOverlayState | null;
   /** Overlay action callbacks for the currently-selected row.
@@ -89,6 +93,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowImageState = null,
   selectedRowImageActions,
   selectedRowVideoClip = null,
+  selectedRowBrollContext = null,
   selectedRowOverlay = null,
   selectedRowOverlayActions,
   rowImagesByIndex,
@@ -148,6 +153,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
               selectedRowImageState={selectedRowImageState}
               selectedRowImageActions={selectedRowImageActions}
               selectedRowVideoClip={selectedRowVideoClip}
+              selectedRowBrollContext={selectedRowBrollContext}
               selectedRowOverlay={selectedRowOverlay}
               selectedRowOverlayActions={selectedRowOverlayActions}
               doc={doc}

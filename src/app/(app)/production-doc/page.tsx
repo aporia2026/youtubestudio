@@ -14311,6 +14311,44 @@ function ProductionDocPage() {
       // `rowImages` is `RowImageState[]`, structurally compatible
       // with the editor's `RowImageStateView[]`.
       rowImagesByIndex={rowImages}
+      // R3 Video-editable: full BrollCell props bundle for the
+      // selected row. The inspector mounts BrollCell verbatim — same
+      // polling loop, same model picker, same lock-as-still — so
+      // every legacy B-roll feature works inside the inspector with
+      // zero divergence. Mirrors the legacy grid mount (~line 12586).
+      selectedRowBrollContext={
+        expandedRow !== null && expandedRow >= 0 && doc?.rows[expandedRow]
+          ? (() => {
+              const row = doc.rows[expandedRow];
+              const sig = brollRowSignatureInput({
+                timecode: row.timecode,
+                visual_description: row.visual_description,
+              });
+              const imgState = rowImages[expandedRow];
+              return {
+                rowIndex: expandedRow,
+                rowSignature: sig,
+                productionDocId: historyEntryId,
+                sceneDurationMs: computeRowSceneDurationMs(expandedRow),
+                visualDescription: row.visual_description,
+                aiImagePrompt: row.ai_image_prompt,
+                styleHint: stylePreset,
+                stillImageUrl: imgState?.status === 'done' ? imgState?.imageUrl : undefined,
+                initialClip: rowBatchStubs[expandedRow] ?? undefined,
+                lockedAsStill: Boolean(rowLockSignatures[sig]),
+                onToggleLockedAsStill: (locked: boolean) => toggleRowLock(sig, locked),
+                docBrollModelId: doc.broll_model_id as BrollModelId | undefined,
+                onClipChange: (clip) =>
+                  handleBrollClipChange(
+                    expandedRow,
+                    clip
+                      ? { id: clip.id, status: clip.status, video_url: clip.video_url, duration_seconds: clip.duration_seconds }
+                      : null,
+                  ),
+              };
+            })()
+          : null
+      }
       // R3 Variants editable: feed the same EditorWriters bundle the
       // EditorView uses. The inspector's VariantPanel switches to its
       // editable branch (chip + mini-strip + Add / Generate / Move /
