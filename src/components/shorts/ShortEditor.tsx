@@ -515,12 +515,15 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     player.seekTo(frame);
   }, []);
 
-  // ── action: sync video length to the actual voiceover audio ───────
-  // The render path + preview Player read from voiceover_duration_seconds.
-  // This button calls the sync-duration endpoint which downloads the
-  // voiceover, runs ffmpeg to measure it, and writes the exact value to
-  // the row. After this click, the preview Player + the final mp4 are
-  // the same length as the audio — no padding, no estimate drift.
+  // ── action: sync video length + captions to the voiceover ────────
+  // One click, two effects:
+  //   1. Force-refreshes the ElevenLabs Scribe alignment (the server
+  //      route handles this), which returns word-perfect timing AND
+  //      the precise audio duration.
+  //   2. Server writes the duration to voiceover_duration_seconds; the
+  //      preview Player + the render route read it.
+  // The editor then applies the returned alignment so captions snap to
+  // the new word boundaries in the same click.
   const [syncDurationBusy, setSyncDurationBusy] = useState(false);
   const syncDuration = useCallback(async () => {
     if (!row?.voiceover_audio_url) return;
@@ -532,19 +535,30 @@ export function ShortEditor({ shortId }: { shortId: string }) {
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      // Apply the fresh alignment first so the captions update before
+      // the row reload re-renders the preview — keeps the perceived
+      // delay tight.
+      if (data.alignment) {
+        setAlignment(data.alignment as ForcedAlignmentResponse);
+      }
       await loadRow();
       const before = typeof data.before_seconds === 'number' ? data.before_seconds : null;
       const after = typeof data.seconds === 'number' ? data.seconds : null;
+      const wordCount =
+        data.alignment && Array.isArray(data.alignment.words)
+          ? data.alignment.words.length
+          : null;
+      const captionSuffix = wordCount !== null ? ` Captions synced to ${wordCount} word boundaries.` : '';
       if (before !== null && after !== null) {
         const delta = after - before;
         const arrow = delta > 0 ? '+' : '';
         toast.success(
-          `Synced. Video duration ${before.toFixed(1)}s → ${after.toFixed(1)}s (${arrow}${delta.toFixed(1)}s).`,
+          `Synced. Video duration ${before.toFixed(1)}s → ${after.toFixed(1)}s (${arrow}${delta.toFixed(1)}s).${captionSuffix}`,
         );
       } else if (after !== null) {
-        toast.success(`Synced. Video duration set to ${after.toFixed(1)}s.`);
+        toast.success(`Synced. Video duration set to ${after.toFixed(1)}s.${captionSuffix}`);
       } else {
-        toast.success('Synced.');
+        toast.success(`Synced.${captionSuffix}`);
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Sync failed');
@@ -907,14 +921,14 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           >
             <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
-                Sync video length to voiceover
+                Sync video + captions to voiceover
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                Measures the actual audio (
+                Re-runs the aligner against the actual audio (
                 {row.voiceover_duration_seconds
                   ? `currently stored as ${row.voiceover_duration_seconds.toFixed(1)}s`
                   : 'duration unknown'}
-                ) and updates the preview + the final render to match exactly.
+                ) and updates the preview, the captions, and the final render to match exactly.
               </div>
             </div>
             <button

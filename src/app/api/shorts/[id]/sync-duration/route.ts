@@ -1,31 +1,43 @@
 /**
  * POST /api/shorts/[id]/sync-duration
  *
- * Re-probe the actual voiceover audio length and write it to
- * `shorts.voiceover_duration_seconds`. The render path + preview Player
- * both read from that column, so updating it makes the composition the
- * exact length of the audio — no padded tail, no estimate drift.
+ * One-click "make video length match the voiceover" + "re-sync captions
+ * to actual word boundaries". Does both because they're driven by the
+ * same underlying measurement.
+ *
+ * Implementation:
+ *   1. Force-refreshes the ElevenLabs Scribe alignment for the voiceover.
+ *      That call returns word-perfect timing AND the audio's precise
+ *      length — much more reliable than ffmpeg-probing the mp3 (which
+ *      has been flaky on the Vercel function bundle: ffmpeg sometimes
+ *      doesn't print a Duration line when reading certain MP3 streams
+ *      from stdin).
+ *   2. Writes the aligner's durationMs to `voiceover_duration_seconds`.
+ *      The render path + the preview Player both read that column, so
+ *      the composition now matches the audio exactly.
+ *   3. Returns the new duration AND the alignment so the editor can
+ *      apply it without a second roundtrip.
  *
  * Why this exists as an explicit button:
- *   - The voiceover route already probes on generation (see
- *     `audio-duration-probe.ts`).
- *   - The alignment route already backfills when timing data lands.
- *   - But back-catalog rows whose stored value is the old word-count
- *     estimate (and that haven't had a re-alignment pass since) need a
- *     manual lever the user can pull right before render. That's this
- *     route.
+ *   - The aligner runs automatically once per voiceover load to backfill
+ *     timing. But back-catalog rows whose cached alignment is stale
+ *     (script edited, voiceover regenerated, etc.) need a manual lever
+ *     to re-measure right before render. That's this route.
  *
- * Workspace-scoped (404 on cross-tenant). Returns the new duration so
- * the editor can toast confirmation without a separate row reload.
+ * Workspace-scoped. 422 if no voiceover; 502 if the aligner fails.
  */
 import { NextResponse } from 'next/server';
 import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
-import { probeAudioDurationSeconds } from '@/lib/audio-duration-probe';
+import { shortAlignmentScript } from '@/lib/shorts-render';
+import {
+  buildCanonicalScript,
+  ensureAlignmentForVoiceover,
+} from '@/lib/voiceover-alignment-cache';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 export const POST = apiRoute.authed(
   async (session, _req, ctx: { params: Promise<{ id: string }> }) => {
@@ -41,28 +53,34 @@ export const POST = apiRoute.authed(
           { status: 422 },
         );
       }
-
-      // Fetch the audio bytes from R2. Public URL by construction, so
-      // no auth header needed.
-      const res = await fetch(row.voiceover_audio_url);
-      if (!res.ok) {
-        throw new Error(
-          `Voiceover audio fetch failed (HTTP ${res.status}). The R2 URL may have expired or been deleted.`,
+      if (!row.short_script) {
+        return NextResponse.json(
+          { error: 'This Short has no script to align against.' },
+          { status: 422 },
         );
       }
-      const audioBuffer = Buffer.from(await res.arrayBuffer());
-      const measuredSeconds = await probeAudioDurationSeconds(audioBuffer);
 
-      if (measuredSeconds === null) {
+      // Force-refresh the aligner. Bypasses the cache so a stale row
+      // (script edited after the cached alignment was minted, voiceover
+      // regenerated, etc.) re-measures from scratch. ~$0.22/hr to
+      // ElevenLabs Scribe; pennies per Short.
+      const canonical = buildCanonicalScript([shortAlignmentScript(row.short_script)]);
+      const result = await ensureAlignmentForVoiceover(
+        row.voiceover_audio_url,
+        canonical,
+        { forceRefresh: true },
+      );
+
+      if (result.status !== 'ready') {
         return NextResponse.json(
           {
-            error:
-              'Could not measure the voiceover audio. ffmpeg returned no Duration line — the file may be corrupt or in an unexpected format.',
+            error: `Alignment failed — ${'reason' in result ? result.reason : 'unknown'}.`,
           },
           { status: 502 },
         );
       }
 
+      const measuredSeconds = result.durationMs / 1000;
       const before = row.voiceover_duration_seconds ?? null;
       await sql`
         UPDATE shorts
@@ -75,12 +93,18 @@ export const POST = apiRoute.authed(
         before_seconds: before,
         measured_seconds: measuredSeconds,
         delta_seconds: before === null ? null : measuredSeconds - before,
+        words: result.alignment.words.length,
       });
 
       return NextResponse.json({
         ok: true,
         before_seconds: before,
         seconds: measuredSeconds,
+        // Return the fresh alignment so the editor can apply it without
+        // a second GET /alignment roundtrip — saves a re-fetch and means
+        // the captions snap to the new boundaries in the same click.
+        alignment: result.alignment,
+        durationMs: result.durationMs,
       });
     } catch (err) {
       return domainErrorResponse(err, {
