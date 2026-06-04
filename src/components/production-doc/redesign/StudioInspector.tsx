@@ -5,7 +5,10 @@ import type { ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import { InspectorTabBar, type InspectorTabId } from './InspectorTabBar';
 import { StudioInspectorContent } from './StudioInspectorContent';
-import { StudioInspectorImage } from './StudioInspectorImage';
+import {
+  StudioInspectorImage,
+  type StudioInspectorImageActions,
+} from './StudioInspectorImage';
 
 /**
  * StudioInspector — the right column of `StudioLayout`. Hosts the
@@ -41,9 +44,11 @@ export interface StudioInspectorProps {
    *  `updateRow(rowIndex, patch)` in page.tsx. */
   onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
   /** Image state for the selected row. Drives the Image tab's
-   *  read-only preview. R3 PR4b will add writers for generate /
-   *  upload / edit. */
+   *  read-only preview. R3 PR4. */
   selectedRowImageState?: RowImageStateView | null;
+  /** Image writers for the selected row — Generate / Upload /
+   *  Import URL / Edit / Retry. R3 PR4b. */
+  selectedRowImageActions?: StudioInspectorImageActions;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -53,6 +58,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   initialTab = 'content',
   onUpdateRow,
   selectedRowImageState = null,
+  selectedRowImageActions,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -122,7 +128,10 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             onUpdateRow={onUpdateRow}
           />
         ) : currentTab === 'image' ? (
-          <StudioInspectorImage state={selectedRowImageState} />
+          <StudioInspectorImage
+            state={selectedRowImageState}
+            {...(selectedRowImageActions ?? {})}
+          />
         ) : (
           <p
             className="text-xs"

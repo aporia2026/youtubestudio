@@ -14238,6 +14238,33 @@ function ProductionDocPage() {
           ? rowImages[expandedRow]
           : null
       }
+      // R3 PR4b: image writers for the selected row. Each callback
+      // binds the rowIndex at the call site so the inspector never
+      // needs to know it. Re-uses today's `generateImageForRow`,
+      // `uploadImageForRow`, `importImageUrlForRow`, and the
+      // `setEditPanelRow` modal opener — same paths as the legacy
+      // ImageCell. `canGenerate` mirrors today's semantic: no AI
+      // prompt → button visible but disabled with a tooltip.
+      selectedRowImageActions={
+        expandedRow !== null && expandedRow >= 0 && doc?.rows[expandedRow]
+          ? (() => {
+              const row = doc.rows[expandedRow];
+              const prompt = row.ai_image_prompt?.trim() ?? '';
+              return {
+                canGenerate: !!prompt,
+                onGenerate: prompt
+                  ? () => { void generateImageForRow(expandedRow, prompt); }
+                  : undefined,
+                onUpload: (file: File) => { void uploadImageForRow(expandedRow, file); },
+                onImportUrl: (url: string) => { void importImageUrlForRow(expandedRow, url); },
+                onEdit: () => setEditPanelRow(expandedRow),
+                onRetry: prompt
+                  ? () => { void generateImageForRow(expandedRow, prompt); }
+                  : undefined,
+              };
+            })()
+          : undefined
+      }
     >
       {pageContent}
     </ProductionDocShell>

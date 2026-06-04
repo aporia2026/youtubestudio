@@ -7,6 +7,7 @@ import { StudioTopBar } from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
+import type { StudioInspectorImageActions } from './StudioInspectorImage';
 
 /**
  * Studio Mode — the post-generation Workspace surface.
@@ -47,6 +48,8 @@ export interface StudioModeProps {
   onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
   /** Image state for the currently-selected row. R3 PR4. */
   selectedRowImageState?: RowImageStateView | null;
+  /** Image writers for the currently-selected row. R3 PR4b. */
+  selectedRowImageActions?: StudioInspectorImageActions;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -56,6 +59,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowIndex = null,
   onUpdateRow,
   selectedRowImageState = null,
+  selectedRowImageActions,
 }) => {
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
@@ -82,6 +86,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
             selectedRowLabel={displayLabel}
             onUpdateRow={onUpdateRow}
             selectedRowImageState={selectedRowImageState}
+            selectedRowImageActions={selectedRowImageActions}
           />
         }
       />

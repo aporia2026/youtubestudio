@@ -3,6 +3,7 @@
 import React, { useEffect, useRef } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import { BriefMode } from './BriefMode';
 import { StudioMode } from './StudioMode';
 
@@ -40,6 +41,9 @@ export interface ProductionDocShellProps {
   /** Image state for the currently-selected row. Drives the Image
    *  tab's read-only preview. Ignored in Brief Mode. R3 PR4. */
   selectedRowImageState?: RowImageStateView | null;
+  /** Image action writers for the currently-selected row — Generate,
+   *  Upload, Import URL, Edit, Retry. Ignored in Brief Mode. R3 PR4b. */
+  selectedRowImageActions?: StudioInspectorImageActions;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -60,6 +64,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowIndex,
   onUpdateRow,
   selectedRowImageState,
+  selectedRowImageActions,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -96,6 +101,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowIndex={selectedRowIndex}
       onUpdateRow={onUpdateRow}
       selectedRowImageState={selectedRowImageState}
+      selectedRowImageActions={selectedRowImageActions}
     >
       {children}
     </StudioMode>

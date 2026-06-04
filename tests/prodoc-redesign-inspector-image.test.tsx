@@ -1,9 +1,18 @@
 /**
- * StudioInspectorImage — read-only Image tab body.
- * Phase R3 PR4 of `_plans/2026-06-04-production-doc-redesign.md`.
+ * StudioInspectorImage — Image tab body (read-only + editable modes).
+ * Phase R3 PR4 / R3 PR4b of
+ * `_plans/2026-06-04-production-doc-redesign.md`.
  *
- * Also covers the StudioInspector tab routing that mounts the Image
- * body when `currentTab === 'image'` and a row is selected.
+ * R3 PR4 covered the read-only render. R3 PR4b adds the writer-
+ * callback contract: Generate / Re-generate / Upload / Import URL /
+ * Edit / Retry buttons appear only when their callback is wired, and
+ * a `canGenerate=false` disables (not hides) the Generate button so
+ * the lazy user sees an affordance + a reason in the tooltip.
+ *
+ * Click-driven button behaviour relies on real DOM events that the
+ * project's SSR test environment does not run; the tests below pin
+ * which controls render under which conditions and rely on TypeScript
+ * + React for the click-to-callback wiring.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -174,5 +183,136 @@ describe('StudioInspector — tab routing for Image', () => {
     );
     expect(html).toContain('Select a row');
     expect(html).not.toMatch(/<img/);
+  });
+});
+
+describe('StudioInspectorImage — action buttons (R3 PR4b)', () => {
+  it('renders Generate when state=idle and onGenerate is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage state={{ status: 'idle' }} onGenerate={() => {}} />,
+    );
+    expect(html).toMatch(/<button[^>]*>\s*Generate\s*<\/button>/);
+  });
+
+  it('renders ↻ Re-generate when an image already exists and onGenerate is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage
+        state={{ status: 'done', imageUrl: 'https://x/y.png' }}
+        onGenerate={() => {}}
+      />,
+    );
+    expect(html).toContain('↻ Re-generate');
+    expect(html).not.toMatch(/>\s*Generate\s*</);
+  });
+
+  it('disables Generate (but still renders it) when canGenerate=false', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage
+        state={{ status: 'idle' }}
+        onGenerate={() => {}}
+        canGenerate={false}
+      />,
+    );
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>\s*Generate\s*<\/button>/);
+    expect(html).toMatch(/title="[^"]*This row has no AI prompt/);
+  });
+
+  it('renders Upload when onUpload is wired and the row is not busy', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage state={{ status: 'idle' }} onUpload={() => {}} />,
+    );
+    expect(html).toContain('⬆ Upload');
+    // Hidden file input is mounted so the button can trigger it.
+    expect(html).toMatch(/<input[^>]*type="file"/);
+  });
+
+  it('renders Import URL when onImportUrl is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage state={{ status: 'idle' }} onImportUrl={() => {}} />,
+    );
+    expect(html).toContain('🔗 Import URL');
+  });
+
+  it('renders ✎ Edit only when an image exists AND onEdit is wired', () => {
+    const noImageHtml = renderToStaticMarkup(
+      <StudioInspectorImage state={{ status: 'idle' }} onEdit={() => {}} />,
+    );
+    expect(noImageHtml).not.toContain('✎ Edit');
+
+    const withImageHtml = renderToStaticMarkup(
+      <StudioInspectorImage
+        state={{ status: 'done', imageUrl: 'https://x/y.png' }}
+        onEdit={() => {}}
+      />,
+    );
+    expect(withImageHtml).toContain('✎ Edit');
+  });
+
+  it('renders Retry only when status=error AND onRetry is wired', () => {
+    const errorHtml = renderToStaticMarkup(
+      <StudioInspectorImage
+        state={{ status: 'error', error: 'whoops' }}
+        onRetry={() => {}}
+      />,
+    );
+    expect(errorHtml).toMatch(/<button[^>]*>\s*Retry\s*<\/button>/);
+
+    const doneHtml = renderToStaticMarkup(
+      <StudioInspectorImage
+        state={{ status: 'done', imageUrl: 'https://x/y.png' }}
+        onRetry={() => {}}
+      />,
+    );
+    expect(doneHtml).not.toMatch(/<button[^>]*>\s*Retry\s*<\/button>/);
+  });
+
+  it('hides ALL action buttons while the row is busy (loading / uploading / etc.)', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage
+        state={{ status: 'loading' }}
+        onGenerate={() => {}}
+        onUpload={() => {}}
+        onImportUrl={() => {}}
+        onEdit={() => {}}
+      />,
+    );
+    expect(html).not.toContain('Generate');
+    expect(html).not.toContain('⬆ Upload');
+    expect(html).not.toContain('🔗 Import URL');
+    expect(html).not.toContain('✎ Edit');
+  });
+
+  it('hides every button when no callback is wired (read-only contract from R3 PR4)', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorImage state={{ status: 'idle' }} />,
+    );
+    expect(html).not.toContain('Generate');
+    expect(html).not.toContain('Upload');
+    expect(html).not.toContain('Import URL');
+    expect(html).not.toContain('Edit');
+    expect(html).not.toContain('Retry');
+  });
+});
+
+describe('StudioInspector — Image tab forwards actions (R3 PR4b)', () => {
+  it('forwards selectedRowImageActions down to StudioInspectorImage', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspector
+        selectedRow={makeRow()}
+        selectedRowIndex={1}
+        selectedRowLabel="0:00"
+        initialTab="image"
+        selectedRowImageState={{ status: 'idle' }}
+        selectedRowImageActions={{
+          onGenerate: () => {},
+          onUpload: () => {},
+          onImportUrl: () => {},
+          canGenerate: true,
+        }}
+      />,
+    );
+    expect(html).toContain('Generate');
+    expect(html).toContain('⬆ Upload');
+    expect(html).toContain('🔗 Import URL');
   });
 });
