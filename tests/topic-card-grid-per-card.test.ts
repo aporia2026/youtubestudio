@@ -99,6 +99,43 @@ describe('buildPerCardPrompt', () => {
     });
     expect(out).toContain('1024×1024');
   });
+
+  it('square mode tells the AI to fill the cell edge-to-edge with no sticker halo', () => {
+    // Regression pin for the 2026-06-04 sticker-halo bug: an earlier
+    // version of the prompt always told the AI to "leave generous
+    // solid-colour padding" around the subject. That instruction is
+    // right for circle mode (corners get clipped) but in square mode
+    // produced inconsistent sticker styling — half the cards came
+    // back as full-bleed scenes, the other half as floating icons
+    // with white halos on flat colour backdrops.
+    const out = buildPerCardPrompt({
+      card: card(1, 'Farm', 'a gas mask'),
+      styleHeader: '',
+      cardShape: 'square',
+    });
+    expect(out).toContain('FULL-BLEED');
+    expect(out).toContain('NO white halo');
+    expect(out).toContain('NO sticker outline');
+    expect(out).toContain('touch all four edges');
+    // The circle-mode "leave generous solid-colour padding" wording
+    // must NOT leak into square mode — that's what caused the bug.
+    expect(out).not.toContain('inscribed circle area');
+  });
+
+  it('circle mode keeps the "leave padding inside the inscribed circle" framing', () => {
+    const out = buildPerCardPrompt({
+      card: card(1, 'Farm', 'a gas mask'),
+      styleHeader: '',
+      cardShape: 'circle',
+    });
+    expect(out).toContain('inscribed circle area');
+    expect(out).toContain('corners will be clipped');
+    // The square-mode "full-bleed / no padding" wording must NOT
+    // leak into circle mode — that would tell the AI to put subject
+    // content in the corners that the disc clips off.
+    expect(out).not.toContain('FULL-BLEED');
+    expect(out).not.toContain('touch all four edges');
+  });
 });
 
 describe('runPerCardGeneration', () => {

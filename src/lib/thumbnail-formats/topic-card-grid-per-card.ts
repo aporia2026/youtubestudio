@@ -140,16 +140,29 @@ export function buildPerCardPrompt(input: PerCardPromptInput): string {
     ? `- Background: solid ${backgroundColor}, filling the entire square edge to edge. NO patterns, NO gradients on the background.`
     : `- Background: a SINGLE solid colour that complements the subject. NO patterns, NO gradients, NO scenes, NO landscapes.`;
 
+  // Framing instruction is shape-aware. Circle mode tells the AI to
+  // keep the subject inside the inscribed circle (the corners will be
+  // clipped). Square mode tells the AI to fill the cell edge-to-edge
+  // with NO padding / NO white halo — the earlier "leave generous
+  // padding" wording made the AI produce sticker-style illustrations
+  // with white halos on flat colour backdrops, which read as a yard
+  // sale when the user shipped a square-mode 3×3 grid (some cards
+  // came back as scenes, others as stickers, no consistency).
+  const framingLine =
+    cardShape === 'circle'
+      ? `- Frame the subject CENTRED. Tight composition — fill most of the inscribed circle area with the subject, leave generous solid-colour padding around it (the corners will be clipped to a circle).`
+      : `- Frame the subject as a FULL-BLEED illustration that fills the entire 1024×1024 square edge-to-edge. NO white halo around the subject. NO sticker outline. NO floating-on-flat-colour effect. The subject + background read as ONE integrated image — either a tight crop of the subject so it spans all four edges, or the subject embedded in a scene whose colour atmosphere fills the corners. The illustration must touch all four edges of the square; if you find yourself adding padding around a subject pasted on a flat colour, you are doing it wrong.`;
+
   const cropHint =
     cardShape === 'circle'
       ? `- IMPORTANT: this illustration will be CROPPED to a circle by the downstream pipeline. Anything outside the inscribed circle of the 1024×1024 square (≈ 13 % of the area, the four corners) will be invisible. Keep ALL focal subject content within the inscribed circle. Backgrounds can extend to the corners — they will be clipped harmlessly.`
-      : `- The illustration will be rendered inside a rectangular cell. Corners are visible.`;
+      : `- The illustration will be rendered inside a rectangular cell. ALL four corners are visible — fill them with the illustration's colour atmosphere or composition, NOT with empty white or flat solid colour added as padding around a centred sticker.`;
 
   return `${headerBlock}SINGLE-CARD ILLUSTRATION:
 - Generate ONE 1024×1024 SQUARE illustration. ONE illustration only — not a thumbnail, not a grid, not multiple panels.
 - Subject: ${card.icon_concept}
 ${bgLine}
-- Frame the subject CENTRED. Tight composition — fill most of the inscribed circle area with the subject, leave generous solid-colour padding around it.
+${framingLine}
 - Style: follow the style header above precisely (line weight, palette family, illustration conventions).
 - TEXT INSIDE THE ILLUSTRATION IS FORBIDDEN. The card label "${card.label}" is painted SEPARATELY by our pipeline on a white strip below the illustration — do NOT include any caption, label, title, watermark, or other text in this square. The ONLY allowed text is if it is part of the subject's intrinsic visual identity (e.g. a brand wordmark, an iconic newspaper headline, a single iconic stamp like "SECRET").
 ${cropHint}`;
