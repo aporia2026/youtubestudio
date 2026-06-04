@@ -17,7 +17,10 @@ import {
   StudioInspectorVideo,
   type StudioInspectorVideoClipSlice,
 } from './StudioInspectorVideo';
-import { StudioInspectorOverlay } from './StudioInspectorOverlay';
+import {
+  StudioInspectorOverlay,
+  type StudioInspectorOverlayActions,
+} from './StudioInspectorOverlay';
 import { StudioInspectorSection } from './StudioInspectorSection';
 import { VariantPanel } from '@/components/production-doc/editor/VariantPanel';
 
@@ -64,6 +67,9 @@ export interface StudioInspectorProps {
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
   /** Overlay state for the selected row. R3 PR5 (read-only). */
   selectedRowOverlay?: RowOverlayState | null;
+  /** Overlay action callbacks — Rethink / Edit / Reset / Remove.
+   *  R3 Overlay-editable. */
+  selectedRowOverlayActions?: StudioInspectorOverlayActions;
   /** Doc-level defaults used by the Section tab to display effective
    *  values (row override → doc default → built-in default). Also
    *  required for the Variants tab so the panel can walk the row's
@@ -89,6 +95,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   selectedRowImageActions,
   selectedRowVideoClip = null,
   selectedRowOverlay = null,
+  selectedRowOverlayActions,
   doc = null,
   rowImagesByIndex,
   editorWriters,
@@ -171,6 +178,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
           <StudioInspectorOverlay
             overlay={selectedRowOverlay}
             stockTerms={selectedRow.stock_search_terms}
+            {...(selectedRowOverlayActions ?? {})}
           />
         ) : currentTab === 'section' && writerRowIndex !== null ? (
           <StudioInspectorSection

@@ -9,6 +9,7 @@ import type {
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
+import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
 import { BriefMode } from './BriefMode';
 import { StudioMode } from './StudioMode';
 
@@ -55,6 +56,10 @@ export interface ProductionDocShellProps {
   /** Overlay state for the currently-selected row. Drives the
    *  Overlay tab's read-only preview. Ignored in Brief Mode. R3 PR5. */
   selectedRowOverlay?: RowOverlayState | null;
+  /** Overlay action callbacks for the currently-selected row.
+   *  Drives the Overlay tab's Rethink / Edit / Reset / Remove
+   *  buttons. Ignored in Brief Mode. R3 Overlay-editable. */
+  selectedRowOverlayActions?: StudioInspectorOverlayActions;
   /** Image state per row, indexed by 0-based row index. Used by the
    *  Variants tab to render mini-strip thumbnails for the row's
    *  variant group. Ignored in Brief Mode. R3 PR4d. */
@@ -86,6 +91,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowImageActions,
   selectedRowVideoClip,
   selectedRowOverlay,
+  selectedRowOverlayActions,
   rowImagesByIndex,
   editorWriters,
 }) => {
@@ -127,6 +133,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowImageActions={selectedRowImageActions}
       selectedRowVideoClip={selectedRowVideoClip}
       selectedRowOverlay={selectedRowOverlay}
+      selectedRowOverlayActions={selectedRowOverlayActions}
       rowImagesByIndex={rowImagesByIndex}
       editorWriters={editorWriters}
     >

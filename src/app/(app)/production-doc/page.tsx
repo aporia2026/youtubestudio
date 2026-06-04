@@ -14277,13 +14277,34 @@ function ProductionDocPage() {
       }
       // R3 PR5: overlay state for the selected row. Drives the
       // read-only Overlay tab — stock terms, status pill, transparent
-      // PNG preview. Edit / Rethink / Replace / Undo / Reset writers
-      // land in a follow-up PR (4 modals + a context menu need their
-      // own scope).
+      // PNG preview.
       selectedRowOverlay={
         expandedRow !== null && expandedRow >= 0 && rowOverlays[expandedRow]
           ? rowOverlays[expandedRow]
           : null
+      }
+      // R3 Overlay-editable: bind row-scoped action callbacks. Reuses
+      // the same helpers/state setters today's OverlayCell + context
+      // menu use, so behaviour matches exactly.
+      selectedRowOverlayActions={
+        expandedRow !== null && expandedRow >= 0 && doc?.rows[expandedRow]
+          ? (() => {
+              const row = doc.rows[expandedRow];
+              const terms = row.overlay_stock_terms?.trim() ?? '';
+              return {
+                onRethink: terms
+                  ? () => { void fetchOverlayForRow(expandedRow, terms); }
+                  : undefined,
+                onEdit: () => setOverlayEditRow(expandedRow),
+                onReset: () => updateRow(expandedRow, {
+                  overlay_position: undefined,
+                  overlay_size_pct: undefined,
+                  overlay_stretched_height_pct: undefined,
+                }),
+                onRemove: () => removeOverlayFromRow(expandedRow),
+              };
+            })()
+          : undefined
       }
       // R3 PR4d: full rowImages array so the Variants tab can render
       // the mini-strip of thumbnails for the active row's group.

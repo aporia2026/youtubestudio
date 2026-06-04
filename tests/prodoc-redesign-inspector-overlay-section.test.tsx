@@ -91,6 +91,84 @@ describe('StudioInspectorOverlay — image preview', () => {
   });
 });
 
+describe('StudioInspectorOverlay — action buttons (R3 Overlay-editable)', () => {
+  it('renders ↻ Rethink when onRethink is wired AND stockTerms are present', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        overlay={{ status: 'done', url: 'https://x/o.png' }}
+        stockTerms="businessman"
+        onRethink={() => {}}
+      />,
+    );
+    expect(html).toContain('↻ Rethink');
+  });
+
+  it('omits ↻ Rethink when stockTerms are absent (no terms to refetch from)', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        overlay={{ status: 'done', url: 'https://x/o.png' }}
+        onRethink={() => {}}
+      />,
+    );
+    expect(html).not.toContain('↻ Rethink');
+  });
+
+  it('renders ✎ Edit only when an overlay image exists AND onEdit is wired', () => {
+    const noImage = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        stockTerms="x"
+        overlay={{ status: 'loading' }}
+        onEdit={() => {}}
+      />,
+    );
+    expect(noImage).not.toContain('✎ Edit');
+
+    const withImage = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        stockTerms="x"
+        overlay={{ status: 'done', url: 'https://x/o.png' }}
+        onEdit={() => {}}
+      />,
+    );
+    expect(withImage).toContain('✎ Edit');
+  });
+
+  it('renders ↺ Reset only when an overlay image exists AND onReset is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        stockTerms="x"
+        overlay={{ status: 'done', url: 'https://x/o.png' }}
+        onReset={() => {}}
+      />,
+    );
+    expect(html).toContain('↺ Reset');
+  });
+
+  it('renders ✕ Remove when onRemove is wired and the row has terms or an overlay', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        stockTerms="x"
+        overlay={{ status: 'done', url: 'https://x/o.png' }}
+        onRemove={() => {}}
+      />,
+    );
+    expect(html).toContain('✕ Remove');
+  });
+
+  it('hides every action button when no callback is wired (rule 10)', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorOverlay
+        stockTerms="x"
+        overlay={{ status: 'done', url: 'https://x/o.png' }}
+      />,
+    );
+    expect(html).not.toContain('↻ Rethink');
+    expect(html).not.toContain('✎ Edit');
+    expect(html).not.toContain('↺ Reset');
+    expect(html).not.toContain('✕ Remove');
+  });
+});
+
 describe('StudioInspectorOverlay — error display', () => {
   it('renders the error message when status=error and error is set', () => {
     const html = renderToStaticMarkup(

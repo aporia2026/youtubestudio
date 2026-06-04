@@ -14,6 +14,7 @@ import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
+import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
 
 const STUDIO_SUB_MODE_PREF_KEY = 'prodoc_studio_sub_mode';
 
@@ -62,6 +63,9 @@ export interface StudioModeProps {
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
   /** Overlay state for the currently-selected row. R3 PR5. */
   selectedRowOverlay?: RowOverlayState | null;
+  /** Overlay action callbacks for the currently-selected row.
+   *  R3 Overlay-editable. */
+  selectedRowOverlayActions?: StudioInspectorOverlayActions;
   /** Image state per row indexed by 0-based row index. Used by the
    *  Variants tab to render mini-strip thumbnails for the group.
    *  R3 PR4d. */
@@ -86,6 +90,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowImageActions,
   selectedRowVideoClip = null,
   selectedRowOverlay = null,
+  selectedRowOverlayActions,
   rowImagesByIndex,
   initialSubMode,
   editorWriters,
@@ -144,6 +149,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
               selectedRowImageActions={selectedRowImageActions}
               selectedRowVideoClip={selectedRowVideoClip}
               selectedRowOverlay={selectedRowOverlay}
+              selectedRowOverlayActions={selectedRowOverlayActions}
               doc={doc}
               rowImagesByIndex={rowImagesByIndex}
               editorWriters={editorWriters}
