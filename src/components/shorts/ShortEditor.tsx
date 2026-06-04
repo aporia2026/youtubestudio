@@ -20,13 +20,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import type { PlayerRef } from '@remotion/player';
 import { EditorShell } from '@/components/shorts/editor/EditorShell';
+import { AssetPreviewModal } from '@/components/shorts/editor/AssetPreviewModal';
 import {
   computeRenderCtaState,
   parseTabHash,
   type TabKey,
 } from '@/components/shorts/editor/editor-tabs';
-import { type ShortVideoConfig } from '@/lib/shorts-render-types';
+import { SHORT_FPS, type ShortVideoConfig } from '@/lib/shorts-render-types';
 import type {
   GenerationProgressState,
   ShortFrameAnimation,
@@ -111,6 +113,20 @@ export function ShortEditor({ shortId }: { shortId: string }) {
 
   // Phase 15.11 — alignment data for accurate caption timing in the preview.
   const [alignment, setAlignment] = useState<ForcedAlignmentResponse | null>(null);
+
+  // Remotion Player ref — let the Shots panel seek the preview to a
+  // specific frame's start_ms without dragging the scrubber. Forwarded
+  // into the EditorShell's <Player ref=…> mount.
+  const playerRef = useRef<PlayerRef>(null);
+
+  // Asset preview modal. The Shots panel's thumbnail click opens this
+  // with the frame's image + (optional) animation. Null = closed.
+  interface AssetPreview {
+    title: string;
+    imageUrl: string;
+    animationUrl?: string;
+  }
+  const [assetPreview, setAssetPreview] = useState<AssetPreview | null>(null);
 
   // Active right-rail tab — bound to URL hash for deep-linking + browser back.
   const [activeTab, setActiveTab] = useState<TabKey>('script');
@@ -481,6 +497,24 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     }
   }, [row, stylePick, loadRow]);
 
+  // ── action: seek the preview Player to a specific time ────────────
+  // Used by the Shots panel's "Jump to" buttons. Converts ms → frames
+  // at the composition's fps and calls Remotion's imperative seekTo.
+  // Pauses first so the seek is visible (a playing video will scrub
+  // through the target almost immediately on resume).
+  const seekToMs = useCallback((ms: number) => {
+    const player = playerRef.current;
+    if (!player) return;
+    const safeMs = Math.max(0, Math.floor(ms));
+    const frame = Math.round((safeMs / 1000) * SHORT_FPS);
+    try {
+      player.pause();
+    } catch {
+      /* not all states allow pause; ignore */
+    }
+    player.seekTo(frame);
+  }, []);
+
   // ── action: sync video length to the actual voiceover audio ───────
   // The render path + preview Player read from voiceover_duration_seconds.
   // This button calls the sync-duration endpoint which downloads the
@@ -758,7 +792,13 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           )}
         </div>
         <GenerationProgressStrip progress={row.generation_progress} onRetry={generateAssets} />
-        <ShotsPanel row={row} onChange={loadRow} />
+        <ShotsPanel
+          row={row}
+          captions={previewConfig?.captions ?? []}
+          onChange={loadRow}
+          onSeekToMs={seekToMs}
+          onOpenPreview={(p) => setAssetPreview(p)}
+        />
       </EditorSection>
     ),
     captions: (
@@ -963,17 +1003,28 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   };
 
   return (
-    <EditorShell
-      row={row}
-      previewConfig={previewConfig}
-      previewMessage={previewMessage}
-      previewDurationFrames={previewDurationFrames}
-      activeTab={activeTab}
-      onTabChange={setTab}
-      renderCta={renderCta}
-      onRenderClick={onTopBarRender}
-      tabContent={tabContent}
-    />
+    <>
+      <EditorShell
+        row={row}
+        previewConfig={previewConfig}
+        previewMessage={previewMessage}
+        previewDurationFrames={previewDurationFrames}
+        activeTab={activeTab}
+        onTabChange={setTab}
+        renderCta={renderCta}
+        onRenderClick={onTopBarRender}
+        tabContent={tabContent}
+        playerRef={playerRef}
+      />
+      {assetPreview && (
+        <AssetPreviewModal
+          title={assetPreview.title}
+          imageUrl={assetPreview.imageUrl}
+          animationUrl={assetPreview.animationUrl}
+          onClose={() => setAssetPreview(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -1071,6 +1122,17 @@ function positionToChoice(positionY: number | undefined): CaptionPositionChoice 
 function formatMs(ms: number): string {
   const sec = ms / 1000;
   return `${sec.toFixed(2)}s`;
+}
+
+/** Compact M:SS clock for the Shots panel's "Jump to" pills.
+ *  Negative / NaN values render as 0:00 (defensive — captions array
+ *  rarely has a hole, but never want a "Jump to NaN:NaN" surface). */
+function formatMmSs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '0:00';
+  const totalSec = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec - minutes * 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 }
 
 function CaptionsEditorPanel({
@@ -1770,7 +1832,26 @@ function ShortImageModelControls() {
   );
 }
 
-function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<void> | void }) {
+function ShotsPanel({
+  row,
+  captions,
+  onChange,
+  onSeekToMs,
+  onOpenPreview,
+}: {
+  row: ShortRow;
+  /** Caption chunks from the preview's ShortVideoConfig — used to map a
+   *  frame's `caption_chunk_start_index` to a start_ms for the "Jump to
+   *  ..." pill. Pass an empty array when no preview is buildable; pills
+   *  hide. */
+  captions: ReadonlyArray<{ start_ms: number; end_ms: number; text: string }>;
+  onChange: () => Promise<void> | void;
+  /** Seek the preview Player to a specific ms. */
+  onSeekToMs: (ms: number) => void;
+  /** Open the asset preview modal with the given image (and optional
+   *  i2v animation). */
+  onOpenPreview: (p: { title: string; imageUrl: string; animationUrl?: string }) => void;
+}) {
   const picked = pickShotsBlock(row);
 
   // Per-frame busy state. Keys: 'base' for the base frame; numeric index
@@ -2368,44 +2449,67 @@ function ShotsPanel({ row, onChange }: { row: ShortRow; onChange: () => Promise<
               }
             : undefined
         }
+        // Base frame always starts at 0ms.
+        startMs={0}
+        onSeekToMs={onSeekToMs}
+        onOpenPreview={() =>
+          onOpenPreview({
+            title: 'Base frame',
+            imageUrl: picked.block.base_url,
+            animationUrl: picked.block.base_animation?.video_url,
+          })
+        }
       />
 
-      {picked.block.variants.map((v, i) => (
-        <ShotFrameCard
-          key={`${v.url}-${i}`}
-          title={v.collage ? `Variant ${i} · 2×2 collage` : `Variant ${i}`}
-          subtitle={
-            v.collage
-              ? `Swaps in at caption chunk ${v.caption_chunk_start_index} · ${v.collage.panels.length}-panel collage · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`
-              : `Swaps in at caption chunk ${v.caption_chunk_start_index} · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`
-          }
-          imageUrl={v.url}
-          collage={v.collage}
-          animation={v.animation}
-          prompt={variantPromptDrafts[i] ?? ''}
-          onPromptChange={(s) =>
-            setVariantPromptDrafts((prev) => ({ ...prev, [i]: s }))
-          }
-          promptPlaceholder={
-            v.edit_prompt
-              ? undefined
-              : '(no prompt recorded — type a new edit instruction to regenerate)'
-          }
-          busy={!!busy[`v${i}`]}
-          primaryLabel="Regenerate"
-          onPrimary={() => regenerateVariant(i)}
-          danger={{ label: 'Delete', onClick: () => deleteVariant(i) }}
-          animate={
-            i2vModels.length > 0
-              ? {
-                  busy: !!busy[`anim-v${i}`],
-                  onAnimate: () => animateVariant(i),
-                  onClear: () => clearVariantAnimation(i),
-                }
-              : undefined
-          }
-        />
-      ))}
+      {picked.block.variants.map((v, i) => {
+        const startMs = captions[v.caption_chunk_start_index]?.start_ms;
+        const variantTitle = v.collage ? `Variant ${i} · 2×2 collage` : `Variant ${i}`;
+        return (
+          <ShotFrameCard
+            key={`${v.url}-${i}`}
+            title={variantTitle}
+            subtitle={
+              v.collage
+                ? `Swaps in at caption chunk ${v.caption_chunk_start_index} · ${v.collage.panels.length}-panel collage · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`
+                : `Swaps in at caption chunk ${v.caption_chunk_start_index} · regen uses ${VARIANT_VENDOR_LABELS[vendor].label} (${VARIANT_VENDOR_LABELS[vendor].cost})`
+            }
+            imageUrl={v.url}
+            collage={v.collage}
+            animation={v.animation}
+            prompt={variantPromptDrafts[i] ?? ''}
+            onPromptChange={(s) =>
+              setVariantPromptDrafts((prev) => ({ ...prev, [i]: s }))
+            }
+            promptPlaceholder={
+              v.edit_prompt
+                ? undefined
+                : '(no prompt recorded — type a new edit instruction to regenerate)'
+            }
+            busy={!!busy[`v${i}`]}
+            primaryLabel="Regenerate"
+            onPrimary={() => regenerateVariant(i)}
+            danger={{ label: 'Delete', onClick: () => deleteVariant(i) }}
+            animate={
+              i2vModels.length > 0
+                ? {
+                    busy: !!busy[`anim-v${i}`],
+                    onAnimate: () => animateVariant(i),
+                    onClear: () => clearVariantAnimation(i),
+                  }
+                : undefined
+            }
+            startMs={startMs}
+            onSeekToMs={onSeekToMs}
+            onOpenPreview={() =>
+              onOpenPreview({
+                title: variantTitle,
+                imageUrl: v.url,
+                animationUrl: v.animation?.video_url,
+              })
+            }
+          />
+        );
+      })}
 
       {!appendOpen && !collageOpen ? (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
@@ -2647,6 +2751,9 @@ function ShotFrameCard({
   onPrimary,
   danger,
   animate,
+  startMs,
+  onSeekToMs,
+  onOpenPreview,
 }: {
   title: string;
   subtitle: string;
@@ -2665,6 +2772,14 @@ function ShotFrameCard({
     onAnimate: () => void;
     onClear: () => void;
   };
+  /** Frame's start time in the composition. Drives the "Jump to" pill;
+   *  hidden when undefined (e.g. captions array empty / chunk index out
+   *  of range). */
+  startMs?: number;
+  /** Seek the preview Player to a given ms. */
+  onSeekToMs?: (ms: number) => void;
+  /** Open the preview modal with this frame's asset(s). */
+  onOpenPreview?: () => void;
 }) {
   return (
     <div
@@ -2680,19 +2795,23 @@ function ShotFrameCard({
         alignItems: 'flex-start',
       }}
     >
-      <a
-        href={imageUrl}
-        target="_blank"
-        rel="noreferrer"
-        title="Open full size"
+      <button
+        type="button"
+        onClick={onOpenPreview}
+        disabled={!onOpenPreview}
+        title="Open full-size preview"
+        aria-label={`Open full-size preview of ${title}`}
         style={{
           display: 'block',
           width: 96,
-          aspectRatio: '2 / 3',
+          aspectRatio: '9 / 16',
           borderRadius: 8,
           overflow: 'hidden',
           background: '#000',
           border: '1px solid rgba(255,255,255,0.1)',
+          padding: 0,
+          cursor: onOpenPreview ? 'zoom-in' : 'default',
+          position: 'relative',
         }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -2701,10 +2820,49 @@ function ShotFrameCard({
           alt={title}
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
         />
-      </a>
+        {animation && (
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              bottom: 4,
+              right: 4,
+              padding: '1px 5px',
+              borderRadius: 4,
+              background: 'rgba(0,0,0,0.65)',
+              color: '#fff',
+              fontSize: 9,
+              fontWeight: 600,
+              lineHeight: 1.3,
+            }}
+          >
+            ▶ MP4
+          </span>
+        )}
+      </button>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12, fontWeight: 600 }}>{title}</span>
+          {typeof startMs === 'number' && onSeekToMs && (
+            <button
+              type="button"
+              onClick={() => onSeekToMs(startMs)}
+              title="Jump the preview to this frame's start"
+              style={{
+                padding: '2px 8px',
+                borderRadius: 999,
+                border: '1px solid rgba(167,139,250,0.4)',
+                background: 'rgba(167,139,250,0.1)',
+                color: '#c4b5fd',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: 'pointer',
+                lineHeight: 1.3,
+              }}
+            >
+              ↪ Jump to {formatMmSs(startMs)}
+            </button>
+          )}
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{subtitle}</span>
           {busy && (
             <span style={{ fontSize: 11, color: '#fde68a' }}>● working…</span>

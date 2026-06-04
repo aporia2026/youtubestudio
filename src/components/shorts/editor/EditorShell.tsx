@@ -27,9 +27,10 @@
  * minimize toggle that collapses it to a thumbnail.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode, type Ref } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
+import type { PlayerRef } from '@remotion/player';
 import {
   SHORT_FPS,
   SHORT_HEIGHT,
@@ -68,6 +69,7 @@ const Player = dynamic(() => import('@remotion/player').then((m) => m.Player), {
   durationInFrames: number;
   controls?: boolean;
   style?: React.CSSProperties;
+  ref?: Ref<PlayerRef>;
 }>;
 
 const ShortVideo = dynamic(
@@ -97,6 +99,10 @@ export interface EditorShellProps {
   /** Tab content by key. Each entry is the JSX rendered when its tab
    *  is active. The orchestrator owns all state + handlers in scope. */
   tabContent: Record<TabKey, ReactNode>;
+  /** Optional ref to the Remotion Player so the orchestrator can drive
+   *  it imperatively — seekTo / play / pause from controls outside the
+   *  preview box (e.g. "Jump to frame" buttons in the Shots panel). */
+  playerRef?: Ref<PlayerRef>;
 }
 
 export function EditorShell(props: EditorShellProps) {
@@ -143,6 +149,7 @@ export function EditorShell(props: EditorShellProps) {
           previewMinimized={previewMinimized}
           onTogglePreview={() => setPreviewMinimized((v) => !v)}
           generationProgress={props.row.generation_progress}
+          playerRef={props.playerRef}
         />
 
         <RightRail
@@ -245,6 +252,7 @@ function LeftRail({
   previewMinimized,
   onTogglePreview,
   generationProgress,
+  playerRef,
 }: {
   previewConfig: ShortVideoConfig | null;
   previewMessage: string | null;
@@ -254,6 +262,7 @@ function LeftRail({
   previewMinimized: boolean;
   onTogglePreview: () => void;
   generationProgress: ShortRow['generation_progress'];
+  playerRef?: Ref<PlayerRef>;
 }) {
   const containerStyle: React.CSSProperties = isNarrow
     ? {
@@ -303,6 +312,7 @@ function LeftRail({
         >
           {previewConfig ? (
             <Player
+              ref={playerRef}
               component={ShortVideo}
               inputProps={{ config: previewConfig }}
               compositionWidth={SHORT_WIDTH}
