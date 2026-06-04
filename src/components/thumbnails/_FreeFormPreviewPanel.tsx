@@ -165,6 +165,12 @@ export function FreeFormPreviewPanel({
   cellNoun = 'card',
   presetsStorageKey,
   onApplyPreset,
+  cellBorderWeight,
+  cellLabelPosition,
+  cellLabelCase,
+  cellFillStyle,
+  cellOverlapLabelStroke,
+  cutoutImageUrls,
 }: {
   inputs: FreeFormCellInput[];
   canvasWidth: number;
@@ -198,6 +204,20 @@ export function FreeFormPreviewPanel({
    *  applies the preset's freeFormCells + canvasOptions via setters
    *  passed from the host. Required when `presetsStorageKey` is set. */
   onApplyPreset?: (preset: FreeFormPreset) => void;
+  /** Panel-level circle-parity axes (TCG, 2026-06-04). Each is uniform
+   *  across the whole grid — the user picks one value via the Card
+   *  style controls in TopicCardGridPanel and every cell inherits it.
+   *  The renderer ignores these for non-circle shapes. NLevelsPanel
+   *  omits all five and keeps its legacy behaviour. */
+  cellBorderWeight?: 'thin' | 'thick';
+  cellLabelPosition?: 'below' | 'overlap';
+  cellLabelCase?: 'title' | 'upper';
+  cellFillStyle?: 'photo' | 'cutout' | 'icon';
+  cellOverlapLabelStroke?: 'white-on-black' | 'black-on-white';
+  /** Per-cell cutout PNG URLs keyed by 1-based cell index. Only
+   *  consulted when `cellFillStyle === 'cutout'`. Same shape as the
+   *  `cutouts` map TopicCardGridPanel keeps alongside `uploads`. */
+  cutoutImageUrls?: Record<number, string>;
 }): ReactElement {
   const rendererCells: FreeFormCell[] = inputs.map((input) => {
     const content = freeFormCells[input.index] ?? DEFAULT_FREE_FORM_CELL_STATE;
@@ -219,6 +239,12 @@ export function FreeFormPreviewPanel({
       labelSizeMultiplier: content.labelSizeMultiplier,
       imageUrl: content.imageUrl,
       imageFit: content.imageFit,
+      borderWeight: cellBorderWeight,
+      labelPosition: cellLabelPosition,
+      labelCase: cellLabelCase,
+      fillStyle: cellFillStyle,
+      overlapLabelStroke: cellOverlapLabelStroke,
+      cutoutImageUrl: cutoutImageUrls?.[input.index],
     };
   });
   // Icon picker UI state — search query + per-cell open dropdown id +

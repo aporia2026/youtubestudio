@@ -51,8 +51,16 @@ import {
 } from '@/components/thumbnails/_FreeFormPreviewPanel';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import {
+  CARD_STYLE_PRESETS,
+  cardStylePresetAxes,
   computeRegions,
   makeDefaultLayout,
+  type BorderWeight,
+  type CardStylePreset,
+  type FillStyle,
+  type LabelCase,
+  type LabelPosition,
+  type OverlapLabelStroke,
 } from '@/lib/thumbnail-formats/topic-card-grid';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
@@ -108,6 +116,24 @@ export interface FormatGenerationResult {
    *  that was composited into that cell. Empty when no cells had
    *  attached uploads. */
   uploads?: Record<number, string>;
+  /** 1-based cell index → R2 download URL of the background-removed
+   *  cutout PNG, populated by the `/api/thumbnails/grid-rmbg` route
+   *  the first time the user picks `fillStyle === 'cutout'` for a
+   *  card. Cached so toggling `fillStyle` is free after the first
+   *  call. Drops fields for indexes no longer in the grid. */
+  cutouts?: Record<number, string>;
+  /** Border-weight axis used for this render. Defaults to `'thin'` on
+   *  history entries restored from before the axis shipped. */
+  borderWeight?: BorderWeight;
+  /** Label-position axis. Defaults to `'below'` on legacy entries. */
+  labelPosition?: LabelPosition;
+  /** Label-case axis. Defaults to `'title'` on legacy entries. */
+  labelCase?: LabelCase;
+  /** Fill-style axis. Defaults to `'photo'` on legacy entries. */
+  fillStyle?: FillStyle;
+  /** Stroke pairing for overlap labels. Only meaningful when
+   *  `labelPosition === 'overlap'`. Defaults to `'white-on-black'`. */
+  overlapLabelStroke?: OverlapLabelStroke;
 }
 
 /**
@@ -130,9 +156,22 @@ export interface TopicCardGridDraftState {
   /** Visual card shape selected by the user. Defaults to `'square'` for
    *  drafts saved before the shape toggle shipped. */
   cardShape?: CardShape;
+  /** Five circle-parity axes (2026-06-04). Each defaults to the
+   *  pre-parity value on legacy drafts so older entries hydrate
+   *  cleanly. The Preset row in the panel writes all five at once. */
+  borderWeight?: BorderWeight;
+  labelPosition?: LabelPosition;
+  labelCase?: LabelCase;
+  fillStyle?: FillStyle;
+  overlapLabelStroke?: OverlapLabelStroke;
   /** 1-based cell index → R2 download URL of an uploaded image. Restored
    *  so a refresh mid-review keeps the user's attachments. */
   uploads?: Record<number, string>;
+  /** 1-based cell index → R2 download URL of the background-removed
+   *  cutout PNG for that card. Persisted so the cached cutout survives
+   *  a refresh and the user doesn't pay Replicate twice for the same
+   *  source image. */
+  cutouts?: Record<number, string>;
   /** 1-based cell index → per-upload fit strategy. Drafts saved before
    *  the fit picker shipped restore with this field undefined, which
    *  the panel treats as `'cover'` (the historical default). */
@@ -398,6 +437,15 @@ const IMAGE_MODELS = [
 const REGION_OVERLAY_PREF_KEY = 'topic_card_grid_region_overlay';
 const IMAGE_MODEL_PREF_KEY = 'topic_card_grid_default_image_model';
 const CARD_SHAPE_PREF_KEY = 'topic_card_grid_default_card_shape';
+/** Five new axes from the circle-parity work (2026-06-04). Each persists
+ *  independently so a user who tweaks one stays on the others' defaults;
+ *  the Preset row writes all five at once. See plan
+ *  `_plans/2026-06-04-topic-card-grid-circle-parity.md`. */
+const BORDER_WEIGHT_PREF_KEY = 'topic_card_grid_default_border_weight';
+const LABEL_POSITION_PREF_KEY = 'topic_card_grid_default_label_position';
+const LABEL_CASE_PREF_KEY = 'topic_card_grid_default_label_case';
+const FILL_STYLE_PREF_KEY = 'topic_card_grid_default_fill_style';
+const OVERLAP_STROKE_PREF_KEY = 'topic_card_grid_default_overlap_stroke';
 const BRIGHTNESS_PREF_KEY = 'topic_card_grid_default_brightness';
 const DETAIL_PREF_KEY = 'topic_card_grid_default_detail';
 const STYLE_PREF_KEY = 'topic_card_grid_default_style';
@@ -1014,6 +1062,35 @@ export interface SavedPresetSummary {
  *  fields only emit when subtitle text is non-empty so a stale
  *  subtitleColor / subtitleFontId from a previous edit doesn't leak
  *  into the request. */
+/** Sniff whether a user-uploaded image already has an alpha channel.
+ *  Used to skip the paid background-removal call for PNGs the user has
+ *  already pre-cut. Only PNG is reliably detectable from the first
+ *  ~32 bytes (IHDR sits at a fixed offset; the color-type byte at
+ *  position 25 carries values 4 or 6 when alpha is present). WebP can
+ *  also carry alpha but the VP8X chunk needs a deeper sniff — for now
+ *  WebP returns `false` and we let the rmbg call handle it. JPEG /
+ *  GIF never carry alpha in the way we care about. Pure-client helper
+ *  so the panel can decide before incurring the R2 upload latency. */
+async function detectImageAlpha(file: File): Promise<boolean> {
+  if (file.type !== 'image/png') return false;
+  try {
+    const head = await file.slice(0, 32).arrayBuffer();
+    const bytes = new Uint8Array(head);
+    // PNG signature: 89 50 4E 47 0D 0A 1A 0A. Bail if it doesn't match,
+    // since a non-PNG with image/png MIME is malformed and we shouldn't
+    // try to interpret offset 25.
+    if (
+      bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47
+    ) {
+      return false;
+    }
+    const colorType = bytes[25];
+    return colorType === 4 || colorType === 6;
+  } catch {
+    return false;
+  }
+}
+
 function buildTitleBarRequestPayload(s: PanelTitleBarState): TitleBarRequestPayloadShape | undefined {
   const trimmedText = s.text.trim();
   if (!s.enabled || !trimmedText) return undefined;
@@ -1247,6 +1324,96 @@ export function TopicCardGridPanel({
   useEffect(() => {
     try { localStorage.setItem(CARD_SHAPE_PREF_KEY, cardShape); } catch { /* ignore */ }
   }, [cardShape]);
+
+  // Five circle-parity axes (2026-06-04). Mirror the cardShape pattern
+  // exactly — lazy localStorage initialiser, useEffect writer. Defaults
+  // chosen so a user landing on the panel for the first time sees the
+  // pre-parity look (no surprise), and the Preset row writes all five
+  // at once via the buttons below. See plan
+  // `_plans/2026-06-04-topic-card-grid-circle-parity.md` §"The six
+  // variation axes".
+  const [borderWeight, setBorderWeight] = useState<BorderWeight>(() => {
+    if (typeof window === 'undefined') return 'thin';
+    try {
+      const v = localStorage.getItem(BORDER_WEIGHT_PREF_KEY);
+      if (v === 'thin' || v === 'thick') return v;
+    } catch { /* fall through */ }
+    return 'thin';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(BORDER_WEIGHT_PREF_KEY, borderWeight); } catch { /* ignore */ }
+  }, [borderWeight]);
+
+  const [labelPosition, setLabelPosition] = useState<LabelPosition>(() => {
+    if (typeof window === 'undefined') return 'below';
+    try {
+      const v = localStorage.getItem(LABEL_POSITION_PREF_KEY);
+      if (v === 'below' || v === 'overlap') return v;
+    } catch { /* fall through */ }
+    return 'below';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LABEL_POSITION_PREF_KEY, labelPosition); } catch { /* ignore */ }
+  }, [labelPosition]);
+
+  const [labelCase, setLabelCase] = useState<LabelCase>(() => {
+    if (typeof window === 'undefined') return 'title';
+    try {
+      const v = localStorage.getItem(LABEL_CASE_PREF_KEY);
+      if (v === 'title' || v === 'upper') return v;
+    } catch { /* fall through */ }
+    return 'title';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LABEL_CASE_PREF_KEY, labelCase); } catch { /* ignore */ }
+  }, [labelCase]);
+
+  const [fillStyle, setFillStyle] = useState<FillStyle>(() => {
+    if (typeof window === 'undefined') return 'photo';
+    try {
+      const v = localStorage.getItem(FILL_STYLE_PREF_KEY);
+      if (v === 'photo' || v === 'cutout' || v === 'icon') return v;
+    } catch { /* fall through */ }
+    return 'photo';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(FILL_STYLE_PREF_KEY, fillStyle); } catch { /* ignore */ }
+  }, [fillStyle]);
+
+  const [overlapLabelStroke, setOverlapLabelStroke] = useState<OverlapLabelStroke>(() => {
+    if (typeof window === 'undefined') return 'white-on-black';
+    try {
+      const v = localStorage.getItem(OVERLAP_STROKE_PREF_KEY);
+      if (v === 'white-on-black' || v === 'black-on-white') return v;
+    } catch { /* fall through */ }
+    return 'white-on-black';
+  });
+  useEffect(() => {
+    try { localStorage.setItem(OVERLAP_STROKE_PREF_KEY, overlapLabelStroke); } catch { /* ignore */ }
+  }, [overlapLabelStroke]);
+
+  /** Apply a named preset by writing all five axes at once. The cardShape
+   *  is forced to `'circle'` because every preset in `CARD_STYLE_PRESETS`
+   *  is part of the circle-parity work — the presets aren't meaningful
+   *  for square cards. The user can still tweak any axis after via the
+   *  per-axis controls below. */
+  function applyCardStylePreset(preset: CardStylePreset): void {
+    const axes = cardStylePresetAxes(preset);
+    console.info('[topic-card-grid panel] preset applied', { preset, axes });
+    setCardShape(axes.cardShape);
+    setBorderWeight(axes.borderWeight);
+    setLabelPosition(axes.labelPosition);
+    setLabelCase(axes.labelCase);
+    setFillStyle(axes.fillStyle);
+    setOverlapLabelStroke(axes.overlapLabelStroke);
+  }
+
+  // Per-card cutout PNG cache. Keyed by 1-based card index, value is
+  // the R2 URL returned by `/api/thumbnails/grid-rmbg`. Populated on
+  // demand the first time the user picks `fillStyle === 'cutout'` on
+  // a card whose source image has no alpha, and reused on every
+  // subsequent render so toggling fill style stays free.
+  const [cutouts, setCutouts] = useState<Record<number, string>>({});
 
   // Brightness / detail knobs. Defaults shift to bright + clean —
   // the Phase 1.7 design rebalance. Persisted to localStorage so a
@@ -1612,7 +1779,13 @@ export function TopicCardGridPanel({
     setFormatMode(restoredResult.mode);
     setImageModelId(restoredResult.formatImageModel);
     setCardShape(restoredResult.cardShape ?? 'square');
+    setBorderWeight(restoredResult.borderWeight ?? 'thin');
+    setLabelPosition(restoredResult.labelPosition ?? 'below');
+    setLabelCase(restoredResult.labelCase ?? 'title');
+    setFillStyle(restoredResult.fillStyle ?? 'photo');
+    setOverlapLabelStroke(restoredResult.overlapLabelStroke ?? 'white-on-black');
     setUploads(restoredResult.uploads ?? {});
+    setCutouts(restoredResult.cutouts ?? {});
     setCards(restoredResult.cards);
     setPalette(restoredResult.palette);
     setResult(restoredResult);
@@ -1639,7 +1812,13 @@ export function TopicCardGridPanel({
     setPrefilledLabels(restoredDraftState.prefilledLabels);
     setImageModelId(restoredDraftState.imageModelId);
     setCardShape(restoredDraftState.cardShape ?? 'square');
+    setBorderWeight(restoredDraftState.borderWeight ?? 'thin');
+    setLabelPosition(restoredDraftState.labelPosition ?? 'below');
+    setLabelCase(restoredDraftState.labelCase ?? 'title');
+    setFillStyle(restoredDraftState.fillStyle ?? 'photo');
+    setOverlapLabelStroke(restoredDraftState.overlapLabelStroke ?? 'white-on-black');
     setUploads(restoredDraftState.uploads ?? {});
+    setCutouts(restoredDraftState.cutouts ?? {});
     setUploadFit(restoredDraftState.uploadFit ?? {});
     setUploadFilter(restoredDraftState.uploadFilter ?? {});
     setCards(restoredDraftState.cards);
@@ -1671,7 +1850,13 @@ export function TopicCardGridPanel({
       grid_mode: restoredDraftState.gridMode,
       format_mode: restoredDraftState.formatMode,
       card_shape: restoredDraftState.cardShape ?? 'square',
+      border_weight: restoredDraftState.borderWeight ?? 'thin',
+      label_position: restoredDraftState.labelPosition ?? 'below',
+      label_case: restoredDraftState.labelCase ?? 'title',
+      fill_style: restoredDraftState.fillStyle ?? 'photo',
+      overlap_stroke: restoredDraftState.overlapLabelStroke ?? 'white-on-black',
       uploads_count: Object.keys(restoredDraftState.uploads ?? {}).length,
+      cutouts_count: Object.keys(restoredDraftState.cutouts ?? {}).length,
       style: restoredDraftState.style ?? 'cartoon',
     });
   }, [restoredDraftState]);
@@ -1693,7 +1878,13 @@ export function TopicCardGridPanel({
       palette,
       notesForImageModel,
       cardShape,
+      borderWeight,
+      labelPosition,
+      labelCase,
+      fillStyle,
+      overlapLabelStroke,
       uploads,
+      cutouts,
       uploadFit,
       uploadFilter,
       style,
@@ -1706,7 +1897,8 @@ export function TopicCardGridPanel({
   }, [
     gridMode, presetIdx, customRows, customCols, formatMode,
     prefilledLabels, imageModelId, cards, palette, notesForImageModel,
-    cardShape, uploads, uploadFit, uploadFilter, style, styleFreeForm, labelSize, fontId,
+    cardShape, borderWeight, labelPosition, labelCase, fillStyle, overlapLabelStroke,
+    uploads, cutouts, uploadFit, uploadFilter, style, styleFreeForm, labelSize, fontId,
     postProcess, titleBar,
     onDraftStateChange,
   ]);
@@ -1795,6 +1987,15 @@ export function TopicCardGridPanel({
     });
     const startedAt = Date.now();
     try {
+      // Sniff the file BEFORE the R2 upload so we can decide whether
+      // the user's upload already has alpha (skip the paid Replicate
+      // call entirely) or we need to background-remove. PNG color
+      // type byte sits at offset 25 in the IHDR chunk (values 4 / 6
+      // = grayscale-alpha / RGB-alpha). For any other format we
+      // optimistically assume "no alpha" and let the rmbg call run
+      // when fillStyle is cutout — the cost is $0.00044 and the
+      // false-positive rate of JPEG-with-alpha is zero.
+      const hasAlpha = await detectImageAlpha(file);
       // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
       const presignRes = await fetch('/api/uploads/topic-card-grid-cell', {
         method: 'POST',
@@ -1815,9 +2016,27 @@ export function TopicCardGridPanel({
       if (!putRes.ok) throw new Error(`R2 upload failed (${putRes.status})`);
       setUploads((prev) => ({ ...prev, [cardIndex]: downloadUrl }));
       console.info('[topic-card-grid panel] upload done', {
-        cardIndex, durationMs: Date.now() - startedAt,
+        cardIndex, durationMs: Date.now() - startedAt, hasAlpha,
       });
       toast.success(`Card ${cardIndex} image attached`);
+
+      // Background-remove on upload when the active fill style is
+      // 'cutout'. Pre-alpha uploads short-circuit to the source URL
+      // (no Replicate call, no audit row). Failures degrade
+      // gracefully — the upload is still attached, the user just
+      // doesn't get the cached cutout. The fillStyle effect below
+      // will retry if they toggle off-then-back-on. Rate-limited at
+      // 20/min/IP on the server side.
+      if (fillStyle === 'cutout') {
+        if (hasAlpha) {
+          setCutouts((prev) => ({ ...prev, [cardIndex]: downloadUrl }));
+          console.info('[topic-card-grid panel cutout]', {
+            cardIndex, source: 'user-alpha', durationMs: 0, ok: true,
+          });
+        } else {
+          void fetchCutoutForCard(cardIndex, downloadUrl);
+        }
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn('[topic-card-grid panel] upload error', { cardIndex, reason });
@@ -1831,6 +2050,44 @@ export function TopicCardGridPanel({
     }
   }
 
+  /** Fire-and-forget background-removal call for a single card. The
+   *  upload is already attached by the time we run, so any failure
+   *  here is purely about the cutout cache — never blocks the user.
+   *  Same call also used by the fillStyle-becomes-cutout effect for
+   *  cards uploaded under a different fill style. */
+  async function fetchCutoutForCard(cardIndex: number, sourceImageUrl: string): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
+      const res = await fetch('/api/thumbnails/grid-rmbg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceImageUrl, cardIndex }),
+      });
+      if (!res.ok) {
+        const data: { error?: string } = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Background removal failed (${res.status})`);
+      }
+      const { cutoutUrl } = (await res.json()) as { cutoutUrl?: string };
+      if (typeof cutoutUrl !== 'string' || !cutoutUrl.trim()) {
+        throw new Error('Background removal returned no URL');
+      }
+      setCutouts((prev) => ({ ...prev, [cardIndex]: cutoutUrl }));
+      console.info('[topic-card-grid panel cutout]', {
+        cardIndex, source: 'auto', durationMs: Date.now() - startedAt, ok: true,
+      });
+    } catch (err) {
+      console.warn('[topic-card-grid panel cutout]', {
+        cardIndex,
+        source: 'auto',
+        durationMs: Date.now() - startedAt,
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      toast.error(`Card ${cardIndex}: cutout failed — render will fall back to the original image.`);
+    }
+  }
+
   function clearCellUpload(cardIndex: number) {
     console.info('[topic-card-grid panel] upload clear', { cardIndex });
     setUploads((prev) => {
@@ -1838,7 +2095,56 @@ export function TopicCardGridPanel({
       delete next[cardIndex];
       return next;
     });
+    // Drop the matching cutout too — the source it was derived from
+    // is gone. If the user attaches a new image to this card the
+    // upload handler will repopulate.
+    setCutouts((prev) => {
+      if (!(cardIndex in prev)) return prev;
+      const next = { ...prev };
+      delete next[cardIndex];
+      return next;
+    });
   }
+
+  // Backfill cutouts when the user switches fillStyle to 'cutout'
+  // AFTER attaching uploads. Without this, only uploads added while
+  // cutout mode was active would get backgrounds removed — toggling
+  // the axis would do nothing for already-attached cards. We fire
+  // sequentially (one call at a time) to stay well under the 20/min
+  // rate limit even on large grids. Cards that already have a cached
+  // cutout in the map are skipped — the cache is free after the
+  // first call. Race-safe via a ref guard so flipping the axis on
+  // and off rapidly doesn't fork into parallel runs.
+  const cutoutBackfillRef = useRef(false);
+  useEffect(() => {
+    if (fillStyle !== 'cutout') return;
+    if (cutoutBackfillRef.current) return;
+    const missing = Object.entries(uploads)
+      .map(([k, v]) => ({ cardIndex: Number(k), sourceImageUrl: v }))
+      .filter((u) =>
+        Number.isInteger(u.cardIndex) &&
+        u.cardIndex >= 1 &&
+        u.cardIndex <= totalCards &&
+        !!u.sourceImageUrl &&
+        !cutouts[u.cardIndex],
+      );
+    if (missing.length === 0) return;
+    cutoutBackfillRef.current = true;
+    (async () => {
+      try {
+        for (const { cardIndex, sourceImageUrl } of missing) {
+          await fetchCutoutForCard(cardIndex, sourceImageUrl);
+        }
+      } finally {
+        cutoutBackfillRef.current = false;
+      }
+    })();
+    // The effect intentionally depends on fillStyle and uploads only
+    // — `cutouts` is updated inside the call and we don't want the
+    // backfill to retrigger on its own setState. `totalCards` is
+    // derived from grid mode + size and rarely changes mid-backfill.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fillStyle, uploads, totalCards]);
 
   async function runStep1() {
     if (!canGenerateCards) {
@@ -1943,12 +2249,28 @@ export function TopicCardGridPanel({
       })
       .filter((u) => Number.isInteger(u.cardIndex) && u.cardIndex >= 1 && u.cardIndex <= totalCards && !!u.imageUrl)
       .sort((a, b) => a.cardIndex - b.cardIndex);
+    // Build the cutouts payload alongside uploads — only meaningful
+    // when `fillStyle === 'cutout'`, but always send what we have so
+    // a server-side restart after a fillStyle toggle still finds the
+    // cached cutout. Stale-key filter mirrors the uploads filter so
+    // shrinking the grid doesn't leak ghost-cell cutouts to the
+    // server.
+    const liveCutoutsPayload = Object.entries(cutouts)
+      .map(([k, v]) => ({ cardIndex: Number(k), cutoutImageUrl: v }))
+      .filter((c) => Number.isInteger(c.cardIndex) && c.cardIndex >= 1 && c.cardIndex <= totalCards && !!c.cutoutImageUrl)
+      .sort((a, b) => a.cardIndex - b.cardIndex);
     console.info('[thumbnails format-grid image] requesting', {
       cardsCount: cardsToUse.length,
       imageModelId,
       editsApplied: 0,
       cardShape,
+      borderWeight,
+      labelPosition,
+      labelCase,
+      fillStyle,
+      overlapLabelStroke,
       uploadsCount: liveUploadsPayload.length,
+      cutoutsCount: liveCutoutsPayload.length,
     });
     setBusyStep('image');
     try {
@@ -1965,7 +2287,13 @@ export function TopicCardGridPanel({
           gridCols,
           referenceImageUrl: referenceImageUrl.trim(),
           cardShape,
+          borderWeight,
+          labelPosition,
+          labelCase,
+          fillStyle,
+          overlapLabelStroke,
           uploads: liveUploadsPayload.length > 0 ? liveUploadsPayload : undefined,
+          cutouts: liveCutoutsPayload.length > 0 ? liveCutoutsPayload : undefined,
           brightness,
           detail: detailLevel,
           style,
@@ -2021,8 +2349,16 @@ export function TopicCardGridPanel({
         outputWidth: data.layout.width,
         outputHeight: data.layout.height,
         cardShape,
+        borderWeight,
+        labelPosition,
+        labelCase,
+        fillStyle,
+        overlapLabelStroke,
         uploads: liveUploadsPayload.length > 0
           ? Object.fromEntries(liveUploadsPayload.map((u) => [u.cardIndex, u.imageUrl]))
+          : undefined,
+        cutouts: liveCutoutsPayload.length > 0
+          ? Object.fromEntries(liveCutoutsPayload.map((c) => [c.cardIndex, c.cutoutImageUrl]))
           : undefined,
       };
       setResult(generation);
@@ -2054,6 +2390,19 @@ export function TopicCardGridPanel({
     // position (1-based = idx + 1) and shift every entry above it down
     // by one so the keys still match the post-renumber card.index values.
     setUploads((prev) => {
+      const deletedCardIndex = idx + 1;
+      const next: Record<number, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const n = Number(k);
+        if (n === deletedCardIndex) continue;
+        next[n > deletedCardIndex ? n - 1 : n] = v;
+      }
+      return next;
+    });
+    // Cutouts shadow the uploads map 1:1 — same shift-down logic so
+    // each card keeps its cached background-removed PNG bound to the
+    // same index after the renumber.
+    setCutouts((prev) => {
       const deletedCardIndex = idx + 1;
       const next: Record<number, string> = {};
       for (const [k, v] of Object.entries(prev)) {
@@ -2105,6 +2454,20 @@ export function TopicCardGridPanel({
       if (tmp !== undefined) next[bKey] = tmp; else delete next[bKey];
       return next;
     });
+    // Mirror the swap for cutouts so the cache stays bound to the
+    // moving card, not to the cell-slot index.
+    setCutouts((prev) => {
+      const j = idx + dir;
+      if (j < 0) return prev;
+      const aKey = idx + 1;
+      const bKey = j + 1;
+      if (prev[aKey] === undefined && prev[bKey] === undefined) return prev;
+      const next = { ...prev };
+      const tmp = next[aKey];
+      if (next[bKey] !== undefined) next[aKey] = next[bKey]; else delete next[aKey];
+      if (tmp !== undefined) next[bKey] = tmp; else delete next[bKey];
+      return next;
+    });
   }
 
   function clearCards() {
@@ -2113,6 +2476,7 @@ export function TopicCardGridPanel({
     setPalette(null);
     setNotesForImageModel(undefined);
     setUploads({});
+    setCutouts({});
     setResult(null);
     onResultChange(null);
   }
@@ -2270,6 +2634,183 @@ export function TopicCardGridPanel({
                 : 'Each card is a disc on a white canvas, label centred beneath it.'}
             </p>
           </div>
+
+          {/* Card style — five circle-parity axes plus a one-click
+              preset row that flips all five at once. Hidden in square
+              mode because none of the five axes affect square cells
+              (the renderer scopes them to `shape === 'circle'`),
+              keeping the surface lean per rule 16. Plan:
+              `_plans/2026-06-04-topic-card-grid-circle-parity.md`. */}
+          {cardShape === 'circle' && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Card style preset
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {CARD_STYLE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => applyCardStylePreset(preset.id)}
+                      className="text-[11px] px-2.5 py-1 rounded transition-all"
+                      style={{
+                        background: 'var(--bg-card)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--text-secondary)',
+                      }}
+                      title={preset.description}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  One click sets all five axes below. Tweak any axis afterwards — the source of truth is the axes, not the preset.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Border weight
+                </label>
+                <div className="flex gap-1.5">
+                  {(['thin', 'thick'] as const).map((v) => {
+                    const active = borderWeight === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setBorderWeight(v)}
+                        className="text-[11px] px-2.5 py-1 rounded transition-all"
+                        style={{
+                          background: active ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                          border: `1px solid ${active ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                          color: active ? 'var(--accent-pink)' : 'var(--text-muted)',
+                        }}
+                      >
+                        {v === 'thin' ? 'Thin' : 'Thick'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Label position
+                </label>
+                <div className="flex gap-1.5">
+                  {(['below', 'overlap'] as const).map((v) => {
+                    const active = labelPosition === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setLabelPosition(v)}
+                        className="text-[11px] px-2.5 py-1 rounded transition-all"
+                        style={{
+                          background: active ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                          border: `1px solid ${active ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                          color: active ? 'var(--accent-pink)' : 'var(--text-muted)',
+                        }}
+                      >
+                        {v === 'below' ? 'Below' : 'Overlap'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Label case
+                </label>
+                <div className="flex gap-1.5">
+                  {(['title', 'upper'] as const).map((v) => {
+                    const active = labelCase === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setLabelCase(v)}
+                        className="text-[11px] px-2.5 py-1 rounded transition-all"
+                        style={{
+                          background: active ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                          border: `1px solid ${active ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                          color: active ? 'var(--accent-pink)' : 'var(--text-muted)',
+                        }}
+                      >
+                        {v === 'title' ? 'Title' : 'UPPER'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                  Fill style
+                </label>
+                <div className="flex gap-1.5">
+                  {(['photo', 'cutout', 'icon'] as const).map((v) => {
+                    const active = fillStyle === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setFillStyle(v)}
+                        className="text-[11px] px-2.5 py-1 rounded transition-all"
+                        style={{
+                          background: active ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                          border: `1px solid ${active ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                          color: active ? 'var(--accent-pink)' : 'var(--text-muted)',
+                        }}
+                      >
+                        {v === 'photo' ? 'Photo' : v === 'cutout' ? 'Cutout' : 'Icon'}
+                      </button>
+                    );
+                  })}
+                </div>
+                {fillStyle === 'cutout' && (
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                    Cutout fill removes the background from each uploaded photo (≈$0.0004/image, ≈2 s).
+                  </p>
+                )}
+              </div>
+
+              {/* Overlap stroke — only meaningful when labels overlap the
+                  disc. Hidden otherwise to keep the surface lean (rule 16:
+                  intuitive). */}
+              {labelPosition === 'overlap' && (
+                <div>
+                  <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                    Overlap stroke
+                  </label>
+                  <div className="flex gap-1.5">
+                    {(['white-on-black', 'black-on-white'] as const).map((v) => {
+                      const active = overlapLabelStroke === v;
+                      return (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setOverlapLabelStroke(v)}
+                          className="text-[11px] px-2.5 py-1 rounded transition-all"
+                          style={{
+                            background: active ? 'rgba(236,72,153,0.2)' : 'var(--bg-card)',
+                            border: `1px solid ${active ? 'rgba(236,72,153,0.4)' : 'var(--border)'}`,
+                            color: active ? 'var(--accent-pink)' : 'var(--text-muted)',
+                          }}
+                        >
+                          {v === 'white-on-black' ? 'White on black' : 'Black on white'}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Image model */}
           <div>
@@ -3681,7 +4222,13 @@ export function TopicCardGridPanel({
                           palette,
                           notesForImageModel,
                           cardShape,
+                          borderWeight,
+                          labelPosition,
+                          labelCase,
+                          fillStyle,
+                          overlapLabelStroke,
                           uploads,
+                          cutouts,
                           uploadFit,
                           uploadFilter,
                           style,
@@ -3744,7 +4291,13 @@ export function TopicCardGridPanel({
                       setPrefilledLabels(draft.prefilledLabels);
                       setImageModelId(draft.imageModelId);
                       setCardShape(draft.cardShape ?? 'square');
+                      setBorderWeight(draft.borderWeight ?? 'thin');
+                      setLabelPosition(draft.labelPosition ?? 'below');
+                      setLabelCase(draft.labelCase ?? 'title');
+                      setFillStyle(draft.fillStyle ?? 'photo');
+                      setOverlapLabelStroke(draft.overlapLabelStroke ?? 'white-on-black');
                       setUploads(draft.uploads ?? {});
+                      setCutouts(draft.cutouts ?? {});
                       setUploadFit(draft.uploadFit ?? {});
                       setUploadFilter(draft.uploadFilter ?? {});
                       setCards(draft.cards);
@@ -4213,6 +4766,12 @@ export function TopicCardGridPanel({
             labelFontFamily={findFontById(fontId)?.family ?? 'Patrick Hand'}
             cellNoun="card"
             downloadFilename="topic-card-grid-free-form.png"
+            cellBorderWeight={cardShape === 'circle' ? borderWeight : undefined}
+            cellLabelPosition={cardShape === 'circle' ? labelPosition : undefined}
+            cellLabelCase={cardShape === 'circle' ? labelCase : undefined}
+            cellFillStyle={cardShape === 'circle' ? fillStyle : undefined}
+            cellOverlapLabelStroke={cardShape === 'circle' ? overlapLabelStroke : undefined}
+            cutoutImageUrls={fillStyle === 'cutout' ? cutouts : undefined}
           />
           );
         })()}
