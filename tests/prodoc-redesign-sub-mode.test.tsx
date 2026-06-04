@@ -135,6 +135,51 @@ describe('StudioMode — layout switch via subMode (R3 PR6)', () => {
   });
 });
 
+describe('StudioMode — controlled subMode (R4 PR3)', () => {
+  it('uses the controlled subMode prop when provided (page.tsx pattern)', () => {
+    const html = renderToStaticMarkup(
+      <StudioMode
+        doc={SAMPLE_DOC}
+        subMode="bulk-grid"
+        onToggleSubMode={() => {}}
+      >
+        <span data-testid="grid">grid</span>
+      </StudioMode>,
+    );
+    // Bulk-grid sub-mode skips the 3-column layout — same observable
+    // contract as if `initialSubMode="bulk-grid"` had been passed.
+    expect(html).not.toMatch(/aria-label="Studio left rail"/);
+    expect(html).not.toMatch(/aria-label="Studio inspector"/);
+    expect(html).toContain('data-testid="grid"');
+  });
+
+  it('falls back to internal state when subMode is omitted (back-compat with R3 PR6 callers)', () => {
+    const html = renderToStaticMarkup(
+      <StudioMode doc={SAMPLE_DOC} initialSubMode="scene-strip">
+        <span>g</span>
+      </StudioMode>,
+    );
+    // Scene-strip layout is the default observable behaviour.
+    expect(html).toMatch(/aria-label="Studio left rail"/);
+  });
+
+  it('renders the toggle button label from the controlled subMode, not the internal state', () => {
+    const html = renderToStaticMarkup(
+      <StudioMode
+        doc={SAMPLE_DOC}
+        subMode="bulk-grid"
+        onToggleSubMode={() => {}}
+        initialSubMode="scene-strip"
+      >
+        <span>g</span>
+      </StudioMode>,
+    );
+    // Controlled value wins — bulk-grid → button reads "Scene strip".
+    expect(html).toContain('Scene strip');
+    expect(html).not.toMatch(/>\s*▦ Bulk grid\s*</);
+  });
+});
+
 describe('StudioMode — scene-strip orientation toggle (R4 PR2)', () => {
   it('renders the orientation toggle in scene-strip mode by default', () => {
     const html = renderToStaticMarkup(

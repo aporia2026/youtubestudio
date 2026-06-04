@@ -13,6 +13,7 @@ import {
   type StudioSubMode,
   type SceneStripOrientation,
 } from './StudioTopBar';
+import { useStudioSubMode } from './use-studio-sub-mode';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
@@ -22,7 +23,6 @@ import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
 import type { BrollCellProps } from '@/components/production-doc/BrollCell';
 
-const STUDIO_SUB_MODE_PREF_KEY = 'prodoc_studio_sub_mode';
 const SCENE_STRIP_ORIENTATION_PREF_KEY = 'prodoc_scene_strip_orientation';
 
 /**
@@ -80,10 +80,17 @@ export interface StudioModeProps {
    *  Variants tab to render mini-strip thumbnails for the group.
    *  R3 PR4d. */
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
-  /** Test-only override for the initial sub-mode. In real usage the
-   *  state hydrates from `getPref(STUDIO_SUB_MODE_PREF_KEY)` so the
-   *  user's last choice survives reloads. R3 PR6. */
+  /** Test-only override for the initial sub-mode when StudioMode owns
+   *  the state. Ignored when `subMode` + `onToggleSubMode` are
+   *  provided (controlled mode). R3 PR6. */
   initialSubMode?: StudioSubMode;
+  /** Controlled-mode sub-mode. When provided together with
+   *  `onToggleSubMode`, StudioMode does NOT own the state — useful
+   *  for `page.tsx` which also reads the sub-mode to gate the legacy
+   *  Results section. R4 PR3. */
+  subMode?: StudioSubMode;
+  /** Controlled-mode toggle handler. Paired with `subMode`. R4 PR3. */
+  onToggleSubMode?: () => void;
   /** Test-only override for the initial scene-strip orientation. In
    *  real usage the state hydrates from `getPref(SCENE_STRIP_…)`. R4 PR2. */
   initialSceneStripOrientation?: SceneStripOrientation;
@@ -112,23 +119,18 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   rowImagesByIndex,
   initialSubMode,
   initialSceneStripOrientation,
+  subMode: controlledSubMode,
+  onToggleSubMode: controlledOnToggleSubMode,
   onSelectRow,
   editorWriters,
 }) => {
-  // R3 PR6: Studio sub-mode toggle. Default 'scene-strip' (per §15.2
-  // of the plan). Persisted via getPref/setPref so the user's choice
-  // follows them across sessions and devices.
-  const [subMode, setSubMode] = useState<StudioSubMode>(
-    () => initialSubMode ?? getPref<StudioSubMode>(STUDIO_SUB_MODE_PREF_KEY, 'scene-strip'),
-  );
-  const toggleSubMode = useCallback(() => {
-    setSubMode((prev) => {
-      const next: StudioSubMode = prev === 'scene-strip' ? 'bulk-grid' : 'scene-strip';
-      setPref(STUDIO_SUB_MODE_PREF_KEY, next);
-      console.info('[prodoc studio] sub-mode-toggle', { to: next });
-      return next;
-    });
-  }, []);
+  // R3 PR6 + R4 PR3: Studio sub-mode toggle. When the caller passes
+  // controlled `subMode` + `onToggleSubMode` we defer to them (so
+  // page.tsx can also read the same state for legacy-grid hiding);
+  // otherwise we own the state internally, hydrating from getPref.
+  const internalSubMode = useStudioSubMode(initialSubMode);
+  const subMode = controlledSubMode ?? internalSubMode.subMode;
+  const toggleSubMode = controlledOnToggleSubMode ?? internalSubMode.toggleSubMode;
 
   // R4 PR2: scene-strip orientation toggle. Default 'horizontal'
   // (per §15.2). Persisted via getPref/setPref so the user's choice

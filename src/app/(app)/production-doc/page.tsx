@@ -114,6 +114,10 @@ import { EditorView } from '@/components/production-doc/editor/EditorView';
 // `_plans/2026-06-04-production-doc-redesign.md`. Gated by
 // `PROD_DOC_REDESIGN_V1_PUBLIC` (default off).
 import { ProductionDocShell } from '@/components/production-doc/redesign/ProductionDocShell';
+// R4 PR3: the Studio sub-mode hook is lifted out of StudioMode so
+// page.tsx can also read the same signal — needed to hide the legacy
+// grid when the user is in scene-strip mode.
+import { useStudioSubMode } from '@/components/production-doc/redesign/use-studio-sub-mode';
 // Visual-type color tokens — shared with the redesign's `StudioLegend`.
 // See `_plans/2026-06-04-production-doc-redesign.md` §R2 PR2.
 import { VISUAL_TYPE_COLORS } from '@/lib/visual-type-colors';
@@ -2513,6 +2517,12 @@ function ProductionDocPage() {
   const [editorViewMode, setEditorViewMode] = useState<'grid' | 'editor'>(
     search?.get('view') === 'editor' ? 'editor' : 'grid',
   );
+  // R4 PR3: lifted Studio sub-mode state. Both `ProductionDocShell`
+  // (drives the layout switch) and page.tsx (hides the legacy table
+  // when in scene-strip mode) read from this single source.
+  const { subMode: studioSubMode, toggleSubMode: toggleStudioSubMode } = useStudioSubMode();
+  const hideLegacyTableForRedesign =
+    PROD_DOC_REDESIGN_V1_PUBLIC && studioSubMode === 'scene-strip';
   const scheduleItemId = getScheduleLinkId(search);
   // Direct project handoff (e.g. from the project detail page's "Send to
   // Production Doc" button). Mirrors the schedule-item path but pulls the
@@ -11682,7 +11692,13 @@ function ProductionDocPage() {
             );
           })()}
 
-          {/* ── Desktop table */}
+          {/* ── Desktop table
+              R4 PR3: hidden when the redesign flag is on AND the user
+              is in Studio scene-strip sub-mode — the scene-card
+              strip + inspector replace the table as the primary edit
+              surface there. The Bulk Grid toggle in the top bar
+              brings the table back. */}
+          {!hideLegacyTableForRedesign && (
           <div className="glass rounded-xl overflow-hidden">
             <div className="overflow-x-auto hidden md:block">
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
@@ -13367,6 +13383,7 @@ function ProductionDocPage() {
               })}
             </div>
           </div>
+          )}
 
           {/* ── Video Preview & Render ─────────────────────────────────────── */}
           <div className="mt-6 glass rounded-xl overflow-hidden">
@@ -14359,6 +14376,11 @@ function ProductionDocPage() {
       // inspector and the legacy grid stay in sync (chevron + card
       // are equivalent selection affordances).
       onSelectRow={setExpandedRow}
+      // R4 PR3: controlled sub-mode. Both the shell (layout switch)
+      // and page.tsx (legacy-grid hide) share the same state via
+      // `useStudioSubMode`.
+      subMode={studioSubMode}
+      onToggleSubMode={toggleStudioSubMode}
     >
       {pageContent}
     </ProductionDocShell>

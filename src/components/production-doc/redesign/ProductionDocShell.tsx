@@ -7,6 +7,7 @@ import type {
   RowImageStateView,
 } from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
+import type { StudioSubMode } from './StudioTopBar';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
@@ -77,6 +78,13 @@ export interface ProductionDocShellProps {
    *  to today's `setExpandedRow` in page.tsx. Ignored in Brief Mode.
    *  R4 PR1. */
   onSelectRow?: (rowIndex: number) => void;
+  /** Controlled Studio sub-mode. When provided together with
+   *  `onToggleSubMode`, lifts the state to page.tsx so the same
+   *  signal can gate other UI (e.g. hiding the legacy Results
+   *  section in scene-strip mode). Ignored in Brief Mode. R4 PR3. */
+  subMode?: StudioSubMode;
+  /** Controlled toggle handler. Paired with `subMode`. R4 PR3. */
+  onToggleSubMode?: () => void;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -105,6 +113,8 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   rowImagesByIndex,
   editorWriters,
   onSelectRow,
+  subMode,
+  onToggleSubMode,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -149,6 +159,8 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       rowImagesByIndex={rowImagesByIndex}
       editorWriters={editorWriters}
       onSelectRow={onSelectRow}
+      subMode={subMode}
+      onToggleSubMode={onToggleSubMode}
     >
       {children}
     </StudioMode>
