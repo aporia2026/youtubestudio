@@ -58,11 +58,12 @@ describe('computeRegions (square)', () => {
 describe('circleCellGeometry', () => {
   it('positions the disc in the top portion of the cell', () => {
     const geom = circleCellGeometry(0, 0, 400, 300);
-    // Disc diameter capped by 78% of the smaller dimension (height here):
-    // 300 * 0.78 = 234. The 0.78 ratio replaced an earlier 0.7
-    // (2026-06-04) to match the reference channels' snug "disc fills
-    // most of the cell" look — see DISC_H_FRAC docstring.
-    expect(geom.discD).toBeCloseTo(234, 1);
+    // Disc diameter capped by 82% of the smaller dimension (height
+    // here): 300 * 0.82 = 246. Second retune (2026-06-04) bumped
+    // DISC_H_FRAC from 0.78 → 0.82 because a user comparison render
+    // still showed too much within-cell horizontal padding at 0.78.
+    // See DISC_H_FRAC docstring.
+    expect(geom.discD).toBeCloseTo(246, 1);
     // Disc centred horizontally
     expect(geom.discCx).toBe(200);
     // Label band sits below the disc, occupying the remainder of the cell
@@ -70,23 +71,25 @@ describe('circleCellGeometry', () => {
     expect(Math.round(geom.labelY + geom.labelH)).toBe(300);
   });
   it('caps disc by height when the cell is square', () => {
-    // Square cell — min(W*0.9, H*0.78) = H*0.78 here.
+    // Square cell — min(W*0.9, H*0.82) = H*0.82 here.
     const geom = circleCellGeometry(0, 0, 200, 200);
-    expect(geom.discD).toBeCloseTo(156, 1); // 200 * 0.78
+    expect(geom.discD).toBeCloseTo(164, 1); // 200 * 0.82
   });
   it('caps disc by width when the cell is much wider than tall', () => {
-    // Very wide cell — disc hits the width cap (W*0.9 < H*0.78).
+    // Very wide cell — disc hits the width cap (W*0.9 < H*0.82).
     const geom = circleCellGeometry(0, 0, 100, 300);
     expect(geom.discD).toBeCloseTo(90, 1); // 100 * 0.9
   });
-  it('leaves a snug ~18% label band beneath the disc (matches reference channels)', () => {
+  it('leaves a snug ~16% label band beneath the disc (matches reference channels)', () => {
     // Tall-cell case where DISC_H_FRAC binds. labelH = cellH - topPad
-    // - discD = 300 - (300*0.04) - (300*0.78) = 300 - 12 - 234 = 54
-    // 54 / 300 = 18%. Pins the new reference-channel ratio so a future
-    // tweak to DISC_H_FRAC or DISC_TOP_PAD_FRAC has to land here too.
+    // - discD = 300 - (300*0.025) - (300*0.82) = 300 - 7.5 - 246 =
+    // 46.5. 46.5 / 300 = 15.5%. Pins the second-retune ratio so a
+    // future tweak to DISC_H_FRAC or DISC_TOP_PAD_FRAC has to land
+    // here too; composite's canonicalBandH formula tracks this at
+    // 0.16 so font sizing stays consistent.
     const geom = circleCellGeometry(0, 0, 400, 300);
-    expect(geom.labelH).toBeCloseTo(54, 0);
-    expect(geom.labelH / 300).toBeCloseTo(0.18, 2);
+    expect(geom.labelH).toBeCloseTo(46.5, 0);
+    expect(geom.labelH / 300).toBeCloseTo(0.155, 2);
   });
 });
 
@@ -110,15 +113,15 @@ describe('effectiveRowGutter (vertical spacing between rows)', () => {
     const layout = makeDefaultLayout(2, 3); // defaults to square
     expect(effectiveRowGutter(layout)).toBe(layout.gutter);
   });
-  it('is ~1.4× `gutter` for circle layouts — enough breathing room to keep the label off the next row, no more', () => {
+  it('equals `gutter` for circle layouts — rows stack as tightly as columns', () => {
+    // The 2026-06-04 second retune dropped the circle-mode
+    // multiplier from 1.4 → 1.0. The label band itself provides
+    // visual separation between row 1's text and row 2's disc; an
+    // extra rowGutter on top read as empty whitespace in
+    // user-shipped comparison renders. See `effectiveRowGutter`
+    // docstring for the rationale and history.
     const layout = makeDefaultLayout(2, 3, 1280, 720, 'circle');
-    const rg = effectiveRowGutter(layout);
-    expect(rg).toBeGreaterThan(layout.gutter);
-    // 1.4× exactly, rounded. The earlier 1.8× target overshot and
-    // left wide empty bands between rows — fixed 2026-06-04 to match
-    // the reference channels' snug spacing. See `effectiveRowGutter`
-    // docstring for the rationale.
-    expect(rg).toBe(Math.round(layout.gutter * 1.4));
+    expect(effectiveRowGutter(layout)).toBe(layout.gutter);
   });
   it('explicit `rowGutter` wins over the circle default', () => {
     const layout = { ...makeDefaultLayout(2, 3, 1280, 720, 'circle'), rowGutter: 42 };
@@ -131,16 +134,16 @@ describe('effectiveRowGutter (vertical spacing between rows)', () => {
 });
 
 describe('row spacing flows into computeRegions / computeCircleRegions', () => {
-  it('circle-mode 2-row grids leave a bigger vertical gap between rows than between columns', () => {
+  it('circle-mode 2-row grids have vertical gap == horizontal gap (snug reference-channel target)', () => {
     const layout = makeDefaultLayout(2, 3, 1280, 720, 'circle');
     const regions = computeRegions(layout, ['a', 'b', 'c', 'd', 'e', 'f'], mkSequentialId());
     // Row 0 cells: regions[0..2]. Row 1 cells: regions[3..5].
-    // Horizontal gap between two cells in the same row.
     const horizontalGap = regions[1].x - (regions[0].x + regions[0].w);
-    // Vertical gap between top-row cell bottom and bottom-row cell top.
     const verticalGap = regions[3].y - (regions[0].y + regions[0].h);
-    expect(verticalGap).toBeGreaterThan(horizontalGap);
-    // And the vertical gap matches the effective row gutter.
+    // Second retune (2026-06-04) — rows stack as tight as columns.
+    // The label band inside each cell provides the visual breathing
+    // room between row 1's text and row 2's disc.
+    expect(verticalGap).toBe(horizontalGap);
     expect(verticalGap).toBe(effectiveRowGutter(layout));
   });
   it('square-mode 2-row grids keep vertical and horizontal gaps equal (legacy behaviour)', () => {
@@ -152,33 +155,35 @@ describe('row spacing flows into computeRegions / computeCircleRegions', () => {
   });
 });
 
-describe('reference-channel layout target (2026-06-04 retune)', () => {
+describe('reference-channel layout target (2026-06-04 second retune)', () => {
   // The reference channels (Paint Explainer, Byte Sized Explainer,
   // The Evaluator, 4×2 / 5×3 trivia thumbs) all use a snug grid:
-  // disc fills most of the cell, label hugs the bottom of the disc,
-  // small but visible row gap. These tests pin the per-card-mode
-  // canvas (2048×1152, 3×3) to those ratios so the next time someone
-  // tweaks DISC_H_FRAC or effectiveRowGutter the impact is obvious.
-  it('3×3 circle grid at 2048×1152 produces a disc ≥38% of cell width (was ~37% at 0.7)', () => {
+  // disc fills most of the cell, label hugs the disc, outer margin
+  // is minimal. These tests pin the per-card-mode canvas
+  // (2048×1152, 3×3) to those ratios.
+  it('3×3 circle grid at 2048×1152 produces a disc ≥42% of cell width (was ~41% before)', () => {
     const layout = makeDefaultLayout(3, 3, 2048, 1152, 'circle');
     const regions = computeCircleRegions(layout, Array(9).fill('x'), mkSequentialId());
     const rg = effectiveRowGutter(layout);
     const cellW = (layout.width - 2 * layout.outerMargin - 2 * layout.gutter) / 3;
     const cellH = (layout.height - 2 * layout.outerMargin - 2 * rg) / 3;
-    expect(regions[0].w).toBeGreaterThanOrEqual(Math.round(cellW * 0.38));
-    // Disc is height-bound at this cell shape, so disc diameter
-    // tracks cellH × 0.78 closely.
-    expect(regions[0].w).toBeCloseTo(Math.round(cellH * 0.78), 0);
+    expect(regions[0].w).toBeGreaterThanOrEqual(Math.round(cellW * 0.42));
+    // Disc is height-bound on a 16:9 / 3×3 grid, so disc diameter
+    // tracks cellH × 0.82 closely.
+    expect(regions[0].w).toBeCloseTo(Math.round(cellH * 0.82), 0);
   });
-  it('3×3 row gap is smaller than the disc diameter (rows should not float in empty bands)', () => {
+  it('3×3 row gutter equals horizontal gutter (no extra vertical whitespace)', () => {
     const layout = makeDefaultLayout(3, 3, 2048, 1152, 'circle');
-    const regions = computeCircleRegions(layout, Array(9).fill('x'), mkSequentialId());
     const rg = effectiveRowGutter(layout);
-    // The visual "row gap" the viewer perceives is rg + label band
-    // + topPad. Whatever the exact arithmetic, the row gutter itself
-    // must stay well under the disc diameter — a row gutter approaching
-    // the disc size means whitespace is dominating the layout.
-    expect(rg).toBeLessThan(regions[0].w / 3);
+    expect(rg).toBe(layout.gutter);
+  });
+  it('outer margin is smaller than the inter-column gutter (grid pushes close to canvas edges)', () => {
+    const layout = makeDefaultLayout(3, 3, 2048, 1152, 'circle');
+    // Decoupled 2026-06-04 second retune — defaultOuterMargin uses
+    // 0.5% of canvas width vs defaultGutter's 1.1%, so the grid
+    // sits noticeably closer to the canvas edges than the inter-
+    // column gap, matching reference-channel framing.
+    expect(layout.outerMargin).toBeLessThan(layout.gutter);
   });
 });
 

@@ -1352,7 +1352,14 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
   const canonicalCellH =
     (layout.height - 2 * layout.outerMargin - (layout.rows - 1) * layout.gutter) /
     layout.rows;
-  const canonicalBandH = Math.round(canonicalCellH * 0.2);
+  // Tracks the label-band fraction in `circleCellGeometry` —
+  // `1 - DISC_TOP_PAD_FRAC - DISC_H_FRAC` = 1 - 0.025 - 0.82 = 0.155.
+  // Bumped slightly to 0.16 to give the rasteriser a few px of slack
+  // for descenders + line-height on uppercase labels. Earlier value
+  // was 0.2 (tracked DISC_H_FRAC = 0.7); reduced 2026-06-04 alongside
+  // the disc-fraction retune so labels don't render too big for the
+  // tighter band geometry.
+  const canonicalBandH = Math.round(canonicalCellH * 0.16);
   const baseFontPt = Math.max(12, Math.round(canonicalBandH * 0.55));
   const fontPt = Math.max(8, Math.round(baseFontPt * labelSizeMultiplier));
   console.info('[topic-card-grid composite font-size]', {
