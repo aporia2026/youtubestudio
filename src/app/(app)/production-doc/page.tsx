@@ -14265,6 +14265,16 @@ function ProductionDocPage() {
             })()
           : undefined
       }
+      // R3 PR4c: B-roll clip for the selected row. `rowVideoClips[i]`
+      // is a `BrollClipRow` (or null) which is structurally compatible
+      // with the inspector's `StudioInspectorVideoClipSlice` (extra
+      // fields are ignored). Generate / Re-generate writers land in
+      // a follow-up PR.
+      selectedRowVideoClip={
+        expandedRow !== null && expandedRow >= 0 && rowVideoClips[expandedRow]
+          ? rowVideoClips[expandedRow]
+          : null
+      }
     >
       {pageContent}
     </ProductionDocShell>

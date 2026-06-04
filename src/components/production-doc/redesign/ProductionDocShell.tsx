@@ -4,6 +4,7 @@ import React, { useEffect, useRef } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
+import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import { BriefMode } from './BriefMode';
 import { StudioMode } from './StudioMode';
 
@@ -44,6 +45,9 @@ export interface ProductionDocShellProps {
   /** Image action writers for the currently-selected row — Generate,
    *  Upload, Import URL, Edit, Retry. Ignored in Brief Mode. R3 PR4b. */
   selectedRowImageActions?: StudioInspectorImageActions;
+  /** B-roll clip for the currently-selected row. Drives the Video
+   *  tab's read-only preview. Ignored in Brief Mode. R3 PR4c. */
+  selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -65,6 +69,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   onUpdateRow,
   selectedRowImageState,
   selectedRowImageActions,
+  selectedRowVideoClip,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -102,6 +107,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       onUpdateRow={onUpdateRow}
       selectedRowImageState={selectedRowImageState}
       selectedRowImageActions={selectedRowImageActions}
+      selectedRowVideoClip={selectedRowVideoClip}
     >
       {children}
     </StudioMode>

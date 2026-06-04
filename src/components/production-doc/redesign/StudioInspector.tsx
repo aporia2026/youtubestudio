@@ -9,6 +9,10 @@ import {
   StudioInspectorImage,
   type StudioInspectorImageActions,
 } from './StudioInspectorImage';
+import {
+  StudioInspectorVideo,
+  type StudioInspectorVideoClipSlice,
+} from './StudioInspectorVideo';
 
 /**
  * StudioInspector — the right column of `StudioLayout`. Hosts the
@@ -49,6 +53,8 @@ export interface StudioInspectorProps {
   /** Image writers for the selected row — Generate / Upload /
    *  Import URL / Edit / Retry. R3 PR4b. */
   selectedRowImageActions?: StudioInspectorImageActions;
+  /** B-roll clip for the selected row. R3 PR4c (read-only). */
+  selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -59,6 +65,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   onUpdateRow,
   selectedRowImageState = null,
   selectedRowImageActions,
+  selectedRowVideoClip = null,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -132,6 +139,8 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             state={selectedRowImageState}
             {...(selectedRowImageActions ?? {})}
           />
+        ) : currentTab === 'video' ? (
+          <StudioInspectorVideo clip={selectedRowVideoClip} />
         ) : (
           <p
             className="text-xs"

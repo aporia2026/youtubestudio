@@ -8,6 +8,7 @@ import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
+import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 
 /**
  * Studio Mode — the post-generation Workspace surface.
@@ -50,6 +51,8 @@ export interface StudioModeProps {
   selectedRowImageState?: RowImageStateView | null;
   /** Image writers for the currently-selected row. R3 PR4b. */
   selectedRowImageActions?: StudioInspectorImageActions;
+  /** B-roll clip for the currently-selected row. R3 PR4c. */
+  selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -60,6 +63,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   onUpdateRow,
   selectedRowImageState = null,
   selectedRowImageActions,
+  selectedRowVideoClip = null,
 }) => {
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
@@ -87,6 +91,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
             onUpdateRow={onUpdateRow}
             selectedRowImageState={selectedRowImageState}
             selectedRowImageActions={selectedRowImageActions}
+            selectedRowVideoClip={selectedRowVideoClip}
           />
         }
       />
