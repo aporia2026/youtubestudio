@@ -143,10 +143,15 @@ export const SHORT_HEIGHT = 1920;
 export const SHORT_FPS = 30;
 
 /**
- * Trailing silence after the last word so the closing card doesn't get
- * cut off when MediaRecorder / Vercel Blob streaming gets impatient.
+ * The Short's composition is now exactly the voiceover length — no
+ * padded tail. Previously a 800ms tail was added "defensively" so a
+ * closing card wouldn't get cut off during MediaRecorder/Blob streaming,
+ * but it leaves blank time at the end of every preview and confuses
+ * the editor's duration math. If a future closing-card need surfaces,
+ * the renderer should add its own padding internally instead of the
+ * composition-level constant leaking into every consumer's math.
  */
-export const SHORT_OUTRO_TAIL_MS = 800;
+export const SHORT_OUTRO_TAIL_MS = 0;
 
 /** Default background — deep purple-to-black gradient that doesn't
  *  fight the captions. */

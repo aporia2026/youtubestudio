@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { sql } from '@/lib/db';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { getShort } from '@/lib/shorts';
@@ -57,6 +58,31 @@ export const GET = apiRoute.authed(
           { status: 502 },
         );
       }
+      // Backfill `voiceover_duration_seconds` from the aligner's measured
+      // duration (the alignment includes every word's start/end ms;
+      // result.durationMs is the precise audio length). This heals existing
+      // rows whose stored value was the old word-count estimate AND keeps
+      // new rows accurate even if the ffmpeg probe in the voiceover route
+      // fell back to the estimate for any reason. Only writes when the
+      // alignment-derived value differs by more than 0.25s — avoids
+      // dirtying the row on every read for already-correct durations.
+      const measuredSeconds = result.durationMs / 1000;
+      const storedSeconds = row.voiceover_duration_seconds ?? 0;
+      if (Math.abs(measuredSeconds - storedSeconds) > 0.25) {
+        await sql`
+          UPDATE shorts
+             SET voiceover_duration_seconds = ${measuredSeconds},
+                 updated_at = NOW()
+           WHERE id = ${row.id}::uuid AND workspace_id = ${session.ws}::uuid
+        `;
+        logger.info('[shorts alignment] backfilled voiceover_duration_seconds', {
+          shortId: row.id,
+          stored_before: storedSeconds,
+          measured: measuredSeconds,
+          delta_seconds: measuredSeconds - storedSeconds,
+        });
+      }
+
       logger.info('[shorts alignment] ok', {
         shortId: row.id,
         cached: result.cached,

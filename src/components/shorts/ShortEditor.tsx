@@ -324,6 +324,11 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         const data = await res.json();
         if (cancelled) return;
         setAlignment(data.alignment as ForcedAlignmentResponse);
+        // The alignment endpoint backfills `voiceover_duration_seconds`
+        // from the measured audio length when it differs from the stored
+        // value (heals rows that have the old word-count estimate). Re-
+        // load the row so the preview Player picks up the new duration.
+        void loadRow();
       } catch {
         /* preview falls back to proportional timing */
       }
@@ -331,7 +336,7 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [row?.id, row?.voiceover_audio_url]);
+  }, [row?.id, row?.voiceover_audio_url, loadRow]);
 
   // ── manual re-sync (force re-alignment, bypass cache) ──────────────
   const [resyncing, setResyncing] = useState(false);
@@ -344,13 +349,16 @@ export function ShortEditor({ shortId }: { shortId: string }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setAlignment(data.alignment as ForcedAlignmentResponse);
+      // The aligner also backfills voiceover_duration_seconds — pick up
+      // the new value so the preview Player adjusts in the same click.
+      void loadRow();
       toast.success(`Re-synced to ${data.alignment?.words?.length ?? 0} word boundaries.`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Re-sync failed');
     } finally {
       setResyncing(false);
     }
-  }, [row?.id, row?.voiceover_audio_url]);
+  }, [row?.id, row?.voiceover_audio_url, loadRow]);
 
   // ── PATCH helper for the editable fields ───────────────────────────
   const savePatch = useCallback(
