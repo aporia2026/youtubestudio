@@ -14401,6 +14401,21 @@ function ProductionDocPage() {
               progress: renderProgress,
               downloadUrl: renderDownloadUrl ?? undefined,
               onStartRender: () => { void startVideoRender(); },
+              // R5 PR2: batch action wires. Each callback fires today's
+              // existing helpers; `batchInFlight` carries whichever
+              // batch is currently progressing so the dock can show
+              // the matching live progress label and disable the
+              // sibling buttons.
+              onRetryFailedImages: () => { void runRetryFailedImages(); },
+              onRetryFailedVideos: () => { void runRetryFailedVideos(); },
+              onAnimateAll: () => { void runAnimateAll(); },
+              batchInFlight: animatingAll
+                ? { kind: 'animate', done: animatingAll.done, total: animatingAll.total }
+                : retryingImages
+                  ? { kind: 'retry-images', done: retryingImages.done, total: retryingImages.total }
+                  : retryingVideos
+                    ? { kind: 'retry-videos', done: retryingVideos.done, total: retryingVideos.total }
+                    : null,
             }
           : undefined
       }

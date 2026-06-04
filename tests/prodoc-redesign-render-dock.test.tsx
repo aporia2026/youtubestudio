@@ -166,6 +166,77 @@ describe('RenderDock — progress + download', () => {
   });
 });
 
+describe('RenderDock — batch actions (R5 PR2)', () => {
+  it('renders Retry-images only when onRetryFailedImages is wired AND failed > 0', () => {
+    const noFailures = renderToStaticMarkup(
+      <RenderDock {...makeProps({ onRetryFailedImages: () => {} })} />,
+    );
+    expect(noFailures).not.toContain('Retry images');
+
+    const withFailures = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageStats: { ready: 8, failed: 2, total: 12 },
+          onRetryFailedImages: () => {},
+        })}
+      />,
+    );
+    expect(withFailures).toContain('↻ Retry images (2)');
+  });
+
+  it('renders Retry-clips only when onRetryFailedVideos is wired AND failed > 0', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          videoStats: { ready: 1, failed: 3, total: 5 },
+          onRetryFailedVideos: () => {},
+        })}
+      />,
+    );
+    expect(html).toContain('↻ Retry clips (3)');
+  });
+
+  it('renders Animate-all whenever onAnimateAll is wired (no failure precondition)', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock {...makeProps({ onAnimateAll: () => {} })} />,
+    );
+    expect(html).toContain('▶ Animate all');
+  });
+
+  it('shows live progress label and disables every batch button while a batch is in flight', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageStats: { ready: 8, failed: 2, total: 12 },
+          videoStats: { ready: 1, failed: 1, total: 12 },
+          onRetryFailedImages: () => {},
+          onRetryFailedVideos: () => {},
+          onAnimateAll: () => {},
+          batchInFlight: { kind: 'animate', done: 3, total: 12 },
+        })}
+      />,
+    );
+    expect(html).toContain('Animating 3/12…');
+    // Sibling buttons stay rendered but disabled.
+    const disabledCount = (html.match(/<button[^>]*\bdisabled\b/g) ?? []).length;
+    expect(disabledCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('hides every batch button when no callbacks are wired (rule 10)', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageStats: { ready: 8, failed: 2, total: 12 },
+          videoStats: { ready: 1, failed: 3, total: 12 },
+        })}
+      />,
+    );
+    expect(html).not.toContain('Retry images');
+    expect(html).not.toContain('Retry clips');
+    expect(html).not.toContain('Animate all');
+  });
+});
+
 describe('RenderDock — error message', () => {
   it('shows a truncated error message when status=error', () => {
     const html = renderToStaticMarkup(

@@ -31,6 +31,17 @@ export interface RenderDockMediaStats {
   total: number;
 }
 
+export type RenderDockBatchKind =
+  | 'animate'
+  | 'retry-images'
+  | 'retry-videos';
+
+export interface RenderDockBatchProgress {
+  kind: RenderDockBatchKind;
+  done: number;
+  total: number;
+}
+
 export interface RenderDockProps {
   imageStats: RenderDockMediaStats;
   videoStats: RenderDockMediaStats;
@@ -43,6 +54,18 @@ export interface RenderDockProps {
   errorMessage?: string;
   /** Primary action. Disabled while rendering. */
   onStartRender?: () => void;
+  /** Retry every row whose image is in 'error' state. Hidden when
+   *  the callback is undefined or there are no failed images. R5 PR2. */
+  onRetryFailedImages?: () => void;
+  /** Retry every row whose B-roll clip is in 'failed' state. Hidden
+   *  when the callback is undefined or there are no failed clips. R5 PR2. */
+  onRetryFailedVideos?: () => void;
+  /** Kick off B-roll generation for every row that doesn't have a
+   *  clip yet. R5 PR2. */
+  onAnimateAll?: () => void;
+  /** When non-null, a batch is in flight. The matching button shows
+   *  a progress label; all batch buttons disable. R5 PR2. */
+  batchInFlight?: RenderDockBatchProgress | null;
 }
 
 function pluralize(n: number, singular: string, plural?: string): string {
@@ -91,6 +114,10 @@ export const RenderDock: React.FC<RenderDockProps> = ({
   downloadUrl,
   errorMessage,
   onStartRender,
+  onRetryFailedImages,
+  onRetryFailedVideos,
+  onAnimateAll,
+  batchInFlight = null,
 }) => {
   const isRendering = status === 'rendering';
   const isDone = status === 'done';
@@ -194,6 +221,63 @@ export const RenderDock: React.FC<RenderDockProps> = ({
           {errorMessage.length > 60 ? `${errorMessage.slice(0, 60)}…` : errorMessage}
         </span>
       )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        {onRetryFailedImages && imageStats.failed > 0 && (
+          <button
+            type="button"
+            onClick={onRetryFailedImages}
+            disabled={!!batchInFlight}
+            className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+            style={{
+              ...COUNTER_PILL_STYLE,
+              cursor: batchInFlight ? 'not-allowed' : 'pointer',
+              opacity: batchInFlight ? 0.5 : 1,
+            }}
+            title={`Retry the ${imageStats.failed} failed image${imageStats.failed === 1 ? '' : 's'}.`}
+          >
+            {batchInFlight?.kind === 'retry-images'
+              ? `Retrying ${batchInFlight.done}/${batchInFlight.total}…`
+              : `↻ Retry images (${imageStats.failed})`}
+          </button>
+        )}
+        {onRetryFailedVideos && videoStats.failed > 0 && (
+          <button
+            type="button"
+            onClick={onRetryFailedVideos}
+            disabled={!!batchInFlight}
+            className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+            style={{
+              ...COUNTER_PILL_STYLE,
+              cursor: batchInFlight ? 'not-allowed' : 'pointer',
+              opacity: batchInFlight ? 0.5 : 1,
+            }}
+            title={`Retry the ${videoStats.failed} failed clip${videoStats.failed === 1 ? '' : 's'}.`}
+          >
+            {batchInFlight?.kind === 'retry-videos'
+              ? `Retrying ${batchInFlight.done}/${batchInFlight.total}…`
+              : `↻ Retry clips (${videoStats.failed})`}
+          </button>
+        )}
+        {onAnimateAll && (
+          <button
+            type="button"
+            onClick={onAnimateAll}
+            disabled={!!batchInFlight}
+            className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+            style={{
+              ...COUNTER_PILL_STYLE,
+              cursor: batchInFlight ? 'not-allowed' : 'pointer',
+              opacity: batchInFlight ? 0.5 : 1,
+            }}
+            title="Generate B-roll clips for every row that doesn't have one yet."
+          >
+            {batchInFlight?.kind === 'animate'
+              ? `Animating ${batchInFlight.done}/${batchInFlight.total}…`
+              : '▶ Animate all'}
+          </button>
+        )}
+      </div>
 
       <div className="ms-auto flex items-center gap-2">
         {isDone && downloadUrl && (
