@@ -86,8 +86,15 @@ export interface GridLayout {
   cols: number;
   /** White outer margin in pixels (top/right/bottom/left, uniform). */
   outerMargin: number;
-  /** White gutter between cards in pixels (uniform horizontal + vertical). */
+  /** White gutter between cards in pixels. Used for horizontal spacing
+   *  between columns, and as the vertical spacing fallback when
+   *  `rowGutter` is not set. */
   gutter: number;
+  /** Optional override for the vertical gap between rows. When omitted,
+   *  circle cards get `gutter * 1.8` automatically (otherwise labels visually
+   *  butt against the next row's discs), and square cards stay at `gutter`.
+   *  Set explicitly to dial it tighter or airier. Pixels. */
+  rowGutter?: number;
   /** Visual card shape. `'square'` keeps the original layout: a black-bordered
    *  rectangle split into an illustration region (top) and a white label
    *  strip (bottom). `'circle'` renders each card as a borderless disc with
@@ -249,6 +256,21 @@ export function defaultGutter(width: number): number {
   return Math.max(8, Math.round(width * 0.011));
 }
 
+/**
+ * Resolve the effective vertical gap between rows. Explicit `rowGutter`
+ * wins; otherwise circle layouts get `gutter * 1.8` because the label
+ * sits below the disc and would visually crowd the next row's disc on
+ * a uniform gutter (see the reference SCP / Mystery Doc thumbnails for
+ * what comfortable spacing looks like). Square layouts stay at `gutter`
+ * — their cells share borders / dividers and a tight gutter reads fine.
+ */
+export function effectiveRowGutter(layout: GridLayout): number {
+  if (typeof layout.rowGutter === 'number') return Math.max(0, Math.round(layout.rowGutter));
+  return layout.cardShape === 'circle'
+    ? Math.round(layout.gutter * 1.8)
+    : layout.gutter;
+}
+
 export function makeDefaultLayout(
   rows: number,
   cols: number,
@@ -275,14 +297,15 @@ export function computeRegions(
   mkId: () => string,
 ): ThumbnailRegion[] {
   const { width, height, rows, cols, outerMargin: om, gutter: g } = layout;
+  const rg = effectiveRowGutter(layout);
   const cardW = (width - 2 * om - (cols - 1) * g) / cols;
-  const cardH = (height - 2 * om - (rows - 1) * g) / rows;
+  const cardH = (height - 2 * om - (rows - 1) * rg) / rows;
   const regions: ThumbnailRegion[] = [];
   let i = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x = om + c * (cardW + g);
-      const y = om + r * (cardH + g);
+      const y = om + r * (cardH + rg);
       regions.push({
         id: mkId(),
         label: labels[i] ?? `Card ${i + 1}`,
@@ -387,14 +410,15 @@ export function computeCircleRegions(
   mkId: () => string,
 ): ThumbnailRegion[] {
   const { width, height, rows, cols, outerMargin: om, gutter: g } = layout;
+  const rg = effectiveRowGutter(layout);
   const cardW = (width - 2 * om - (cols - 1) * g) / cols;
-  const cardH = (height - 2 * om - (rows - 1) * g) / rows;
+  const cardH = (height - 2 * om - (rows - 1) * rg) / rows;
   const regions: ThumbnailRegion[] = [];
   let i = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const cellX = om + c * (cardW + g);
-      const cellY = om + r * (cardH + g);
+      const cellY = om + r * (cardH + rg);
       const geom = circleCellGeometry(cellX, cellY, cardW, cardH);
       const discLeft = geom.discCx - geom.discD / 2;
       const discTop = geom.discCy - geom.discD / 2;

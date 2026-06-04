@@ -49,7 +49,9 @@ Three logical phases left. Land them in this order so each one stays independent
 
    Suggested log namespace: `[topic-card-grid panel cutout]` with `{ cardIndex, source: 'auto' | 'user-alpha', durationMs, ok }`.
 
-6. **Settings audit** per rule 15: all five axes persist per-thumbnail via localStorage. No global app-settings entry yet — propose adding one only if the user asks.
+6. **Row spacing slider** — `GridLayout.rowGutter?: number` was added in commit `<row-gutter commit>`. Default behaviour: circle layouts get `gutter * 1.8` automatically; square layouts stay at `gutter`. Add a slider in the editor labelled "Row spacing" with range ~`gutter` (tight) to ~`gutter * 3` (airy), default at the computed value. Persist alongside the other axes via localStorage. The geometry already flows the value through `computeRegions`, `computeCircleRegions`, and `cellRect` — UI just needs to write it.
+
+7. **Settings audit** per rule 15: all five axes plus rowGutter persist per-thumbnail via localStorage. No global app-settings entry yet — propose adding one only if the user asks.
 
 ### Phase 3 — Server Sharp composite parity
 

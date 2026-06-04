@@ -30,6 +30,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import {
   circleCellGeometry,
+  effectiveRowGutter,
   type CardShape,
   type GridLayout,
   type TopicCard,
@@ -144,13 +145,14 @@ export interface ApplyCellUploadsInput {
  */
 export function cellRect(layout: GridLayout, cardIndex: number): { x: number; y: number; w: number; h: number } {
   const { width, height, rows, cols, outerMargin: om, gutter: g } = layout;
+  const rg = effectiveRowGutter(layout);
   const cardW = (width - 2 * om - (cols - 1) * g) / cols;
-  const cardH = (height - 2 * om - (rows - 1) * g) / rows;
+  const cardH = (height - 2 * om - (rows - 1) * rg) / rows;
   const i = cardIndex - 1; // convert to 0-based
   const r = Math.floor(i / cols);
   const c = i % cols;
   const x = om + c * (cardW + g);
-  const y = om + r * (cardH + g);
+  const y = om + r * (cardH + rg);
   return {
     x: Math.round(x),
     y: Math.round(y),

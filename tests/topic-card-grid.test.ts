@@ -8,6 +8,7 @@ import {
   DEFAULT_CANVAS,
   DEFAULT_LABEL_SIZE,
   DEFAULT_STYLE,
+  effectiveRowGutter,
   ICON_CONCEPT_BANLIST,
   LABEL_SIZE_MAX,
   LABEL_SIZE_MIN,
@@ -89,6 +90,50 @@ describe('computeCircleRegions', () => {
     expect(regions[0].h).toBe(regions[0].w); // disc is square
     // First disc x > outer margin (disc is centred within the cell)
     expect(regions[0].x).toBeGreaterThan(layout.outerMargin);
+  });
+});
+
+describe('effectiveRowGutter (vertical spacing between rows)', () => {
+  it('equals `gutter` for square layouts', () => {
+    const layout = makeDefaultLayout(2, 3); // defaults to square
+    expect(effectiveRowGutter(layout)).toBe(layout.gutter);
+  });
+  it('is ~1.8× `gutter` for circle layouts to keep labels from butting against the next row', () => {
+    const layout = makeDefaultLayout(2, 3, 1280, 720, 'circle');
+    const rg = effectiveRowGutter(layout);
+    expect(rg).toBeGreaterThan(layout.gutter);
+    // 1.8× exactly, rounded
+    expect(rg).toBe(Math.round(layout.gutter * 1.8));
+  });
+  it('explicit `rowGutter` wins over the circle default', () => {
+    const layout = { ...makeDefaultLayout(2, 3, 1280, 720, 'circle'), rowGutter: 42 };
+    expect(effectiveRowGutter(layout)).toBe(42);
+  });
+  it('explicit `rowGutter: 0` is honoured (caller wants edge-to-edge rows)', () => {
+    const layout = { ...makeDefaultLayout(2, 3, 1280, 720, 'circle'), rowGutter: 0 };
+    expect(effectiveRowGutter(layout)).toBe(0);
+  });
+});
+
+describe('row spacing flows into computeRegions / computeCircleRegions', () => {
+  it('circle-mode 2-row grids leave a bigger vertical gap between rows than between columns', () => {
+    const layout = makeDefaultLayout(2, 3, 1280, 720, 'circle');
+    const regions = computeRegions(layout, ['a', 'b', 'c', 'd', 'e', 'f'], mkSequentialId());
+    // Row 0 cells: regions[0..2]. Row 1 cells: regions[3..5].
+    // Horizontal gap between two cells in the same row.
+    const horizontalGap = regions[1].x - (regions[0].x + regions[0].w);
+    // Vertical gap between top-row cell bottom and bottom-row cell top.
+    const verticalGap = regions[3].y - (regions[0].y + regions[0].h);
+    expect(verticalGap).toBeGreaterThan(horizontalGap);
+    // And the vertical gap matches the effective row gutter.
+    expect(verticalGap).toBe(effectiveRowGutter(layout));
+  });
+  it('square-mode 2-row grids keep vertical and horizontal gaps equal (legacy behaviour)', () => {
+    const layout = makeDefaultLayout(2, 3); // square
+    const regions = computeRegions(layout, ['a', 'b', 'c', 'd', 'e', 'f'], mkSequentialId());
+    const horizontalGap = regions[1].x - (regions[0].x + regions[0].w);
+    const verticalGap = regions[3].y - (regions[0].y + regions[0].h);
+    expect(verticalGap).toBe(horizontalGap);
   });
 });
 
