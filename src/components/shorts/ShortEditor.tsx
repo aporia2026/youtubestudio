@@ -589,7 +589,25 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
           {row.title || 'Untitled Short'}
         </h1>
-        <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
+        <Link
+          href={`/shorts/${encodeURIComponent(shortId)}/redesign`}
+          style={{
+            marginLeft: 'auto',
+            padding: '5px 11px',
+            borderRadius: 7,
+            border: '1px solid rgba(253,224,71,0.4)',
+            background: 'rgba(253,224,71,0.08)',
+            color: '#fde68a',
+            fontSize: 12,
+            fontWeight: 600,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+          title="See the proposed new layout for this Short — sticky preview + tabbed editor. Read-only prototype."
+        >
+          Preview new layout →
+        </Link>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           {new Date(row.updated_at).toLocaleString()}
         </span>
       </div>
