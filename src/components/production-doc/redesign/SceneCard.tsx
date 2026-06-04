@@ -106,6 +106,22 @@ export const SceneCard: React.FC<SceneCardProps> = ({
   const hasOst = !!row.on_screen_text?.trim();
   const videoBadge = videoBadgeState(videoState);
 
+  // QA fix: show in-flight image generation progress so cards aren't
+  // just "no image" silent during long runs. Maps the underlying
+  // RowImageStateView statuses onto user-facing labels + colors.
+  const imageStatusLabel: { label: string; color: string } | null = (() => {
+    const status = imageState?.status;
+    if (!status || status === 'done') return null;
+    if (status === 'pending' || status === 'loading') {
+      return { label: 'Generating…', color: '#a78bfa' };
+    }
+    if (status === 'uploading') return { label: 'Uploading…', color: '#a78bfa' };
+    if (status === 'editing') return { label: 'Editing…', color: '#fbbf24' };
+    if (status === 'search') return { label: 'Searching…', color: '#60a5fa' };
+    if (status === 'error') return { label: 'Failed', color: '#f87171' };
+    return null;
+  })();
+
   const label = `Scene ${displayIndex}${row.timecode ? ` at ${row.timecode}` : ''}`;
 
   if (orientation === 'vertical') {
@@ -146,6 +162,20 @@ export const SceneCard: React.FC<SceneCardProps> = ({
               className="absolute inset-0 w-full h-full object-cover"
               loading="lazy"
             />
+          ) : imageStatusLabel ? (
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center text-[9px] gap-0.5 px-1 text-center"
+              style={{ color: imageStatusLabel.color }}
+            >
+              {(imageState?.status === 'pending' ||
+                imageState?.status === 'loading' ||
+                imageState?.status === 'uploading' ||
+                imageState?.status === 'editing' ||
+                imageState?.status === 'search') && (
+                <span aria-hidden="true" className="animate-pulse">●●●</span>
+              )}
+              <span>{imageStatusLabel.label}</span>
+            </div>
           ) : (
             <div
               className="absolute inset-0 flex items-center justify-center text-[9px]"
@@ -280,6 +310,20 @@ export const SceneCard: React.FC<SceneCardProps> = ({
             className="absolute inset-0 w-full h-full object-cover"
             loading="lazy"
           />
+        ) : imageStatusLabel ? (
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center text-[10px] gap-1"
+            style={{ color: imageStatusLabel.color }}
+          >
+            {(imageState?.status === 'pending' ||
+              imageState?.status === 'loading' ||
+              imageState?.status === 'uploading' ||
+              imageState?.status === 'editing' ||
+              imageState?.status === 'search') && (
+              <span aria-hidden="true" className="animate-pulse">●●●</span>
+            )}
+            <span>{imageStatusLabel.label}</span>
+          </div>
         ) : (
           <div
             className="absolute inset-0 flex items-center justify-center text-[10px]"

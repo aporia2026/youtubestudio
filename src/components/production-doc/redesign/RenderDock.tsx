@@ -131,12 +131,19 @@ export const RenderDock: React.FC<RenderDockProps> = ({
     <div
       aria-label="Render dock"
       role="region"
-      className="fixed inset-x-0 bottom-0 px-4 py-3 flex flex-wrap items-center gap-3"
+      className="fixed inset-x-0 bottom-0 px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-2"
       style={{
         background: 'rgba(15,15,17,0.92)',
         borderTop: '1px solid rgba(255,255,255,0.08)',
         backdropFilter: 'blur(8px)',
         zIndex: 40,
+        // QA fix: when many batch buttons + render CTA combine to
+        // exceed the viewport width, flex-wrap pushes the trailing
+        // group to a second row. `maxWidth: 100vw` + `boxSizing:
+        // border-box` keeps the dock anchored to the viewport
+        // regardless of the document's horizontal scroll width.
+        maxWidth: '100vw',
+        boxSizing: 'border-box',
       }}
     >
       <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -281,7 +288,7 @@ export const RenderDock: React.FC<RenderDockProps> = ({
         )}
       </div>
 
-      <div className="ms-auto flex items-center gap-2">
+      <div className="flex items-center gap-2 ms-auto flex-wrap" style={{ marginInlineStart: 'auto' }}>
         {isDone && downloadUrl && (
           <a
             href={downloadUrl}

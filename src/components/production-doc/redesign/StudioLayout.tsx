@@ -40,20 +40,38 @@ export const StudioLayout: React.FC<StudioLayoutProps> = ({
       <aside
         aria-label="Studio left rail"
         className="min-w-0"
-        style={{ position: 'sticky', top: 16, alignSelf: 'start' }}
+        style={{
+          position: 'sticky',
+          top: 16,
+          alignSelf: 'start',
+          // QA fix: prevent the rail's content from growing the grid
+          // track beyond its allotted 200px (overflow-x: hidden caps
+          // the visual; aria-hidden state stays accessible).
+          overflowX: 'hidden',
+        }}
       >
         {leftRail}
       </aside>
       <main
         aria-label="Studio main content"
         className="min-w-0"
+        style={{ overflowX: 'hidden' }}
       >
         {mainContent}
       </main>
       <aside
         aria-label="Studio inspector"
         className="min-w-0"
-        style={{ position: 'sticky', top: 16, alignSelf: 'start' }}
+        style={{
+          position: 'sticky',
+          top: 16,
+          alignSelf: 'start',
+          // QA fix: same as the left rail — without overflow-x: hidden
+          // the inspector's tab bar (6 tabs that exceed 380px in
+          // total width) stretches the grid track and pushes the
+          // page past the viewport edge.
+          overflowX: 'hidden',
+        }}
       >
         {inspector}
       </aside>

@@ -14310,17 +14310,26 @@ function ProductionDocPage() {
           ? (() => {
               const row = doc.rows[expandedRow];
               const prompt = row.ai_image_prompt?.trim() ?? '';
+              // QA fix: always wire `onGenerate` and `onRetry` so a
+              // failed row shows a Re-generate / Retry affordance.
+              // `canGenerate` drives the disabled state — when no
+              // prompt is set, the button renders disabled with a
+              // tooltip explaining the user needs to fill in the AI
+              // prompt on the Content tab first. Previous wiring
+              // returned `undefined` for those callbacks when the
+              // prompt was empty, which made the button vanish
+              // entirely on failed rows with no prompt.
               return {
                 canGenerate: !!prompt,
-                onGenerate: prompt
-                  ? () => { void generateImageForRow(expandedRow, prompt); }
-                  : undefined,
+                onGenerate: () => {
+                  if (prompt) void generateImageForRow(expandedRow, prompt);
+                },
                 onUpload: (file: File) => { void uploadImageForRow(expandedRow, file); },
                 onImportUrl: (url: string) => { void importImageUrlForRow(expandedRow, url); },
                 onEdit: () => setEditPanelRow(expandedRow),
-                onRetry: prompt
-                  ? () => { void generateImageForRow(expandedRow, prompt); }
-                  : undefined,
+                onRetry: () => {
+                  if (prompt) void generateImageForRow(expandedRow, prompt);
+                },
               };
             })()
           : undefined

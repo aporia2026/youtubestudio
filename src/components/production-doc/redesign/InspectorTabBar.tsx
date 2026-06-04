@@ -62,12 +62,19 @@ export const InspectorTabBar: React.FC<InspectorTabBarProps> = ({
   current,
   onSelect,
 }) => {
+  // QA fix: when the inspector column is narrow (380px on 1080p,
+  // narrower with side rails) the 6 tabs ~400px combined width
+  // overflow the container — last tab (Variants) gets clipped to
+  // "Varia". Use horizontal scroll so every tab stays reachable.
   return (
     <div
       role="tablist"
       aria-label="Row inspector tabs"
-      className="flex items-stretch gap-1 border-b"
-      style={{ borderColor: 'rgba(255,255,255,0.08)' }}
+      className="flex items-stretch gap-1 border-b overflow-x-auto"
+      style={{
+        borderColor: 'rgba(255,255,255,0.08)',
+        scrollbarWidth: 'thin',
+      }}
     >
       {INSPECTOR_TABS.map((tab) => {
         const isCurrent = tab.id === current;

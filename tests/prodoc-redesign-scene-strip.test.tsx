@@ -92,6 +92,35 @@ describe('SceneCard — content', () => {
     expect(html).not.toContain('<img');
   });
 
+  it('shows an in-flight status label for loading/pending/uploading/editing states (QA fix)', () => {
+    const loading = renderToStaticMarkup(
+      <SceneCard rowIndex={0} row={makeRow()} imageState={{ status: 'loading' }} />,
+    );
+    expect(loading).toContain('Generating');
+
+    const pending = renderToStaticMarkup(
+      <SceneCard rowIndex={0} row={makeRow()} imageState={{ status: 'pending' }} />,
+    );
+    expect(pending).toContain('Generating');
+
+    const uploading = renderToStaticMarkup(
+      <SceneCard rowIndex={0} row={makeRow()} imageState={{ status: 'uploading' }} />,
+    );
+    expect(uploading).toContain('Uploading');
+
+    const editing = renderToStaticMarkup(
+      <SceneCard rowIndex={0} row={makeRow()} imageState={{ status: 'editing' }} />,
+    );
+    expect(editing).toContain('Editing');
+  });
+
+  it('shows "Failed" label when image generation failed (QA fix)', () => {
+    const html = renderToStaticMarkup(
+      <SceneCard rowIndex={0} row={makeRow()} imageState={{ status: 'error' }} />,
+    );
+    expect(html).toContain('Failed');
+  });
+
   it('shows the OST and overlay badges when those fields are populated', () => {
     const html = renderToStaticMarkup(
       <SceneCard
