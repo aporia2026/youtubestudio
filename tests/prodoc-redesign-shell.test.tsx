@@ -74,17 +74,21 @@ describe('ProductionDocShell — children always rendered', () => {
     expect(html).toContain('legacy page render');
   });
 
-  it('Studio Mode is still a transparent pass-through (until R2)', () => {
-    // Studio Mode does not inject chrome yet — page.tsx still renders
-    // the legacy grid inside the children. R2 will replace this with
-    // the new top bar + left rail + render dock. When that phase lands,
-    // update this assertion deliberately.
+  it('Studio Mode now injects the StudioTopBar above children (R2)', () => {
     const html = renderToStaticMarkup(
       <ProductionDocShell doc={SAMPLE_DOC}>
-        <span>only-child</span>
+        <span data-testid="legacy-studio">legacy grid</span>
       </ProductionDocShell>,
     );
-    expect(html).toBe('<span>only-child</span>');
+    // Top bar landmark identifies the chrome unambiguously.
+    expect(html).toMatch(/aria-label="Studio top bar"/);
+    // Children still render after the top bar.
+    expect(html).toContain('data-testid="legacy-studio"');
+    // Order: top bar precedes the children.
+    const topBarIdx = html.indexOf('Studio top bar');
+    const childIdx = html.indexOf('legacy-studio');
+    expect(topBarIdx).toBeGreaterThanOrEqual(0);
+    expect(childIdx).toBeGreaterThan(topBarIdx);
   });
 });
 
@@ -126,16 +130,35 @@ describe('ProductionDocShell — Brief Mode header injection (R1)', () => {
     expect(html).toContain('New session');
   });
 
-  it('Studio Mode does not render the BriefHeader even with onNewSession set', () => {
-    // Brief and Studio are mutually exclusive. The new-session callback
-    // for Studio Mode will live in the Studio top bar (R2), not in
-    // the Brief header.
+  it('Studio Mode renders the doc title (not "Production Doc") and does NOT render BriefHeader', () => {
+    // Brief and Studio are mutually exclusive. Studio shows the doc
+    // title (via StudioTopBar) where Brief shows the generic
+    // "Production Doc" page title.
     const html = renderToStaticMarkup(
       <ProductionDocShell doc={SAMPLE_DOC} onNewSession={() => {}}>
         <span>studio content</span>
       </ProductionDocShell>,
     );
-    expect(html).not.toContain('Production Doc');
+    expect(html).toContain('Test doc');
+    expect(html).not.toContain('Plan, write, and produce a video');
+    expect(html).not.toContain('Production doc workflow');
+  });
+
+  it('Studio Mode forwards onNewSession to its top bar', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC} onNewSession={() => {}}>
+        <span>studio content</span>
+      </ProductionDocShell>,
+    );
+    expect(html).toContain('New session');
+  });
+
+  it('Studio Mode omits the New session button when onNewSession is not provided', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC}>
+        <span>studio content</span>
+      </ProductionDocShell>,
+    );
     expect(html).not.toContain('New session');
   });
 

@@ -67,9 +67,15 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
     priorMode.current = mode;
   }, [mode, doc]);
 
+  // `mode === 'studio'` is true only when `doc` is non-null (see
+  // `selectShellMode`). The non-null assertion here is therefore safe
+  // and lets `StudioMode` declare `doc` as required, which keeps the
+  // downstream API honest.
   return mode === 'brief' ? (
     <BriefMode onNewSession={onNewSession}>{children}</BriefMode>
   ) : (
-    <StudioMode>{children}</StudioMode>
+    <StudioMode doc={doc!} onNewSession={onNewSession}>
+      {children}
+    </StudioMode>
   );
 };
