@@ -31,6 +31,7 @@ import { fontFilePath } from '@/lib/thumbnail-formats/topic-card-grid-fonts-serv
 import {
   applyCellUploads,
   SHARP_INPUT_PIXEL_CAP,
+  type CellCutout,
   type CellUpload,
   type UploadFit,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
@@ -187,6 +188,26 @@ interface ReqBody {
      *  Unknown values silently fall back to undefined. */
     filter?: string;
   }>;
+  /** Phase 3 (2026-06-04): five circle-parity axes shipped to the
+   *  server so the Sharp composite can match what the editor shows.
+   *  Every field is optional and degrades to the pre-parity default
+   *  (`thin`, `below`, `title`, `photo`, `white-on-black`) when
+   *  absent or unrecognised — older clients that pre-date the parity
+   *  work keep rendering unchanged. All five are ignored in `square`
+   *  cardShape mode; the composite scopes them to circle cells only,
+   *  matching the editor's behaviour. */
+  borderWeight?: 'thin' | 'thick';
+  labelPosition?: 'below' | 'overlap';
+  labelCase?: 'title' | 'upper';
+  fillStyle?: 'photo' | 'cutout' | 'icon';
+  overlapLabelStroke?: 'white-on-black' | 'black-on-white';
+  /** Per-card background-removed PNG URLs, paired by 1-based
+   *  `cardIndex`. Populated by the editor when the user picks the
+   *  `'cutout'` fill style and the `/api/thumbnails/grid-rmbg` route
+   *  successfully removes the background. Only consumed by the
+   *  composite when `fillStyle === 'cutout'`; ignored otherwise.
+   *  Same SSRF + 8 MB cap guards as `uploads`. */
+  cutouts?: Array<{ cardIndex: number; cutoutImageUrl: string }>;
   /** Brightness register. Defaults to `'bright'` post-Phase-1.7. */
   brightness?: 'bright' | 'mixed' | 'moody';
   /** Detail register. Defaults to `'clean'` post-Phase-1.7. */
@@ -334,6 +355,23 @@ export async function POST(req: NextRequest) {
     // the field keep working unchanged.
     const cardShape: CardShape = body.cardShape === 'circle' ? 'circle' : 'square';
 
+    // Phase 3 axes — five circle-parity knobs the editor sends with
+    // every request. Each falls back to its pre-parity default so
+    // older clients keep working unchanged. Allowlist-style validation
+    // mirrors the brightness / detail / style shape elsewhere in this
+    // route (unknown → default, no 400). All five are scoped to circle
+    // mode by the composite; square mode ignores them entirely.
+    const borderWeight: 'thin' | 'thick' =
+      body.borderWeight === 'thick' ? 'thick' : 'thin';
+    const labelPosition: 'below' | 'overlap' =
+      body.labelPosition === 'overlap' ? 'overlap' : 'below';
+    const labelCase: 'title' | 'upper' =
+      body.labelCase === 'upper' ? 'upper' : 'title';
+    const fillStyle: 'photo' | 'cutout' | 'icon' =
+      body.fillStyle === 'cutout' || body.fillStyle === 'icon' ? body.fillStyle : 'photo';
+    const overlapLabelStroke: 'white-on-black' | 'black-on-white' =
+      body.overlapLabelStroke === 'black-on-white' ? 'black-on-white' : 'white-on-black';
+
     // Per-cell uploads. Each entry's URL passes the same SSRF guard the
     // reference URL passes; out-of-range cardIndex values are dropped
     // server-side so a stale client can't smuggle in extras. The bytes
@@ -388,6 +426,36 @@ export async function POST(req: NextRequest) {
       }
     }
     const uploadedCellIndexes = uploadRequests.map((u) => u.cardIndex).sort((a, b) => a - b);
+
+    // Per-card background-removed cutouts. Same SSRF + dedup +
+    // out-of-range filter pattern as the uploads array above. Only
+    // consumed when `fillStyle === 'cutout'`, but parsed
+    // unconditionally so a stale client switching fill styles after
+    // the fact still finds the cache server-side.
+    const cutoutRequests: Array<{ cardIndex: number; safeUrl: URL }> = [];
+    if (Array.isArray(body.cutouts)) {
+      const seen = new Set<number>();
+      for (const entry of body.cutouts) {
+        if (!entry || typeof entry !== 'object') continue;
+        const cardIndex = Number((entry as { cardIndex?: unknown }).cardIndex);
+        const rawUrl = String((entry as { cutoutImageUrl?: unknown }).cutoutImageUrl ?? '').trim();
+        if (!Number.isInteger(cardIndex) || cardIndex < 1 || cardIndex > totalCards) continue;
+        if (seen.has(cardIndex)) continue;
+        if (!rawUrl) continue;
+        let safeUrl: URL;
+        try {
+          safeUrl = assertSafePublicUrl(rawUrl, { allowedProtocols: ['https:'] });
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          return NextResponse.json(
+            { error: `Cell cutout URL for card ${cardIndex} was rejected: ${reason}` },
+            { status: 400 },
+          );
+        }
+        seen.add(cardIndex);
+        cutoutRequests.push({ cardIndex, safeUrl });
+      }
+    }
 
     // Layout + regions are computed AFTER the AI image lands so they're
     // keyed off the actual canvas dimensions of `aiBytes`, not the
@@ -676,6 +744,55 @@ export async function POST(req: NextRequest) {
         });
       }
     }
+    // Same fetch loop for cutout PNGs. Only meaningful when fillStyle
+    // === 'cutout' but we always fetch what the client sent so a stale
+    // toggle round-trip still finds the cache server-side. Failures on
+    // individual cutouts degrade gracefully — the composite warns on
+    // missing cutouts and falls back to a plain coloured disc, which
+    // is preferable to failing the whole render.
+    const cellCutouts: CellCutout[] = [];
+    if (cutoutRequests.length > 0 && fillStyle === 'cutout') {
+      logger.info('[thumb-format-grid image] composite cutouts fetch start', {
+        cell_count: cutoutRequests.length,
+      });
+      for (const req of cutoutRequests) {
+        try {
+          const cutRes = await fetch(req.safeUrl);
+          if (!cutRes.ok) {
+            logger.warn('[thumb-format-grid image] cutout fetch failed', {
+              card_index: req.cardIndex,
+              status: cutRes.status,
+            });
+            continue;
+          }
+          const declaredLen = Number.parseInt(cutRes.headers.get('content-length') ?? '', 10);
+          if (Number.isFinite(declaredLen) && declaredLen > MAX_CELL_UPLOAD_BYTES) {
+            logger.warn('[thumb-format-grid image] cutout exceeds size cap', {
+              card_index: req.cardIndex,
+              declared_len: declaredLen,
+            });
+            continue;
+          }
+          const cutArrayBuf = await cutRes.arrayBuffer();
+          if (cutArrayBuf.byteLength > MAX_CELL_UPLOAD_BYTES) {
+            logger.warn('[thumb-format-grid image] cutout exceeds size cap', {
+              card_index: req.cardIndex,
+              actual_len: cutArrayBuf.byteLength,
+            });
+            continue;
+          }
+          cellCutouts.push({
+            cardIndex: req.cardIndex,
+            bytes: Buffer.from(cutArrayBuf),
+          });
+        } catch (err) {
+          logger.warn('[thumb-format-grid image] cutout fetch errored', {
+            card_index: req.cardIndex,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
     const compositeStart = Date.now();
     let finalBytes = await applyCellUploads({
       baseImage: aiBytes,
@@ -685,6 +802,12 @@ export async function POST(req: NextRequest) {
       uploads: cellUploads,
       labelSizeMultiplier: labelSize,
       fontId,
+      borderWeight,
+      labelPosition,
+      labelCase,
+      fillStyle,
+      overlapLabelStroke,
+      cutouts: cellCutouts,
     });
     const compositorMs = Date.now() - compositeStart;
     const uploadsApplied = cellUploads.length;
@@ -694,6 +817,12 @@ export async function POST(req: NextRequest) {
       uploads_applied: uploadsApplied,
       labels_uniformized: labelsUniformized,
       card_shape: cardShape,
+      border_weight: borderWeight,
+      label_position: labelPosition,
+      label_case: labelCase,
+      fill_style: fillStyle,
+      overlap_stroke: overlapLabelStroke,
+      cutouts_applied: cellCutouts.length,
       output_bytes: finalBytes.byteLength,
     });
 

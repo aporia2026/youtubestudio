@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import {
   applyCellUploads,
   cellRect,
+  circleBorderPx,
   circularMaskSvg,
   computeScanBounds,
   detectAiCellRect,
@@ -12,6 +13,9 @@ import {
   escapePangoText,
   fitCover,
   renderLabelPng,
+  renderStrokedLabelPng,
+  LABEL_FONT_FAMILY,
+  LABEL_FONT_PATH,
   type CellScanBounds,
 } from '@/lib/thumbnail-formats/topic-card-grid-composite';
 import { makeDefaultLayout, type TopicCard } from '@/lib/thumbnail-formats/topic-card-grid';
@@ -1136,5 +1140,276 @@ describe('applyCellUploads', () => {
     expect(pB1).toBeLessThan(60);
     expect(pB4).toBeGreaterThan(200); // blue
     expect(pR4).toBeLessThan(60);
+  });
+});
+
+// ─── Phase 3: circle-parity axes ────────────────────────────────────────────
+
+describe('circleBorderPx', () => {
+  it('returns the 0.6% formula for `thin` (pre-Phase-3 default)', () => {
+    // 1000 px cell × 0.006 = 6 px. Matches the pre-Phase-3 hardcoded
+    // formula in `buildCircleCellOverlay` so legacy renders are
+    // pixel-identical.
+    expect(circleBorderPx(1000, 'thin')).toBe(6);
+    // Tiny canvases hit the 3 px floor so the stroke doesn't AA away.
+    expect(circleBorderPx(100, 'thin')).toBe(3);
+  });
+  it('returns the 1.6% formula for `thick` (bold doodle stroke)', () => {
+    expect(circleBorderPx(1000, 'thick')).toBe(16);
+    // Floor still applies — `thick` on a tiny canvas degrades to the
+    // minimum visible stroke rather than rounding to 2 px.
+    expect(circleBorderPx(150, 'thick')).toBe(3);
+  });
+  it('defaults to `thin` when weight is omitted', () => {
+    expect(circleBorderPx(1000)).toBe(circleBorderPx(1000, 'thin'));
+  });
+});
+
+describe('renderStrokedLabelPng', () => {
+  // Each test renders a one-character label and samples specific pixel
+  // regions to verify the stroke ring and fill layer landed where the
+  // helper says they should. The render-twice approach is deterministic
+  // so the assertions are tight on colour but loose on exact pixel
+  // coordinates (Pango glyph metrics drift slightly across versions).
+  const FONT = { family: LABEL_FONT_FAMILY, filePath: LABEL_FONT_PATH };
+
+  it('returns a 1×1 transparent PNG for empty text (mirrors renderLabelPng)', async () => {
+    const png = await renderStrokedLabelPng('', 100, 30, FONT, '#ffffff', '#000000', 2);
+    const meta = await sharp(png).metadata();
+    expect(meta.width).toBe(1);
+    expect(meta.height).toBe(1);
+  });
+
+  it('white-on-black places the white fill at the glyph centre with a black ring around it', async () => {
+    // Solid Pango-rendered "X" at 60pt — large enough that we can sample
+    // a few pixels in from any glyph edge and still hit pure fill /
+    // pure stroke without straddling the boundary.
+    const png = await renderStrokedLabelPng('X', 200, 60, FONT, '#ffffff', '#000000', 3);
+    const meta = await sharp(png).metadata();
+    const w = meta.width ?? 1;
+    const h = meta.height ?? 1;
+    // Decode the whole bitmap once so we can scan for the brightest +
+    // darkest pixels rather than guessing exact glyph coordinates.
+    const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    let foundWhiteOnBlack = false;
+    let foundOpaqueBlack = false;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = (y * w + x) * info.channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const a = data[idx + 3];
+        if (a < 200) continue;
+        if (r > 240 && g > 240 && b > 240) foundWhiteOnBlack = true;
+        if (r < 30 && g < 30 && b < 30) foundOpaqueBlack = true;
+      }
+    }
+    // Both ring (black) AND fill (white) pixels must exist at full
+    // opacity — proves the two layers composited correctly.
+    expect(foundWhiteOnBlack).toBe(true);
+    expect(foundOpaqueBlack).toBe(true);
+  });
+
+  it('black-on-white inverts the colour pair so the fill is black with a white ring', async () => {
+    const png = await renderStrokedLabelPng('X', 200, 60, FONT, '#000000', '#ffffff', 3);
+    const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const meta = await sharp(png).metadata();
+    const w = meta.width ?? 1;
+    const h = meta.height ?? 1;
+    let foundOpaqueBlack = false;
+    let foundOpaqueWhite = false;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = (y * w + x) * info.channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const a = data[idx + 3];
+        if (a < 200) continue;
+        if (r < 30 && g < 30 && b < 30) foundOpaqueBlack = true;
+        if (r > 240 && g > 240 && b > 240) foundOpaqueWhite = true;
+      }
+    }
+    expect(foundOpaqueBlack).toBe(true);
+    expect(foundOpaqueWhite).toBe(true);
+  });
+
+  it('expands the output canvas by 2*strokeWidth so the ring is never clipped', async () => {
+    const base = await renderLabelPng('X', 200, 100, 60, FONT);
+    const baseMeta = await sharp(base).metadata();
+    const stroked = await renderStrokedLabelPng('X', 200, 60, FONT, '#ffffff', '#000000', 4);
+    const strokedMeta = await sharp(stroked).metadata();
+    // Padding is `strokeWidth` on each side. ±1 px slack because Pango
+    // glyph metrics can drift between the two calls.
+    expect((strokedMeta.width ?? 0) - (baseMeta.width ?? 0)).toBeGreaterThanOrEqual(8 - 1);
+    expect((strokedMeta.height ?? 0) - (baseMeta.height ?? 0)).toBeGreaterThanOrEqual(8 - 1);
+  });
+});
+
+describe('applyCellUploads — Phase 3 axes', () => {
+  // Larger canvas than the 240×160 used above so cells are big enough
+  // to sample inside the disc without straddling the edge.
+  const CANVAS_W = 600;
+  const CANVAS_H = 400;
+  const cards: TopicCard[] = [
+    { index: 1, label: 'A', icon_concept: 'icon a', accent_color: '#ff0000' },
+    { index: 2, label: 'B', icon_concept: 'icon b' },
+  ];
+
+  it('paints a thicker border in circle mode when borderWeight = thick', async () => {
+    // Compare the centre-of-disc-edge stroke width by sampling a horizontal
+    // strip just outside the disc centre on the thin vs thick output —
+    // thick should have more black pixels in the same horizontal cross-
+    // section of the border ring.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const upload = await makeSolidPng(120, 120, { r: 255, g: 255, b: 255 });
+    const renderWith = async (borderWeight: 'thin' | 'thick') =>
+      await applyCellUploads({
+        baseImage: base,
+        layout,
+        cards,
+        cardShape: 'circle',
+        uploads: [{ cardIndex: 1, bytes: upload }],
+        borderWeight,
+      });
+    const thinOut = await renderWith('thin');
+    const thickOut = await renderWith('thick');
+    const rect = cellRect(layout, 1);
+    // Walk horizontally through the disc centre on each output, counting
+    // black pixels (the border). Thick should produce strictly more
+    // black pixels than thin because the border ring is wider.
+    const countBlackRow = async (png: Buffer, sampleY: number): Promise<number> => {
+      const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      let count = 0;
+      for (let x = rect.x; x < rect.x + rect.w; x++) {
+        const idx = (sampleY * info.width + x) * info.channels;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        if (r < 30 && g < 30 && b < 30) count++;
+      }
+      return count;
+    };
+    // Sample at the disc's vertical centre — the widest cross-section,
+    // where the difference between thin and thick is most pronounced.
+    const sampleY = rect.y + Math.round(rect.h * 0.28);
+    const thinBlack = await countBlackRow(thinOut, sampleY);
+    const thickBlack = await countBlackRow(thickOut, sampleY);
+    expect(thickBlack).toBeGreaterThan(thinBlack);
+  });
+
+  it('paints the accent colour as a flat disc when fillStyle = cutout (no cutout bytes attached)', async () => {
+    // Fallback path: cutout requested but no cutout bytes. The composite
+    // should warn (covered by the console.warn) and paint a plain
+    // accent-coloured disc, which is preferable to failing the render.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    // Any non-empty upload — the photo bytes are ignored in cutout mode,
+    // but applyCellUploads's loop only enters the circle branch when an
+    // upload is present (or other uploads exist in the request).
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      fillStyle: 'cutout',
+      // No cutouts array → falls back to plain accent disc.
+    });
+    const rect = cellRect(layout, 1);
+    // Disc centre should be the card's accent_color (#ff0000), NOT the
+    // green upload colour — proves the cutout branch ran instead of the
+    // photo branch.
+    const [r, g, b] = await pixelAt(out, rect.x + rect.w / 2, rect.y + rect.h * 0.28);
+    expect(r).toBeGreaterThan(200);
+    expect(g).toBeLessThan(60);
+    expect(b).toBeLessThan(60);
+  });
+
+  it('composites the cutout PNG over the accent disc when fillStyle = cutout AND cutout bytes provided', async () => {
+    // The cutout subject is bright magenta on transparent. Sample the
+    // disc centre — it should be magenta (subject), not the red accent.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    // Magenta square with alpha = 1 across the whole image. After resize
+    // to 80% of disc size and centred composite, the disc centre will
+    // hit the magenta pixels.
+    const cutout = await makeSolidPng(64, 64, { r: 255, g: 0, b: 255 });
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      fillStyle: 'cutout',
+      cutouts: [{ cardIndex: 1, bytes: cutout }],
+    });
+    const rect = cellRect(layout, 1);
+    const [r, g, b] = await pixelAt(out, rect.x + rect.w / 2, rect.y + rect.h * 0.28);
+    expect(r).toBeGreaterThan(200); // magenta R high
+    expect(g).toBeLessThan(60);     // magenta G low
+    expect(b).toBeGreaterThan(200); // magenta B high
+  });
+
+  it('falls back to plain accent disc when fillStyle = icon (no iconSlug infra yet)', async () => {
+    // icon mode currently has no iconSlug plumbing on TopicCard, so the
+    // composite paints just the accent disc and logs a warning. Test
+    // pins that fallback so the branch doesn't silently break in a
+    // future change.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'circle');
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    const out = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'circle',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      fillStyle: 'icon',
+    });
+    const rect = cellRect(layout, 1);
+    const [r, g, b] = await pixelAt(out, rect.x + rect.w / 2, rect.y + rect.h * 0.28);
+    expect(r).toBeGreaterThan(200); // red accent
+    expect(g).toBeLessThan(60);
+    expect(b).toBeLessThan(60);
+  });
+
+  it('does not affect square mode when axes are passed (square ignores all 5)', async () => {
+    // Belt-and-braces: the composite scopes the axes to circle mode.
+    // Passing them in square mode should produce the same output as
+    // omitting them entirely — proves the axes don't leak into the
+    // square branch.
+    const base = await makeSolidPng(CANVAS_W, CANVAS_H, { r: 0, g: 0, b: 0 });
+    const layout = makeDefaultLayout(1, 2, CANVAS_W, CANVAS_H, 'square');
+    const upload = await makeSolidPng(64, 64, { r: 0, g: 255, b: 0 });
+    const baseline = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'square',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+    });
+    const withAxes = await applyCellUploads({
+      baseImage: base,
+      layout,
+      cards,
+      cardShape: 'square',
+      uploads: [{ cardIndex: 1, bytes: upload }],
+      borderWeight: 'thick',
+      labelPosition: 'overlap',
+      labelCase: 'upper',
+      fillStyle: 'cutout',
+      overlapLabelStroke: 'black-on-white',
+    });
+    // Hash-equal proves the output is byte-identical. If the axes had
+    // any effect in square mode, even a single-pixel difference would
+    // change the hash.
+    const baselineHash = createHash('sha256').update(baseline).digest('hex');
+    const withAxesHash = createHash('sha256').update(withAxes).digest('hex');
+    expect(withAxesHash).toBe(baselineHash);
   });
 });

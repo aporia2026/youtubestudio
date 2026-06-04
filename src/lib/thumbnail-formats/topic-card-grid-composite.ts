@@ -31,8 +31,13 @@ import sharp from 'sharp';
 import {
   circleCellGeometry,
   effectiveRowGutter,
+  type BorderWeight,
   type CardShape,
+  type FillStyle,
   type GridLayout,
+  type LabelCase,
+  type LabelPosition,
+  type OverlapLabelStroke,
   type TopicCard,
 } from './topic-card-grid';
 import {
@@ -110,6 +115,23 @@ export interface CellUpload {
   filter?: ImageFilter;
 }
 
+/**
+ * Per-card background-removed cutout PNG, paired with its 1-based
+ * `cardIndex`. The route fetches these bytes from R2 the same way it
+ * fetches `CellUpload`s, then hands them here so the composite module
+ * stays free of network code. Only consumed when the active
+ * `fillStyle === 'cutout'`; ignored in `'photo'` / `'icon'` modes.
+ *
+ * Phase 3 (2026-06-04) — paired with the `/api/thumbnails/grid-rmbg`
+ * route the editor calls on upload. See plan
+ * `_plans/2026-06-04-topic-card-grid-circle-parity.md` §"Background
+ * removal".
+ */
+export interface CellCutout {
+  cardIndex: number;
+  bytes: Buffer;
+}
+
 export interface ApplyCellUploadsInput {
   /** AI-generated image as bytes. Any sharp-supported format works; output
    *  will always be PNG. */
@@ -133,6 +155,43 @@ export interface ApplyCellUploadsInput {
    *  back to the default silently — no throw, no broken render. Omit
    *  to use Patrick Hand (matches the bundled reference). */
   fontId?: string;
+  // ─── Phase 3 axes (2026-06-04) ──────────────────────────────────────────
+  // Each axis is uniform across the whole grid (no per-cell override
+  // here yet — the parity plan calls per-card mixing out of scope).
+  // Every field is optional so older callers and tests that pre-date
+  // Phase 3 keep working unchanged with the pre-parity defaults.
+  // All five are ignored in `'square'` cardShape mode; the renderer +
+  // composite both scope the new visual axes to circle cells only.
+  /** Cartoon-outline thickness. `'thin'` ≈ 0.6 % of cell width (the
+   *  pre-Phase-3 default); `'thick'` ≈ 1.6 % (bold doodle stroke).
+   *  Default `'thin'`. */
+  borderWeight?: BorderWeight;
+  /** Where the card's label sits relative to the disc. `'below'` is
+   *  the classic floating label; `'overlap'` shifts the label so its
+   *  vertical centre crosses the disc's bottom edge and renders with
+   *  a stroked outline so it stays readable on any disc colour.
+   *  Default `'below'`. */
+  labelPosition?: LabelPosition;
+  /** `'title'` keeps the source string casing; `'upper'` uppercases
+   *  the label before rendering. Source string is never mutated.
+   *  Default `'title'`. */
+  labelCase?: LabelCase;
+  /** How the disc is filled. `'photo'` (default) covers the disc with
+   *  the uploaded image. `'cutout'` paints the card's accent colour
+   *  and overlays the background-removed subject. `'icon'` paints the
+   *  accent colour and centres the AI-generated icon (interim: no
+   *  iconSlug infrastructure yet on `TopicCard` — falls back to a
+   *  plain coloured disc plus the label). */
+  fillStyle?: FillStyle;
+  /** Only used when `labelPosition === 'overlap'`. Colour pairing for
+   *  the stroked label. Default `'white-on-black'` = white fill with
+   *  black outline. */
+  overlapLabelStroke?: OverlapLabelStroke;
+  /** Per-card background-removed cutout PNGs. Only consumed when the
+   *  active `fillStyle === 'cutout'`. Cards without an entry fall back
+   *  to painting just the coloured disc (no cutout) and a console
+   *  warning so the gap surfaces in logs. */
+  cutouts?: CellCutout[];
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -345,6 +404,127 @@ export async function renderLabelPng(
  */
 export function escapePangoText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Circle-cell border thickness in canvas pixels. Scales with cell width
+ * so the cartoon outline reads consistently across canvas resolutions
+ * (a 4K render gets a beefier border than a 720p test fixture). Mirrors
+ * the browser preview's formula at
+ * `ThumbnailRenderer.tsx`'s circle branch, kept in lockstep so preview
+ * and export agree.
+ *
+ *  - `'thin'`  ≈ 0.6 % of cell width (pre-Phase-3 default).
+ *  - `'thick'` ≈ 1.6 % of cell width — the bold doodle stroke from the
+ *    competitor references the parity work was scoped against.
+ *
+ * Minimum 3 px so tiny test canvases keep a hairline border instead of
+ * dropping to a sub-pixel stroke libvips would anti-alias away.
+ */
+export function circleBorderPx(cellW: number, weight: BorderWeight = 'thin'): number {
+  const frac = weight === 'thick' ? 0.016 : 0.006;
+  return Math.max(3, Math.round(cellW * frac));
+}
+
+/**
+ * Render a label with a stroked outline ("paint-order stroke fill" in
+ * SVG terms) using the Pango render-twice trick:
+ *
+ *   1. Render the label once via Sharp/Pango — the bitmap comes out
+ *      black-on-transparent (Pango's default when no markup colour is
+ *      supplied).
+ *   2. Build two flat-coloured copies by `dest-in` compositing the
+ *      bitmap's alpha against a coloured background — yields a
+ *      stroke-coloured copy and a fill-coloured copy.
+ *   3. Composite the stroke copy onto an expanded canvas eight times
+ *      around the centre (NW, N, NE, W, E, SW, S, SE) at the stroke
+ *      width offset — forms the outline ring.
+ *   4. Composite the fill copy on top, centred.
+ *
+ * Approximation of SVG `paint-order="stroke fill"`. Not pixel-exact —
+ * SVG strokes the GLYPH OUTLINE at the specified width, whereas this
+ * offset-ring approach strokes the GLYPH BITMAP. At YouTube label
+ * sizes (≈30-60 px tall) the difference is invisible; at extreme
+ * sizes the ring approach reads slightly bolder. Picked over the
+ * embedded-`@font-face` SVG approach because it stays inside the
+ * existing Pango font-loading path (no librsvg `@font-face` quirks,
+ * no fontconfig dance).
+ *
+ * Empty `text` returns a 1×1 transparent PNG, same as `renderLabelPng`.
+ */
+export async function renderStrokedLabelPng(
+  text: string,
+  targetW: number,
+  fontPt: number,
+  font: { family: string; filePath: string },
+  fill: string,
+  stroke: string,
+  strokeWidthPx: number,
+): Promise<Buffer> {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return await sharp({
+      create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .png()
+      .toBuffer();
+  }
+  const safeW = Math.max(16, Math.round(targetW));
+  // Step 1: render the text bitmap once.
+  const baseBitmap = await sharp({
+    text: {
+      text: escapePangoText(trimmed),
+      fontfile: font.filePath,
+      font: `${font.family} ${fontPt}`,
+      rgba: true,
+      width: safeW,
+      align: 'centre',
+      wrap: 'word',
+    },
+  })
+    .png()
+    .toBuffer();
+  const meta = await sharp(baseBitmap).metadata();
+  const w = meta.width ?? 1;
+  const h = meta.height ?? 1;
+
+  // Step 2: build the stroke + fill bitmaps via alpha-mask recolour.
+  // `dest-in` keeps only the pixels covered by the bitmap's alpha,
+  // dropping everything else to transparent. The `background` then
+  // shows through as the new flat colour.
+  const buildFlat = async (colour: string): Promise<Buffer> =>
+    await sharp({
+      create: { width: w, height: h, channels: 4, background: colour },
+    })
+      .composite([{ input: baseBitmap, blend: 'dest-in' }])
+      .png()
+      .toBuffer();
+  const strokeLayer = await buildFlat(stroke);
+  const fillLayer = await buildFlat(fill);
+
+  // Step 3 + 4: composite the eight-direction stroke ring then the
+  // fill on top onto an expanded canvas so the offset ring doesn't
+  // clip at the edges.
+  const pad = Math.max(1, Math.round(strokeWidthPx));
+  const canvasW = w + 2 * pad;
+  const canvasH = h + 2 * pad;
+  const ringOffsets: ReadonlyArray<readonly [number, number]> = [
+    [-pad, -pad], [0, -pad], [pad, -pad],
+    [-pad, 0],               [pad, 0],
+    [-pad, pad],  [0, pad],  [pad, pad],
+  ];
+  const overlays: sharp.OverlayOptions[] = ringOffsets.map(([dx, dy]) => ({
+    input: strokeLayer,
+    top: pad + dy,
+    left: pad + dx,
+  }));
+  overlays.push({ input: fillLayer, top: pad, left: pad });
+  return await sharp({
+    create: { width: canvasW, height: canvasH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite(overlays)
+    .png()
+    .toBuffer();
 }
 
 /**
@@ -994,6 +1174,27 @@ export function detectAiLabelTop(
 export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Buffer> {
   const { baseImage, layout, cards, cardShape, uploads } = input;
   const labelSizeMultiplier = input.labelSizeMultiplier ?? 1;
+  // Phase 3 axes. Each is uniform across the grid and only consumed by
+  // the circle branch of the per-cell overlay. Square mode ignores them
+  // entirely so older callers / tests stay unaffected.
+  const axisBorderWeight: BorderWeight = input.borderWeight ?? 'thin';
+  const axisLabelPosition: LabelPosition = input.labelPosition ?? 'below';
+  const axisLabelCase: LabelCase = input.labelCase ?? 'title';
+  const axisFillStyle: FillStyle = input.fillStyle ?? 'photo';
+  const axisOverlapStroke: OverlapLabelStroke = input.overlapLabelStroke ?? 'white-on-black';
+  // Index per-card cutout bytes so the per-cell loop can look them up
+  // by index without a linear scan per card.
+  const cutoutByIndex = new Map<number, Buffer>();
+  for (const cut of input.cutouts ?? []) cutoutByIndex.set(cut.cardIndex, cut.bytes);
+  console.info('[topic-card-grid composite axes]', {
+    card_shape: cardShape,
+    border_weight: axisBorderWeight,
+    label_position: axisLabelPosition,
+    label_case: axisLabelCase,
+    fill_style: axisFillStyle,
+    overlap_stroke: axisOverlapStroke,
+    cutouts_attached: cutoutByIndex.size,
+  });
 
   // Resolve the label font once per call. Unknown ids fall back to the
   // default silently — the route already validates against the
@@ -1237,7 +1438,25 @@ export async function applyCellUploads(input: ApplyCellUploadsInput): Promise<Bu
       }
       const overlay =
         cardShape === 'circle'
-          ? await buildCircleCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font, uploadFit, uploadFilter)
+          ? await buildCircleCellOverlay(
+              imageBytes,
+              card.label,
+              rect.w,
+              rect.h,
+              fontPt,
+              font,
+              uploadFit,
+              uploadFilter,
+              {
+                borderWeight: axisBorderWeight,
+                labelPosition: axisLabelPosition,
+                labelCase: axisLabelCase,
+                fillStyle: axisFillStyle,
+                overlapLabelStroke: axisOverlapStroke,
+                accentColor: card.accent_color,
+                cutoutBytes: cutoutByIndex.get(card.index),
+              },
+            )
           : await buildSquareCellOverlay(imageBytes, card.label, rect.w, rect.h, fontPt, font, uploadFit, uploadFilter);
       overlays.push({ input: overlay, top: rect.y, left: rect.x });
       continue;
@@ -1509,12 +1728,52 @@ async function buildSquareCellOverlay(
 }
 
 /**
+ * Per-cell circle-mode axis options. Mirrors the five circle-parity
+ * axes the editor exposes plus the per-card disc-fill colour and the
+ * background-removed cutout bytes. Passed as a single record so the
+ * `buildCircleCellOverlay` signature stays manageable as the axis
+ * count grows. All fields optional — omitted ones fall back to the
+ * pre-Phase-3 behaviour.
+ */
+interface CircleCellAxes {
+  borderWeight?: BorderWeight;
+  labelPosition?: LabelPosition;
+  labelCase?: LabelCase;
+  fillStyle?: FillStyle;
+  overlapLabelStroke?: OverlapLabelStroke;
+  /** Per-card accent colour, used to paint the disc background for
+   *  `'cutout'` and `'icon'` fill styles. Falls back to `'#000000'`
+   *  (the most common cutout backdrop in the competitor references)
+   *  when neither the card nor the layout supplies one. */
+  accentColor?: string;
+  /** Background-removed PNG bytes for this card. Only consumed when
+   *  `fillStyle === 'cutout'`. */
+  cutoutBytes?: Buffer;
+}
+
+/**
  * Circle-mode per-cell overlay. Exactly `cellW × cellH`. Layout:
  *  - Whole cell starts as white (covers any AI render).
  *  - The disc occupies the top portion (geometry from
- *    `circleCellGeometry`); the uploaded image is cover-fit into a square
- *    equal to the disc diameter, then alpha-masked to a circle.
- *  - The label sits in the remaining strip beneath the disc, centred.
+ *    `circleCellGeometry`).
+ *  - Disc fill branches on `fillStyle`:
+ *     - `'photo'` (default): cover-fit the uploaded image into a disc-
+ *       sized square, alpha-mask to a circle.
+ *     - `'cutout'`: paint the card's accent colour as a flat disc,
+ *       composite the background-removed PNG at ~80 % disc height
+ *       centred.
+ *     - `'icon'`: same as cutout but composites the AI icon. Interim
+ *       (Phase 3): no `iconSlug` infrastructure on `TopicCard` yet, so
+ *       this branch renders the coloured disc only and logs a warning.
+ *  - Disc border thickness scales with `borderWeight` (`'thin'` ≈ 0.6 %
+ *    of cell width, `'thick'` ≈ 1.6 %).
+ *  - Label branches on `labelPosition`:
+ *     - `'below'` (default): centred in the strip beneath the disc.
+ *     - `'overlap'`: vertical centre crosses the disc's bottom edge,
+ *       rendered as stroked text via `renderStrokedLabelPng` so it
+ *       stays readable on any disc colour.
+ *  - `labelCase === 'upper'` uppercases the label string before
+ *    rendering. Source string is never mutated upstream.
  *
  * Every disc gets a black border (cartoon-style outline) — matches the
  * browser preview and every reference thumbnail in the genre.
@@ -1528,50 +1787,163 @@ async function buildCircleCellOverlay(
   font?: { family: string; filePath: string },
   fit: UploadFit = 'cover',
   filter?: ImageFilter,
+  axes: CircleCellAxes = {},
 ): Promise<Buffer> {
+  // Resolve every axis up front so the painting code below stays a
+  // flat conditional ladder. Pre-Phase-3 defaults preserve the
+  // historic look exactly.
+  const borderWeight: BorderWeight = axes.borderWeight ?? 'thin';
+  const labelPosition: LabelPosition = axes.labelPosition ?? 'below';
+  const labelCase: LabelCase = axes.labelCase ?? 'title';
+  const fillStyle: FillStyle = axes.fillStyle ?? 'photo';
+  const overlapStroke: OverlapLabelStroke = axes.overlapLabelStroke ?? 'white-on-black';
+  // Black is the most common cutout/icon backdrop across the
+  // competitor references. The plan doesn't pin a fallback colour;
+  // black-on-white reads correctly on the default canvas without
+  // forcing colour decisions on the caller.
+  const accentColor = axes.accentColor ?? '#000000';
+
   // Geometry is computed in canvas-local coords; we pass cellX/cellY = 0
   // so the returned positions are within the overlay's own frame.
   const geom = circleCellGeometry(0, 0, cellW, cellH);
   const discD = Math.round(geom.discD);
+  const borderPx = circleBorderPx(cellW, borderWeight);
 
-  // 1) Fit the uploaded image to a discD × discD square. `fit` and
-  //    `filter` are per-upload overrides; defaults match the pre-Phase-5
-  //    behaviour (cover + no filter).
-  const square = await fitImage(imageBytes, discD, discD, fit, filter);
+  // 1) Build the disc bitmap based on `fillStyle`. Each branch returns
+  //    a `discD × discD` PNG with alpha outside the circle so the
+  //    border ring composites cleanly on top.
+  let discNoBorder: Buffer;
+  if (fillStyle === 'photo') {
+    // Existing path: cover-fit the upload into a disc-sized square,
+    // alpha-mask to a circle. `fit` and `filter` are per-upload
+    // overrides; defaults match the pre-Phase-5 behaviour (cover +
+    // no filter).
+    const square = await fitImage(imageBytes, discD, discD, fit, filter);
+    discNoBorder = await sharp(square)
+      .composite([{ input: circularMaskSvg(discD), blend: 'dest-in' }])
+      .png()
+      .toBuffer();
+  } else if (fillStyle === 'cutout' && axes.cutoutBytes) {
+    // Cutout: paint a flat accent disc, then composite the
+    // background-removed PNG at ~80 % disc height centred so the
+    // subject reads as floating on the colour. We `contain` rather
+    // than `cover` so the subject isn't cropped — the user's cutout
+    // is the whole point of this fill style.
+    const subjectSize = Math.max(1, Math.round(discD * 0.8));
+    const subjectFitted = await sharp(axes.cutoutBytes, { limitInputPixels: SHARP_INPUT_PIXEL_CAP })
+      .resize(subjectSize, subjectSize, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
+    const subjectOffset = Math.round((discD - subjectSize) / 2);
+    const flatDisc = await sharp({
+      create: { width: discD, height: discD, channels: 4, background: accentColor },
+    })
+      .composite([{ input: circularMaskSvg(discD), blend: 'dest-in' }])
+      .png()
+      .toBuffer();
+    discNoBorder = await sharp(flatDisc)
+      .composite([{ input: subjectFitted, top: subjectOffset, left: subjectOffset }])
+      .png()
+      .toBuffer();
+    if (filter) {
+      discNoBorder = await applyFilter(discNoBorder, filter);
+    }
+  } else {
+    // `'icon'` OR `'cutout'` with no cutout bytes attached. Fall back
+    // to a plain accent disc + label. The icon-slug path needs
+    // `TopicCard.iconSlug` plumbing that doesn't exist yet — left as
+    // a Phase 4+ follow-up. Surface the gap in logs so it's not silent.
+    if (fillStyle === 'icon') {
+      console.warn('[topic-card-grid composite icon-fallback]', {
+        reason: 'icon fillStyle requested but TopicCard.iconSlug infrastructure not implemented',
+        cell_w: cellW,
+      });
+    } else if (fillStyle === 'cutout') {
+      console.warn('[topic-card-grid composite cutout-fallback]', {
+        reason: 'cutout fillStyle requested but no cutout bytes attached for this card',
+        cell_w: cellW,
+      });
+    }
+    discNoBorder = await sharp({
+      create: { width: discD, height: discD, channels: 4, background: accentColor },
+    })
+      .composite([{ input: circularMaskSvg(discD), blend: 'dest-in' }])
+      .png()
+      .toBuffer();
+  }
 
-  // 2) Apply the circular alpha mask (dest-in keeps only the pixels under
-  //    the white circle, dropping the corners to transparent), then
-  //    composite a black border ring on top so the disc has the cartoon-
-  //    style outline every reference thumbnail in the genre uses. Border
-  //    weight matches the browser preview's formula
-  //    (`max(3, round(w * 0.006))`) so preview and export agree.
-  const borderPx = Math.max(3, Math.round(cellW * 0.006));
-  const maskedNoBorder = await sharp(square)
-    .composite([{ input: circularMaskSvg(discD), blend: 'dest-in' }])
-    .png()
-    .toBuffer();
-  const masked = await sharp(maskedNoBorder)
+  // 2) Composite the black border ring on top of the disc. Same call
+  //    shape as the pre-Phase-3 code; the only difference is `borderPx`
+  //    now varies with `borderWeight`.
+  const masked = await sharp(discNoBorder)
     .composite([{ input: circularBorderSvg(discD, borderPx) }])
     .png()
     .toBuffer();
 
-  // 3) Render the label text PNG.
+  // 3) Resolve the label string + render. Two branches:
+  //     - `'below'`  → renderLabelPng (existing path, fits in the
+  //       label band beneath the disc).
+  //     - `'overlap'` → renderStrokedLabelPng at a disc-relative font
+  //       size so the label reads at a comparable scale to the
+  //       browser preview's overlap mode.
+  const displayLabel = labelCase === 'upper' ? label.toUpperCase() : label;
+  const isOverlap = labelPosition === 'overlap';
   const labelPad = Math.max(2, Math.round(cellW * 0.025));
-  const labelW = Math.max(16, Math.round(geom.labelW) - 2 * labelPad);
-  const labelH = Math.max(8, Math.round(geom.labelH) - 2);
-  const labelPng = await renderLabelPng(label, labelW, labelH, fontPt, font);
-  const labelMeta = await sharp(labelPng).metadata();
-  const labelTextW = labelMeta.width ?? 1;
-  const labelTextH = labelMeta.height ?? 1;
+  let labelPng: Buffer;
+  let labelTextW: number;
+  let labelTextH: number;
+  let labelTop: number;
+  if (isOverlap) {
+    // Overlap mode renders at ~13 % of disc diameter — the band-derived
+    // size is tuned for the 20 % strip below, far too small when the
+    // label crosses the disc. Stroke width tracks the browser preview's
+    // 6 % of font size.
+    const overlapFontPt = Math.max(12, Math.round(discD * 0.13));
+    const fillColor = overlapStroke === 'white-on-black' ? '#ffffff' : '#000000';
+    const strokeColor = overlapStroke === 'white-on-black' ? '#000000' : '#ffffff';
+    const strokeWidth = Math.max(1, Math.round(overlapFontPt * 0.06));
+    const labelW = Math.max(16, cellW - 2 * labelPad);
+    const resolvedFont = font ?? { family: LABEL_FONT_FAMILY, filePath: LABEL_FONT_PATH };
+    labelPng = await renderStrokedLabelPng(
+      displayLabel,
+      labelW,
+      overlapFontPt,
+      resolvedFont,
+      fillColor,
+      strokeColor,
+      strokeWidth,
+    );
+    const meta = await sharp(labelPng).metadata();
+    labelTextW = meta.width ?? 1;
+    labelTextH = meta.height ?? 1;
+    // Position so the label's vertical centre crosses the disc's
+    // bottom edge — produces the "overlapping label" look from the
+    // competitor references.
+    const discTop = Math.round(geom.discCy - discD / 2);
+    labelTop = Math.max(0, discTop + discD - Math.round(labelTextH / 2));
+  } else {
+    const labelW = Math.max(16, Math.round(geom.labelW) - 2 * labelPad);
+    const labelH = Math.max(8, Math.round(geom.labelH) - 2);
+    labelPng = await renderLabelPng(displayLabel, labelW, labelH, fontPt, font);
+    const meta = await sharp(labelPng).metadata();
+    labelTextW = meta.width ?? 1;
+    labelTextH = meta.height ?? 1;
+    const discTop = Math.round(geom.discCy - discD / 2);
+    labelTop = Math.max(
+      discTop + discD + 1,
+      Math.round(geom.labelY + (geom.labelH - labelTextH) / 2),
+    );
+  }
 
-  // 4) Composite onto a white base of the cell size.
+  // 4) Composite the disc + label onto a white base of the cell size.
+  //    Overlap labels paint AFTER the disc so the stroke ring sits on
+  //    top of the disc edge — matches the browser preview's z-order.
   const discLeft = Math.round(geom.discCx - discD / 2);
   const discTop = Math.round(geom.discCy - discD / 2);
   const labelLeft = Math.max(0, Math.round((cellW - labelTextW) / 2));
-  const labelTop = Math.max(
-    discTop + discD + 1,
-    Math.round(geom.labelY + (geom.labelH - labelTextH) / 2),
-  );
   return await sharp({
     create: { width: cellW, height: cellH, channels: 4, background: WHITE },
   })
