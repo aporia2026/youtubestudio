@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import type { ProductionRow } from '@/remotion/utils';
+import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { InspectorTabBar, type InspectorTabId } from './InspectorTabBar';
 import { StudioInspectorContent } from './StudioInspectorContent';
 import {
@@ -13,6 +14,8 @@ import {
   StudioInspectorVideo,
   type StudioInspectorVideoClipSlice,
 } from './StudioInspectorVideo';
+import { StudioInspectorOverlay } from './StudioInspectorOverlay';
+import { StudioInspectorSection } from './StudioInspectorSection';
 
 /**
  * StudioInspector — the right column of `StudioLayout`. Hosts the
@@ -55,6 +58,11 @@ export interface StudioInspectorProps {
   selectedRowImageActions?: StudioInspectorImageActions;
   /** B-roll clip for the selected row. R3 PR4c (read-only). */
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
+  /** Overlay state for the selected row. R3 PR5 (read-only). */
+  selectedRowOverlay?: RowOverlayState | null;
+  /** Doc-level defaults used by the Section tab to display effective
+   *  values (row override → doc default → built-in default). */
+  doc?: ProductionDoc | null;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -66,6 +74,8 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   selectedRowImageState = null,
   selectedRowImageActions,
   selectedRowVideoClip = null,
+  selectedRowOverlay = null,
+  doc = null,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -141,6 +151,13 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
           />
         ) : currentTab === 'video' ? (
           <StudioInspectorVideo clip={selectedRowVideoClip} />
+        ) : currentTab === 'overlay' ? (
+          <StudioInspectorOverlay
+            overlay={selectedRowOverlay}
+            stockTerms={selectedRow.stock_search_terms}
+          />
+        ) : currentTab === 'section' ? (
+          <StudioInspectorSection row={selectedRow} doc={doc} />
         ) : (
           <p
             className="text-xs"

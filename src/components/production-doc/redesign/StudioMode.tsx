@@ -3,6 +3,7 @@
 import React from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { StudioTopBar } from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
@@ -53,6 +54,8 @@ export interface StudioModeProps {
   selectedRowImageActions?: StudioInspectorImageActions;
   /** B-roll clip for the currently-selected row. R3 PR4c. */
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
+  /** Overlay state for the currently-selected row. R3 PR5. */
+  selectedRowOverlay?: RowOverlayState | null;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -64,6 +67,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowImageState = null,
   selectedRowImageActions,
   selectedRowVideoClip = null,
+  selectedRowOverlay = null,
 }) => {
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
@@ -92,6 +96,8 @@ export const StudioMode: React.FC<StudioModeProps> = ({
             selectedRowImageState={selectedRowImageState}
             selectedRowImageActions={selectedRowImageActions}
             selectedRowVideoClip={selectedRowVideoClip}
+            selectedRowOverlay={selectedRowOverlay}
+            doc={doc}
           />
         }
       />

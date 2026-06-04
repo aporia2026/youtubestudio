@@ -3,6 +3,7 @@
 import React, { useEffect, useRef } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import { BriefMode } from './BriefMode';
@@ -48,6 +49,9 @@ export interface ProductionDocShellProps {
   /** B-roll clip for the currently-selected row. Drives the Video
    *  tab's read-only preview. Ignored in Brief Mode. R3 PR4c. */
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
+  /** Overlay state for the currently-selected row. Drives the
+   *  Overlay tab's read-only preview. Ignored in Brief Mode. R3 PR5. */
+  selectedRowOverlay?: RowOverlayState | null;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -70,6 +74,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowImageState,
   selectedRowImageActions,
   selectedRowVideoClip,
+  selectedRowOverlay,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -108,6 +113,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowImageState={selectedRowImageState}
       selectedRowImageActions={selectedRowImageActions}
       selectedRowVideoClip={selectedRowVideoClip}
+      selectedRowOverlay={selectedRowOverlay}
     >
       {children}
     </StudioMode>

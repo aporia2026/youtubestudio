@@ -14275,6 +14275,16 @@ function ProductionDocPage() {
           ? rowVideoClips[expandedRow]
           : null
       }
+      // R3 PR5: overlay state for the selected row. Drives the
+      // read-only Overlay tab — stock terms, status pill, transparent
+      // PNG preview. Edit / Rethink / Replace / Undo / Reset writers
+      // land in a follow-up PR (4 modals + a context menu need their
+      // own scope).
+      selectedRowOverlay={
+        expandedRow !== null && expandedRow >= 0 && rowOverlays[expandedRow]
+          ? rowOverlays[expandedRow]
+          : null
+      }
     >
       {pageContent}
     </ProductionDocShell>
