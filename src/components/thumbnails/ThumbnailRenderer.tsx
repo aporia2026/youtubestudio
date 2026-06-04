@@ -959,10 +959,12 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   // visual fills the disc; the flags below collapse the precedence rules
   // into one place instead of repeating them on each branch's condition.
   //  - `useCutout`: circle-only, needs the bg-removed PNG ready.
-  //  - `useIcon`: forced when `fillStyle === 'icon'` even if `imageUrl`
-  //    is set; otherwise legacy "image > icon > emoji" precedence.
+  //  - `useIcon`: forced when `fillStyle === 'icon'` (circles only) even if
+  //    `imageUrl` is set; otherwise legacy "image > icon > emoji" precedence.
   //  - `useImage` / `useEmoji`: fall through.
-  const fillStyle = cell.fillStyle ?? 'photo';
+  // `fillStyle` is intentionally circle-only — square / rounded cells use
+  // the legacy precedence regardless of any `fillStyle` value on the cell.
+  const fillStyle = shape === 'circle' ? (cell.fillStyle ?? 'photo') : 'photo';
   const hasUsableIcon = !!(cell.iconSlug && getIconEntry(cell.iconSlug));
   const useCutout = shape === 'circle' && fillStyle === 'cutout' && !!cell.cutoutImageUrl;
   const useIcon = !useCutout && hasUsableIcon && (fillStyle === 'icon' || !cell.imageUrl);
@@ -1007,21 +1009,26 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           background-removed PNG at ~80 % disc height, centred. The
           disc's `bg` colour shows through wherever the cutout is
           transparent — that's the "subject-on-solid-colour" look from
-          the reference thumbnails. No clip-path needed because the
-          cutout is already smaller than the disc. */}
+          the reference thumbnails. Defensive clip-path: a square-aspect
+          cutout's bounding box corners sit at ~0.566 × discDiameter from
+          the centre (just outside the 0.5 × discDiameter radius), so
+          for rectangular-silhouette subjects the clip prevents bleed
+          past the disc edge. */}
       {useCutout && cell.cutoutImageUrl && (() => {
         const subjectH = Math.round(discDiameter * 0.8);
         const subjectX = discCx - subjectH / 2;
         const subjectY = discCy - subjectH / 2;
         return (
-          <image
-            href={cell.cutoutImageUrl}
-            x={subjectX}
-            y={subjectY}
-            width={subjectH}
-            height={subjectH}
-            preserveAspectRatio="xMidYMid meet"
-          />
+          <g clipPath={`url(#${circleClipId})`}>
+            <image
+              href={cell.cutoutImageUrl}
+              x={subjectX}
+              y={subjectY}
+              width={subjectH}
+              height={subjectH}
+              preserveAspectRatio="xMidYMid meet"
+            />
+          </g>
         );
       })()}
       {/* Custom image (per-cell upload / URL). Takes PRECEDENCE over

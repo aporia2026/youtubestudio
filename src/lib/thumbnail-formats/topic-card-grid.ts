@@ -94,8 +94,9 @@ export interface GridLayout {
    *  the label centred in the gutter below. Defaults to `'square'` when
    *  omitted so older history entries hydrate cleanly. */
   cardShape?: CardShape;
-  /** Cartoon-outline thickness. `'thin'` ≈ 0.4% of cell width (subtle line),
-   *  `'thick'` ≈ 1.6% (bold doodle stroke). Default `'thin'`. */
+  /** Cartoon-outline thickness. `'thin'` ≈ 0.6% of cell width (matches the
+   *  legacy default), `'thick'` ≈ 1.6% (bold doodle stroke). Default
+   *  `'thin'`. Per-cell `borderPx` overrides this if explicitly set. */
   borderWeight?: BorderWeight;
   /** Where the card's label sits relative to the disc. `'below'` is the
    *  classic floating label; `'overlap'` places the label so its top crosses

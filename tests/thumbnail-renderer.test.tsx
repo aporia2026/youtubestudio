@@ -566,3 +566,174 @@ describe('ThumbnailRenderer — circle cell clip + border invariant', () => {
     expect(html).not.toContain('stroke="#ff0000"');
   });
 });
+
+// ─── Card-style axes (2026-06-04 parity work) ──────────────────────────────
+
+/**
+ * Coverage for the five new variation axes added to `FreeFormCell`:
+ * borderWeight, labelPosition, labelCase, fillStyle, overlapLabelStroke.
+ * Each test asserts the smallest visible signal the axis produces in the
+ * rendered SVG markup so a regression hits a single, named test.
+ */
+describe('ThumbnailRenderer — card-style axes', () => {
+  it('borderWeight "thick" produces a fatter stroke than "thin"', () => {
+    const renderWith = (w: 'thin' | 'thick') =>
+      renderToStaticMarkup(
+        <ThumbnailRenderer
+          canvasWidth={400}
+          canvasHeight={225}
+          cells={[
+            {
+              bounds: { x: 0, y: 0, w: 200, h: 200 },
+              shape: 'circle',
+              borderWeight: w,
+              label: 'Test',
+            },
+          ]}
+        />,
+      );
+    const thin = renderWith('thin');
+    const thick = renderWith('thick');
+    // 0.6 % of w=200 = 1.2 → max(3, 1) = 3
+    expect(thin).toMatch(/stroke-width="3"/);
+    // 1.6 % of w=200 = 3.2 → max(3, 3) = 3 — same floor at this size.
+    // Use a wider cell where the difference clears the floor.
+    const renderWide = (w: 'thin' | 'thick') =>
+      renderToStaticMarkup(
+        <ThumbnailRenderer
+          canvasWidth={1000}
+          canvasHeight={300}
+          cells={[
+            {
+              bounds: { x: 0, y: 0, w: 1000, h: 200 },
+              shape: 'circle',
+              borderWeight: w,
+              label: 'Test',
+            },
+          ]}
+        />,
+      );
+    const wideThin = renderWide('thin');
+    const wideThick = renderWide('thick');
+    expect(wideThin).toMatch(/stroke-width="6"/); // 0.6 % of 1000
+    expect(wideThick).toMatch(/stroke-width="16"/); // 1.6 % of 1000
+  });
+
+  it('labelCase "upper" uppercases the displayed string at render time', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            label: 'Frank Olson',
+            labelCase: 'upper',
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain('FRANK OLSON');
+    expect(html).not.toContain('>Frank Olson<');
+  });
+
+  it('labelPosition "overlap" emits stroked text via paint-order', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            label: 'TEST',
+            labelPosition: 'overlap',
+          },
+        ]}
+      />,
+    );
+    // Default overlap stroke is white-on-black.
+    expect(html).toContain('paint-order="stroke fill"');
+    expect(html).toMatch(/<text[^>]*fill="#ffffff"[^>]*stroke="#000000"/);
+  });
+
+  it('labelPosition "overlap" with stroke "black-on-white" inverts fill + stroke', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            label: 'TEST',
+            labelPosition: 'overlap',
+            overlapLabelStroke: 'black-on-white',
+          },
+        ]}
+      />,
+    );
+    expect(html).toMatch(/<text[^>]*fill="#000000"[^>]*stroke="#ffffff"/);
+  });
+
+  it('fillStyle "cutout" renders cutoutImageUrl and skips imageUrl when both are set', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            imageUrl: 'https://example.com/photo.png',
+            cutoutImageUrl: 'https://example.com/cutout.png',
+            fillStyle: 'cutout',
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain('cutout.png');
+    expect(html).not.toContain('photo.png');
+  });
+
+  it('fillStyle "icon" forces the icon path even when imageUrl is set (circle shape only)', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            imageUrl: 'https://example.com/photo.png',
+            iconSlug: 'heart',
+            fillStyle: 'icon',
+          },
+        ]}
+      />,
+    );
+    // The image should NOT be painted. Icon should be (via dangerouslySetInnerHTML).
+    expect(html).not.toContain('photo.png');
+  });
+
+  it('fillStyle on non-circle shapes is ignored — square cells keep legacy precedence (image > icon > emoji)', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'square',
+            imageUrl: 'https://example.com/photo.png',
+            iconSlug: 'heart',
+            fillStyle: 'icon', // would force icon on a circle; on a square it must be ignored.
+          },
+        ]}
+      />,
+    );
+    // Image wins on squares regardless of fillStyle.
+    expect(html).toContain('photo.png');
+  });
+});
