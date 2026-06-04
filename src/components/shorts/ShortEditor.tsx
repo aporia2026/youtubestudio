@@ -1,42 +1,32 @@
 'use client';
 
 /**
- * ShortEditor — Phase 15.10.
+ * ShortEditor — orchestrator for the Shorts editor page.
  *
- * The single workspace for editing + generating a Short. Same shape as
- * the production-doc page: live Remotion preview at the top, sectioned
- * editor below. Generation actions (style assets, voiceover, render)
- * live INSIDE the editor so the user can see the live preview update
- * after each step instead of staring at a stalled "Generating…" button
- * on the Create surface.
+ * Owns all editor state + handlers: row, drafts, alignment, asset-pipeline
+ * polling, render job. Layout is delegated to `<EditorShell>` (sticky
+ * preview rail on the left, tabbed right rail, persistent Render CTA in
+ * the top bar). Each tab's content is built inline here so it captures
+ * the orchestrator's state + handlers via closure — no prop plumbing.
  *
- * Layout:
- *   ┌────────────────────────────────────────────┐
- *   │  9:16 Player preview              ←  back │
- *   │  (mounts ShortVideo composition)          │
- *   ├────────────────────────────────────────────┤
- *   │  Script         (textarea, save on blur)   │
- *   │  Style          (picker + assets + retry)  │
- *   │  Voiceover      (voice picker + Generate)  │
- *   │  Render         (Render + progress + DL)   │
- *   └────────────────────────────────────────────┘
+ * Plan: `_plans/2026-06-04-shorts-editor-redesign-split-tabs.md`.
  *
  * Polling: while style assets are still generating server-side, the
- * editor polls the row every 12s to keep the preview + status pill
- * current. Same cadence as ShortsInboxPanel. The interval clears the
- * moment style_assets land.
+ * editor polls the row every 2s during in-flight phases and every 12s
+ * baseline. Same cadence as before the redesign; only the layout
+ * changed.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import { EditorShell } from '@/components/shorts/editor/EditorShell';
 import {
-  SHORT_FPS,
-  SHORT_HEIGHT,
-  SHORT_WIDTH,
-  type ShortVideoConfig,
-} from '@/lib/shorts-render-types';
+  computeRenderCtaState,
+  parseTabHash,
+  type TabKey,
+} from '@/components/shorts/editor/editor-tabs';
+import { type ShortVideoConfig } from '@/lib/shorts-render-types';
 import type {
   GenerationProgressState,
   ShortFrameAnimation,
@@ -61,35 +51,6 @@ import type {
   ShortsCaptionsStyle,
 } from '@/lib/shorts-render-types';
 
-// Dynamic import keeps Remotion's browser-only deps (WebGL, Canvas, etc.)
-// out of the SSR bundle. Same pattern the production-doc page uses for its
-// VideoPlayer wrapper. The Player + ShortVideo composition both reference
-// browser globals at module-load time so they cannot be statically imported
-// into an SSR'd file. `as any` on the Player component prop because
-// @remotion/player's type is constrained to `Record<string, unknown>` props
-// and refuses our typed ShortVideoProps — runtime is correct, only the
-// generic is misaligned.
-const Player = dynamic(() => import('@remotion/player').then((m) => m.Player), {
-  ssr: false,
-  loading: () => (
-    <div style={{ width: '100%', aspectRatio: '9 / 16', background: 'rgba(255,255,255,0.04)', borderRadius: 12 }} />
-  ),
-}) as unknown as React.ComponentType<{
-  component: unknown;
-  inputProps: Record<string, unknown>;
-  compositionWidth: number;
-  compositionHeight: number;
-  fps: number;
-  durationInFrames: number;
-  controls?: boolean;
-  style?: React.CSSProperties;
-}>;
-
-const ShortVideo = dynamic(
-  () => import('@/remotion/compositions/ShortVideo').then((m) => m.ShortVideo),
-  { ssr: false },
-);
-
 interface ElevenVoice {
   voice_id: string;
   name: string;
@@ -105,6 +66,13 @@ interface RenderJob {
 
 export function ShortEditor({ shortId }: { shortId: string }) {
   const [row, setRow] = useState<ShortRow | null>(null);
+  // `rowRef` mirrors the latest `row` so callbacks that survive across
+  // renders (the Render CTA in the top bar, for instance) can read the
+  // current value without re-binding on every row update.
+  const rowRef = useRef<ShortRow | null>(null);
+  useEffect(() => {
+    rowRef.current = row;
+  }, [row]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -143,6 +111,23 @@ export function ShortEditor({ shortId }: { shortId: string }) {
 
   // Phase 15.11 — alignment data for accurate caption timing in the preview.
   const [alignment, setAlignment] = useState<ForcedAlignmentResponse | null>(null);
+
+  // Active right-rail tab — bound to URL hash for deep-linking + browser back.
+  const [activeTab, setActiveTab] = useState<TabKey>('script');
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setActiveTab(parseTabHash(window.location.hash));
+    const onHash = () => setActiveTab(parseTabHash(window.location.hash));
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const setTab = useCallback((next: TabKey) => {
+    setActiveTab(next);
+    if (typeof window !== 'undefined') {
+      // replaceState so tab switches don't pile up history entries.
+      window.history.replaceState(null, '', `#${next}`);
+    }
+  }, []);
 
   // ── load row + voices ──────────────────────────────────────────────
   const loadRow = useCallback(async () => {
@@ -551,6 +536,20 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     }
   }, [row, loadRow]);
 
+  // Persistent Render CTA: switches to the Render tab AND fires the
+  // render job in one click. Declared here (above the early returns) so
+  // the Rules-of-Hooks order is preserved on every render path. The
+  // callback re-evaluates `row` at call time, so a click that lands
+  // before the row finishes loading is a no-op.
+  const onTopBarRender = useCallback(() => {
+    setTab('render');
+    if (renderBusy) return;
+    const r = rowRef.current;
+    if (!r) return;
+    if (!computeRenderCtaState(r).enabled) return;
+    void renderShort();
+  }, [setTab, renderBusy, renderShort]);
+
   // ── render ─────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -572,139 +571,13 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   const previewDurationFrames = previewConfig
     ? Math.max(1, Math.round((previewConfig.duration_ms / 1000) * previewConfig.fps))
     : 90;
+  const renderCta = computeRenderCtaState(row);
 
-  return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-        <Link
-          href="/shorts"
-          style={{
-            fontSize: 13,
-            color: 'var(--text-secondary, rgba(255,255,255,0.7))',
-            textDecoration: 'none',
-          }}
-        >
-          ← Shorts
-        </Link>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-          {row.title || 'Untitled Short'}
-        </h1>
-        <Link
-          href={`/shorts/${encodeURIComponent(shortId)}/redesign`}
-          style={{
-            marginLeft: 'auto',
-            padding: '5px 11px',
-            borderRadius: 7,
-            border: '1px solid rgba(253,224,71,0.4)',
-            background: 'rgba(253,224,71,0.08)',
-            color: '#fde68a',
-            fontSize: 12,
-            fontWeight: 600,
-            textDecoration: 'none',
-            whiteSpace: 'nowrap',
-          }}
-          title="See the proposed new layout for this Short — sticky preview + tabbed editor. Read-only prototype."
-        >
-          Preview new layout →
-        </Link>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          {new Date(row.updated_at).toLocaleString()}
-        </span>
-      </div>
-
-      {/* ── Preview pane ─────────────────────────────────────────── */}
-      <section
-        style={{
-          marginBottom: 20,
-          padding: 16,
-          borderRadius: 14,
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.08)',
-          display: 'grid',
-          gridTemplateColumns: 'minmax(280px, 360px) 1fr',
-          gap: 20,
-          alignItems: 'flex-start',
-        }}
-      >
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            aspectRatio: '9 / 16',
-            background: '#000',
-            borderRadius: 12,
-            overflow: 'hidden',
-          }}
-        >
-          {previewConfig ? (
-            <Player
-              component={ShortVideo}
-              inputProps={{ config: previewConfig }}
-              compositionWidth={SHORT_WIDTH}
-              compositionHeight={SHORT_HEIGHT}
-              fps={SHORT_FPS}
-              durationInFrames={previewDurationFrames}
-              controls
-              style={{ width: '100%', height: '100%' }}
-            />
-          ) : (
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: 24,
-                textAlign: 'center',
-                color: 'var(--text-secondary, rgba(255,255,255,0.6))',
-                fontSize: 12,
-                lineHeight: 1.55,
-              }}
-            >
-              <strong style={{ color: '#fde68a', fontSize: 13, marginBottom: 6 }}>
-                Preview unavailable
-              </strong>
-              {previewMessage}
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13 }}>
-          <Row label="Medium" value={row.medium} />
-          <Row label="Style" value={row.style_id || 'not picked yet'} />
-          <Row label="Words" value={row.word_count ? String(row.word_count) : '—'} />
-          <Row
-            label="Estimated length"
-            value={row.estimated_duration_seconds ? `${row.estimated_duration_seconds}s` : '—'}
-          />
-          <Row
-            label="Voiceover"
-            value={
-              row.voiceover_audio_url
-                ? `${row.voiceover_duration_seconds ?? '?'}s ✓`
-                : 'not generated yet'
-            }
-          />
-          <Row
-            label="Style assets"
-            value={
-              assetStatus === 'ready'
-                ? `${styleAssetLabel(row.style_id)} ready ✓`
-                : assetStatus === 'generating'
-                  ? `${styleAssetLabel(row.style_id)} generating (polls every 12s)`
-                  : 'n/a'
-            }
-          />
-          <Row
-            label="Rendered MP4"
-            value={row.rendered_video_url ? 'ready ✓' : 'not rendered yet'}
-          />
-        </div>
-      </section>
-
-      {/* ── Script section ───────────────────────────────────────── */}
+  // Per-tab JSX. Inline so each tab captures the orchestrator's state +
+  // handlers via closure — no prop plumbing. The wrapper sections
+  // (EditorSection) stay so each tab keeps its original header + subtitle.
+  const tabContent: Record<TabKey, React.ReactNode> = {
+    script: (
       <EditorSection title="Script" subtitle="Edit the spoken text. Saves on blur.">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -791,8 +664,8 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           </label>
         </div>
       </EditorSection>
-
-      {/* ── Style section ────────────────────────────────────────── */}
+    ),
+    style: (
       <EditorSection
         title="Style"
         subtitle="Pick the visual treatment. Doodle + Paint mint Atlas frames (1-4 min)."
@@ -823,8 +696,8 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         <GenerationProgressStrip progress={row.generation_progress} onRetry={generateAssets} />
         <ShotsPanel row={row} onChange={loadRow} />
       </EditorSection>
-
-      {/* ── Captions section (Phase 15.11) ───────────────────────── */}
+    ),
+    captions: (
       <EditorSection
         title="Captions"
         subtitle={
@@ -869,8 +742,8 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           onResetAll={resetAllCaptions}
         />
       </EditorSection>
-
-      {/* ── Voiceover section ────────────────────────────────────── */}
+    ),
+    voice: (
       <EditorSection
         title="Voiceover"
         subtitle="ElevenLabs multilingual_v2. Re-run with a different voice to overwrite."
@@ -915,8 +788,8 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           />
         )}
       </EditorSection>
-
-      {/* ── Render section ───────────────────────────────────────── */}
+    ),
+    render: (
       <EditorSection
         title="Render"
         subtitle="Compose the MP4 at 1080×1920. Needs voiceover + (for Doodle/Paint) generated assets."
@@ -955,8 +828,8 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           )}
         </div>
       </EditorSection>
-
-      {/* ── SEO section ──────────────────────────────────────────── */}
+    ),
+    seo: (
       <EditorSection
         title="SEO"
         subtitle="Generate graded title, description, and hashtag suggestions for this Short. Pick the AI model, then generate."
@@ -986,7 +859,21 @@ export function ShortEditor({ shortId }: { shortId: string }) {
           </p>
         )}
       </EditorSection>
-    </div>
+    ),
+  };
+
+  return (
+    <EditorShell
+      row={row}
+      previewConfig={previewConfig}
+      previewMessage={previewMessage}
+      previewDurationFrames={previewDurationFrames}
+      activeTab={activeTab}
+      onTabChange={setTab}
+      renderCta={renderCta}
+      onRenderClick={onTopBarRender}
+      tabContent={tabContent}
+    />
   );
 }
 
