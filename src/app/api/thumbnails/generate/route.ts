@@ -59,6 +59,7 @@ const VISION_ALLOWED = new Set<string>([
   'kie-gemini-3-flash',
   'kie-gemini-3-pro',
   'kie-gemini-3.1-pro',
+  'kie-gemini-3-5-flash',
   // Kie.ai — Claude variants. All routed through Kie's
   // /claude/v1/messages passthrough with Anthropic-style image blocks.
   'kie-claude-opus-4-7',

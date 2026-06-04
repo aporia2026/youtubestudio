@@ -62,7 +62,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest, { params }
       // Google — all Gemini accept images
       'gemini-2.0-flash', 'gemini-2.0-flash-thinking-exp',
       // Kie.ai — Gemini and Claude variants accept images via their respective SDKs
-      'kie-gemini-2.5-flash', 'kie-gemini-2.5-pro', 'kie-gemini-3-flash', 'kie-gemini-3-pro', 'kie-gemini-3.1-pro',
+      'kie-gemini-2.5-flash', 'kie-gemini-2.5-pro', 'kie-gemini-3-flash', 'kie-gemini-3-pro', 'kie-gemini-3.1-pro', 'kie-gemini-3-5-flash',
       'kie-claude-opus-4-6', 'kie-claude-sonnet-4-6', 'kie-claude-sonnet-4-5', 'kie-claude-opus-4-5', 'kie-claude-haiku-4-5',
     ]);
     if (!VISION_ALLOWED.has(modelId)) {

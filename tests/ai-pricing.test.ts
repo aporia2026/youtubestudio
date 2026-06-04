@@ -31,6 +31,13 @@ describe('findPricing', () => {
     expect(k!.provider).toBe('kie');
   });
 
+  it('finds Kie Gemini 3.5 Flash exactly', () => {
+    const k = findPricing('kie-gemini-3-5-flash');
+    expect(k).not.toBeNull();
+    expect(k!.provider).toBe('kie');
+    expect(k!.label).toBe('Kie · Gemini 3.5 Flash');
+  });
+
   it('returns null for unknown / blank model ids', () => {
     expect(findPricing('made-up-model-9000')).toBeNull();
     expect(findPricing('')).toBeNull();

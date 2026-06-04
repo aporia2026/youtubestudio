@@ -99,6 +99,7 @@ const CONCEPT_VISION_MODELS = new Set<string>([
   'kie-gemini-3-flash',
   'kie-gemini-3-pro',
   'kie-gemini-3.1-pro',
+  'kie-gemini-3-5-flash',
   // Kie.ai — Claude variants
   'kie-claude-opus-4-7',
   'kie-claude-opus-4-6',

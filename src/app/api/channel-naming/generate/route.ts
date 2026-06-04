@@ -87,7 +87,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       'gpt-4o', 'gpt-4o-mini',
       'gemini-2.0-flash', 'gemini-2.0-flash-thinking-exp',
       'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash', 'gemini-3-pro', 'gemini-3.1-pro',
-      'kie-gemini-2.5-flash', 'kie-gemini-2.5-pro', 'kie-gemini-3-flash', 'kie-gemini-3-pro', 'kie-gemini-3.1-pro',
+      'kie-gemini-2.5-flash', 'kie-gemini-2.5-pro', 'kie-gemini-3-flash', 'kie-gemini-3-pro', 'kie-gemini-3.1-pro', 'kie-gemini-3-5-flash',
       'kie-claude-opus-4-6', 'kie-claude-sonnet-4-6', 'kie-claude-sonnet-4-5', 'kie-claude-opus-4-5', 'kie-claude-haiku-4-5',
     ]);
     if (!VISION_OK.has(modelId)) {

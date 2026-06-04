@@ -50,6 +50,7 @@ const LLM_CALL_TIMEOUT_MS = 150_000;
 const FAST_VISION_MODEL_SUGGESTIONS = [
   'Gemini 2.5 Flash (or kie-gemini-2.5-flash)',
   'Gemini 3 Flash (kie-gemini-3-flash)',
+  'Gemini 3.5 Flash (kie-gemini-3-5-flash)',
   'Claude Haiku 4.5',
   'GPT-4o Mini',
 ];
@@ -119,6 +120,7 @@ const VISION_ALLOWED = new Set<string>([
   'kie-gemini-3-flash',
   'kie-gemini-3-pro',
   'kie-gemini-3.1-pro',
+  'kie-gemini-3-5-flash',
   'kie-claude-opus-4-7',
   'kie-claude-opus-4-6',
   'kie-claude-sonnet-4-6',

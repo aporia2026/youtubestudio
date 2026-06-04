@@ -145,6 +145,14 @@ export const AI_PRICING_REGISTRY: AiModelPricing[] = [
     label: 'Kie · Gemini 3.1 Pro',
   },
   {
+    match: 'kie-gemini-3-5-flash',
+    matchKind: 'exact',
+    provider: 'kie',
+    inputPerMillion: 0.1,
+    outputPerMillion: 0.4,
+    label: 'Kie · Gemini 3.5 Flash',
+  },
+  {
     match: 'kie-gpt-5',
     matchKind: 'prefix',
     provider: 'kie',
