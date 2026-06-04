@@ -14354,6 +14354,11 @@ function ProductionDocPage() {
       // editable branch (chip + mini-strip + Add / Generate / Move /
       // Delete actions) when this is non-undefined.
       editorWriters={editorWriters}
+      // R4 PR1: clicking a SceneCard in the scene strip flips the
+      // selection state. Reuses today's expandedRow setter so the
+      // inspector and the legacy grid stay in sync (chevron + card
+      // are equivalent selection affordances).
+      onSelectRow={setExpandedRow}
     >
       {pageContent}
     </ProductionDocShell>

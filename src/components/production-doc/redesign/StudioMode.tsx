@@ -12,6 +12,7 @@ import { StudioTopBar, type StudioSubMode } from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
+import { SceneStrip } from './SceneStrip';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
 import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
@@ -78,6 +79,10 @@ export interface StudioModeProps {
    *  state hydrates from `getPref(STUDIO_SUB_MODE_PREF_KEY)` so the
    *  user's last choice survives reloads. R3 PR6. */
   initialSubMode?: StudioSubMode;
+  /** Called when the user clicks a SceneCard in the scene strip.
+   *  Page.tsx wires this to `setExpandedRow` so the inspector
+   *  populates with the clicked row. R4 PR1. */
+  onSelectRow?: (rowIndex: number) => void;
   /** Full writer bundle used by the inspector tabs that need to drive
    *  variant management, section bulk-apply, overlay edits, etc.
    *  R3 (Variants editable). */
@@ -98,6 +103,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowOverlayActions,
   rowImagesByIndex,
   initialSubMode,
+  onSelectRow,
   editorWriters,
 }) => {
   // R3 PR6: Studio sub-mode toggle. Default 'scene-strip' (per §15.2
@@ -143,7 +149,17 @@ export const StudioMode: React.FC<StudioModeProps> = ({
       ) : (
         <StudioLayout
           leftRail={<StudioLeftRail doc={doc} />}
-          mainContent={children}
+          mainContent={
+            <div className="space-y-4">
+              <SceneStrip
+                doc={doc}
+                rowImagesByIndex={rowImagesByIndex}
+                selectedRowIndex={selectedRowIndex}
+                onSelectRow={onSelectRow}
+              />
+              {children}
+            </div>
+          }
           inspector={
             <StudioInspector
               selectedRow={selectedRow}

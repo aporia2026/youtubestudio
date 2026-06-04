@@ -73,6 +73,10 @@ export interface ProductionDocShellProps {
    *  (and, in later PRs, Section / Overlay / Video) tabs editable.
    *  Ignored in Brief Mode. */
   editorWriters?: EditorWriters;
+  /** Called when a SceneCard in the scene strip is activated. Wires
+   *  to today's `setExpandedRow` in page.tsx. Ignored in Brief Mode.
+   *  R4 PR1. */
+  onSelectRow?: (rowIndex: number) => void;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -100,6 +104,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowOverlayActions,
   rowImagesByIndex,
   editorWriters,
+  onSelectRow,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -143,6 +148,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowOverlayActions={selectedRowOverlayActions}
       rowImagesByIndex={rowImagesByIndex}
       editorWriters={editorWriters}
+      onSelectRow={onSelectRow}
     >
       {children}
     </StudioMode>
