@@ -16,6 +16,7 @@ import {
 } from './StudioInspectorVideo';
 import { StudioInspectorOverlay } from './StudioInspectorOverlay';
 import { StudioInspectorSection } from './StudioInspectorSection';
+import { VariantPanel } from '@/components/production-doc/editor/VariantPanel';
 
 /**
  * StudioInspector — the right column of `StudioLayout`. Hosts the
@@ -61,8 +62,13 @@ export interface StudioInspectorProps {
   /** Overlay state for the selected row. R3 PR5 (read-only). */
   selectedRowOverlay?: RowOverlayState | null;
   /** Doc-level defaults used by the Section tab to display effective
-   *  values (row override → doc default → built-in default). */
+   *  values (row override → doc default → built-in default). Also
+   *  required for the Variants tab so the panel can walk the row's
+   *  variant group. */
   doc?: ProductionDoc | null;
+  /** Image state per row, indexed by 0-based row index. Used by the
+   *  Variants tab to render the mini-strip thumbnails. R3 PR4d. */
+  rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -76,6 +82,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   selectedRowVideoClip = null,
   selectedRowOverlay = null,
   doc = null,
+  rowImagesByIndex,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -158,6 +165,12 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
           />
         ) : currentTab === 'section' ? (
           <StudioInspectorSection row={selectedRow} doc={doc} />
+        ) : currentTab === 'variants' && doc && writerRowIndex !== null ? (
+          <VariantPanel
+            doc={doc}
+            activeSection={writerRowIndex}
+            rowImages={rowImagesByIndex ?? []}
+          />
         ) : (
           <p
             className="text-xs"

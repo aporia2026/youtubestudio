@@ -14285,6 +14285,11 @@ function ProductionDocPage() {
           ? rowOverlays[expandedRow]
           : null
       }
+      // R3 PR4d: full rowImages array so the Variants tab can render
+      // the mini-strip of thumbnails for the active row's group.
+      // `rowImages` is `RowImageState[]`, structurally compatible
+      // with the editor's `RowImageStateView[]`.
+      rowImagesByIndex={rowImages}
     >
       {pageContent}
     </ProductionDocShell>

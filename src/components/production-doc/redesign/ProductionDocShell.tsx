@@ -52,6 +52,10 @@ export interface ProductionDocShellProps {
   /** Overlay state for the currently-selected row. Drives the
    *  Overlay tab's read-only preview. Ignored in Brief Mode. R3 PR5. */
   selectedRowOverlay?: RowOverlayState | null;
+  /** Image state per row, indexed by 0-based row index. Used by the
+   *  Variants tab to render mini-strip thumbnails for the row's
+   *  variant group. Ignored in Brief Mode. R3 PR4d. */
+  rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -75,6 +79,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowImageActions,
   selectedRowVideoClip,
   selectedRowOverlay,
+  rowImagesByIndex,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -114,6 +119,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       selectedRowImageActions={selectedRowImageActions}
       selectedRowVideoClip={selectedRowVideoClip}
       selectedRowOverlay={selectedRowOverlay}
+      rowImagesByIndex={rowImagesByIndex}
     >
       {children}
     </StudioMode>

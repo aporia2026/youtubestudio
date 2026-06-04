@@ -56,6 +56,10 @@ export interface StudioModeProps {
   selectedRowVideoClip?: StudioInspectorVideoClipSlice | null;
   /** Overlay state for the currently-selected row. R3 PR5. */
   selectedRowOverlay?: RowOverlayState | null;
+  /** Image state per row indexed by 0-based row index. Used by the
+   *  Variants tab to render mini-strip thumbnails for the group.
+   *  R3 PR4d. */
+  rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -68,6 +72,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowImageActions,
   selectedRowVideoClip = null,
   selectedRowOverlay = null,
+  rowImagesByIndex,
 }) => {
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
@@ -98,6 +103,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
             selectedRowVideoClip={selectedRowVideoClip}
             selectedRowOverlay={selectedRowOverlay}
             doc={doc}
+            rowImagesByIndex={rowImagesByIndex}
           />
         }
       />
