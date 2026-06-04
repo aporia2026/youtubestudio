@@ -108,7 +108,7 @@ describe('StudioInspectorOverlay — error display', () => {
 describe('StudioInspectorSection — field display', () => {
   it('renders the row section title when set', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ section_title: 'How compounding works' })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ section_title: 'How compounding works' })} />,
     );
     expect(html).toContain('Section title');
     expect(html).toContain('How compounding works');
@@ -116,40 +116,40 @@ describe('StudioInspectorSection — field display', () => {
 
   it('renders the placeholder when section title is empty', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ section_title: '' })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ section_title: '' })} />,
     );
     expect(html).toMatch(/Section title[\s\S]*?—/);
   });
 
   it('renders the scene zoom as a percentage', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ scene_zoom: 120 })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ scene_zoom: 120 })} />,
     );
     expect(html).toMatch(/Scene zoom[\s\S]*?120%/);
   });
 
   it('renders the region zoom padding as a percentage', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ region_zoom_padding_pct: 25 })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ region_zoom_padding_pct: 25 })} />,
     );
     expect(html).toMatch(/Region zoom padding[\s\S]*?25%/);
   });
 
   it('renders Scene fade On/Off label, not raw boolean', () => {
     const onHtml = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ scene_fade: true })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ scene_fade: true })} />,
     );
     expect(onHtml).toMatch(/Scene fade[\s\S]*?On/);
 
     const offHtml = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ scene_fade: false })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ scene_fade: false })} />,
     );
     expect(offHtml).toMatch(/Scene fade[\s\S]*?Off/);
   });
 
   it('renders the pillarbox color with a hex swatch when the value is a valid hex', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow({ pillarbox_color: '#aabbcc' })} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow({ pillarbox_color: '#aabbcc' })} />,
     );
     expect(html).toContain('#aabbcc');
     // Swatch span uses inline-block + background-color set to the hex.
@@ -159,13 +159,14 @@ describe('StudioInspectorSection — field display', () => {
   it('renders the transition kind when set, placeholder otherwise', () => {
     const setHtml = renderToStaticMarkup(
       <StudioInspectorSection
+        rowIndex={0}
         row={makeRow({ thumbnail_transition: { kind: 'pan' } as never })}
       />,
     );
     expect(setHtml).toMatch(/Transition[\s\S]*?pan/);
 
     const unsetHtml = renderToStaticMarkup(
-      <StudioInspectorSection row={makeRow()} />,
+      <StudioInspectorSection rowIndex={0} row={makeRow()} />,
     );
     expect(unsetHtml).toMatch(/Transition[\s\S]*?—/);
   });
@@ -175,6 +176,7 @@ describe('StudioInspectorSection — inherited indicators', () => {
   it('marks Title layout "inherited" when the row has no override and doc has a default', () => {
     const html = renderToStaticMarkup(
       <StudioInspectorSection
+        rowIndex={0}
         row={makeRow()}
         doc={makeDoc({ section_title_layout_default: 'overlay' })}
       />,
@@ -185,6 +187,7 @@ describe('StudioInspectorSection — inherited indicators', () => {
   it('does not mark Title layout "inherited" when the row has its own override', () => {
     const html = renderToStaticMarkup(
       <StudioInspectorSection
+        rowIndex={0}
         row={makeRow({ section_title_layout: 'letterbox' })}
         doc={makeDoc({ section_title_layout_default: 'overlay' })}
       />,
@@ -198,6 +201,7 @@ describe('StudioInspectorSection — inherited indicators', () => {
   it('marks Pillarbox color "inherited" when row has no override and doc has a default', () => {
     const html = renderToStaticMarkup(
       <StudioInspectorSection
+        rowIndex={0}
         row={makeRow()}
         doc={makeDoc({ pillarbox_color_default: '#112233' })}
       />,
@@ -207,12 +211,12 @@ describe('StudioInspectorSection — inherited indicators', () => {
   });
 
   it('marks Scene fade "inherited" when row has no override', () => {
-    const html = renderToStaticMarkup(<StudioInspectorSection row={makeRow()} />);
+    const html = renderToStaticMarkup(<StudioInspectorSection rowIndex={0} row={makeRow()} />);
     expect(html).toMatch(/Scene fade[\s\S]*?inherited/);
   });
 
   it('marks Scene zoom "inherited" with the built-in default of 100% when row has no override', () => {
-    const html = renderToStaticMarkup(<StudioInspectorSection row={makeRow()} />);
+    const html = renderToStaticMarkup(<StudioInspectorSection rowIndex={0} row={makeRow()} />);
     expect(html).toMatch(/Scene zoom[\s\S]*?inherited[\s\S]*?100%/);
   });
 });
@@ -249,6 +253,146 @@ describe('StudioInspector — tab routing for Overlay (R3 PR5)', () => {
       />,
     );
     expect(html).toContain('This row has no overlay configured');
+  });
+});
+
+describe('StudioInspectorSection — editable mode (R3 Section-editable)', () => {
+  it('renders the section_title text input when onUpdateRow is provided', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={3}
+        row={makeRow({ section_title: 'Hello' })}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toMatch(/<input[^>]*type="text"[^>]*value="Hello"/);
+  });
+
+  it('renders a radiogroup for title layout when editable', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow()}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toMatch(/role="radiogroup"[^>]*aria-label="Title layout"/);
+  });
+
+  it('renders a color input + hex display for pillarbox when editable', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ pillarbox_color: '#112233' })}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toMatch(/<input[^>]*type="color"[^>]*value="#112233"/);
+    expect(html).toMatch(/#112233/);
+  });
+
+  it('renders a numeric input for scene zoom when editable', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ scene_zoom: 150 })}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toMatch(/<input[^>]*type="number"[^>]*value="150"/);
+  });
+
+  it('renders a numeric input for region zoom padding when editable', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ region_zoom_padding_pct: 30 })}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).toMatch(/<input[^>]*type="number"[^>]*value="30"/);
+  });
+});
+
+describe('StudioInspectorSection — bulk-apply controls (editorWriters wired)', () => {
+  function makeMinimalWriters() {
+    return {
+      updateRow: () => {},
+      applyTitleToRange: () => {},
+      applyPillarboxColorToAll: () => {},
+      clearPillarboxOverrides: () => {},
+      applyStripeLayoutToAll: () => {},
+      clearStripeLayoutOverrides: () => {},
+      applySceneZoomToAll: () => {},
+      clearSceneZoomOverrides: () => {},
+      applyRegionZoomPaddingToAll: () => {},
+      applyTitleCardAsSectionTitle: () => {},
+      fetchOverlayForRow: () => {},
+      generateImageForRow: () => {},
+      uploadImageForRow: () => {},
+      importImageUrlForRow: () => {},
+      openEditPanelForRow: () => {},
+      openOverlayPositionEditorForRow: () => {},
+      handleBrollClipChange: () => {},
+      toggleRowLock: () => {},
+      computeRowSceneDurationMs: () => 0,
+      addVariantRow: () => {},
+      generateVariantImage: () => Promise.resolve(),
+      generateAllVariantsInGroup: () => Promise.resolve(),
+      deleteVariantRow: () => {},
+      moveVariantRow: () => {},
+    };
+  }
+
+  it('renders Apply-to-all + Clear-all-overrides under Pillarbox when editorWriters is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ pillarbox_color: '#aabbcc' })}
+        onUpdateRow={() => {}}
+        editorWriters={makeMinimalWriters()}
+      />,
+    );
+    // Both bulk buttons render in the Pillarbox group.
+    expect(html).toMatch(/Pillarbox color[\s\S]*?Apply to all/);
+    expect(html).toMatch(/Pillarbox color[\s\S]*?Clear all overrides/);
+  });
+
+  it('renders Apply-to-all + Clear-all-overrides under Scene zoom when editorWriters is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ scene_zoom: 120 })}
+        onUpdateRow={() => {}}
+        editorWriters={makeMinimalWriters()}
+      />,
+    );
+    expect(html).toMatch(/Scene zoom[\s\S]*?Apply to all/);
+    expect(html).toMatch(/Scene zoom[\s\S]*?Clear all overrides/);
+  });
+
+  it('renders Apply-to-all under Region padding when editorWriters is wired', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ region_zoom_padding_pct: 25 })}
+        onUpdateRow={() => {}}
+        editorWriters={makeMinimalWriters()}
+      />,
+    );
+    expect(html).toMatch(/Region zoom padding[\s\S]*?Apply to all/);
+  });
+
+  it('hides all bulk-apply buttons when editorWriters is NOT provided (rule 10)', () => {
+    const html = renderToStaticMarkup(
+      <StudioInspectorSection
+        rowIndex={0}
+        row={makeRow({ pillarbox_color: '#aabbcc', scene_zoom: 120 })}
+        onUpdateRow={() => {}}
+      />,
+    );
+    expect(html).not.toContain('Apply to all');
+    expect(html).not.toContain('Clear all overrides');
   });
 });
 

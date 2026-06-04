@@ -172,8 +172,14 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             overlay={selectedRowOverlay}
             stockTerms={selectedRow.stock_search_terms}
           />
-        ) : currentTab === 'section' ? (
-          <StudioInspectorSection row={selectedRow} doc={doc} />
+        ) : currentTab === 'section' && writerRowIndex !== null ? (
+          <StudioInspectorSection
+            rowIndex={writerRowIndex}
+            row={selectedRow}
+            doc={doc}
+            onUpdateRow={onUpdateRow}
+            editorWriters={editorWriters}
+          />
         ) : currentTab === 'variants' && doc && writerRowIndex !== null ? (
           <VariantPanel
             doc={doc}

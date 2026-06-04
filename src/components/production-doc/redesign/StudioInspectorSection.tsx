@@ -2,38 +2,58 @@
 
 import React from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import type { EditorWriters } from '@/components/production-doc/editor/types';
 
 /**
- * StudioInspectorSection — read-only Section tab body in the Studio
- * inspector. Phase R3 PR5 of
- * `_plans/2026-06-04-production-doc-redesign.md`.
+ * StudioInspectorSection — Section tab body in the Studio inspector.
+ * See `_plans/2026-06-04-production-doc-redesign.md` §3.4 / §4.2 and
+ * the R3 PR5 + R3 Section-editable entries.
  *
- * Shows the row's section-level fields (title, layout, pillarbox
- * color, transition, scene zoom, region padding, scene fade) with
- * effective values — i.e. row value if set, otherwise the doc-level
- * default, with a small "inherited" hint so the user knows the value
- * is coming from somewhere else.
+ * R3 PR5 shipped this read-only. R3 Section-editable (this revision)
+ * makes seven of the eight legacy SectionThumbnailCard control groups
+ * editable in place, with Apply-to-all and Clear-all-overrides where
+ * the legacy surface had them:
  *
- * The editable variant — grouped accordions (Layout · Title ·
- * Transition · Zoom · Fade · Color) with Apply-to-all and Clear-all-
- * overrides per group, mirroring the legacy `SectionThumbnailCard` —
- * lands in a follow-up PR. The consolidation is the biggest UX win
- * in §3.4 of the plan and warrants its own scope.
+ *   - Section title         (text → updateRow)
+ *   - Title layout          (overlay / letterbox toggle → updateRow)
+ *   - Pillarbox color       (color input + bulk apply + bulk clear)
+ *   - Scene fade            (On/Off toggle → updateRow)
+ *   - Scene zoom            (number + bulk apply + bulk clear)
+ *   - Region zoom padding   (number + bulk apply)
+ *
+ * Read-only for now (rich pickers needed):
+ *   - Transition kind       (object editor — own PR)
+ *   - Zoom-to region        (region picker — own PR)
+ *
+ * Each editable field shows the EFFECTIVE value (row → doc → built-in
+ * default) with an "inherited" badge when the row has no override.
+ * Saving via the field's input writes a row override; Clear-all-
+ * overrides removes overrides across every row at once.
+ *
+ * Pass `editorWriters` to switch the tab from read-only to editable.
+ * Pass `onUpdateRow` for the per-row text/toggle fields. Per rule 10,
+ * fields without callbacks render their read-only display.
  */
 export interface StudioInspectorSectionProps {
+  rowIndex: number;
   row: ProductionRow;
-  /** Doc-level defaults the row falls back to. Optional so tests
-   *  can render without a full doc. */
   doc?: ProductionDoc | null;
+  /** Same signature as today's `updateRow`. Required for the per-row
+   *  text + toggle + number inputs to become editable. */
+  onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
+  /** Full editor writer bundle — drives the Apply-to-all and Clear-
+   *  all-overrides bulk actions. When omitted the bulk buttons hide
+   *  per rule 10. */
+  editorWriters?: EditorWriters;
 }
 
-interface FieldProps {
+interface FieldShellProps {
   label: string;
-  value: React.ReactNode;
   inherited?: boolean;
+  children: React.ReactNode;
 }
 
-const Field: React.FC<FieldProps> = ({ label, value, inherited }) => (
+const FieldShell: React.FC<FieldShellProps> = ({ label, inherited, children }) => (
   <div>
     <div
       className="text-[10px] uppercase tracking-wider font-semibold mb-1 flex items-center gap-1.5"
@@ -56,9 +76,7 @@ const Field: React.FC<FieldProps> = ({ label, value, inherited }) => (
         </span>
       )}
     </div>
-    <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
-      {value}
-    </div>
+    {children}
   </div>
 );
 
@@ -68,113 +86,315 @@ function isHexColor(s: string): boolean {
   return /^#[0-9a-fA-F]{3,8}$/.test(s);
 }
 
-const ColorSwatch: React.FC<{ color: string }> = ({ color }) => (
-  <span className="inline-flex items-center gap-2">
-    <span
-      aria-hidden="true"
-      className="inline-block h-3 w-3 rounded"
-      style={{
-        background: color,
-        border: '1px solid rgba(255,255,255,0.15)',
-      }}
-    />
-    <span style={{ fontFamily: 'monospace' }}>{color}</span>
-  </span>
-);
+const TEXT_INPUT_STYLE: React.CSSProperties = {
+  background: 'rgba(0,0,0,0.25)',
+  color: 'var(--text-primary)',
+  border: '1px solid rgba(255,255,255,0.10)',
+};
+const PILL_BUTTON_STYLE: React.CSSProperties = {
+  background: 'rgba(255,255,255,0.04)',
+  color: 'var(--text-secondary)',
+  border: '1px solid rgba(255,255,255,0.10)',
+  cursor: 'pointer',
+};
+const ACCENT_BUTTON_STYLE: React.CSSProperties = {
+  ...PILL_BUTTON_STYLE,
+  background: 'rgba(124,58,237,0.18)',
+  color: 'var(--accent-purple-bright, #a78bfa)',
+  border: '1px solid rgba(124,58,237,0.35)',
+};
 
 export const StudioInspectorSection: React.FC<StudioInspectorSectionProps> = ({
+  rowIndex,
   row,
   doc = null,
+  onUpdateRow,
+  editorWriters,
 }) => {
-  // ── Section title
-  const title = row.section_title?.trim() ?? '';
+  // ── Section title (per-row text) ─────────────────────────────────
+  const title = row.section_title ?? '';
 
-  // ── Title layout (overlay vs letterbox) — row override → doc default → 'letterbox'
+  // ── Title layout (per-row toggle) ────────────────────────────────
   const titleLayoutRow = row.section_title_layout;
   const titleLayoutDoc = doc?.section_title_layout_default;
   const titleLayoutEffective = titleLayoutRow ?? titleLayoutDoc ?? 'letterbox';
   const titleLayoutInherited = titleLayoutRow === undefined;
 
-  // ── Pillarbox color — row override → doc default → white
-  const pillarboxRow = row.pillarbox_color?.trim();
-  const pillarboxDoc = doc?.pillarbox_color_default?.trim();
-  const pillarboxEffective = pillarboxRow || pillarboxDoc || '#ffffff';
-  const pillarboxInherited = !pillarboxRow;
+  // ── Pillarbox color (per-row + bulk) ─────────────────────────────
+  const pillarboxRow = row.pillarbox_color;
+  const pillarboxDoc = doc?.pillarbox_color_default;
+  const pillarboxEffective = (pillarboxRow?.trim() || pillarboxDoc?.trim() || '#ffffff');
+  const pillarboxInherited = !pillarboxRow?.trim();
 
-  // ── Scene fade — row override → doc default → false
+  // ── Scene fade (per-row toggle) ──────────────────────────────────
   const fadeRow = row.scene_fade;
   const fadeDoc = doc?.scene_fade_enabled;
   const fadeEffective = fadeRow ?? fadeDoc ?? false;
   const fadeInherited = fadeRow === undefined;
 
-  // ── Scene zoom % — row override → 100
+  // ── Scene zoom (per-row + bulk) ──────────────────────────────────
   const zoomRow = row.scene_zoom;
   const zoomEffective = zoomRow ?? 100;
   const zoomInherited = zoomRow === undefined;
 
-  // ── Region padding % — row override → 15 (legacy default)
+  // ── Region padding (per-row + bulk) ──────────────────────────────
   const padRow = row.region_zoom_padding_pct;
   const padEffective = padRow ?? 15;
   const padInherited = padRow === undefined;
 
-  // ── Transition — row override only; no doc-level default at this
-  //    layer (the renderer composes a default from the doc thumbnail).
+  // ── Read-only: transition kind, zoom-to region ───────────────────
   const transitionKind = row.thumbnail_transition?.kind ?? null;
-
-  // ── Zoom-to region id (raw id; the legacy Section card picks it
-  //    from a dropdown sourced from doc.thumbnail.regions).
   const zoomToId = row.thumbnail_zoom_to?.trim() ?? '';
+
+  const editable = !!onUpdateRow;
 
   return (
     <div className="space-y-4">
-      <Field label="Section title" value={title || EMPTY_PLACEHOLDER} />
+      {/* Section title */}
+      <FieldShell label="Section title">
+        {editable ? (
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => onUpdateRow!(rowIndex, { section_title: e.target.value })}
+            placeholder="Optional title for this scene"
+            className="w-full text-xs rounded px-2 py-1.5"
+            style={TEXT_INPUT_STYLE}
+            aria-label="Section title"
+          />
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {title.trim() || EMPTY_PLACEHOLDER}
+          </div>
+        )}
+      </FieldShell>
 
-      <Field
-        label="Title layout"
-        value={titleLayoutEffective}
-        inherited={titleLayoutInherited}
-      />
+      {/* Title layout */}
+      <FieldShell label="Title layout" inherited={titleLayoutInherited}>
+        {editable ? (
+          <div role="radiogroup" aria-label="Title layout" className="flex gap-1">
+            {(['overlay', 'letterbox'] as const).map((opt) => {
+              const isCurrent = titleLayoutEffective === opt;
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  role="radio"
+                  aria-checked={isCurrent}
+                  onClick={() => onUpdateRow!(rowIndex, { section_title_layout: opt })}
+                  className="text-[11px] px-2 py-1 rounded"
+                  style={isCurrent ? ACCENT_BUTTON_STYLE : PILL_BUTTON_STYLE}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {titleLayoutEffective}
+          </div>
+        )}
+      </FieldShell>
 
-      <Field
-        label="Pillarbox color"
-        value={
-          isHexColor(pillarboxEffective)
-            ? <ColorSwatch color={pillarboxEffective} />
-            : pillarboxEffective
-        }
-        inherited={pillarboxInherited}
-      />
+      {/* Pillarbox color */}
+      <FieldShell label="Pillarbox color" inherited={pillarboxInherited}>
+        {editable ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={isHexColor(pillarboxEffective) ? pillarboxEffective : '#ffffff'}
+                onChange={(e) => onUpdateRow!(rowIndex, { pillarbox_color: e.target.value })}
+                className="h-7 w-10 rounded cursor-pointer"
+                aria-label="Pillarbox color"
+              />
+              <span className="text-xs font-mono" style={{ color: 'var(--text-primary)' }}>
+                {pillarboxEffective}
+              </span>
+            </div>
+            {editorWriters && (
+              <div className="flex gap-1 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => editorWriters.applyPillarboxColorToAll(pillarboxEffective)}
+                  className="text-[11px] px-2 py-0.5 rounded"
+                  style={PILL_BUTTON_STYLE}
+                  title="Apply this color to every row, overriding existing per-row colors."
+                >
+                  Apply to all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => editorWriters.clearPillarboxOverrides()}
+                  className="text-[11px] px-2 py-0.5 rounded"
+                  style={PILL_BUTTON_STYLE}
+                  title="Clear every row's per-row pillarbox color override (rows fall back to the doc default)."
+                >
+                  Clear all overrides
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="inline-flex items-center gap-2">
+            {isHexColor(pillarboxEffective) && (
+              <span
+                aria-hidden="true"
+                className="inline-block h-3 w-3 rounded"
+                style={{
+                  background: pillarboxEffective,
+                  border: '1px solid rgba(255,255,255,0.15)',
+                }}
+              />
+            )}
+            <span className="text-xs font-mono" style={{ color: 'var(--text-primary)' }}>
+              {pillarboxEffective}
+            </span>
+          </div>
+        )}
+      </FieldShell>
 
-      <Field
-        label="Scene fade"
-        value={fadeEffective ? 'On' : 'Off'}
-        inherited={fadeInherited}
-      />
+      {/* Scene fade */}
+      <FieldShell label="Scene fade" inherited={fadeInherited}>
+        {editable ? (
+          <div role="radiogroup" aria-label="Scene fade" className="flex gap-1">
+            {([true, false] as const).map((opt) => {
+              const isCurrent = fadeEffective === opt;
+              const label = opt ? 'On' : 'Off';
+              return (
+                <button
+                  key={String(opt)}
+                  type="button"
+                  role="radio"
+                  aria-checked={isCurrent}
+                  onClick={() => onUpdateRow!(rowIndex, { scene_fade: opt })}
+                  className="text-[11px] px-2 py-1 rounded"
+                  style={isCurrent ? ACCENT_BUTTON_STYLE : PILL_BUTTON_STYLE}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {fadeEffective ? 'On' : 'Off'}
+          </div>
+        )}
+      </FieldShell>
 
-      <Field
-        label="Scene zoom"
-        value={`${zoomEffective}%`}
-        inherited={zoomInherited}
-      />
+      {/* Scene zoom */}
+      <FieldShell label="Scene zoom" inherited={zoomInherited}>
+        {editable ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={10}
+                max={400}
+                step={5}
+                value={zoomEffective}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  if (Number.isFinite(next)) onUpdateRow!(rowIndex, { scene_zoom: next });
+                }}
+                className="w-20 text-xs rounded px-2 py-1"
+                style={TEXT_INPUT_STYLE}
+                aria-label="Scene zoom percentage"
+              />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>%</span>
+            </div>
+            {editorWriters && (
+              <div className="flex gap-1 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => editorWriters.applySceneZoomToAll(zoomEffective)}
+                  className="text-[11px] px-2 py-0.5 rounded"
+                  style={PILL_BUTTON_STYLE}
+                  title="Apply this zoom to every row."
+                >
+                  Apply to all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => editorWriters.clearSceneZoomOverrides()}
+                  className="text-[11px] px-2 py-0.5 rounded"
+                  style={PILL_BUTTON_STYLE}
+                  title="Clear every row's per-row scene zoom (rows fall back to 100%)."
+                >
+                  Clear all overrides
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {zoomEffective}%
+          </div>
+        )}
+      </FieldShell>
 
-      <Field
-        label="Region zoom padding"
-        value={`${padEffective}%`}
-        inherited={padInherited}
-      />
+      {/* Region zoom padding */}
+      <FieldShell label="Region zoom padding" inherited={padInherited}>
+        {editable ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                max={50}
+                step={1}
+                value={padEffective}
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  if (Number.isFinite(next)) onUpdateRow!(rowIndex, { region_zoom_padding_pct: next });
+                }}
+                className="w-20 text-xs rounded px-2 py-1"
+                style={TEXT_INPUT_STYLE}
+                aria-label="Region zoom padding percentage"
+              />
+              <span className="text-xs" style={{ color: 'var(--text-muted)' }}>%</span>
+            </div>
+            {editorWriters && (
+              <div className="flex gap-1 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => editorWriters.applyRegionZoomPaddingToAll(padEffective)}
+                  className="text-[11px] px-2 py-0.5 rounded"
+                  style={PILL_BUTTON_STYLE}
+                  title="Apply this padding to every row."
+                >
+                  Apply to all
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {padEffective}%
+          </div>
+        )}
+      </FieldShell>
 
-      <Field
-        label="Transition"
-        value={transitionKind || EMPTY_PLACEHOLDER}
-      />
+      {/* Read-only: transition + zoom-to (rich pickers in a follow-up) */}
+      <FieldShell label="Transition">
+        <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+          {transitionKind || EMPTY_PLACEHOLDER}
+        </div>
+      </FieldShell>
 
-      <Field label="Zoom to region" value={zoomToId || EMPTY_PLACEHOLDER} />
+      <FieldShell label="Zoom to region">
+        <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+          {zoomToId || EMPTY_PLACEHOLDER}
+        </div>
+      </FieldShell>
 
       <p
         className="text-[11px]"
         style={{ color: 'var(--text-muted)' }}
       >
-        Editable accordions (Layout · Title · Transition · Zoom · Fade · Color) with Apply-to-all and Clear-all-overrides land in a follow-up PR.
+        Transition kind and Zoom-to region pickers land in a follow-up PR.
       </p>
     </div>
   );
