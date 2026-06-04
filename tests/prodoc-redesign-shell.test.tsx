@@ -91,7 +91,7 @@ describe('ProductionDocShell — children always rendered', () => {
     expect(childIdx).toBeGreaterThan(topBarIdx);
   });
 
-  it('Studio Mode injects the StudioLegend between top bar and children (R2 PR2)', () => {
+  it('Studio Mode wraps children in the three-column StudioLayout (R3 PR2)', () => {
     const docWithRows: typeof SAMPLE_DOC = {
       ...SAMPLE_DOC,
       rows: [
@@ -112,13 +112,29 @@ describe('ProductionDocShell — children always rendered', () => {
         <span data-testid="legacy-studio">grid</span>
       </ProductionDocShell>,
     );
-    expect(html).toMatch(/aria-label="Scene type breakdown"/);
-    // Order: top bar → legend → children.
+    // All three column landmarks are present.
+    expect(html).toMatch(/aria-label="Studio left rail"/);
+    expect(html).toMatch(/aria-label="Studio main content"/);
+    expect(html).toMatch(/aria-label="Studio inspector"/);
+    // Children land inside the main column.
+    expect(html).toContain('data-testid="legacy-studio"');
+    // Legend now lives inside the left rail, not above the children.
+    expect(html).toMatch(/aria-label="Studio left rail"[\s\S]*?Scene type breakdown/);
+    // Top bar still precedes the layout.
     const topBarIdx = html.indexOf('Studio top bar');
-    const legendIdx = html.indexOf('Scene type breakdown');
-    const childIdx = html.indexOf('legacy-studio');
-    expect(topBarIdx).toBeLessThan(legendIdx);
-    expect(legendIdx).toBeLessThan(childIdx);
+    const layoutIdx = html.indexOf('Studio left rail');
+    expect(topBarIdx).toBeLessThan(layoutIdx);
+  });
+
+  it('Studio Mode inspector renders the tab bar and the empty-state prompt (R3 PR2)', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC}>
+        <span>grid</span>
+      </ProductionDocShell>,
+    );
+    expect(html).toMatch(/aria-label="Row inspector"/);
+    expect(html).toMatch(/aria-label="Row inspector tabs"/);
+    expect(html).toContain('Select a row');
   });
 });
 

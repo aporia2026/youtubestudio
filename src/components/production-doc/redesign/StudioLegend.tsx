@@ -5,26 +5,27 @@ import type { ProductionDoc } from '@/remotion/utils';
 import { getVisualTypeColor } from '@/lib/visual-type-colors';
 
 /**
- * StudioLegend — a horizontal scene-type breakdown rendered under the
- * Studio top bar.
+ * StudioLegend — scene-type breakdown rendered under the Studio top
+ * bar (horizontal) or inside the left rail (vertical).
  *
- * See `_plans/2026-06-04-production-doc-redesign.md` §4.2 for the
- * left-rail target. The Legend sits in that rail in the final design
- * alongside Filters and Jump-to nav, but R2 PR2 ships it as a
- * non-layout-breaking horizontal strip — the left-rail sidebar arrives
- * with R3 when the inspector replaces the right side of the grid.
+ * See `_plans/2026-06-04-production-doc-redesign.md` §4.2. The Legend
+ * counts visual types from `doc.rows` and renders one pill per type
+ * that actually appears. The §4.2 mock improves on today's legacy
+ * legend (which only shows labels) by including counts so the user
+ * can scan their scene mix at a glance.
  *
- * The Legend counts visual types from `doc.rows` and renders one pill
- * per type that actually appears. The §4.2 mock improves on today's
- * legacy legend (which only shows labels) by including counts so the
- * user can scan their scene mix at a glance.
+ * R2 PR2 shipped this as a horizontal strip. R3 PR2 added the
+ * `orientation` prop so the left rail can stack the pills vertically.
  *
  * Read-only by design — no clicks, no state. Per rule 10 we don't
  * ship interactive controls until they actually do something. Filter
- * chips with shared filter state land in R3.
+ * chips with shared filter state land in later R3 PRs.
  */
 export interface StudioLegendProps {
   doc: ProductionDoc;
+  /** Layout direction for the pills. Defaults to `'horizontal'`
+   *  (R2 PR2 behaviour). The left rail mounts this with `'vertical'`. */
+  orientation?: 'horizontal' | 'vertical';
 }
 
 interface TypeTally {
@@ -52,16 +53,25 @@ function countOverlays(doc: ProductionDoc): number {
   return n;
 }
 
-export const StudioLegend: React.FC<StudioLegendProps> = ({ doc }) => {
+export const StudioLegend: React.FC<StudioLegendProps> = ({
+  doc,
+  orientation = 'horizontal',
+}) => {
   const tallies = useMemo(() => tallyVisualTypes(doc), [doc]);
   const overlayCount = useMemo(() => countOverlays(doc), [doc]);
 
   if (tallies.length === 0 && overlayCount === 0) return null;
 
+  const containerClass =
+    orientation === 'vertical'
+      ? 'flex flex-col items-stretch gap-1.5'
+      : 'mb-4 flex flex-wrap items-center gap-2';
+
   return (
     <section
       aria-label="Scene type breakdown"
-      className="mb-4 flex flex-wrap items-center gap-2"
+      data-orientation={orientation}
+      className={containerClass}
     >
       {tallies.map(({ type, count }) => {
         const { bg, color } = getVisualTypeColor(type);
