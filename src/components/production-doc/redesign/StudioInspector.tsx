@@ -2,8 +2,10 @@
 
 import React, { useEffect, useState } from 'react';
 import type { ProductionRow } from '@/remotion/utils';
+import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import { InspectorTabBar, type InspectorTabId } from './InspectorTabBar';
 import { StudioInspectorContent } from './StudioInspectorContent';
+import { StudioInspectorImage } from './StudioInspectorImage';
 
 /**
  * StudioInspector — the right column of `StudioLayout`. Hosts the
@@ -38,6 +40,10 @@ export interface StudioInspectorProps {
   /** Optional writer for the Content tab. Same signature as today's
    *  `updateRow(rowIndex, patch)` in page.tsx. */
   onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
+  /** Image state for the selected row. Drives the Image tab's
+   *  read-only preview. R3 PR4b will add writers for generate /
+   *  upload / edit. */
+  selectedRowImageState?: RowImageStateView | null;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -46,6 +52,7 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   selectedRowLabel,
   initialTab = 'content',
   onUpdateRow,
+  selectedRowImageState = null,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -114,12 +121,14 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             row={selectedRow}
             onUpdateRow={onUpdateRow}
           />
+        ) : currentTab === 'image' ? (
+          <StudioInspectorImage state={selectedRowImageState} />
         ) : (
           <p
             className="text-xs"
             style={{ color: 'var(--text-muted)' }}
           >
-            Tab editing lands in R3 PR4+. See plan §3.4 for the per-tab inventory.
+            Tab editing lands in later R3 PRs. See plan §3.4 for the per-tab inventory.
           </p>
         )}
       </div>

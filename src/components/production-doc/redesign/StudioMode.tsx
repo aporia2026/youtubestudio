@@ -2,6 +2,7 @@
 
 import React from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import { StudioTopBar } from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
@@ -44,6 +45,8 @@ export interface StudioModeProps {
    *  page.tsx). When provided the Content tab's text fields become
    *  editable in-place. R3 PR3b. */
   onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
+  /** Image state for the currently-selected row. R3 PR4. */
+  selectedRowImageState?: RowImageStateView | null;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -52,6 +55,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   onNewSession,
   selectedRowIndex = null,
   onUpdateRow,
+  selectedRowImageState = null,
 }) => {
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
@@ -77,6 +81,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
             selectedRowIndex={displayIndex}
             selectedRowLabel={displayLabel}
             onUpdateRow={onUpdateRow}
+            selectedRowImageState={selectedRowImageState}
           />
         }
       />

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import { BriefMode } from './BriefMode';
 import { StudioMode } from './StudioMode';
 
@@ -36,6 +37,9 @@ export interface ProductionDocShellProps {
    *  becomes editable. Same signature as today's `updateRow(rowIndex,
    *  patch)` in page.tsx. Ignored in Brief Mode. */
   onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
+  /** Image state for the currently-selected row. Drives the Image
+   *  tab's read-only preview. Ignored in Brief Mode. R3 PR4. */
+  selectedRowImageState?: RowImageStateView | null;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -55,6 +59,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   onNewSession,
   selectedRowIndex,
   onUpdateRow,
+  selectedRowImageState,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -90,6 +95,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       onNewSession={onNewSession}
       selectedRowIndex={selectedRowIndex}
       onUpdateRow={onUpdateRow}
+      selectedRowImageState={selectedRowImageState}
     >
       {children}
     </StudioMode>

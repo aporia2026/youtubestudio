@@ -14228,6 +14228,16 @@ function ProductionDocPage() {
       // fires the same atomic row-asset path the legacy ✎ inline
       // editor uses.
       onUpdateRow={updateRow}
+      // R3 PR4: feed the selected row's image state to the Image tab.
+      // `rowImages` is `RowImageState[]`, structurally compatible
+      // with the editor's `RowImageStateView` (extra optional fields
+      // are ignored at the inspector layer). `expandedRow` may be
+      // out of range or null — guarded inline.
+      selectedRowImageState={
+        expandedRow !== null && expandedRow >= 0 && rowImages[expandedRow]
+          ? rowImages[expandedRow]
+          : null
+      }
     >
       {pageContent}
     </ProductionDocShell>

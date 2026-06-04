@@ -132,16 +132,19 @@ describe('StudioInspector — selection wiring (R3 PR3)', () => {
     expect(html).not.toContain('Tab editing lands in');
   });
 
-  it('shows the "later phases" placeholder for non-content tabs when a row is selected', () => {
+  it('shows the "later phases" placeholder for non-content tabs that have not been mounted yet', () => {
+    // R3 PR4 lit up the Image tab. R3 PR4b+ will light up Video,
+    // Overlay, Section, Variants. Until then, those tabs still hit
+    // the placeholder when a row is selected.
     const html = renderToStaticMarkup(
       <StudioInspector
         selectedRow={makeRow()}
         selectedRowIndex={1}
         selectedRowLabel="0:00"
-        initialTab="image"
+        initialTab="video"
       />,
     );
-    expect(html).toContain('Tab editing lands in R3 PR4');
+    expect(html).toContain('Tab editing lands in later R3 PRs');
     expect(html).not.toContain('Select a row');
   });
 });
