@@ -685,8 +685,8 @@ Brief Mode (Notebook) → Studio Mode (Studio). Mode switches on `doc !== null`.
 | 2026-06-04 | Settings layer = new "Production Doc" section in Phase R2 with all 4 prefs | User approved; verified settings page pattern in codebase |
 | 2026-06-04 | Mobile = desktop-first, narrow viewport routes to Bulk Grid with notice | Recommended path accepted |
 | 2026-06-04 | §4 mocks + §3 contract approved | Start Phase R0 scaffolding |
-| — | Phase R0 merged? | — |
-| — | Flag flipped? | — |
+| 2026-06-04 | Phase R0 merged | `6d18c42` |
+| 2026-06-05 | Flag flipped (R6 — default ON, opt-out) | Plan complete. Legacy code paths stay for a few weeks as rollback insurance; cleanup PR follows once production confirms stable. |
 
 ---
 

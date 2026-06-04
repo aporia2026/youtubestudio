@@ -308,10 +308,10 @@ describe('PROD_DOC_REDESIGN_V1_PUBLIC — feature flag export', () => {
     expect(typeof PROD_DOC_REDESIGN_V1_PUBLIC).toBe('boolean');
   });
 
-  it('defaults to false when NEXT_PUBLIC_PROD_DOC_REDESIGN_V1 is unset (production safety)', () => {
-    // The test environment does not set the env var, so the resolved
-    // value must be false. If this fails, the default-OFF contract is
-    // broken and the redesign would ship to all users unintentionally.
-    expect(PROD_DOC_REDESIGN_V1_PUBLIC).toBe(false);
+  it('defaults to true when NEXT_PUBLIC_PROD_DOC_REDESIGN_V1 is unset (R6 flag flip)', () => {
+    // As of R6 (2026-06-05) the flag is default-ON (opt-out). An
+    // unset env var resolves to true. To roll back, set
+    // NEXT_PUBLIC_PROD_DOC_REDESIGN_V1=false in the build env.
+    expect(PROD_DOC_REDESIGN_V1_PUBLIC).toBe(true);
   });
 });

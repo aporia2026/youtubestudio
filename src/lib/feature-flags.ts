@@ -78,24 +78,27 @@ export const COLLAGE_TESTER_PUBLIC = process.env.NEXT_PUBLIC_COLLAGE_TESTER === 
  * Production-doc redesign V1 (see
  * `_plans/2026-06-04-production-doc-redesign.md`).
  *
- * Default-OFF (opt-in). When on, the production-doc page renders the new
- * two-mode shell — Brief Notebook before generation, Studio Workspace
- * after — in place of today's grid view. Every existing feature stays
- * reachable; the redesign is presentation-only. The page is
- * `'use client'`, so only a public flag is needed — no server route to
- * gate.
+ * Default-ON (opt-out) as of R6 (2026-06-05). The production-doc page
+ * renders the new two-mode shell — Brief Notebook before generation,
+ * Studio Workspace after — in place of today's grid view. Every
+ * existing feature stays reachable; the redesign is presentation-only.
+ * The page is `'use client'`, so only a public flag is needed.
  *
- * Opt-in by setting `NEXT_PUBLIC_PROD_DOC_REDESIGN_V1=true` in
- * `.env.local` (or in Vercel env for preview / prod gating). Next.js
- * inlines `NEXT_PUBLIC_*` at build time, so flipping requires a
- * redeploy — the right granularity for a UI surface this large.
+ * Default-ON pattern (`!== 'false'`): an unset env var evaluates to
+ * `true` so the redesign ships on every deploy. To opt back into the
+ * legacy grid (rollback path) set
+ * `NEXT_PUBLIC_PROD_DOC_REDESIGN_V1=false` in `.env.local` or Vercel
+ * env. Next.js inlines `NEXT_PUBLIC_*` at build time, so flipping
+ * requires a redeploy.
  *
- * The plan ships across six phases (R0 through R6). Phase R0 lands this
- * flag plus scaffolding components; R1–R5 progressively build the new
- * surfaces behind the flag; R6 flips the default to on and removes the
- * flag once stable.
+ * Phase progression (the plan ships across six phases):
+ *   R0 — flag + scaffolding (this file)
+ *   R1–R5 — progressive surface buildout behind the flag
+ *   R6 — flip default to ON (this commit). The legacy grid stays
+ *        reachable as a rollback path; a follow-up PR will remove
+ *        the legacy code paths and this flag entirely.
  */
-export const PROD_DOC_REDESIGN_V1_PUBLIC = process.env.NEXT_PUBLIC_PROD_DOC_REDESIGN_V1 === 'true';
+export const PROD_DOC_REDESIGN_V1_PUBLIC = process.env.NEXT_PUBLIC_PROD_DOC_REDESIGN_V1 !== 'false';
 
 /**
  * System-wide auto-upscale via Recraft Crisp Upscale (see
