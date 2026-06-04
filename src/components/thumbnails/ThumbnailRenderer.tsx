@@ -162,6 +162,33 @@ export interface FreeFormCell {
    *  band-height-derived font size, so 1.5× makes the label 50 %
    *  larger than the default. Range typically 0.5..2.0. */
   labelSizeMultiplier?: number;
+  // ─── Topic-card-grid v2 axes (2026-06-04 parity work) ─────────────────────
+  /** Border thickness preset. `'thin'` ≈ 0.4 % of cell width, `'thick'`
+   *  ≈ 1.6 %. Default `'thin'`. Ignored if `borderPx` is set explicitly
+   *  (explicit per-cell override always wins). */
+  borderWeight?: 'thin' | 'thick';
+  /** Label position relative to the disc (circle shape only).
+   *  `'below'` floats under the disc as today; `'overlap'` shifts the
+   *  label up so its top crosses the disc's bottom edge by ~12 % of
+   *  disc diameter and renders with a stroked outline so it stays
+   *  readable on any background. Default `'below'`. */
+  labelPosition?: 'below' | 'overlap';
+  /** `'title'` keeps the source casing; `'upper'` applies CSS
+   *  `text-transform: uppercase`. Source string is untouched.
+   *  Default `'title'`. */
+  labelCase?: 'title' | 'upper';
+  /** Disc-fill mode (circle shape only). `'photo'` covers the disc
+   *  with `imageUrl` (existing path). `'cutout'` paints `bgColor` and
+   *  centres `cutoutImageUrl` at ~80 % disc height. `'icon'` paints
+   *  `bgColor` and centres the AI-generated icon (`iconSlug`).
+   *  Default `'photo'`. */
+  fillStyle?: 'photo' | 'cutout' | 'icon';
+  /** Only used when `labelPosition === 'overlap'`. Colour pairing
+   *  for the stroked label. Default `'white-on-black'`. */
+  overlapLabelStroke?: 'white-on-black' | 'black-on-white';
+  /** Background-removed PNG URL, used when `fillStyle === 'cutout'`.
+   *  Generated server-side via the `/api/thumbnails/grid-rmbg` route. */
+  cutoutImageUrl?: string;
 }
 
 export interface ThumbnailRendererProps {
@@ -896,8 +923,15 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   const { x, y, w, h } = cell.bounds;
   const bg = cell.bgColor ?? '#ffffff';
   const borderColor = cell.borderColor ?? '#000000';
-  // Match server's `squareBorderPx`: max(3, round(w * 0.006)).
-  const borderPx = cell.borderPx ?? Math.max(3, Math.round(w * 0.006));
+  // Border thickness: explicit `borderPx` wins (caller knows what they
+  // want). Otherwise pick from `borderWeight` — `'thick'` doubles the
+  // base 0.6 %-of-cell-width into the cartoon-doodle range, `'thin'`
+  // and the legacy unset path keep the original 0.6 %. Floor of 3 so
+  // borders stay visible on very small cells.
+  const borderWeight = cell.borderWeight ?? 'thin';
+  const borderPx =
+    cell.borderPx ??
+    Math.max(3, Math.round(w * (borderWeight === 'thick' ? 0.016 : 0.006)));
   // Match server's SQUARE_ILLUSTRATION_FRAC = 0.8.
   const illustrationH = Math.round(h * 0.8);
   const labelH = h - illustrationH;
@@ -921,6 +955,19 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   // flat-bottomed. The server-side Sharp composite already masks via
   // an alpha layer; this brings the browser preview in line.
   const circleClipId = useId();
+  // Card-style axes (2026-06-04 parity work). `fillStyle` decides which
+  // visual fills the disc; the flags below collapse the precedence rules
+  // into one place instead of repeating them on each branch's condition.
+  //  - `useCutout`: circle-only, needs the bg-removed PNG ready.
+  //  - `useIcon`: forced when `fillStyle === 'icon'` even if `imageUrl`
+  //    is set; otherwise legacy "image > icon > emoji" precedence.
+  //  - `useImage` / `useEmoji`: fall through.
+  const fillStyle = cell.fillStyle ?? 'photo';
+  const hasUsableIcon = !!(cell.iconSlug && getIconEntry(cell.iconSlug));
+  const useCutout = shape === 'circle' && fillStyle === 'cutout' && !!cell.cutoutImageUrl;
+  const useIcon = !useCutout && hasUsableIcon && (fillStyle === 'icon' || !cell.imageUrl);
+  const useImage = !useCutout && !useIcon && fillStyle !== 'icon' && !!cell.imageUrl;
+  const useEmoji = !useCutout && !useIcon && !useImage && !!cell.emoji && cell.emoji.trim().length > 0;
   // Emoji sizes to ~60 % of the illustration area's shorter side — big
   // enough to read, small enough to leave breathing room.
   const emojiSize = Math.round(Math.min(w, illustrationH) * 0.55);
@@ -956,11 +1003,32 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
       ) : (
         <rect x={x} y={y} width={w} height={h} fill={bg} rx={cornerRadius} ry={cornerRadius} />
       )}
+      {/* Cutout fill (circle + `fillStyle: 'cutout'`). Paints the
+          background-removed PNG at ~80 % disc height, centred. The
+          disc's `bg` colour shows through wherever the cutout is
+          transparent — that's the "subject-on-solid-colour" look from
+          the reference thumbnails. No clip-path needed because the
+          cutout is already smaller than the disc. */}
+      {useCutout && cell.cutoutImageUrl && (() => {
+        const subjectH = Math.round(discDiameter * 0.8);
+        const subjectX = discCx - subjectH / 2;
+        const subjectY = discCy - subjectH / 2;
+        return (
+          <image
+            href={cell.cutoutImageUrl}
+            x={subjectX}
+            y={subjectY}
+            width={subjectH}
+            height={subjectH}
+            preserveAspectRatio="xMidYMid meet"
+          />
+        );
+      })()}
       {/* Custom image (per-cell upload / URL). Takes PRECEDENCE over
           both Lucide icons and emojis when set. The image fills the
           illustration area (top 80 % of the cell, or the disc in
           circle mode). Same transform pipeline applies. */}
-      {cell.imageUrl && (() => {
+      {useImage && (() => {
         const cx = x + w / 2;
         const cy = y + illustrationH / 2;
         const offsetX = (cell.emojiOffsetX ?? 0) * w;
@@ -1014,8 +1082,10 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           / flip / offset around the cell centre). The icon is
           imported as an SVG string from `flex-icon-grid-icons.ts` and
           embedded via `dangerouslySetInnerHTML` on a wrapping `<g>`
-          (React doesn't natively parse raw SVG markup into elements). */}
-      {!cell.imageUrl && cell.iconSlug && getIconEntry(cell.iconSlug) && (() => {
+          (React doesn't natively parse raw SVG markup into elements).
+          `useIcon` collapses the precedence rules — see the flag
+          declarations above. */}
+      {useIcon && cell.iconSlug && getIconEntry(cell.iconSlug) && (() => {
         const cx = x + w / 2;
         const cy = y + illustrationH / 2;
         const offsetX = (cell.emojiOffsetX ?? 0) * w;
@@ -1068,9 +1138,9 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
           per-cell offset / rotation / flip. The transform is applied
           ONLY to the emoji glyph (not the background or border) so the
           cell frame stays axis-aligned regardless of the rotation.
-          Skipped when an imageUrl OR known iconSlug is set (image
-          and icon both take precedence over emoji). */}
-      {!cell.imageUrl && !(cell.iconSlug && getIconEntry(cell.iconSlug)) && cell.emoji && cell.emoji.trim() && (() => {
+          Skipped when a higher-precedence visual is active — see the
+          `useEmoji` flag above. */}
+      {useEmoji && (() => {
         const cx = x + w / 2;
         const cy = y + illustrationH / 2;
         const offsetX = (cell.emojiOffsetX ?? 0) * w;
@@ -1123,19 +1193,51 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
       {shape !== 'circle' && (
         <rect x={x} y={y + illustrationH} width={w} height={labelH} fill="#ffffff" />
       )}
-      {/* Label text — centered in the band. */}
-      {cell.label && cell.label.trim() && (
-        <text
-          x={x + w / 2}
-          y={y + illustrationH + labelH / 2 + labelFontSize / 3}
-          fontSize={labelFontSize}
-          textAnchor="middle"
-          fill={cell.labelColor ?? '#000000'}
-          fontFamily={cell.labelFontFamily ?? 'Patrick Hand'}
-        >
-          {cell.label}
-        </text>
-      )}
+      {/* Label text. Three orthogonal knobs:
+            - `labelPosition`: 'below' (classic, centred in the label
+              band) vs 'overlap' (circle only — baseline sits just
+              below the disc edge so the label's top half crosses
+              into the disc).
+            - `labelCase`: 'title' keeps source casing; 'upper' applies
+              the uppercase transform at render time. SVG <text> does
+              NOT honour CSS `text-transform`, so we uppercase the
+              displayed string directly.
+            - `overlapLabelStroke`: only meaningful when overlapping —
+              picks white-on-black or black-on-white stroked text. The
+              stroke is painted UNDER the fill via `paint-order` so the
+              outline doesn't eat into the glyph silhouette. */}
+      {cell.label && cell.label.trim() && (() => {
+        const labelCase = cell.labelCase ?? 'title';
+        const labelPosition = cell.labelPosition ?? 'below';
+        const isOverlap = shape === 'circle' && labelPosition === 'overlap';
+        const displayLabel = labelCase === 'upper' ? cell.label.toUpperCase() : cell.label;
+        const baseY = isOverlap
+          ? discCy + discDiameter / 2 + labelFontSize * 0.25
+          : y + illustrationH + labelH / 2 + labelFontSize / 3;
+        const overlapStroke = cell.overlapLabelStroke ?? 'white-on-black';
+        const overlapFill = isOverlap
+          ? overlapStroke === 'white-on-black' ? '#ffffff' : '#000000'
+          : (cell.labelColor ?? '#000000');
+        const overlapStrokeColor = isOverlap
+          ? overlapStroke === 'white-on-black' ? '#000000' : '#ffffff'
+          : undefined;
+        return (
+          <text
+            x={x + w / 2}
+            y={baseY}
+            fontSize={labelFontSize}
+            textAnchor="middle"
+            fill={overlapFill}
+            stroke={overlapStrokeColor}
+            strokeWidth={isOverlap ? labelFontSize * 0.06 : undefined}
+            paintOrder={isOverlap ? 'stroke fill' : undefined}
+            fontFamily={cell.labelFontFamily ?? 'Patrick Hand'}
+            fontWeight={isOverlap ? 700 : undefined}
+          >
+            {displayLabel}
+          </text>
+        );
+      })()}
       {/* Outer border. Square / rounded use a rect with optional
           corner radius; circle draws a stroked disc around the
           illustration area (label band has no border). Circles force
