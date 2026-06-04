@@ -97,6 +97,17 @@ export interface ProductionDocShellProps {
   /** Render-dock state + actions. When provided, the pinned-bottom
    *  dock renders in Studio Mode. Ignored in Brief Mode. R5 PR1. */
   renderDock?: RenderDockProps;
+  // Follow-up additions:
+  onNavigateRow?: (direction: 'prev' | 'next') => void;
+  onDeleteRow?: (rowIndex: number) => void;
+  stylePreset?: string;
+  characterSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  sceneSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  untaggedDescriptionSlugs?: ReadonlyArray<string>;
+  isMotionCollageAutoFilling?: boolean;
+  pipelineError?: { class: string; message: string; at: string } | null;
+  pipelineErrorExhausted?: boolean;
+  onPipelineErrorRetry?: () => void;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -130,6 +141,16 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   subMode,
   onToggleSubMode,
   renderDock,
+  onNavigateRow,
+  onDeleteRow,
+  stylePreset,
+  characterSlugs,
+  sceneSlugs,
+  untaggedDescriptionSlugs,
+  isMotionCollageAutoFilling,
+  pipelineError,
+  pipelineErrorExhausted,
+  onPipelineErrorRetry,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -213,6 +234,16 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
             subMode={subMode}
             onToggleSubMode={onToggleSubMode}
             renderDock={renderDock}
+            onNavigateRow={onNavigateRow}
+            onDeleteRow={onDeleteRow}
+            stylePreset={stylePreset}
+            characterSlugs={characterSlugs}
+            sceneSlugs={sceneSlugs}
+            untaggedDescriptionSlugs={untaggedDescriptionSlugs}
+            isMotionCollageAutoFilling={isMotionCollageAutoFilling}
+            pipelineError={pipelineError}
+            pipelineErrorExhausted={pipelineErrorExhausted}
+            onPipelineErrorRetry={onPipelineErrorRetry}
           >
             {children}
           </StudioMode>

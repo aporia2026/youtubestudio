@@ -8,6 +8,11 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  deleteFromArray,
+  deleteFromRecord,
+  deleteIndexMap,
+  deleteRowFromProductionDocState,
+  deleteSingleIndex,
   reorderArray,
   reorderIndexMap,
   reorderProductionDocState,
@@ -277,5 +282,123 @@ describe('reorderProductionDocState — full atomic reorder', () => {
     expect(out.rowOverlays).toBeUndefined();
     expect(out.rowBatchStubs).toBeUndefined();
     expect(out.expandedRow).toBeNull();
+  });
+});
+
+describe('deleteIndexMap', () => {
+  it('marks the deleted index as null and shifts higher indexes down', () => {
+    const map = deleteIndexMap(2, 5);
+    expect(map[0]).toBe(0);
+    expect(map[1]).toBe(1);
+    expect(map[2]).toBeNull();
+    expect(map[3]).toBe(2);
+    expect(map[4]).toBe(3);
+  });
+});
+
+describe('deleteFromArray', () => {
+  it('removes the element and returns a new array', () => {
+    expect(deleteFromArray(['a', 'b', 'c', 'd'], 1)).toEqual(['a', 'c', 'd']);
+  });
+
+  it('returns a copy for out-of-range indexes (defensive)', () => {
+    expect(deleteFromArray(['a', 'b'], -1)).toEqual(['a', 'b']);
+    expect(deleteFromArray(['a', 'b'], 10)).toEqual(['a', 'b']);
+  });
+
+  it('does not mutate the input', () => {
+    const input = ['a', 'b', 'c'];
+    deleteFromArray(input, 1);
+    expect(input).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('deleteFromRecord', () => {
+  it('drops the deleted key and shifts higher keys down by 1', () => {
+    const out = deleteFromRecord({ 0: 'A', 1: 'B', 2: 'C', 3: 'D' }, 1, 4);
+    expect(out).toEqual({ 0: 'A', 1: 'C', 2: 'D' });
+  });
+
+  it('preserves out-of-range integer keys unchanged', () => {
+    const out = deleteFromRecord({ 0: 'A', 9: 'GHOST' }, 0, 2);
+    // Index 0 dropped, ghost key 9 stays.
+    expect(out).toEqual({ 9: 'GHOST' });
+  });
+
+  it('skips non-integer keys without crashing', () => {
+    const input = { 0: 'A', 1: 'B', NaN: 'X' } as unknown as Record<number, string>;
+    const out = deleteFromRecord(input, 0, 2);
+    expect(out[0]).toBe('B');
+  });
+});
+
+describe('deleteSingleIndex', () => {
+  it('returns null when ref equals the deleted index', () => {
+    expect(deleteSingleIndex(2, 2, 5)).toBeNull();
+  });
+  it('returns null for null input', () => {
+    expect(deleteSingleIndex(null, 2, 5)).toBeNull();
+  });
+  it('shifts higher indexes down by 1', () => {
+    expect(deleteSingleIndex(3, 1, 5)).toBe(2);
+  });
+  it('leaves lower indexes untouched', () => {
+    expect(deleteSingleIndex(0, 2, 5)).toBe(0);
+  });
+});
+
+describe('deleteRowFromProductionDocState — full atomic delete', () => {
+  it('drops the row + every slice slot AND shifts higher state down', () => {
+    const rows = [makeRow('A'), makeRow('B'), makeRow('C'), makeRow('D')];
+    const rowImages = ['img-A', 'img-B', 'img-C', 'img-D'];
+    const rowVideoClips: Record<number, { status: string } | null> = {
+      0: { status: 'ready' },
+      1: { status: 'generating' },
+      2: null,
+      3: { status: 'failed' },
+    };
+    const rowOverlays: Record<number, { status: string }> = {
+      0: { status: 'done' },
+      3: { status: 'idle' },
+    };
+
+    const out = deleteRowFromProductionDocState(
+      {
+        rows,
+        rowImages,
+        rowVideoClips,
+        rowOverlays,
+        expandedRow: 1,
+      },
+      1, // delete row B
+    );
+
+    expect(out.rows.map((r) => r.script_text)).toEqual(['A', 'C', 'D']);
+    expect(out.rowImages).toEqual(['img-A', 'img-C', 'img-D']);
+    expect(out.rowVideoClips).toEqual({
+      0: { status: 'ready' },           // A stayed
+      1: null,                           // was 2 (C had null)
+      2: { status: 'failed' },           // was 3 (D shifted to 2)
+    });
+    expect(out.rowOverlays).toEqual({
+      0: { status: 'done' },             // A stayed
+      2: { status: 'idle' },             // was 3 (D shifted to 2)
+    });
+    // Selection collapsed: was pointing at the deleted row.
+    expect(out.expandedRow).toBeNull();
+  });
+
+  it('shifts expandedRow when it sits above the deleted index', () => {
+    const rows = [makeRow('A'), makeRow('B'), makeRow('C')];
+    const out = deleteRowFromProductionDocState({ rows, expandedRow: 2 }, 0);
+    // Row A deleted; C was at idx 2, now at idx 1.
+    expect(out.expandedRow).toBe(1);
+  });
+
+  it('no-ops cleanly on out-of-range delete', () => {
+    const rows = [makeRow('A')];
+    const out = deleteRowFromProductionDocState({ rows, expandedRow: 0 }, 5);
+    expect(out.rows.map((r) => r.script_text)).toEqual(['A']);
+    expect(out.expandedRow).toBe(0);
   });
 });

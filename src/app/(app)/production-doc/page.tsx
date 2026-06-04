@@ -114,9 +114,13 @@ import { EditorView } from '@/components/production-doc/editor/EditorView';
 // `_plans/2026-06-04-production-doc-redesign.md`. Gated by
 // `PROD_DOC_REDESIGN_V1_PUBLIC` (default off).
 import { ProductionDocShell } from '@/components/production-doc/redesign/ProductionDocShell';
-// Pure helper for the drag-to-reorder writer below — atomically
-// rekeys every row-indexed state slice when a card is moved.
-import { reorderProductionDocState } from '@/lib/production-doc-reorder';
+// Pure helpers for the drag-to-reorder + delete writers below —
+// atomically rekey every row-indexed state slice when a card is
+// moved or removed.
+import {
+  deleteRowFromProductionDocState,
+  reorderProductionDocState,
+} from '@/lib/production-doc-reorder';
 // R4 PR3: the Studio sub-mode hook is lifted out of StudioMode so
 // page.tsx can also read the same signal — needed to hide the legacy
 // grid when the user is in scene-strip mode.
@@ -4653,6 +4657,46 @@ function ProductionDocPage() {
         },
         fromIndex,
         toIndex,
+      );
+      if (result.rowImages !== undefined) setRowImages(result.rowImages);
+      if (result.rowVideoClips !== undefined) setRowVideoClips(result.rowVideoClips);
+      if (result.rowOverlays !== undefined) setRowOverlays(result.rowOverlays);
+      if (result.rowBatchStubs !== undefined) setRowBatchStubs(result.rowBatchStubs);
+      if (result.expandedRow !== undefined) setExpandedRow(result.expandedRow);
+      const nextDoc = { ...prev, rows: result.rows };
+      persistDoc(nextDoc);
+      return nextDoc;
+    });
+  }, [rowImages, rowVideoClips, rowOverlays, rowBatchStubs, expandedRow]);
+
+  /**
+   * Delete a row atomically — drops the row from `doc.rows` AND
+   * shifts every row-indexed state slice (rowImages, rowVideoClips,
+   * rowOverlays, rowBatchStubs) so no orphan slots remain.
+   * `expandedRow` collapses to null when the selected row is the one
+   * being deleted, otherwise shifts down to track its post-delete
+   * position. `rowLockSignatures` is signature-keyed and naturally
+   * follows the row that owns the signature.
+   *
+   * Variant rows use their own delete path (`deleteVariantRow`) which
+   * re-indexes the group. This writer is for non-variant rows.
+   *
+   * Confirmation lives at the caller (e.g. inspector header) so this
+   * writer is pure: pass the index, get the side-effects.
+   */
+  const deleteRowAtIndex = useCallback((rowIndex: number) => {
+    setDoc(prev => {
+      if (!prev) return prev;
+      const result = deleteRowFromProductionDocState(
+        {
+          rows: prev.rows,
+          rowImages,
+          rowVideoClips,
+          rowOverlays,
+          rowBatchStubs,
+          expandedRow,
+        },
+        rowIndex,
       );
       if (result.rowImages !== undefined) setRowImages(result.rowImages);
       if (result.rowVideoClips !== undefined) setRowVideoClips(result.rowVideoClips);
@@ -14370,6 +14414,29 @@ function ProductionDocPage() {
                         void autoFillMotionCollagePanels(expandedRow, captured);
                       }
                     : undefined,
+                onRevertMotionCollageToRegular:
+                  row.shot_kind === 'motion_collage'
+                    ? () => updateRow(expandedRow, {
+                        shot_kind: undefined,
+                        motion_collage_grid: undefined,
+                        motion_collage_panel_prompts: undefined,
+                        motion_collage_image_url: undefined,
+                        motion_collage_panel_urls: undefined,
+                        image_url: undefined,
+                      })
+                    : undefined,
+                onAutoFillMotionCollagePanels:
+                  row.shot_kind === 'motion_collage'
+                    ? () => {
+                        void autoFillMotionCollagePanels(expandedRow, {
+                          grid: row.motion_collage_grid ?? { cols: 2, rows: 2 },
+                          scriptText: row.script_text ?? '',
+                          visualDescription: row.visual_description,
+                          baseImagePrompt: row.ai_image_prompt,
+                          existingPanels: row.motion_collage_panel_prompts ?? [],
+                        });
+                      }
+                    : undefined,
               };
             })()
           : undefined
@@ -14522,6 +14589,41 @@ function ProductionDocPage() {
                     ? { kind: 'retry-videos', done: retryingVideos.done, total: retryingVideos.total }
                     : null,
             }
+          : undefined
+      }
+      // Follow-up plumbing: row delete + header nav + slug chips +
+      // motion-collage editor + pipeline error chip. Each prop bottom
+      // out at a tab inside the inspector — see StudioInspector.tsx.
+      onDeleteRow={deleteRowAtIndex}
+      onNavigateRow={(direction) => {
+        if (!doc) return;
+        if (expandedRow === null) return;
+        const next = direction === 'prev' ? expandedRow - 1 : expandedRow + 1;
+        if (next < 0 || next >= doc.rows.length) return;
+        setExpandedRow(next);
+      }}
+      stylePreset={stylePreset}
+      characterSlugs={characterSlugTally}
+      sceneSlugs={sceneSlugTally}
+      untaggedDescriptionSlugs={untaggedDescriptionSlugs}
+      isMotionCollageAutoFilling={
+        expandedRow !== null && expandedRow >= 0
+          ? autoFillingRows.has(expandedRow)
+          : false
+      }
+      pipelineError={
+        expandedRow !== null && expandedRow >= 0 && doc?.rows[expandedRow]?.last_error
+          ? doc.rows[expandedRow].last_error!
+          : null
+      }
+      pipelineErrorExhausted={
+        expandedRow !== null && expandedRow >= 0 && doc?.rows[expandedRow]?.last_error
+          ? isExhausted(doc.rows[expandedRow].attempts, doc.rows[expandedRow].last_error!.class)
+          : false
+      }
+      onPipelineErrorRetry={
+        expandedRow !== null && expandedRow >= 0
+          ? () => updateRow(expandedRow, { attempts: 0, last_error: null })
           : undefined
       }
     >

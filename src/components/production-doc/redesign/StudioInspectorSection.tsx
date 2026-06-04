@@ -439,6 +439,30 @@ export const StudioInspectorSection: React.FC<StudioInspectorSectionProps> = ({
               </option>
             ))}
           </select>
+        ) : editable && doc?.thumbnail && (doc.thumbnail.regions?.length ?? 0) === 0 ? (
+          <div
+            className="text-[11px] leading-relaxed px-2 py-1.5 rounded"
+            style={{
+              color: 'var(--text-muted)',
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px dashed rgba(255,255,255,0.10)',
+            }}
+            role="status"
+          >
+            Section thumbnail is uploaded but has no marked regions yet. Scroll to the doc-level <strong>Section divider thumbnail</strong> block and click <strong>Mark regions</strong> to draw rectangles over each icon — those become selectable here.
+          </div>
+        ) : editable ? (
+          <div
+            className="text-[11px] leading-relaxed px-2 py-1.5 rounded"
+            style={{
+              color: 'var(--text-muted)',
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px dashed rgba(255,255,255,0.10)',
+            }}
+            role="status"
+          >
+            No section thumbnail set. Upload one in the doc-level <strong>Section divider thumbnail</strong> block and mark its regions to make them selectable here.
+          </div>
         ) : (
           <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
             {zoomToId || EMPTY_PLACEHOLDER}

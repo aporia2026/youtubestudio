@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useRef, useState } from 'react';
+import type { ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
+import { MotionCollageRowEditor } from '@/components/production-doc/MotionCollageRowEditor';
 
 /**
  * StudioInspectorImage — Image tab body in the Studio inspector.
@@ -52,10 +54,30 @@ export interface StudioInspectorImageActions {
    *  hide the Convert button (already converted) and show the
    *  "Re-fill panels" hint instead. */
   isMotionCollage?: boolean;
+  /** Revert a motion_collage row back to a regular Animation row.
+   *  Clears motion_collage_* fields + image_url. Wired into the
+   *  MotionCollageRowEditor's "Revert" button. */
+  onRevertMotionCollageToRegular?: () => void;
+  /** Auto-fill the empty panel prompts from the row's narration beat
+   *  via the parent's LLM helper. Non-destructive — user-edited
+   *  prompts are preserved. */
+  onAutoFillMotionCollagePanels?: () => void;
 }
 
 export interface StudioInspectorImageProps extends StudioInspectorImageActions {
   state?: RowImageStateView | null;
+  /** The row itself — needed for the MotionCollageRowEditor mount
+   *  when `row.shot_kind === 'motion_collage'`. */
+  row?: ProductionRow | null;
+  /** Row-scoped updater (rowIndex is already bound at the call site). */
+  onUpdateRow?: (patch: Partial<ProductionRow>) => void;
+  /** Spinner flag for the motion-collage panel auto-fill flow. */
+  isAutoFillingMotionCollage?: boolean;
+  /** Per-row pipeline failure state from the auto-pipeline. When
+   *  set + exhausted, renders the error chip + Rethink affordance. */
+  pipelineError?: { class: string; message: string; at: string } | null;
+  pipelineErrorExhausted?: boolean;
+  onPipelineErrorRetry?: () => void;
 }
 
 const STATUS_LABEL: Record<RowImageStateView['status'], string> = {
@@ -114,6 +136,14 @@ export const StudioInspectorImage: React.FC<StudioInspectorImageProps> = ({
   onToggleLockedAsStill,
   onConvertToMotionCollage,
   isMotionCollage = false,
+  onRevertMotionCollageToRegular,
+  onAutoFillMotionCollagePanels,
+  row = null,
+  onUpdateRow,
+  isAutoFillingMotionCollage = false,
+  pipelineError = null,
+  pipelineErrorExhausted = false,
+  onPipelineErrorRetry,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [urlInputOpen, setUrlInputOpen] = useState(false);
@@ -170,9 +200,94 @@ export const StudioInspectorImage: React.FC<StudioInspectorImageProps> = ({
     );
   }
 
+  const motionCollageGrid = row?.motion_collage_grid ?? undefined;
+  const motionCollagePanelPrompts = row?.motion_collage_panel_prompts ?? undefined;
+
   return (
     <div className="space-y-3">
       {fileInput}
+
+      {pipelineError && pipelineErrorExhausted && (
+        <div
+          role="alert"
+          className="text-[11px] leading-relaxed px-2.5 py-2 rounded space-y-1.5"
+          style={{
+            background: 'rgba(239,68,68,0.08)',
+            color: '#f87171',
+            border: '1px solid rgba(239,68,68,0.25)',
+          }}
+        >
+          <div className="font-semibold">Pipeline gave up after retries</div>
+          <div style={{ opacity: 0.9 }}>
+            <span style={{ fontFamily: 'monospace' }}>{pipelineError.class}</span>
+            {pipelineError.message ? ` · ${pipelineError.message}` : ''}
+          </div>
+          {onPipelineErrorRetry && (
+            <button
+              type="button"
+              onClick={onPipelineErrorRetry}
+              className="text-[11px] px-2 py-0.5 rounded"
+              style={{
+                background: 'rgba(239,68,68,0.15)',
+                color: '#fca5a5',
+                border: '1px solid rgba(239,68,68,0.35)',
+                cursor: 'pointer',
+              }}
+              title="Reset this row's attempt counter so the pipeline picks it up again on the next tick."
+            >
+              ↻ Rethink
+            </button>
+          )}
+        </div>
+      )}
+
+      {row?.shot_kind === 'motion_collage' && onUpdateRow && (
+        <div
+          className="px-2 py-2 rounded"
+          style={{
+            background: 'rgba(124,58,237,0.06)',
+            border: '1px solid rgba(124,58,237,0.20)',
+          }}
+        >
+          <div
+            className="text-[10px] uppercase tracking-wider font-semibold mb-1.5"
+            style={{ color: 'var(--accent-purple-bright, #a78bfa)' }}
+          >
+            Motion-collage panels{isAutoFillingMotionCollage ? ' · auto-filling…' : ''}
+          </div>
+          <MotionCollageRowEditor
+            grid={motionCollageGrid}
+            panelPrompts={motionCollagePanelPrompts ?? []}
+            onChange={(next) => {
+              onUpdateRow({
+                motion_collage_grid: next.grid,
+                motion_collage_panel_prompts: next.panelPrompts,
+                // Any grid/prompt change invalidates the existing
+                // rendered panels — clear urls so the next generate
+                // triggers a fresh collage run.
+                image_url: undefined,
+                motion_collage_image_url: undefined,
+                motion_collage_panel_urls: undefined,
+              });
+            }}
+            onRevertToRegular={
+              onRevertMotionCollageToRegular ??
+              (() => {
+                onUpdateRow({
+                  shot_kind: undefined,
+                  motion_collage_grid: undefined,
+                  motion_collage_panel_prompts: undefined,
+                  motion_collage_image_url: undefined,
+                  motion_collage_panel_urls: undefined,
+                  image_url: undefined,
+                });
+              })
+            }
+            onAutoFill={onAutoFillMotionCollagePanels ?? (() => {})}
+            autoFilling={isAutoFillingMotionCollage}
+          />
+        </div>
+      )}
 
       {statusLabel && statusColor && (
         <div className="flex flex-wrap items-center gap-2">

@@ -120,6 +120,102 @@ export interface ReorderedProductionState<RImage, RVideo, ROverlay, RStub> {
   expandedRow: number | null | undefined;
 }
 
+/** Map an old index to its post-delete index. The removed row is
+ *  reported as `null` so callers can drop its associated state. */
+export function deleteIndexMap(
+  index: number,
+  length: number,
+): Record<number, number | null> {
+  const map: Record<number, number | null> = {};
+  for (let i = 0; i < length; i++) {
+    if (i === index) map[i] = null;
+    else if (i < index) map[i] = i;
+    else map[i] = i - 1;
+  }
+  return map;
+}
+
+/** Remove the element at `index` from a positional array. Returns a
+ *  copy when the index is out of range. */
+export function deleteFromArray<T>(arr: ReadonlyArray<T>, index: number): T[] {
+  if (index < 0 || index >= arr.length) return [...arr];
+  const result = [...arr];
+  result.splice(index, 1);
+  return result;
+}
+
+/** Drop the value at `index` from an index-keyed record AND shift
+ *  every higher key down by 1. Out-of-range integer keys are
+ *  preserved unchanged so corrupted state isn't silently dropped. */
+export function deleteFromRecord<T>(
+  record: Readonly<Record<number, T>>,
+  index: number,
+  length: number,
+): Record<number, T> {
+  const map = deleteIndexMap(index, length);
+  const result: Record<number, T> = {};
+  for (const [oldKeyStr, value] of Object.entries(record)) {
+    const oldKey = Number(oldKeyStr);
+    if (!Number.isInteger(oldKey)) continue;
+    const mapped = map[oldKey];
+    if (mapped === null) continue; // the deleted row's slot is dropped
+    const newKey = mapped !== undefined ? mapped : oldKey;
+    result[newKey] = value;
+  }
+  return result;
+}
+
+/** Map a single 0-based index through a delete. Returns `null` for
+ *  the deleted row and for `null` input. */
+export function deleteSingleIndex(
+  ref: number | null,
+  index: number,
+  length: number,
+): number | null {
+  if (ref === null) return null;
+  if (ref === index) return null;
+  if (ref < 0 || ref >= length) return ref;
+  return ref < index ? ref : ref - 1;
+}
+
+/**
+ * Compute the post-delete state for every row-indexed slice. Like
+ * `reorderProductionDocState` but for the destructive remove path.
+ * The deleted row's slots are dropped from every slice; selection
+ * (`expandedRow`) collapses to `null` if it pointed at the deleted
+ * row, otherwise shifts down by 1 when above the cut.
+ */
+export function deleteRowFromProductionDocState<RImage, RVideo, ROverlay, RStub>(
+  state: ReorderableProductionState<RImage, RVideo, ROverlay, RStub>,
+  index: number,
+): ReorderedProductionState<RImage, RVideo, ROverlay, RStub> {
+  const length = state.rows.length;
+  if (index < 0 || index >= length) {
+    return {
+      rows: [...state.rows],
+      rowImages: state.rowImages ? [...state.rowImages] : undefined,
+      rowVideoClips: state.rowVideoClips ? { ...state.rowVideoClips } : undefined,
+      rowOverlays: state.rowOverlays ? { ...state.rowOverlays } : undefined,
+      rowBatchStubs: state.rowBatchStubs ? { ...state.rowBatchStubs } : undefined,
+      expandedRow: state.expandedRow ?? null,
+    };
+  }
+  return {
+    rows: deleteFromArray(state.rows, index),
+    rowImages: state.rowImages ? deleteFromArray(state.rowImages, index) : undefined,
+    rowVideoClips: state.rowVideoClips
+      ? deleteFromRecord(state.rowVideoClips, index, length)
+      : undefined,
+    rowOverlays: state.rowOverlays
+      ? deleteFromRecord(state.rowOverlays, index, length)
+      : undefined,
+    rowBatchStubs: state.rowBatchStubs
+      ? deleteFromRecord(state.rowBatchStubs, index, length)
+      : undefined,
+    expandedRow: deleteSingleIndex(state.expandedRow ?? null, index, length),
+  };
+}
+
 /**
  * Compute the post-reorder state for every row-indexed slice. Returns
  * a NEW object for each slice that's present; absent slices stay

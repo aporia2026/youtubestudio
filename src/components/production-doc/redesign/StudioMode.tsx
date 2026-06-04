@@ -113,6 +113,17 @@ export interface StudioModeProps {
   /** Render-dock state + actions. When provided, the pinned-bottom
    *  dock renders with media counters + Start Render CTA. R5 PR1. */
   renderDock?: RenderDockProps;
+  // Follow-up additions:
+  onNavigateRow?: (direction: 'prev' | 'next') => void;
+  onDeleteRow?: (rowIndex: number) => void;
+  stylePreset?: string;
+  characterSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  sceneSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  untaggedDescriptionSlugs?: ReadonlyArray<string>;
+  isMotionCollageAutoFilling?: boolean;
+  pipelineError?: { class: string; message: string; at: string } | null;
+  pipelineErrorExhausted?: boolean;
+  onPipelineErrorRetry?: () => void;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -137,6 +148,16 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   onReorderRow,
   editorWriters,
   renderDock,
+  onNavigateRow,
+  onDeleteRow,
+  stylePreset,
+  characterSlugs,
+  sceneSlugs,
+  untaggedDescriptionSlugs,
+  isMotionCollageAutoFilling,
+  pipelineError,
+  pipelineErrorExhausted,
+  onPipelineErrorRetry,
 }) => {
   // R3 PR6 + R4 PR3: Studio sub-mode toggle. When the caller passes
   // controlled `subMode` + `onToggleSubMode` we defer to them (so
@@ -226,6 +247,17 @@ export const StudioMode: React.FC<StudioModeProps> = ({
               doc={doc}
               rowImagesByIndex={rowImagesByIndex}
               editorWriters={editorWriters}
+              onNavigateRow={onNavigateRow}
+              totalRows={doc.rows.length}
+              onDeleteRow={onDeleteRow}
+              stylePreset={stylePreset}
+              characterSlugs={characterSlugs}
+              sceneSlugs={sceneSlugs}
+              untaggedDescriptionSlugs={untaggedDescriptionSlugs}
+              isMotionCollageAutoFilling={isMotionCollageAutoFilling}
+              pipelineError={pipelineError}
+              pipelineErrorExhausted={pipelineErrorExhausted}
+              onPipelineErrorRetry={onPipelineErrorRetry}
             />
           }
         />

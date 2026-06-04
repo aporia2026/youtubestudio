@@ -7,6 +7,7 @@ import {
   VISUAL_TYPE_COLORS,
 } from '@/lib/visual-type-colors';
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
+import { SlugChip } from '@/components/production-doc/SlugChip';
 import { InspectorInlineField } from './InspectorInlineField';
 
 /**
@@ -34,6 +35,12 @@ export interface StudioInspectorContentProps {
   /** Doc-level default for on-screen-text mode. Used to render the
    *  inherited indicator + fallback value in `OstModeControl`. */
   docOstModeDefault?: OstMode;
+  /** Style preset slug — drives doodle_explainer_2-only SlugChip
+   *  affordances. */
+  stylePreset?: string;
+  characterSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  sceneSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  untaggedDescriptionSlugs?: ReadonlyArray<string>;
 }
 
 export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
@@ -41,6 +48,10 @@ export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
   row,
   onUpdateRow,
   docOstModeDefault,
+  stylePreset,
+  characterSlugs,
+  sceneSlugs,
+  untaggedDescriptionSlugs,
 }) => {
   const visualType = row.visual_type?.trim() ?? '';
   const visualTypeColor = visualType ? getVisualTypeColor(visualType) : null;
@@ -157,6 +168,31 @@ export const StudioInspectorContent: React.FC<StudioInspectorContentProps> = ({
           onSave={makeSaver('notes')}
           multiline
         />
+      )}
+      {editable && stylePreset === 'doodle_explainer_2' && (
+        <div>
+          <div
+            className="text-[10px] uppercase tracking-wider font-semibold mb-1"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Tags
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <SlugChip
+              kind="character"
+              value={row.character_id}
+              availableSlugs={characterSlugs ?? []}
+              untaggedDescriptionSlugs={untaggedDescriptionSlugs}
+              onChange={(next) => onUpdateRow!(rowIndex, { character_id: next })}
+            />
+            <SlugChip
+              kind="scene"
+              value={row.scene_id}
+              availableSlugs={sceneSlugs ?? []}
+              onChange={(next) => onUpdateRow!(rowIndex, { scene_id: next })}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

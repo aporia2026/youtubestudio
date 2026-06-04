@@ -93,6 +93,35 @@ export interface StudioInspectorProps {
    *  overlay and B-roll editing flows. Same shape EditorView already
    *  uses — page.tsx exposes a single useMemo'd bundle that we share. */
   editorWriters?: EditorWriters;
+  /** Header-level row navigation (prev / next via ◂ ▸ buttons).
+   *  Page.tsx wires this to `setExpandedRow` keyed off the selected
+   *  row's absolute index. */
+  onNavigateRow?: (direction: 'prev' | 'next') => void;
+  /** Total row count — used to disable Next when at the last row.
+   *  Inspector derives prev-disabled from `selectedRowIndex <= 1`. */
+  totalRows?: number;
+  /** Delete-row callback. Wired to page.tsx's `deleteRowAtIndex`
+   *  which uses `deleteRowFromProductionDocState` to atomically
+   *  shift every row-indexed state slice. */
+  onDeleteRow?: (rowIndex: number) => void;
+  /** Active style preset slug — drives doodle_explainer_2-only
+   *  affordances like the SlugChip character / scene tagging row. */
+  stylePreset?: string;
+  /** Character-id tally for the SlugChip dropdown. */
+  characterSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  /** Scene-id tally for the SlugChip dropdown. */
+  sceneSlugs?: ReadonlyArray<{ slug: string; count: number }>;
+  /** Character slugs that appear in row descriptions but aren't
+   *  formally tagged — surface as suggestions. */
+  untaggedDescriptionSlugs?: ReadonlyArray<string>;
+  /** Auto-fill in-flight flag for motion_collage panels. */
+  isMotionCollageAutoFilling?: boolean;
+  /** Pipeline error info for the selected row when the auto-pipeline
+   *  gave up. Drives the error chip + Rethink button in the Image
+   *  tab. */
+  pipelineError?: { class: string; message: string; at: string } | null;
+  pipelineErrorExhausted?: boolean;
+  onPipelineErrorRetry?: () => void;
 }
 
 export const StudioInspector: React.FC<StudioInspectorProps> = ({
@@ -110,6 +139,17 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
   doc = null,
   rowImagesByIndex,
   editorWriters,
+  onNavigateRow,
+  totalRows = 0,
+  onDeleteRow,
+  stylePreset,
+  characterSlugs,
+  sceneSlugs,
+  untaggedDescriptionSlugs,
+  isMotionCollageAutoFilling = false,
+  pipelineError = null,
+  pipelineErrorExhausted = false,
+  onPipelineErrorRetry,
 }) => {
   const [currentTab, setCurrentTab] = useState<InspectorTabId>(initialTab);
 
@@ -140,12 +180,52 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
         className="px-3 py-2 flex items-center justify-between gap-3 flex-wrap"
         style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
       >
-        <h2
-          className="text-[10px] uppercase tracking-wider font-semibold shrink-0"
-          style={{ color: 'var(--text-muted)' }}
-        >
-          Inspector
-        </h2>
+        <div className="flex items-center gap-2 shrink-0">
+          <h2
+            className="text-[10px] uppercase tracking-wider font-semibold"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            Inspector
+          </h2>
+          {hasSelection && onNavigateRow && selectedRowIndex !== null && (
+            <div className="inline-flex items-center gap-0.5" role="group" aria-label="Row navigation">
+              <button
+                type="button"
+                onClick={() => onNavigateRow('prev')}
+                disabled={selectedRowIndex <= 1}
+                aria-label="Previous row"
+                className="text-xs px-1.5 py-0.5 rounded"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: selectedRowIndex <= 1 ? 'not-allowed' : 'pointer',
+                  opacity: selectedRowIndex <= 1 ? 0.4 : 1,
+                }}
+                title="Select the previous row"
+              >
+                ◂
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigateRow('next')}
+                disabled={selectedRowIndex >= totalRows}
+                aria-label="Next row"
+                className="text-xs px-1.5 py-0.5 rounded"
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  cursor: selectedRowIndex >= totalRows ? 'not-allowed' : 'pointer',
+                  opacity: selectedRowIndex >= totalRows ? 0.4 : 1,
+                }}
+                title="Select the next row"
+              >
+                ▸
+              </button>
+            </div>
+          )}
+        </div>
         {hasSelection && selectedRow && (
           <div className="flex items-center gap-2 flex-wrap min-w-0">
             {/* Variant chip: shows the row's place in its variant
@@ -185,6 +265,30 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
                 Row {selectedRowIndex} · {selectedRowLabel}
               </span>
             )}
+            {onDeleteRow && writerRowIndex !== null && (selectedRow.variant_index ?? 0) === 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  const preview = (selectedRow.script_text ?? '').trim().slice(0, 50);
+                  const confirmed = window.confirm(
+                    `Delete row ${selectedRowIndex}${preview ? ` (“${preview}${preview.length === 50 ? '…' : ''}”)` : ''}?\n\nThis cannot be undone.`,
+                  );
+                  if (!confirmed) return;
+                  onDeleteRow(writerRowIndex);
+                }}
+                aria-label="Delete row"
+                className="text-xs px-2 py-0.5 rounded shrink-0"
+                style={{
+                  background: 'rgba(239,68,68,0.10)',
+                  color: '#fca5a5',
+                  border: '1px solid rgba(239,68,68,0.35)',
+                  cursor: 'pointer',
+                }}
+                title="Delete this row from the doc. Cannot be undone."
+              >
+                🗑
+              </button>
+            )}
           </div>
         )}
       </header>
@@ -210,11 +314,23 @@ export const StudioInspector: React.FC<StudioInspectorProps> = ({
             row={selectedRow}
             onUpdateRow={onUpdateRow}
             docOstModeDefault={doc?.on_screen_text_mode_default}
+            stylePreset={stylePreset}
+            characterSlugs={characterSlugs}
+            sceneSlugs={sceneSlugs}
+            untaggedDescriptionSlugs={untaggedDescriptionSlugs}
           />
         ) : currentTab === 'image' ? (
           <StudioInspectorImage
             state={selectedRowImageState}
             {...(selectedRowImageActions ?? {})}
+            row={selectedRow}
+            onUpdateRow={onUpdateRow && writerRowIndex !== null
+              ? (patch) => onUpdateRow(writerRowIndex, patch)
+              : undefined}
+            isAutoFillingMotionCollage={isMotionCollageAutoFilling}
+            pipelineError={pipelineError}
+            pipelineErrorExhausted={pipelineErrorExhausted}
+            onPipelineErrorRetry={onPipelineErrorRetry}
           />
         ) : currentTab === 'video' ? (
           selectedRowBrollContext ? (
