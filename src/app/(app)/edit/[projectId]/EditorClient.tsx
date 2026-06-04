@@ -480,6 +480,25 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
   const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
   applyRef.current = apply;
 
+  // Mid-session save-error escalation (2026-06-04). Mirrors the
+  // production-doc page's banner. Debounced 3 s so transient blips
+  // (a single dropped PATCH that the next autosave recovers) don't
+  // flash the red banner.
+  const [showSaveErrorBanner, setShowSaveErrorBanner] = useState(false);
+  const [saveErrorRetrying, setSaveErrorRetrying] = useState(false);
+  useEffect(() => {
+    if (saveStatus.kind === 'error') {
+      const timer = setTimeout(() => {
+        console.warn('[editor save] escalating to banner', { message: saveStatus.message });
+        setShowSaveErrorBanner(true);
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+    if (saveStatus.kind === 'saved' || saveStatus.kind === 'idle') {
+      setShowSaveErrorBanner(false);
+    }
+  }, [saveStatus]);
+
   // Fresh-state ref. Long-running async batches (fill-blank-shots
   // worker pool) close over state at kickoff time, so without this
   // ref they'd send the stale snapshot for every shot. The useEffect
@@ -3946,6 +3965,20 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
           }}
         />
       )}
+      {showSaveErrorBanner && saveStatus.kind === 'error' && (
+        <SaveErrorBanner
+          message={saveStatus.message}
+          retrying={saveErrorRetrying}
+          onRetry={async () => {
+            setSaveErrorRetrying(true);
+            try {
+              await flushSave();
+            } finally {
+              setSaveErrorRetrying(false);
+            }
+          }}
+        />
+      )}
       <div
         ref={previewContainerRef}
         className="rounded-lg overflow-hidden flex-1 min-w-0 relative editor-panel"
@@ -6540,6 +6573,56 @@ function ConflictBanner({ onReload }: { onReload: () => void }): React.ReactElem
         style={{ borderColor: '#f87171', color: '#fca5a5' }}
       >
         Reload from server
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Mid-session save-error banner — editor parity for the production-
+ * doc page's red banner. When `saveStatus.kind === 'error'` for the
+ * editor's own auto-save loop (PATCH /api/edit/[id]), the StatusBar
+ * tints the save chip but the user can easily miss the color change
+ * while focused on the timeline. This banner promotes the failure to
+ * the same prominence as the conflict banner so unsaved edits don't
+ * silently pile up.
+ *
+ * Retry calls `flushSave()` which cancels the auto-save debounce
+ * and re-issues the PATCH immediately. The banner clears itself when
+ * a save lands cleanly (saveStatus → 'saved' | 'idle').
+ *
+ * 2026-06-04 / _plans/2026-06-04-prevent-production-doc-silent-loss.md
+ */
+function SaveErrorBanner({
+  message,
+  onRetry,
+  retrying,
+}: {
+  message: string;
+  onRetry: () => void;
+  retrying: boolean;
+}): React.ReactElement {
+  return (
+    <div
+      role="alert"
+      className="p-3 rounded-lg border flex items-center justify-between gap-3"
+      style={{
+        borderColor: '#f87171',
+        background: 'rgba(248, 113, 113, 0.08)',
+      }}
+    >
+      <div className="text-sm min-w-0" style={{ color: '#fca5a5' }}>
+        <strong>Recent edits aren&apos;t reaching the server.</strong>{' '}
+        <span style={{ opacity: 0.85 }}>{message}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={retrying}
+        className="text-xs px-3 py-1.5 rounded border transition-colors hover:bg-white/5 disabled:opacity-50 disabled:cursor-progress shrink-0"
+        style={{ borderColor: '#f87171', color: '#fca5a5' }}
+      >
+        {retrying ? 'Retrying…' : 'Retry now'}
       </button>
     </div>
   );

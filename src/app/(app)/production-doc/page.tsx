@@ -2878,7 +2878,19 @@ function ProductionDocPage() {
   // open. Phase 4 polish can surface a banner; for now the version
   // conflict is logged at the hook level and the save status flips
   // to 'conflict' silently.
-  const project = useProject(historyEntryId ?? '');
+  const project = useProject(historyEntryId ?? '', {
+    // Conflict surfacing lives on the existing yellow banner driven
+    // by `project.saveStatus.kind === 'conflict'` further down the
+    // page. We only need this callback for logging — without it, a
+    // conflict during an off-screen poll would be invisible in the
+    // browser console history when the user later reports trouble.
+    onConflict: (currentVersion, currentPayload) => {
+      console.warn('[doc-sync conflict]', {
+        currentVersion,
+        remoteRows: currentPayload.doc?.rows?.length ?? 0,
+      });
+    },
+  });
 
   // ─── Hydrate local state from the canonical payload ──────────────
   //
@@ -3013,14 +3025,22 @@ function ProductionDocPage() {
         | null,
       options: { styleVersion?: number } = {},
     ): boolean => {
-      if (!historyEntryId) {
+      if (!historyEntryId || !isUuid(historyEntryId)) {
         // Defer instead of silently dropping. The historyEntryId
         // watcher useEffect below flushes the queue once it arrives.
         // This closes the worst persistence leak in the audit.
+        //
+        // 2026-06-04: also defer when historyEntryId is a non-UUID
+        // synthetic id (offline-save fallback). The /row-asset POST
+        // would 400 on the UUID regex; the IDB outbox would retry,
+        // exhaust, and silently drop. Queueing here means the
+        // resurrection-rebind path replays asset persists with the
+        // real UUID after the offline queue drains.
         pendingPersistsRef.current.push(() => persistRowAsset(rowIndex, slot, value, options));
-        console.info('[row-asset persist] deferred — no historyEntryId yet, will replay', {
+        console.info('[row-asset persist] deferred — historyEntryId not a real UUID yet, will replay', {
           rowIndex,
           slot,
+          historyEntryId,
         });
         return true;
       }
@@ -6326,7 +6346,16 @@ function ProductionDocPage() {
   // visibly, never silently degrade". See _plans/2026-06-04-prevent-
   // production-doc-silent-loss.md.
   const [saveFailure, setSaveFailure] = useState<
-    | { kind: 'no_session' | 'unauthorized' | 'rejected' | 'queued_offline'; message: string; retrying: boolean }
+    | {
+        kind:
+          | 'no_session'
+          | 'unauthorized'
+          | 'rejected'
+          | 'queued_offline'
+          | 'mid_session_error';
+        message: string;
+        retrying: boolean;
+      }
     | null
   >(null);
   // Holds the most-recent saveProductionDocEntry payload so the banner's
@@ -6336,16 +6365,108 @@ function ProductionDocPage() {
   // they saved, not a moving target).
   const pendingSavePayloadRef = useRef<Parameters<typeof saveProductionDocEntry>[0] | null>(null);
 
-  // Banner's Retry handler. Re-issues the cached save payload through
-  // the same path. Stable identity so the banner's onClick doesn't
-  // re-create on every render.
+  // Mid-session canonical-save watchdog (2026-06-04). useProject's
+  // saveStatus pill is easy to miss. When the auto-save PATCH errors
+  // and stays errored for 5+ seconds (transient flickers like a
+  // network blip that resolves under a second don't qualify), promote
+  // it to the persistent banner so the user can't keep editing into a
+  // void.
+  //
+  // Why 5s: useProject debounces saves at 800 ms; a typical failure
+  // resolves in <2 s once the network comes back. 5 s is long enough
+  // to skip the flickers AND short enough that a real outage shows
+  // immediately in editing-speed terms.
+  //
+  // Initial-save failures (no_session / unauthorized / rejected /
+  // queued_offline) take priority over mid-session errors — we don't
+  // want to overwrite a "you must sign in" banner with a generic
+  // "save failed" while the underlying problem is the auth.
+  useEffect(() => {
+    // Initial-save failures (no_session / unauthorized / rejected /
+    // queued_offline) take priority over mid-session errors — we
+    // don't want to overwrite a "you must sign in" banner with a
+    // generic "save failed" while the underlying problem is the auth.
+    const initialFailureActive =
+      saveFailure !== null && saveFailure.kind !== 'mid_session_error';
+    if (initialFailureActive) return;
+
+    if (project.saveStatus.kind === 'error') {
+      const reason = project.saveStatus.message || 'Network error';
+      const timer = setTimeout(() => {
+        console.warn('[doc-save mid-session] escalating to banner', { reason });
+        setSaveFailure({
+          kind: 'mid_session_error',
+          message: `Your recent edits couldn't reach the server: ${reason}. Click Retry to flush the pending save, or fix your connection and the auto-save will resume.`,
+          retrying: false,
+        });
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+
+    if (project.saveStatus.kind === 'saved' || project.saveStatus.kind === 'idle') {
+      // Auto-clear the mid-session banner once a save lands cleanly.
+      // Conflict banners stay until the user explicitly Reloads or
+      // Continues — different recovery semantics.
+      if (saveFailure?.kind === 'mid_session_error') {
+        console.info('[doc-save mid-session] cleared by successful save');
+        setSaveFailure(null);
+      }
+    }
+  }, [project.saveStatus, saveFailure]);
+
+  // Banner's primary action. Behavior splits by failure kind:
+  //   - Initial-save kinds (no_session / unauthorized / rejected /
+  //     queued_offline) — reissue saveProductionDocEntry with the
+  //     cached payload from the failed attempt.
+  //   - mid_session_error — flush the useProject autosave timer to
+  //     retry the most-recent canonical PATCH now (vs. waiting for
+  //     the 800 ms debounce + next user keystroke).
+  // mid_session_conflict is handled by the existing yellow conflict
+  // banner driven by `project.saveStatus.kind === 'conflict'` below.
   const retryProductionDocSave = useCallback(async (): Promise<void> => {
+    const currentFailure = saveFailureRef.current;
+    if (!currentFailure) return;
+
+    setSaveFailure((prev) => (prev ? { ...prev, retrying: true } : prev));
+
+    if (currentFailure.kind === 'mid_session_error') {
+      console.info('[doc-save retry] flushing canonical save');
+      try {
+        const result = await projectRef.current.flush();
+        console.info('[doc-save retry] flush result', { kind: result.kind });
+        if (result.kind === 'saved' || result.kind === 'no_op') {
+          setSaveFailure(null);
+          toast.success('Saved to server.');
+        } else if (result.kind === 'error') {
+          setSaveFailure({
+            kind: 'mid_session_error',
+            message: `Still couldn't reach the server: ${result.message}. Check your connection and retry.`,
+            retrying: false,
+          });
+        } else if (result.kind === 'conflict') {
+          // Hand off to the existing conflict banner — useProject's
+          // saveStatus is already 'conflict'.
+          setSaveFailure(null);
+        } else if (result.kind === 'gone') {
+          setSaveFailure({
+            kind: 'rejected',
+            message: 'The server says this project was deleted. Your work is still in memory; generate a fresh doc to restart.',
+            retrying: false,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        setSaveFailure({ kind: 'mid_session_error', message: msg, retrying: false });
+      }
+      return;
+    }
+
+    // Initial-save retry path.
     const payload = pendingSavePayloadRef.current;
     if (!payload) {
       setSaveFailure(null);
       return;
     }
-    setSaveFailure((prev) => (prev ? { ...prev, retrying: true } : prev));
     console.info('[doc-save retry] reissuing initial save');
     try {
       const entry = await saveProductionDocEntry(payload);
@@ -6356,7 +6477,6 @@ function ProductionDocPage() {
         toast.success('Saved to server.');
         console.info('[doc-save retry] committed', { id: entry.id });
       } else {
-        // Still queued offline (5xx persisted). Banner stays.
         setSaveFailure({
           kind: 'queued_offline',
           message:
@@ -6377,6 +6497,11 @@ function ProductionDocPage() {
       }
     }
   }, []);
+
+  // Stable ref to saveFailure for the retry callback (which has []
+  // deps so it doesn't recreate per render and lose its event listeners).
+  const saveFailureRef = useRef(saveFailure);
+  saveFailureRef.current = saveFailure;
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // One-shot guard: surface the localStorage-quota toast at most once per
   // session so a tight render-typing-render loop doesn't spam the user.
@@ -8236,6 +8361,21 @@ function ProductionDocPage() {
      *  in the same synchronous tick (see comment on generateImageForRow). */
     docOverlaysDisabled?: boolean,
   ) {
+    // 2026-06-04 hard gate. Image generation costs real money per call.
+    // Without a real UUID historyEntryId, every generated image's
+    // persistRowAsset POST 400s server-side (UUID regex), the URL
+    // never lands on the row, and the user pays for output that
+    // vanishes on reload. Refuse rather than burn the budget.
+    // The save-failure banner above is the user-visible signal —
+    // this gate is the actual enforcement.
+    if (!historyEntryId || !isUuid(historyEntryId)) {
+      const reason = saveFailure
+        ? 'Resolve the server-save banner above before generating images — the URLs would be lost.'
+        : 'Save the doc to the server before generating images.';
+      toast.error(reason);
+      console.warn('[image gen] refused — no UUID historyEntryId', { historyEntryId });
+      return;
+    }
     const aiRows = rows
       .map((r, i) => ({ row: r, idx: i }))
       // Exclude motion_collage rows: their image is the N panels produced
@@ -9533,6 +9673,20 @@ function ProductionDocPage() {
    */
   async function startVideoRender() {
     if (!doc) return;
+    // 2026-06-04 hard gate: refuse to render against a non-UUID
+    // historyEntryId. Render submits the project id to Lambda which
+    // POSTs back row-asset URLs keyed to that id. A synthetic local-
+    // only id silently fails server-side and burns Lambda minutes for
+    // nothing. The banner above already tells the user to resolve
+    // the save failure first; this is the defense-in-depth gate.
+    if (!historyEntryId || !isUuid(historyEntryId)) {
+      const reason = saveFailure
+        ? 'Resolve the server-save banner above before rendering.'
+        : 'Save the doc to the server before rendering (the doc needs a real server id).';
+      toast.error(reason);
+      console.warn('[render preflight] refused — no UUID historyEntryId', { historyEntryId });
+      return;
+    }
     // Phase 0: record render-click intent regardless of whether the
     // missing-clips preflight short-circuits. Captures the moment
     // the creator commits to rendering — the survey on `done` then
@@ -9944,55 +10098,53 @@ function ProductionDocPage() {
           renderer's row-asset writes) silently breaks when the doc
           isn't on the server. See _plans/2026-06-04-prevent-production-
           doc-silent-loss.md for the post-mortem. */}
-      {saveFailure && (
-        <div
-          role="alert"
-          className="mb-4 rounded-md border p-3 flex items-start gap-3"
-          style={{
-            background: saveFailure.kind === 'queued_offline' ? 'rgba(251, 191, 36, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-            borderColor: saveFailure.kind === 'queued_offline' ? 'rgba(251, 191, 36, 0.55)' : 'rgba(239, 68, 68, 0.55)',
-          }}
-        >
+      {saveFailure && (() => {
+        const isAmber = saveFailure.kind === 'queued_offline';
+        const accent = isAmber ? '#fbbf24' : '#f87171';
+        const bg = isAmber ? 'rgba(251, 191, 36, 0.08)' : 'rgba(239, 68, 68, 0.08)';
+        const border = isAmber ? 'rgba(251, 191, 36, 0.55)' : 'rgba(239, 68, 68, 0.55)';
+        const headline =
+          saveFailure.kind === 'no_session'
+            ? 'Not signed in — your work is NOT saved to the server'
+            : saveFailure.kind === 'unauthorized'
+              ? 'Your session expired — your work is NOT saved to the server'
+              : saveFailure.kind === 'rejected'
+                ? 'Server rejected the save — your work is NOT saved'
+                : saveFailure.kind === 'queued_offline'
+                  ? 'Server save deferred — work queued locally'
+                  : 'Recent edits aren\'t reaching the server'; // mid_session_error
+        return (
           <div
-            className="text-sm font-semibold mt-0.5"
-            style={{ color: saveFailure.kind === 'queued_offline' ? '#fbbf24' : '#f87171' }}
+            role="alert"
+            className="mb-4 rounded-md border p-3 flex items-start gap-3"
+            style={{ background: bg, borderColor: border }}
           >
-            {saveFailure.kind === 'queued_offline' ? '⏳' : '⚠'}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p
-              className="text-sm font-semibold"
-              style={{ color: saveFailure.kind === 'queued_offline' ? '#fbbf24' : '#f87171' }}
+            <div className="text-sm font-semibold mt-0.5" style={{ color: accent }}>
+              {isAmber ? '⏳' : '⚠'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold" style={{ color: accent }}>
+                {headline}
+              </p>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                {saveFailure.message}
+              </p>
+              <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                Your doc is in memory + browser cache. Image generation, Open in editor, and Render are disabled until the save succeeds.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void retryProductionDocSave()}
+              disabled={saveFailure.retrying}
+              className="px-3 py-1.5 rounded text-xs font-semibold border disabled:opacity-50 disabled:cursor-progress shrink-0"
+              style={{ borderColor: border, color: accent }}
             >
-              {saveFailure.kind === 'no_session'
-                ? 'Not signed in — your work is NOT saved to the server'
-                : saveFailure.kind === 'unauthorized'
-                  ? 'Your session expired — your work is NOT saved to the server'
-                  : saveFailure.kind === 'rejected'
-                    ? 'Server rejected the save — your work is NOT saved'
-                    : 'Server save deferred — work queued locally'}
-            </p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-              {saveFailure.message}
-            </p>
-            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-              Your doc is in memory + browser cache. Image generation, Open in editor, and Render are disabled until the save succeeds.
-            </p>
+              {saveFailure.retrying ? 'Retrying…' : 'Retry'}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => void retryProductionDocSave()}
-            disabled={saveFailure.retrying}
-            className="px-3 py-1.5 rounded text-xs font-semibold border disabled:opacity-50 disabled:cursor-progress"
-            style={{
-              borderColor: saveFailure.kind === 'queued_offline' ? 'rgba(251, 191, 36, 0.55)' : 'rgba(239, 68, 68, 0.55)',
-              color: saveFailure.kind === 'queued_offline' ? '#fbbf24' : '#f87171',
-            }}
-          >
-            {saveFailure.retrying ? 'Retrying…' : 'Retry'}
-          </button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── Header */}
       <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
