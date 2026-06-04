@@ -37,6 +37,52 @@
 
 import type { HistoryKind } from './user-history-types';
 
+/**
+ * Typed error thrown by save paths when the server save genuinely
+ * cannot proceed and the caller MUST surface the failure to the user.
+ *
+ * Why this exists (2026-06-04):
+ *   Before this, every save failure was silently degraded into a
+ *   synthetic-id local fallback. That hid TWO very different cases
+ *   behind the same return value:
+ *
+ *     - "Authenticated user is offline / 5xx" — recoverable. The
+ *       entry gets queued in `__history_pending__` and `drainPending`
+ *       retries on the next list fetch. Fallback is correct here.
+ *
+ *     - "User has no auth session" — UNrecoverable. With no scope,
+ *       the entry can't be cached, can't be queued, can't be
+ *       retried. The synthetic id is a dead-end — every downstream
+ *       consumer (`useProject`, `persistRowAsset`, the editor route)
+ *       rejects it. The user works on the doc thinking it's saved;
+ *       a single navigation wipes everything.
+ *
+ *   This error fires the second case loudly so callers can refuse
+ *   to enter the dead-end state and surface a "save failed, please
+ *   sign in and retry" banner instead.
+ *
+ * Caller contract:
+ *   - `kind: 'no_session'` — `/api/auth/me` returned non-200. Refresh
+ *     the page or sign in again, then retry.
+ *   - `kind: 'unauthorized'` — POST returned 401/403. Same recovery.
+ *   - `kind: 'rejected'` — POST returned 4xx other than 401/403
+ *     (validation, 413 too-large, etc.). Caller fixes the payload
+ *     and retries. Not retryable without intervention.
+ *
+ *   `httpStatus` is set for the 'unauthorized' / 'rejected' kinds;
+ *   undefined for 'no_session' (no HTTP call made).
+ */
+export class HistorySaveError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: 'no_session' | 'unauthorized' | 'rejected',
+    public readonly httpStatus?: number,
+  ) {
+    super(message);
+    this.name = 'HistorySaveError';
+  }
+}
+
 export interface ScriptHistoryEntry {
   id: string;
   timestamp: number;
@@ -769,6 +815,23 @@ async function saveToServer<T extends { id: string; timestamp: number }>(
   partial: Omit<T, 'id' | 'timestamp'>,
 ): Promise<T> {
   const scope = await loadScope();
+
+  // 2026-06-04: refuse the silent synthetic-id fallback when there's
+  // no auth scope. Without scope the fallback can't be queued AND
+  // can't be cached — every downstream consumer of the returned id
+  // (useProject GET, persistRowAsset POST, editor route) rejects the
+  // non-UUID id, the user works thinking it's saved, and one
+  // navigation wipes everything. See _plans/2026-06-04-prevent-
+  // production-doc-silent-loss.md for the post-mortem.
+  if (!scope) {
+    console.warn('[doc-save initial] no session — throwing', { kind: wiring.kind });
+    throw new HistorySaveError(
+      'Not signed in — couldn\'t save to the server. Please refresh the page and sign in again, then retry.',
+      'no_session',
+    );
+  }
+
+  let httpStatus: number | undefined;
   try {
     const res = await fetch('/api/history', {
       method: 'POST',
@@ -779,42 +842,74 @@ async function saveToServer<T extends { id: string; timestamp: number }>(
     if (res.ok) {
       const json = (await res.json()) as { item: ServerRow };
       const entry = fromServerRow<T>(json.item);
-      if (scope) {
-        // Prepend to cache so the panel updates immediately on the
-        // current page without a refetch.
-        const cache = readCache<T>(wiring.cacheKey, scope);
-        cache.unshift(entry);
-        writeCache(wiring.cacheKey, scope, cache);
-      }
+      // Prepend to cache so the panel updates immediately on the
+      // current page without a refetch.
+      const cache = readCache<T>(wiring.cacheKey, scope);
+      cache.unshift(entry);
+      writeCache(wiring.cacheKey, scope, cache);
+      console.info('[doc-save initial] committed', { kind: wiring.kind, id: entry.id });
       return entry;
     }
+    httpStatus = res.status;
     warn('saveToServer', `${wiring.kind} → ${res.status}`);
+
+    // 401 / 403: session expired or scope mismatch. Same fix as
+    // no_session above — caller must surface a sign-in prompt; the
+    // fallback path is a dead-end for these.
+    if (res.status === 401 || res.status === 403) {
+      throw new HistorySaveError(
+        'Your session expired — couldn\'t save to the server. Please refresh the page and sign in, then retry.',
+        'unauthorized',
+        res.status,
+      );
+    }
+    // Other 4xx (validation, 413 too-large): the payload is the
+    // problem, not the connection. Queueing the same payload for
+    // retry would just fail again — surface to caller.
+    if (res.status >= 400 && res.status < 500) {
+      throw new HistorySaveError(
+        `Server rejected the save (HTTP ${res.status}). Edit the doc to make it smaller, then retry.`,
+        'rejected',
+        res.status,
+      );
+    }
+    // 5xx falls through to the offline-queue path below.
   } catch (err) {
+    // Don't re-wrap our own throws.
+    if (err instanceof HistorySaveError) throw err;
     warn('saveToServer', `${wiring.kind} threw: ${err instanceof Error ? err.message : String(err)}`);
   }
-  // Server unreachable / unauth — write a local-only entry with a
-  // synthetic id and queue it for upload on the next successful
-  // list fetch (see drainPending). Without the queue, this entry
-  // would disappear the next time the cache is refreshed from the
-  // server.
+
+  // Authenticated session + transient failure (network blip / 5xx).
+  // Write a local-only entry with a synthetic id and queue it for
+  // upload on the next successful list fetch (see drainPending).
+  // This path IS recoverable because scope is set: the queued entry
+  // belongs to this user/workspace and the drain on next mount will
+  // retry it. Returning the fallback lets the user keep working in
+  // the meantime; the caller must still treat the synthetic id as
+  // "not yet on the server" and refuse to set it as a permanent
+  // historyEntryId until the drain rebinds to a real UUID.
   const clientId = generateId();
   const fallback = {
     ...(partial as Record<string, unknown>),
     id: clientId,
     timestamp: Date.now(),
   } as T;
-  if (scope) {
-    enqueuePending({
-      kind: wiring.kind,
-      clientId,
-      payload: partial as Record<string, unknown>,
-      queuedAt: Date.now(),
-      scope,
-    });
-    const cache = readCache<T>(wiring.cacheKey, scope);
-    cache.unshift(fallback);
-    writeCache(wiring.cacheKey, scope, cache);
-  }
+  enqueuePending({
+    kind: wiring.kind,
+    clientId,
+    payload: partial as Record<string, unknown>,
+    queuedAt: Date.now(),
+    scope,
+  });
+  const cache = readCache<T>(wiring.cacheKey, scope);
+  cache.unshift(fallback);
+  writeCache(wiring.cacheKey, scope, cache);
+  console.info('[doc-save initial] queued offline', {
+    kind: wiring.kind,
+    clientId,
+    httpStatus,
+  });
   return fallback;
 }
 

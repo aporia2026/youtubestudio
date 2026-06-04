@@ -14,7 +14,7 @@
  * MUST NOT issue any network call. If it ever does, the legacy
  * data-loss path is reopened.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // ── localStorage stub ──────────────────────────────────────────────
 const store = new Map<string, string>();
@@ -88,6 +88,14 @@ describe('updateProductionDocEntryCacheOnly', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  afterAll(() => {
+    // Clear module-scope global stubs so later tests in the same
+    // vitest process don't inherit our window / localStorage / fetch
+    // overrides — particularly session.test.ts which needs the real
+    // globalThis.crypto.subtle for JWT verify.
+    vi.unstubAllGlobals();
   });
 
   it('updates the local cache row without issuing a PATCH to /api/history/[id]', async () => {

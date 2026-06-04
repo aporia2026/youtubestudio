@@ -36,12 +36,14 @@ import {
   getVoiceoverHistory,
   updateProductionDocEntry,
   updateProductionDocEntryCacheOnly,
+  HistorySaveError,
   deleteProductionDocEntry,
   clearProductionDocHistory,
   getRecentNiches,
   getRecentTopics,
   type ProductionDocHistoryEntry,
 } from '@/lib/history';
+import { isUuid } from '@/lib/user-history-types';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { NichePicker } from '@/components/ui/NichePicker';
 import { CopyForElevenLabs } from '@/components/ui/CopyForElevenLabs';
@@ -6313,6 +6315,68 @@ function ProductionDocPage() {
   // wiped state. See useProject.beforeunload — its 64 KB keepalive cap
   // can't carry full paint_explainer_v1 payloads.
   const [openingEditor, setOpeningEditor] = useState(false);
+  // Server-save failure banner (2026-06-04). Driven by:
+  //   - HistorySaveError thrown from saveProductionDocEntry — no_session /
+  //     unauthorized / rejected. Banner is persistent (no auto-dismiss);
+  //     blocks "Open in editor" because there's no historyEntryId.
+  //   - 'queued_offline' kind — server returned 5xx (or network blip),
+  //     entry queued in __history_pending__. Softer copy because drain
+  //     on next list fetch resurrects to a real UUID.
+  // Never null on a real save failure — the design contract is "fail
+  // visibly, never silently degrade". See _plans/2026-06-04-prevent-
+  // production-doc-silent-loss.md.
+  const [saveFailure, setSaveFailure] = useState<
+    | { kind: 'no_session' | 'unauthorized' | 'rejected' | 'queued_offline'; message: string; retrying: boolean }
+    | null
+  >(null);
+  // Holds the most-recent saveProductionDocEntry payload so the banner's
+  // Retry button can re-issue the exact same save without rebuilding
+  // it from current page state (which may have diverged since the
+  // failed attempt — banner retry should ship what the user thought
+  // they saved, not a moving target).
+  const pendingSavePayloadRef = useRef<Parameters<typeof saveProductionDocEntry>[0] | null>(null);
+
+  // Banner's Retry handler. Re-issues the cached save payload through
+  // the same path. Stable identity so the banner's onClick doesn't
+  // re-create on every render.
+  const retryProductionDocSave = useCallback(async (): Promise<void> => {
+    const payload = pendingSavePayloadRef.current;
+    if (!payload) {
+      setSaveFailure(null);
+      return;
+    }
+    setSaveFailure((prev) => (prev ? { ...prev, retrying: true } : prev));
+    console.info('[doc-save retry] reissuing initial save');
+    try {
+      const entry = await saveProductionDocEntry(payload);
+      if (isUuid(entry.id)) {
+        setHistoryEntryId(entry.id);
+        setHistoryItems((prev) => [entry, ...prev.filter((p) => p.id !== entry.id)]);
+        setSaveFailure(null);
+        toast.success('Saved to server.');
+        console.info('[doc-save retry] committed', { id: entry.id });
+      } else {
+        // Still queued offline (5xx persisted). Banner stays.
+        setSaveFailure({
+          kind: 'queued_offline',
+          message:
+            "Still couldn't reach the server. Your work stays queued; click Retry to try once more, or reload the page to drain the queue.",
+          retrying: false,
+        });
+        setHistoryItems((prev) => [entry, ...prev.filter((p) => p.id !== entry.id)]);
+        console.warn('[doc-save retry] still queued', { syntheticId: entry.id });
+      }
+    } catch (err) {
+      if (err instanceof HistorySaveError) {
+        setSaveFailure({ kind: err.kind, message: err.message, retrying: false });
+        console.warn('[doc-save retry] failed', { kind: err.kind, status: err.httpStatus });
+      } else {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        setSaveFailure({ kind: 'rejected', message: msg, retrying: false });
+        console.warn('[doc-save retry] threw', { msg });
+      }
+    }
+  }, []);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // One-shot guard: surface the localStorage-quota toast at most once per
   // session so a tight render-typing-render loop doesn't spam the user.
@@ -8800,7 +8864,12 @@ function ProductionDocPage() {
         }
       }
 
-      const savedEntry = await saveProductionDocEntry({
+      // Build the save payload once and stash it on a ref so the
+      // banner's Retry button can reissue the same save without
+      // rebuilding from current page state (which may have diverged
+      // since the failed attempt — retry should ship what the user
+      // thought they saved, not a moving target).
+      const savePayload: Parameters<typeof saveProductionDocEntry>[0] = {
         title: result.title || topic || niche,
         niche: result.niche || niche,
         topic,
@@ -8820,10 +8889,60 @@ function ProductionDocPage() {
         // older entries' "voiceoverUrl missing" path stays distinct
         // from "explicitly cleared."
         voiceoverUrl: voiceoverUrl || undefined,
-      });
-      setHistoryEntryId(savedEntry.id);
-      // Optimistic prepend — see voiceover/generator save handlers.
-      setHistoryItems((prev) => [savedEntry, ...prev.filter((p) => p.id !== savedEntry.id)]);
+      };
+      pendingSavePayloadRef.current = savePayload;
+
+      // 2026-06-04: tri-state save handling. The 2026-06-04 silent-loss
+      // post-mortem (see _plans/2026-06-04-prevent-production-doc-silent-
+      // loss.md) drove the change: a failed initial save MUST surface a
+      // banner, and the page MUST refuse to set `historyEntryId` to a
+      // non-UUID synthetic id (which silently breaks every downstream
+      // save).
+      let savedEntry: ProductionDocHistoryEntry | null = null;
+      try {
+        savedEntry = await saveProductionDocEntry(savePayload);
+      } catch (err) {
+        if (err instanceof HistorySaveError) {
+          console.warn('[doc-save initial] failed', { kind: err.kind, status: err.httpStatus });
+          setSaveFailure({ kind: err.kind, message: err.message, retrying: false });
+          appendLog(`✗ Couldn't save to server: ${err.message}`);
+          toast.error(err.message, { duration: 12000 });
+          // Don't rethrow — the user's doc IS in memory. The banner
+          // gives them the retry path. Falling through to image gen
+          // would attach images to a non-existent server row, so
+          // skip the post-save side-effects entirely.
+          appendLog(`⚠ Doc kept in memory only — fix sign-in / connection and click Retry on the red banner.`);
+          // Surface to the outer finally → setGenerating(false).
+          return;
+        }
+        throw err;
+      }
+
+      if (savedEntry) {
+        if (isUuid(savedEntry.id)) {
+          // Happy path: real server UUID. Bind historyEntryId.
+          setHistoryEntryId(savedEntry.id);
+          setHistoryItems((prev) => [savedEntry!, ...prev.filter((p) => p.id !== savedEntry!.id)]);
+          setSaveFailure(null);
+        } else {
+          // Synthetic id from the queue-and-retry fallback (server
+          // returned 5xx with valid auth scope). The entry IS in
+          // `__history_pending__` and `drainPending` will rebind on
+          // the next list fetch. Until then, refuse to set
+          // historyEntryId — every downstream save path 400s on a
+          // non-UUID id.
+          console.warn('[doc-save initial] queued offline — historyEntryId NOT set', {
+            syntheticId: savedEntry.id,
+          });
+          setSaveFailure({
+            kind: 'queued_offline',
+            message: 'Server save deferred (transient error). Your work is in memory + offline queue; click Retry to sync now, or it will sync on the next page reload.',
+            retrying: false,
+          });
+          setHistoryItems((prev) => [savedEntry!, ...prev]);
+          appendLog(`⚠ Doc kept in memory + offline queue — click Retry on the banner to sync now.`);
+        }
+      }
       appendLog(`✓ ${result.rows.length} shots generated`);
       toast.success(`Production doc ready — ${result.rows.length} shots`);
 
@@ -9818,6 +9937,62 @@ function ProductionDocPage() {
       />
     <div className="p-6 max-w-full">
       {scheduleItem && <ScheduleLinkBanner item={scheduleItem} feature="Production Doc" />}
+
+      {/* 2026-06-04 server-save failure banner. Persistent on purpose
+          (no auto-dismiss) — the user MUST see this, because every
+          downstream consumer (Open in editor, image gen, render,
+          renderer's row-asset writes) silently breaks when the doc
+          isn't on the server. See _plans/2026-06-04-prevent-production-
+          doc-silent-loss.md for the post-mortem. */}
+      {saveFailure && (
+        <div
+          role="alert"
+          className="mb-4 rounded-md border p-3 flex items-start gap-3"
+          style={{
+            background: saveFailure.kind === 'queued_offline' ? 'rgba(251, 191, 36, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+            borderColor: saveFailure.kind === 'queued_offline' ? 'rgba(251, 191, 36, 0.55)' : 'rgba(239, 68, 68, 0.55)',
+          }}
+        >
+          <div
+            className="text-sm font-semibold mt-0.5"
+            style={{ color: saveFailure.kind === 'queued_offline' ? '#fbbf24' : '#f87171' }}
+          >
+            {saveFailure.kind === 'queued_offline' ? '⏳' : '⚠'}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p
+              className="text-sm font-semibold"
+              style={{ color: saveFailure.kind === 'queued_offline' ? '#fbbf24' : '#f87171' }}
+            >
+              {saveFailure.kind === 'no_session'
+                ? 'Not signed in — your work is NOT saved to the server'
+                : saveFailure.kind === 'unauthorized'
+                  ? 'Your session expired — your work is NOT saved to the server'
+                  : saveFailure.kind === 'rejected'
+                    ? 'Server rejected the save — your work is NOT saved'
+                    : 'Server save deferred — work queued locally'}
+            </p>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+              {saveFailure.message}
+            </p>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+              Your doc is in memory + browser cache. Image generation, Open in editor, and Render are disabled until the save succeeds.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void retryProductionDocSave()}
+            disabled={saveFailure.retrying}
+            className="px-3 py-1.5 rounded text-xs font-semibold border disabled:opacity-50 disabled:cursor-progress"
+            style={{
+              borderColor: saveFailure.kind === 'queued_offline' ? 'rgba(251, 191, 36, 0.55)' : 'rgba(239, 68, 68, 0.55)',
+              color: saveFailure.kind === 'queued_offline' ? '#fbbf24' : '#f87171',
+            }}
+          >
+            {saveFailure.retrying ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>
+      )}
 
       {/* ── Header */}
       <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
@@ -13176,7 +13351,7 @@ function ProductionDocPage() {
                     hidden too. Disabled until the doc has been saved
                     once (we need a historyEntryId to route against). */}
                 {EDITOR_V1_PUBLIC && (
-                  historyEntryId ? (
+                  historyEntryId && !saveFailure ? (
                     <button
                       type="button"
                       disabled={openingEditor}
@@ -13223,7 +13398,11 @@ function ProductionDocPage() {
                       disabled
                       className="w-full text-xs px-3 py-2 rounded border opacity-40 cursor-not-allowed"
                       style={{ borderColor: 'var(--card-border)' }}
-                      title="Save the production doc first to open it in the editor"
+                      title={
+                        saveFailure
+                          ? 'Resolve the server-save banner above before opening the editor — your doc isn\'t on the server yet.'
+                          : 'Save the production doc first to open it in the editor'
+                      }
                     >
                       Open in editor →
                     </button>
@@ -13343,12 +13522,29 @@ function ProductionDocPage() {
       <HistoryPanel
         title="Production Doc History"
         icon="🎬"
-        items={historyItems.map(e => ({
-          id: e.id,
-          timestamp: e.timestamp,
-          label: e.videoTitle || e.title,
-          sublabel: `${e.niche} · ${e.shotCount} shots · ${e.totalDuration} · ${e.stylePreset}`,
-        }))}
+        items={historyItems.map(e => {
+          // 2026-06-04: read top-level fields first (legacy entries
+          // saved before the canonical refactor have them populated),
+          // but fall back to nested `doc.*` so canonical entries —
+          // which carry the title/rows/niche under `doc` — render
+          // accurately instead of "Untitled project · undefined shots
+          // · undefined". That misleading display masked the user's
+          // real docs in today's silent-loss incident; see
+          // _plans/2026-06-04-prevent-production-doc-silent-loss.md.
+          const nested = e.doc as Partial<ProductionDoc> | undefined;
+          const label = e.videoTitle || e.title || nested?.title || '(no title)';
+          const niche = e.niche || nested?.niche || '';
+          const shotCount = e.shotCount || nested?.rows?.length || 0;
+          const totalDuration = e.totalDuration || nested?.total_duration || '';
+          const stylePreset =
+            e.stylePreset || (nested as { style_preset?: string } | undefined)?.style_preset || '';
+          return {
+            id: e.id,
+            timestamp: e.timestamp,
+            label,
+            sublabel: `${niche} · ${shotCount} shots · ${totalDuration} · ${stylePreset}`,
+          };
+        })}
         onRestore={(id) => {
           const entry = historyItems.find(e => e.id === id);
           if (!entry) return;
