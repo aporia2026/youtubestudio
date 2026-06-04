@@ -2986,12 +2986,35 @@ export function TopicCardGridPanel({
               })}
             </div>
             {generationMode === 'per-card' ? (
-              <p className="text-[10px] mt-1" style={{ color: 'var(--accent-yellow)' }}>
-                Generates each card separately for perfect spacing. Approx cost: {totalCards} cards × $0.04 ≈ ${(totalCards * 0.04).toFixed(2)}. Uploaded cells are skipped (no AI call).
-              </p>
+              (() => {
+                // Live AI-call count = total cells minus cells the user
+                // already uploaded. Stale upload entries pointing outside
+                // [1, totalCards] are filtered out so a recent grid-shrink
+                // doesn't make the cost line lie. Same in-range filter
+                // the request-build site uses for the uploads payload.
+                const liveUploadCount = Object.keys(uploads).filter((k) => {
+                  const n = Number(k);
+                  return Number.isInteger(n) && n >= 1 && n <= totalCards;
+                }).length;
+                const aiCallCount = Math.max(0, totalCards - liveUploadCount);
+                const estCost = (aiCallCount * 0.04).toFixed(2);
+                return (
+                  <p className="text-[10px] mt-1" style={{ color: 'var(--accent-yellow)' }}>
+                    Generates each card separately for perfect spacing. {aiCallCount} AI {aiCallCount === 1 ? 'call' : 'calls'} × ~$0.04 ≈ ${estCost}
+                    {liveUploadCount > 0
+                      ? ` (${liveUploadCount} uploaded ${liveUploadCount === 1 ? 'cell skips' : 'cells skip'} the AI).`
+                      : '.'}
+                  </p>
+                );
+              })()
             ) : (
               <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                 One AI call for the whole grid (~$0.04). Use Per-card if rows look crowded.
+              </p>
+            )}
+            {generationMode === 'per-card' && imageModelId !== 'gpt-image-2-openai-i2i' && imageModelId !== 'gpt-image-2-i2i' && (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Per-card mode always uses GPT Image 2 (OpenAI direct) regardless of the model selector above.
               </p>
             )}
           </div>
@@ -4723,15 +4746,22 @@ export function TopicCardGridPanel({
           )}
 
           {/* Reference image notice — optional, server falls back to a
-              curated default when nothing is uploaded. */}
-          {!referenceImageUrl.trim() && (
+              curated default when nothing is uploaded. Suppressed in
+              per-card mode because the per-card runner never attaches
+              a reference (each call is one isolated illustration). */}
+          {generationMode !== 'per-card' && !referenceImageUrl.trim() && (
             <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
               No reference uploaded — we&apos;ll use a bundled curated default. Upload one above (Image Generation section) to lock the typography to your own font.
             </p>
           )}
-          {referenceImageUrl.trim() && (
+          {generationMode !== 'per-card' && referenceImageUrl.trim() && (
             <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
               Reference image will guide the layout, typography, and overall style of the rendered thumbnail.
+            </p>
+          )}
+          {generationMode === 'per-card' && (
+            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+              Per-card mode ignores the reference image — each card is generated independently.
             </p>
           )}
 

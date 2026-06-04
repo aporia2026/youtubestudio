@@ -272,16 +272,24 @@ export function defaultGutter(width: number): number {
 
 /**
  * Resolve the effective vertical gap between rows. Explicit `rowGutter`
- * wins; otherwise circle layouts get `gutter * 1.8` because the label
- * sits below the disc and would visually crowd the next row's disc on
- * a uniform gutter (see the reference SCP / Mystery Doc thumbnails for
- * what comfortable spacing looks like). Square layouts stay at `gutter`
- * — their cells share borders / dividers and a tight gutter reads fine.
+ * wins; otherwise circle layouts get `gutter * 1.4` because the label
+ * sits below the disc and needs a little breathing room before the next
+ * row's disc starts. Square layouts stay at `gutter` — their cells
+ * share borders / dividers and a tight gutter reads fine.
+ *
+ * The 1.4 multiplier replaced an earlier 1.8 (2026-06-04). 1.8 was
+ * tuned to give the one-shot AI extra room because the AI consistently
+ * crowded rows; in per-card mode the composite owns layout and the
+ * extra gap stopped working — it produced thumbnails with vast empty
+ * vertical bands instead of the tight reference-channel look (Paint
+ * Explainer / Byte Sized Explainer / 4×2 trivia grids). 1.4 keeps the
+ * label band from butting against the next-row disc while matching the
+ * snug reference-channel spacing.
  */
 export function effectiveRowGutter(layout: GridLayout): number {
   if (typeof layout.rowGutter === 'number') return Math.max(0, Math.round(layout.rowGutter));
   return layout.cardShape === 'circle'
-    ? Math.round(layout.gutter * 1.8)
+    ? Math.round(layout.gutter * 1.4)
     : layout.gutter;
 }
 
@@ -370,11 +378,26 @@ export interface CircleCellGeometry {
 }
 
 /** Fraction of the smaller cell dimension the disc diameter targets.
- *  `cardW * 0.9` and `cardH * 0.7` together leave a small breathing margin
- *  around the disc and a ~25% strip below for the label. The plan calls these
- *  out explicitly — see `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md`. */
+ *  `cardW * 0.9` keeps a small horizontal breathing margin around the
+ *  disc on wide cells; `cardH * 0.78` makes the disc fill most of the
+ *  cell height in tall-cell cases (3+ row grids) so it matches the
+ *  reference channels' look — Paint Explainer, Byte Sized Explainer,
+ *  The Evaluator, and the 4×2 / 5×3 trivia thumbnails all use a disc
+ *  that occupies the top ~78% of the cell with a snug ~18% label band
+ *  beneath it.
+ *
+ *  Earlier value was 0.7 (2026-05-19) which left a 26% label band —
+ *  great for label rendering, but visually the discs read as small
+ *  with the label floating in unused white space. 0.78 grows the disc
+ *  by ~11% on tall-cell layouts and tightens the label band to 19%,
+ *  which still fits comfortably (the composite's fontPt math targets a
+ *  20% band, and the rendered text plus line-height is ~14% of cell
+ *  height — room to spare). Plan
+ *  `_plans/2026-05-19-topic-card-grid-circles-and-uploads.md` set the
+ *  original ratios; the 2026-06-04 retune addresses the spacing
+ *  mismatch surfaced by the reference channels. */
 const DISC_W_FRAC = 0.9;
-const DISC_H_FRAC = 0.7;
+const DISC_H_FRAC = 0.78;
 const DISC_TOP_PAD_FRAC = 0.04; // 4% of cellH between the cell top and the disc top.
 
 /**
@@ -1088,18 +1111,20 @@ export function topicCardGridImagePrompt(input: ImagePromptInput): string {
   // diff this prompt against image gen outputs when debugging drift.
   const layoutBlock =
     cardShape === 'circle'
-      ? `LAYOUT (strict):
+      ? `LAYOUT (strict — match the snug reference-channel spacing):
 - A WHITE canvas with an evenly-spaced ${gridRows} rows × ${gridCols} columns grid of ${total} discs (circles) total.
-- WHITE outer margin on all four sides (top, bottom, left, right). Outer margin width matches the horizontal gutter between columns.
-- VERTICAL SPACING IS GENEROUS — NOT UNIFORM WITH HORIZONTAL:
-  • Horizontal gap between two discs in the same row: the standard gutter (~3-4% of canvas width).
-  • Vertical gap between two rows (measured from the BOTTOM of the upper row's LABEL to the TOP of the lower row's DISC): roughly 1.8–2× the horizontal gap, so labels never visually touch the next row's discs. This is the single most common rendering failure in this format — err generous on vertical space.
-- Each disc sits in its own equal-size cell. The disc occupies the top ~65% of the cell height (NOT 75% — leave a clearly visible WHITE GAP between the label and the bottom edge of the cell so the next row's disc has breathing room). Disc fills most of the cell width.
+- WHITE outer margin on all four sides (top, bottom, left, right). Outer margin width matches the horizontal gutter between columns. Keep both TIGHT — small whitespace, not generous.
+- GRID FILLS THE CANVAS. The reference channels (Paint Explainer, Byte Sized Explainer, The Evaluator, 4×2 trivia thumbs) push the grid edge-to-edge so the discs read as the biggest possible at thumbnail size. Do NOT leave large empty bands of white around the grid.
+- SPACING TARGET (match this, do not over-pad):
+  • Horizontal gap between two discs in the same row: a small uniform gutter (~1–2% of canvas width).
+  • Vertical gap between two rows (measured from the BOTTOM of the upper row's LABEL to the TOP of the lower row's DISC): about 1.4× the horizontal gap. Just enough that the label doesn't visually touch the next-row disc — NOT a wide empty band. The earlier "2× horizontal" target overshot and left rows floating in white space.
+- Each disc sits in its own equal-size cell. The disc occupies the top ~78% of the cell height (large and tight — fills most of the cell). The label band beneath the disc occupies the next ~18%, and the remaining ~4% is a tiny breathing strip at the cell bottom.
+- Disc fills most of the cell width (~90%) — small left/right padding inside each cell so discs in the same row appear close but not touching.
 - NO rectangular borders around the cells. NO black frame around each disc. NO hairline divider. The discs sit directly on the white canvas; the label sits in the white canvas beneath each disc.
 - Each disc's edge is a single clean circular outline (no shadow, no bevel) — or the disc is borderless if its illustration's natural background bleeds to the disc edge.
 - Each disc is split into two regions:
-  • The disc itself (top ~65% of the cell): the illustration, framed by the circular crop. Anything in the corners of the source illustration is CLIPPED by the disc — frame each subject centred and tight.
-  • A short label strip BELOW the disc (next ~20% of the cell): white background, label text centred. The remaining ~15% of the cell is WHITE breathing room beneath the label — do NOT extend the label into this region, do NOT push the next row up into it.`
+  • The disc itself (top ~78% of the cell): the illustration, framed by the circular crop. Anything in the corners of the source illustration is CLIPPED by the disc — frame each subject centred and tight.
+  • A short label strip BELOW the disc (next ~18% of the cell): white background, label text centred and snug against the disc — NOT floating in the middle of a wide white band.`
       : `LAYOUT (strict):
 - An evenly-spaced ${gridRows} rows × ${gridCols} columns grid of identical-size cards = ${total} cards total.
 - A WHITE outer margin around the entire grid on all four sides of the canvas (top, bottom, left, right) — same width as the inter-card gutter.

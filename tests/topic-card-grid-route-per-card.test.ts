@@ -178,6 +178,46 @@ describe('POST /api/thumbnails/format/topic-card-grid/image — per-card mode', 
     expect(data.perCard).toEqual({ succeeded: 8, failed: 1, total: 9 });
   });
 
+  it('falls back to a neutral placeholder when a failed card has a malformed accent_color', async () => {
+    // Cards with three different malformed accent_color shapes — all
+    // should land on the '#cccccc' fallback without crashing the
+    // sharp.create() call. The point is to prove the regex guard
+    // protects against `'inherit'` (the palette sentinel), `'#fff'`
+    // (3-digit hex which sharp accepts but we reject for
+    // conservatism), and the empty string.
+    generateImageOpenAIMock.mockImplementation(async () => {
+      throw new Error('synthetic refusal');
+    });
+    const malformedCards = [
+      { index: 1, label: 'A', icon_concept: 'x', accent_color: 'inherit' },
+      { index: 2, label: 'B', icon_concept: 'y', accent_color: '#fff' },
+      { index: 3, label: 'C', icon_concept: 'z', accent_color: '' },
+      { index: 4, label: 'D', icon_concept: 'w', accent_color: '#aabbcc' },
+    ];
+
+    const req = makeRequest(
+      baseBody({
+        generationMode: 'per-card',
+        gridRows: 2,
+        gridCols: 2,
+        cards: malformedCards,
+      }),
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    const data = await res.json() as { perCard: { succeeded: number; failed: number } };
+    expect(data.perCard).toEqual({ succeeded: 0, failed: 4, total: 4 });
+
+    const compositeInput = applyCellUploadsMock.mock.calls[0][0] as { uploads: Array<{ cardIndex: number; bytes: Buffer }> };
+    // All four cells get a placeholder — the malformed accent_color
+    // values must not have crashed the sharp.create() call.
+    expect(compositeInput.uploads).toHaveLength(4);
+    for (const u of compositeInput.uploads) {
+      expect(Buffer.isBuffer(u.bytes)).toBe(true);
+      expect(u.bytes.byteLength).toBeGreaterThan(0);
+    }
+  });
+
   it('does not call generateImageOpenAI for cells the user already uploaded', async () => {
     generateImageOpenAIMock.mockImplementation(async () => ({
       base64: Buffer.from('ok').toString('base64'),
