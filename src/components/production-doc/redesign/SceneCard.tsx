@@ -28,6 +28,13 @@ import { getVisualTypeColor } from '@/lib/visual-type-colors';
  */
 export type SceneCardOrientation = 'horizontal' | 'vertical';
 
+/** Per-card video clip status. Mirrors the shape page.tsx already
+ *  produces; widened to `string` so unknown statuses don't break the
+ *  card (polish PR). */
+export interface SceneCardVideoState {
+  status: string;
+}
+
 export interface SceneCardProps {
   /** 0-based index into `doc.rows`. */
   rowIndex: number;
@@ -35,6 +42,8 @@ export interface SceneCardProps {
   /** Image state for this row (drives the thumbnail). Optional —
    *  when absent / not 'done', the card shows the placeholder. */
   imageState?: RowImageStateView;
+  /** Video clip state for this row (drives the V badge). Optional. */
+  videoState?: SceneCardVideoState | null;
   /** Whether this card is the currently-selected one. */
   selected?: boolean;
   /** Called with the 0-based index when the user activates the card. */
@@ -53,10 +62,35 @@ function truncate(text: string, max: number): string {
   return t.slice(0, max - 1).trimEnd() + '…';
 }
 
+type VideoBadgeState = 'ready' | 'generating' | 'failed' | null;
+
+function videoBadgeState(s: SceneCardVideoState | null | undefined): VideoBadgeState {
+  if (!s) return null;
+  if (s.status === 'ready') return 'ready';
+  if (s.status === 'failed') return 'failed';
+  if (s.status === 'generating' || s.status === 'starting' || s.status === 'pending') {
+    return 'generating';
+  }
+  return null;
+}
+
+const VIDEO_BADGE_COLOR: Record<NonNullable<VideoBadgeState>, string> = {
+  ready: '#34d399',
+  generating: '#a78bfa',
+  failed: '#f87171',
+};
+
+const VIDEO_BADGE_TITLE: Record<NonNullable<VideoBadgeState>, string> = {
+  ready: 'B-roll clip ready',
+  generating: 'B-roll generating',
+  failed: 'B-roll generation failed',
+};
+
 export const SceneCard: React.FC<SceneCardProps> = ({
   rowIndex,
   row,
   imageState,
+  videoState,
   selected = false,
   onSelect,
   orientation = 'horizontal',
@@ -70,6 +104,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
       : null;
   const hasOverlay = !!row.overlay_stock_terms?.trim();
   const hasOst = !!row.on_screen_text?.trim();
+  const videoBadge = videoBadgeState(videoState);
 
   const label = `Scene ${displayIndex}${row.timecode ? ` at ${row.timecode}` : ''}`;
 
@@ -165,6 +200,19 @@ export const SceneCard: React.FC<SceneCardProps> = ({
           aria-hidden="true"
           className="shrink-0 flex items-center gap-1 px-2"
         >
+          {videoBadge && (
+            <span
+              title={VIDEO_BADGE_TITLE[videoBadge]}
+              className="text-[9px] px-1 rounded"
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                color: VIDEO_BADGE_COLOR[videoBadge],
+                border: '1px solid rgba(255,255,255,0.08)',
+              }}
+            >
+              V
+            </span>
+          )}
           {hasOst && (
             <span
               title="On-screen text"
@@ -256,6 +304,18 @@ export const SceneCard: React.FC<SceneCardProps> = ({
           aria-hidden="true"
           className="absolute bottom-1 right-1 inline-flex items-center gap-0.5"
         >
+          {videoBadge && (
+            <span
+              title={VIDEO_BADGE_TITLE[videoBadge]}
+              className="text-[9px] px-1 rounded"
+              style={{
+                background: 'rgba(0,0,0,0.6)',
+                color: VIDEO_BADGE_COLOR[videoBadge],
+              }}
+            >
+              V
+            </span>
+          )}
           {hasOst && (
             <span
               title="On-screen text"

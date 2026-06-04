@@ -72,6 +72,9 @@ export interface ProductionDocShellProps {
    *  Variants tab to render mini-strip thumbnails for the row's
    *  variant group. Ignored in Brief Mode. R3 PR4d. */
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
+  /** Video clip state per row, drives the V badge on each SceneCard.
+   *  Ignored in Brief Mode. Polish PR. */
+  rowVideoClipsByIndex?: Readonly<Record<number, { status: string } | null>>;
   /** Full editor-writer bundle. When provided, makes Variants
    *  (and, in later PRs, Section / Overlay / Video) tabs editable.
    *  Ignored in Brief Mode. */
@@ -116,6 +119,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   selectedRowOverlay,
   selectedRowOverlayActions,
   rowImagesByIndex,
+  rowVideoClipsByIndex,
   editorWriters,
   onSelectRow,
   subMode,
@@ -197,6 +201,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
             selectedRowOverlay={selectedRowOverlay}
             selectedRowOverlayActions={selectedRowOverlayActions}
             rowImagesByIndex={rowImagesByIndex}
+            rowVideoClipsByIndex={rowVideoClipsByIndex}
             editorWriters={editorWriters}
             onSelectRow={onSelectRow}
             subMode={subMode}

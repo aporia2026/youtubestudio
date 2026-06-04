@@ -81,6 +81,9 @@ export interface StudioModeProps {
    *  Variants tab to render mini-strip thumbnails for the group.
    *  R3 PR4d. */
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
+  /** Video clip state per row, used by the scene strip's V badge.
+   *  Polish PR. */
+  rowVideoClipsByIndex?: Readonly<Record<number, { status: string } | null>>;
   /** Test-only override for the initial sub-mode when StudioMode owns
    *  the state. Ignored when `subMode` + `onToggleSubMode` are
    *  provided (controlled mode). R3 PR6. */
@@ -121,6 +124,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowOverlay = null,
   selectedRowOverlayActions,
   rowImagesByIndex,
+  rowVideoClipsByIndex,
   initialSubMode,
   initialSceneStripOrientation,
   subMode: controlledSubMode,
@@ -193,6 +197,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
               <SceneStrip
                 doc={doc}
                 rowImagesByIndex={rowImagesByIndex}
+                rowVideoClipsByIndex={rowVideoClipsByIndex}
                 selectedRowIndex={selectedRowIndex}
                 onSelectRow={onSelectRow}
                 orientation={sceneStripOrientation}

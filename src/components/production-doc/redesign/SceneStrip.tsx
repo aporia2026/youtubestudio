@@ -1,9 +1,13 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
-import { SceneCard, type SceneCardOrientation } from './SceneCard';
+import {
+  SceneCard,
+  type SceneCardOrientation,
+  type SceneCardVideoState,
+} from './SceneCard';
 
 export type SceneStripOrientation = SceneCardOrientation;
 
@@ -26,6 +30,8 @@ export type SceneStripOrientation = SceneCardOrientation;
 export interface SceneStripProps {
   doc: ProductionDoc;
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
+  /** Per-row video clip state. Drives the V badge on each card. */
+  rowVideoClipsByIndex?: Readonly<Record<number, SceneCardVideoState | null>>;
   /** 0-based selected row index, or `null` when nothing is selected. */
   selectedRowIndex?: number | null;
   /** Called with the 0-based index when the user activates a card. */
@@ -37,11 +43,39 @@ export interface SceneStripProps {
 export const SceneStrip: React.FC<SceneStripProps> = ({
   doc,
   rowImagesByIndex,
+  rowVideoClipsByIndex,
   selectedRowIndex = null,
   onSelectRow,
   orientation = 'horizontal',
 }) => {
   const rows = doc.rows ?? [];
+  // Jump-to-scene search. Filters the visible cards by case-insensitive
+  // substring match against scene index, timecode, script_text,
+  // visual_description, and section_title. Hidden when there are
+  // fewer than 6 scenes (the strip is short enough to scan visually).
+  const [searchQuery, setSearchQuery] = useState('');
+  const filteredIndices = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return rows.map((_, idx) => idx);
+    return rows
+      .map((row, idx) => {
+        const haystack = [
+          String(idx + 1),
+          row.timecode ?? '',
+          row.script_text ?? '',
+          row.visual_description ?? '',
+          row.section_title ?? '',
+          row.visual_type ?? '',
+        ]
+          .join('  ')
+          .toLowerCase();
+        return haystack.includes(q) ? idx : -1;
+      })
+      .filter((idx) => idx >= 0);
+  }, [rows, searchQuery]);
+  const showSearch = rows.length >= 6;
+  const hiddenCount = rows.length - filteredIndices.length;
+
   if (rows.length === 0) {
     return (
       <div
@@ -73,11 +107,28 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
         >
           Scenes
         </h2>
+        {showSearch && (
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Jump to scene…"
+            aria-label="Search scenes"
+            className="text-[11px] rounded px-2 py-0.5 flex-1 max-w-[200px]"
+            style={{
+              background: 'rgba(0,0,0,0.25)',
+              color: 'var(--text-primary)',
+              border: '1px solid rgba(255,255,255,0.10)',
+            }}
+          />
+        )}
         <span
           className="text-[10px]"
           style={{ color: 'var(--text-muted)' }}
         >
-          {rows.length} {rows.length === 1 ? 'scene' : 'scenes'}
+          {hiddenCount > 0
+            ? `${filteredIndices.length} of ${rows.length}`
+            : `${rows.length} ${rows.length === 1 ? 'scene' : 'scenes'}`}
         </span>
       </header>
       <div
@@ -101,26 +152,38 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
               }
         }
       >
-        {rows.map((row, idx) => (
+        {filteredIndices.map((idx) => {
+          const row = rows[idx];
+          return (
+            <div
+              key={idx}
+              role="listitem"
+              style={
+                orientation === 'horizontal'
+                  ? { scrollSnapAlign: 'start' }
+                  : undefined
+              }
+            >
+              <SceneCard
+                rowIndex={idx}
+                row={row}
+                imageState={rowImagesByIndex?.[idx]}
+                videoState={rowVideoClipsByIndex?.[idx] ?? null}
+                selected={selectedRowIndex === idx}
+                onSelect={onSelectRow}
+                orientation={orientation}
+              />
+            </div>
+          );
+        })}
+        {filteredIndices.length === 0 && searchQuery && (
           <div
-            key={idx}
-            role="listitem"
-            style={
-              orientation === 'horizontal'
-                ? { scrollSnapAlign: 'start' }
-                : undefined
-            }
+            className="text-xs px-3 py-4 italic"
+            style={{ color: 'var(--text-muted)' }}
           >
-            <SceneCard
-              rowIndex={idx}
-              row={row}
-              imageState={rowImagesByIndex?.[idx]}
-              selected={selectedRowIndex === idx}
-              onSelect={onSelectRow}
-              orientation={orientation}
-            />
+            No scenes match "{searchQuery}".
           </div>
-        ))}
+        )}
       </div>
     </section>
   );

@@ -14376,6 +14376,8 @@ function ProductionDocPage() {
       // inspector and the legacy grid stay in sync (chevron + card
       // are equivalent selection affordances).
       onSelectRow={setExpandedRow}
+      // Polish: per-row video clip state for the V badge on scene cards.
+      rowVideoClipsByIndex={rowVideoClips as Record<number, { status: string } | null>}
       // R4 PR3: controlled sub-mode. Both the shell (layout switch)
       // and page.tsx (legacy-grid hide) share the same state via
       // `useStudioSubMode`.

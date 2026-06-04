@@ -377,25 +377,61 @@ export const StudioInspectorSection: React.FC<StudioInspectorSectionProps> = ({
         )}
       </FieldShell>
 
-      {/* Read-only: transition + zoom-to (rich pickers in a follow-up) */}
+      {/* Transition kind */}
       <FieldShell label="Transition">
-        <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
-          {transitionKind || EMPTY_PLACEHOLDER}
-        </div>
+        {editable ? (
+          <div role="radiogroup" aria-label="Transition kind" className="flex gap-1">
+            {(['hard-cut', 'smooth', 'none'] as const).map((opt) => {
+              const isCurrent = transitionKind === opt;
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  role="radio"
+                  aria-checked={isCurrent}
+                  onClick={() => onUpdateRow!(rowIndex, {
+                    thumbnail_transition: { kind: opt },
+                  })}
+                  className="text-[11px] px-2 py-1 rounded"
+                  style={isCurrent ? ACCENT_BUTTON_STYLE : PILL_BUTTON_STYLE}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {transitionKind || EMPTY_PLACEHOLDER}
+          </div>
+        )}
       </FieldShell>
 
+      {/* Zoom-to region */}
       <FieldShell label="Zoom to region">
-        <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
-          {zoomToId || EMPTY_PLACEHOLDER}
-        </div>
+        {editable && doc?.thumbnail?.regions && doc.thumbnail.regions.length > 0 ? (
+          <select
+            value={zoomToId}
+            onChange={(e) => onUpdateRow!(rowIndex, {
+              thumbnail_zoom_to: e.target.value || undefined,
+            })}
+            className="text-xs rounded px-2 py-1"
+            style={TEXT_INPUT_STYLE}
+            aria-label="Zoom-to region"
+          >
+            <option value="">— none —</option>
+            {doc.thumbnail.regions.map((region) => (
+              <option key={region.id} value={region.id}>
+                {region.label || region.id}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="text-xs" style={{ color: 'var(--text-primary)' }}>
+            {zoomToId || EMPTY_PLACEHOLDER}
+          </div>
+        )}
       </FieldShell>
-
-      <p
-        className="text-[11px]"
-        style={{ color: 'var(--text-muted)' }}
-      >
-        Transition kind and Zoom-to region pickers land in a follow-up PR.
-      </p>
     </div>
   );
 };
