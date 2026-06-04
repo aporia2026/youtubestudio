@@ -73,6 +73,7 @@ function doodleRow(overrides: Partial<ShortRow> = {}): ShortRow {
     },
     captions_config: {},
     generation_progress: {},
+    assets_context: null,
     created_at: '2026-06-01T00:00:00Z',
     updated_at: '2026-06-01T00:00:00Z',
     ...overrides,

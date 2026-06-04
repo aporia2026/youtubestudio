@@ -114,6 +114,11 @@ export interface ShortRow {
   // grace period so a stale row from a crashed function gets
   // garbage-collected by the next read.
   generation_progress: GenerationProgressState;
+  // Migration 0117: optional creator-supplied prompt steer for the
+  // Doodle/Paint asset planner. Null = no extra context; the planner
+  // omits the block. See `_plans/2026-06-04-shorts-captions-position-
+  // and-assets-context.md`.
+  assets_context: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -110,6 +110,65 @@ describe('buildDoodleVariantPrompt', () => {
     const { user } = buildDoodleVariantPrompt({ shortScript: huge, captions, niche: 'x' });
     expect(user.length).toBeLessThan(8000);
   });
+
+  describe('assetsContext (migration 0117)', () => {
+    it('omits the context block entirely when no assetsContext is set', () => {
+      const { user } = buildDoodleVariantPrompt({
+        shortScript: 'x',
+        captions,
+        niche: 'x',
+      });
+      expect(user).not.toMatch(/Extra context from the creator/);
+    });
+
+    it('omits the context block when assetsContext is empty / whitespace', () => {
+      const { user } = buildDoodleVariantPrompt({
+        shortScript: 'x',
+        captions,
+        niche: 'x',
+        assetsContext: '   \n  ',
+      });
+      expect(user).not.toMatch(/Extra context from the creator/);
+    });
+
+    it('embeds the assetsContext above the script and tags it as a hard constraint', () => {
+      const { user } = buildDoodleVariantPrompt({
+        shortScript: 'A short about hydration.',
+        captions,
+        niche: 'health',
+        assetsContext: 'The character is a kid in a red hoodie. Every scene is in a kitchen.',
+      });
+      expect(user).toMatch(/Extra context from the creator/);
+      expect(user).toMatch(/HARD CONSTRAINTS/);
+      expect(user).toContain('red hoodie');
+      expect(user).toContain('kitchen');
+      // Ordering check: context must come before the script so the model
+      // reads it as setup, not as an afterthought.
+      const ctxIdx = user.indexOf('Extra context from the creator');
+      const scriptIdx = user.indexOf('Full script:');
+      expect(ctxIdx).toBeGreaterThan(-1);
+      expect(scriptIdx).toBeGreaterThan(-1);
+      expect(ctxIdx).toBeLessThan(scriptIdx);
+    });
+
+    it('caps the assetsContext at 2000 chars to prevent prompt blow-up', () => {
+      const huge = 'detail '.repeat(1000);
+      const { user } = buildDoodleVariantPrompt({
+        shortScript: 'x',
+        captions,
+        niche: 'x',
+        assetsContext: huge,
+      });
+      // The trimmed-and-sliced block should be present but capped. The
+      // slice between the first two triple-quotes includes the framing
+      // newlines (`\n…\n`) — strip them before measuring the body.
+      const block = user.split('Extra context from the creator')[1] ?? '';
+      const blockBody = (block.split('"""')[1] ?? '').trim();
+      expect(blockBody.length).toBeLessThanOrEqual(2000);
+      // Sanity: the cap is biting (it shouldn't shrink to ~0 either).
+      expect(blockBody.length).toBeGreaterThan(1000);
+    });
+  });
 });
 
 describe('parseDoodleVariantResult', () => {

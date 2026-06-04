@@ -624,6 +624,7 @@ export async function listShortsForWorkspace(
         hook_score, dismissed_at::text AS dismissed_at,
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
+        assets_context,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -649,6 +650,7 @@ export async function listShortsForWorkspace(
         hook_score, dismissed_at::text AS dismissed_at,
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
+        assets_context,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -672,6 +674,7 @@ export async function listShortsForWorkspace(
         hook_score, dismissed_at::text AS dismissed_at,
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
+        assets_context,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -696,6 +699,7 @@ export async function listShortsForWorkspace(
         hook_score, dismissed_at::text AS dismissed_at,
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
+        assets_context,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -718,6 +722,7 @@ export async function listShortsForWorkspace(
       hook_score, dismissed_at::text AS dismissed_at,
       source_youtube_video_id, clip_start_ms, clip_end_ms,
       style_id, style_assets, captions_config, generation_progress,
+      assets_context,
       created_at::text AS created_at,
       updated_at::text AS updated_at
     FROM shorts
@@ -741,6 +746,7 @@ export async function getShort(id: string, workspaceId: string): Promise<ShortRo
       hook_score, dismissed_at::text AS dismissed_at,
       source_youtube_video_id, clip_start_ms, clip_end_ms,
       style_id, style_assets, captions_config, generation_progress,
+      assets_context,
       created_at::text AS created_at,
       updated_at::text AS updated_at
     FROM shorts

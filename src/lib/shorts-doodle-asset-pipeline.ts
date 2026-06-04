@@ -82,6 +82,9 @@ export interface DoodleAssetPipelineInput {
    *  onProgress are caught + logged but do not fail the pipeline (the
    *  progress strip is observability, not a critical path). */
   onProgress?: (state: GenerationProgressState) => Promise<void> | void;
+  /** Migration 0117 — creator-supplied prompt steer. See
+   *  `DoodleVariantInput.assetsContext`. */
+  assetsContext?: string;
 }
 
 export interface DoodleAssetPipelineResult {
@@ -152,6 +155,9 @@ export interface PlanDoodleAssetsInput {
   niche: string;
   captions: ShortCaptionChunk[];
   maxVariants?: number;
+  /** Migration 0117 — creator-supplied prompt steer threaded through the
+   *  planner. See `DoodleVariantInput.assetsContext`. */
+  assetsContext?: string;
 }
 
 /** Step 1 — the LLM call that plans the base scene prompt + per-chunk
@@ -172,6 +178,7 @@ export async function planDoodleAssets(
     captions: input.captions,
     niche: input.niche,
     maxVariants: cappedMax,
+    assetsContext: input.assetsContext,
   });
   const spend: AiSpendContext = {
     workspaceId: input.workspaceId,

@@ -60,6 +60,9 @@ export interface PaintAssetPipelineInput {
   /** Phase 15.13 — per-step progress hook. Same contract as the Doodle
    *  pipeline; see `shorts-doodle-asset-pipeline.ts` for the rationale. */
   onProgress?: (state: GenerationProgressState) => Promise<void> | void;
+  /** Migration 0117 — creator-supplied prompt steer. See
+   *  `DoodleVariantInput.assetsContext`. */
+  assetsContext?: string;
 }
 
 export interface PaintAssetPipelineResult {
@@ -118,6 +121,9 @@ export interface PlanPaintAssetsInput {
   niche: string;
   captions: ShortCaptionChunk[];
   maxVariants?: number;
+  /** Migration 0117 — creator-supplied prompt steer threaded through the
+   *  planner. See `DoodleVariantInput.assetsContext`. */
+  assetsContext?: string;
 }
 
 /** Step 1 — plan the base scene prompt + per-chunk variant edit prompts.
@@ -136,6 +142,7 @@ export async function planPaintAssets(
     captions: input.captions,
     niche: input.niche,
     maxVariants: cappedMax,
+    assetsContext: input.assetsContext,
   });
   const spend: AiSpendContext = {
     workspaceId: input.workspaceId,

@@ -50,6 +50,12 @@ export interface DoodleVariantInput {
   niche: string;
   /** Maximum variants to ask for. Defaults to 6. Hard-capped to caption count. */
   maxVariants?: number;
+  /** Optional creator-supplied prompt steer ("the character is a kid",
+   *  "set everything in a kitchen"). Surfaced above the script so the
+   *  model treats it as a hard creator brief, not loose inspiration.
+   *  Empty / undefined drops the whole block. Server-trimmed to 2000
+   *  chars upstream. */
+  assetsContext?: string;
 }
 
 export interface DoodleVariantSpec {
@@ -112,7 +118,11 @@ Output STRICTLY this JSON shape:
 
 Return ONLY valid JSON.`,
     user: `Niche: ${input.niche}
-${input.title ? `Working title: ${input.title}\n` : ''}${input.hook ? `Hook (first 1-3 seconds): ${input.hook}\n` : ''}${input.payoff ? `Payoff (closing line): ${input.payoff}\n` : ''}
+${input.title ? `Working title: ${input.title}\n` : ''}${input.hook ? `Hook (first 1-3 seconds): ${input.hook}\n` : ''}${input.payoff ? `Payoff (closing line): ${input.payoff}\n` : ''}${
+      input.assetsContext && input.assetsContext.trim().length > 0
+        ? `\nExtra context from the creator — TREAT AS HARD CONSTRAINTS for the base scene AND every variant (character traits, setting, props, things to avoid, etc.):\n"""\n${input.assetsContext.trim().slice(0, 2000)}\n"""\n`
+        : ''
+    }
 Full script:
 """
 ${input.shortScript.trim().slice(0, 2400)}

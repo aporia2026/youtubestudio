@@ -34,6 +34,9 @@ export const PATCH = apiRoute.authed(
       payoff?: unknown;
       /** Phase 15.11 — opaque captions blob, validated below. */
       captions_config?: unknown;
+      /** Migration 0117 — optional creator prompt steer for the Doodle/Paint
+       *  asset planner. Trimmed + length-capped server-side. */
+      assets_context?: unknown;
     } = {};
     try {
       body = await req.json();
@@ -51,6 +54,13 @@ export const PATCH = apiRoute.authed(
       typeof body.short_script === 'string' ? body.short_script.trim().slice(0, 8000) : null;
     const hook = typeof body.hook === 'string' ? body.hook.trim().slice(0, 600) : null;
     const payoff = typeof body.payoff === 'string' ? body.payoff.trim().slice(0, 600) : null;
+    // assets_context — empty string after trim clears the field (NULL in DB
+    // via COALESCE-guarded UPDATE below); any non-string leaves it untouched.
+    let assetsContext: string | null | undefined;
+    if (typeof body.assets_context === 'string') {
+      const trimmed = body.assets_context.trim().slice(0, 2000);
+      assetsContext = trimmed.length === 0 ? null : trimmed;
+    }
 
     // Phase 15.11 — captions_config. Must be a plain object if present;
     // reject arrays / nulls / strings. The renderer + helpers do per-field
@@ -88,6 +98,11 @@ export const PATCH = apiRoute.authed(
       // Recompute derived fields when the script changes.
       const wc = shortScript ? countSpokenWords(shortScript) : null;
       const est = wc != null ? estimateShortDurationSeconds(wc) : null;
+      // Distinguish "leave alone" (assetsContext === undefined) from "clear
+      // it to NULL" (an empty textarea on save). The other text fields use
+      // COALESCE because the UI has no clear path; assets_context does.
+      const updateAssetsContext = assetsContext !== undefined;
+      const assetsContextValue = assetsContext ?? null;
       await sql`
         UPDATE shorts
            SET title = COALESCE(${title}, title),
@@ -97,6 +112,7 @@ export const PATCH = apiRoute.authed(
                word_count = COALESCE(${wc}, word_count),
                estimated_duration_seconds = COALESCE(${est}, estimated_duration_seconds),
                captions_config = COALESCE(${captionsConfigJson}::jsonb, captions_config),
+               assets_context = CASE WHEN ${updateAssetsContext} THEN ${assetsContextValue} ELSE assets_context END,
                updated_at = NOW()
          WHERE id = ${id}::uuid AND workspace_id = ${session.ws}::uuid
       `;

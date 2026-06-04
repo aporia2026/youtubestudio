@@ -114,6 +114,7 @@ export function ShortEditor({ shortId }: { shortId: string }) {
   const [scriptDraft, setScriptDraft] = useState('');
   const [hookDraft, setHookDraft] = useState('');
   const [payoffDraft, setPayoffDraft] = useState('');
+  const [assetsContextDraft, setAssetsContextDraft] = useState('');
 
   // Style picker — initial selection from row.style_id, falls back to
   // minimal. The user can change it; clicking "Generate assets" then
@@ -156,6 +157,7 @@ export function ShortEditor({ shortId }: { shortId: string }) {
       setScriptDraft(short.short_script ?? '');
       setHookDraft(short.hook ?? '');
       setPayoffDraft(short.payoff ?? '');
+      setAssetsContextDraft(short.assets_context ?? '');
       if (short.style_id) setStylePick(short.style_id as ShortStyleId);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load Short');
@@ -740,6 +742,34 @@ export function ShortEditor({ shortId }: { shortId: string }) {
                 lineHeight: 1.6,
               }}
             />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              Asset context (optional) — extra direction for the AI when planning visuals
+            </span>
+            <textarea
+              rows={4}
+              value={assetsContextDraft}
+              placeholder="e.g. The character is a kid in a red hoodie. Set every scene in a kitchen. Avoid any text or arrows in the artwork."
+              onChange={(e) => setAssetsContextDraft(e.target.value)}
+              onBlur={() => {
+                const current = row.assets_context ?? '';
+                if (assetsContextDraft !== current) {
+                  savePatch({ assets_context: assetsContextDraft });
+                }
+              }}
+              style={{
+                ...inputStyle,
+                resize: 'vertical',
+                fontFamily: 'inherit',
+                fontSize: 13,
+                lineHeight: 1.5,
+              }}
+            />
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              Threaded into both the base scene and every variant on the next asset generation.
+              Doodle + Paint styles only.
+            </span>
           </label>
         </div>
       </EditorSection>

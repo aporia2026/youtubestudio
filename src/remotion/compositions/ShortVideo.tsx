@@ -9,6 +9,11 @@ import {
   useVideoConfig,
 } from 'remotion';
 import type { ShortVideoConfig } from '@/lib/shorts-render-types';
+import {
+  resolveDoodleCaptionStyle,
+  entryEffectTransform,
+  type ResolvedDoodleCaptionStyle,
+} from '../doodle-caption-style';
 
 /**
  * Vertical 1080×1920 Short composition.
@@ -281,10 +286,13 @@ function CaptionChunk({
 // outside the safe zone gets visually clipped.
 
 const DOODLE_TITLE_TOP_PX = 96;
-const DOODLE_CAPTION_BAND_TOP_RATIO = 0.55; // 55% from top = lower-middle band
-const DOODLE_CAPTION_PADDING_X_PX = 64;
+// The doodle defaults live in `doodle-caption-style.ts` so the resolver
+// owns them in one place. The renderer reads the resolved values below.
 
 function DoodleShortVideo({ config }: ShortVideoProps) {
+  // Resolve the user's caption-style overrides on top of the doodle
+  // defaults. Empty / undefined cfg keeps the original doodle look.
+  const captionStyle = resolveDoodleCaptionStyle(config.captions_config?.style);
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
   const elapsedMs = (frame / fps) * 1000;
@@ -399,11 +407,14 @@ function DoodleShortVideo({ config }: ShortVideoProps) {
         </div>
       )}
 
-      {/* Caption band — middle-60% safe zone, yellow comic-bold styling */}
+      {/* Caption band — middle-60% safe zone, defaults to the yellow
+          comic-bold doodle look; every field in `captions_config.style`
+          overrides its slot via `resolveDoodleCaptionStyle`. */}
       {activeCaption && (
         <DoodleCaptionChunk
           caption={activeCaption}
           elapsedMs={elapsedMs}
+          style={captionStyle}
         />
       )}
 
@@ -442,9 +453,11 @@ function DoodleShortVideo({ config }: ShortVideoProps) {
 function DoodleCaptionChunk({
   caption,
   elapsedMs,
+  style,
 }: {
   caption: { start_ms: number; end_ms: number; text: string };
   elapsedMs: number;
+  style: ResolvedDoodleCaptionStyle;
 }) {
   const inDur = 80;
   const outDur = 80;
@@ -455,18 +468,26 @@ function DoodleCaptionChunk({
   const opacity = Math.min(fadeIn, fadeOut);
 
   const wordCount = caption.text.split(/\s+/).filter(Boolean).length;
-  // Slightly smaller than minimal to leave breathing room for the
-  // illustration behind it.
-  const fontSize = wordCount <= 4 ? 96 : wordCount <= 6 ? 80 : wordCount <= 8 ? 64 : 54;
+  // Auto-size by word count, then scale by the user-configured sizeScale
+  // so a creator can bump captions up/down without recomputing per chunk.
+  const autoFontSize = wordCount <= 4 ? 96 : wordCount <= 6 ? 80 : wordCount <= 8 ? 64 : 54;
+  const fontSize = Math.round(autoFontSize * style.sizeScale);
+
+  const effect = entryEffectTransform(style.entryEffect, sinceStart);
+
+  const fontFamily = style.fontFamily
+    ? `'${style.fontFamily}', 'Inter', system-ui, sans-serif`
+    : 'Inter, system-ui, sans-serif';
 
   return (
     <div
       style={{
         position: 'absolute',
-        top: `${DOODLE_CAPTION_BAND_TOP_RATIO * 100}%`,
+        top: `${style.positionY * 100}%`,
         left: 0,
         right: 0,
-        padding: `0 ${DOODLE_CAPTION_PADDING_X_PX}px`,
+        transform: 'translateY(-50%)',
+        padding: `0 ${style.paddingX}px`,
         display: 'flex',
         justifyContent: 'center',
         opacity,
@@ -474,21 +495,44 @@ function DoodleCaptionChunk({
     >
       <div
         style={{
+          fontFamily,
           fontSize,
-          fontWeight: 900,
+          fontWeight: style.fontWeight,
           textAlign: 'center',
-          letterSpacing: -0.5,
-          lineHeight: 1.05,
-          color: '#facc15',                            // doodle yellow
-          // Thick black outline matches the doodle reference's hand-drawn
-          // comic bold typography — see production-doc-styles.ts
-          // BAKED TYPOGRAPHY block.
-          WebkitTextStroke: '6px #0f172a',
-          paintOrder: 'stroke fill',
-          textTransform: 'uppercase',
+          letterSpacing: style.letterSpacing,
+          lineHeight: style.lineHeight,
+          textTransform: style.textTransform,
+          color: style.color,
+          transform: `translateY(${effect.translateY}px) scale(${effect.scale})`,
+          textShadow: style.shadow === 'none' ? undefined : style.shadow,
+          WebkitTextStroke:
+            style.outlineWidth > 0 ? `${style.outlineWidth}px ${style.outlineColor}` : undefined,
+          paintOrder: style.outlineWidth > 0 ? 'stroke fill' : undefined,
+          padding: style.background === 'solid' || style.background === 'blur' ? '10px 24px' : 0,
+          borderRadius: style.background !== 'none' ? 16 : 0,
+          background:
+            style.background === 'solid'
+              ? style.backgroundColor
+              : style.background === 'blur'
+                ? 'rgba(0,0,0,0.35)'
+                : 'transparent',
+          backdropFilter: style.background === 'blur' ? 'blur(20px)' : undefined,
         }}
       >
-        {caption.text}
+        {caption.text.split(/\s+/).map((word, i, arr) => (
+          <React.Fragment key={i}>
+            <span
+              style={
+                i === arr.length - 1 && style.highlightColor !== style.color
+                  ? { color: style.highlightColor }
+                  : undefined
+              }
+            >
+              {word}
+            </span>
+            {i < arr.length - 1 ? ' ' : ''}
+          </React.Fragment>
+        ))}
       </div>
     </div>
   );

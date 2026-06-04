@@ -78,6 +78,7 @@ interface ClaimedShort {
   title: string | null;
   style_assets: ShortStyleAssets | null;
   generation_progress: GenerationProgressState | null;
+  assets_context: string | null;
 }
 
 export type TickOutcome =
@@ -134,7 +135,8 @@ async function claimNextShort(tickId: string): Promise<ClaimedShort | null> {
      )
      RETURNING id::text, workspace_id::text, short_script, style_id, project_id::text,
                voiceover_duration_seconds, estimated_duration_seconds, word_count,
-               hook, payoff, title, style_assets, generation_progress
+               hook, payoff, title, style_assets, generation_progress,
+               assets_context
   `;
   return rows[0] ?? null;
 }
@@ -161,7 +163,8 @@ async function claimSpecificShort(
        AND short_script IS NOT NULL
      RETURNING id::text, workspace_id::text, short_script, style_id, project_id::text,
                voiceover_duration_seconds, estimated_duration_seconds, word_count,
-               hook, payoff, title, style_assets, generation_progress
+               hook, payoff, title, style_assets, generation_progress,
+               assets_context
   `;
   return rows[0] ?? null;
 }
@@ -342,6 +345,7 @@ async function processClaimedShort(
         niche: job.niche ?? 'general',
         captions,
         maxVariants: job.max_variants,
+        assetsContext: short.assets_context ?? undefined,
       };
       const planned = styleKey === 'paint'
         ? await planPaintAssets(planInput)
