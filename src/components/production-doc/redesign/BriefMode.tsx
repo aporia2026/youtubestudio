@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { BriefHeader } from './BriefHeader';
 
 /**
  * Brief Mode — the pre-generation Notebook surface.
@@ -10,15 +11,22 @@ import React from 'react';
  * Script, Generate; sticky-bottom CTA; generation log expands above
  * the button).
  *
- * Phase R0: this component is a transparent pass-through of today's
- * page render. Phase R1 will replace the children with the four-step
- * Notebook layout, reusing the existing input components catalogued
- * in §3.3 of the plan.
+ * Phase R1 (first PR): the new `BriefHeader` is mounted above the
+ * legacy input panel (passed in via `children`). The legacy header
+ * is hidden in `page.tsx` when the flag is on, so the user sees the
+ * new title bar instead. The four-step Notebook restructuring of the
+ * inputs themselves is the work of R1b/c.
  */
 export interface BriefModeProps {
   children: React.ReactNode;
+  onNewSession?: () => void;
 }
 
-export const BriefMode: React.FC<BriefModeProps> = ({ children }) => {
-  return <>{children}</>;
+export const BriefMode: React.FC<BriefModeProps> = ({ children, onNewSession }) => {
+  return (
+    <>
+      <BriefHeader onNewSession={onNewSession} />
+      {children}
+    </>
+  );
 };

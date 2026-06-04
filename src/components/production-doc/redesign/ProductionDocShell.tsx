@@ -18,8 +18,15 @@ import { StudioMode } from './StudioMode';
 export interface ProductionDocShellProps {
   /** Current production-doc, or null if the user has not generated one yet. */
   doc: ProductionDoc | null;
-  /** Today's page render. Phase R0 passes this through unchanged. */
+  /** Today's page render. Phase R0 passed this through unchanged. From R1
+   *  onward the new mode chrome wraps the children — page.tsx hides any
+   *  legacy chunks that the new chrome replaces (see the legacy-header
+   *  conditional in `page.tsx` for the pattern). */
   children: React.ReactNode;
+  /** Wired through to `BriefHeader` so the new-session button keeps
+   *  firing today's `resetSession` callback. Optional so the shell
+   *  stays renderable in tests without setting up the full page state. */
+  onNewSession?: () => void;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -36,6 +43,7 @@ export function selectShellMode(doc: ProductionDoc | null): ProductionDocShellMo
 export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   doc,
   children,
+  onNewSession,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -60,7 +68,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   }, [mode, doc]);
 
   return mode === 'brief' ? (
-    <BriefMode>{children}</BriefMode>
+    <BriefMode onNewSession={onNewSession}>{children}</BriefMode>
   ) : (
     <StudioMode>{children}</StudioMode>
   );

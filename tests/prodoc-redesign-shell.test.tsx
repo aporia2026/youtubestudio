@@ -1,17 +1,19 @@
 /**
- * Phase R0 of the production-doc redesign — see
+ * Production-doc redesign — shell + Brief Mode header tests. See
  * `_plans/2026-06-04-production-doc-redesign.md`.
  *
- * R0 ships only the feature flag, the scaffolding folder, and a
- * transparent-pass-through shell. These tests pin the contract for
- * later phases:
+ * Phase R0 shipped the feature flag, the scaffolding folder, and a
+ * transparent-pass-through shell. Phase R1 (first PR) lands the
+ * `BriefHeader` at the top of Brief Mode.
  *
- *   - The shell routes `doc === null` to `BriefMode` and `doc !== null`
- *     to `StudioMode`. R1 onward depends on this routing being stable.
- *   - The shell renders its children through unchanged. R0's flag flip
- *     must not lose any of today's page render.
- *   - The feature flag is exported as a boolean. Page-level wiring
- *     dereferences this directly.
+ * These tests pin the contracts later phases rely on:
+ *   - The shell routes `doc === null` to Brief Mode and `doc !== null`
+ *     to Studio Mode (stable mode routing).
+ *   - Brief Mode renders `BriefHeader` above children (R1).
+ *   - Studio Mode is still a transparent pass-through (until R2).
+ *   - The `onNewSession` callback wires through shell → BriefMode →
+ *     BriefHeader without being lost in transit.
+ *   - The feature flag is exported as a boolean and defaults to off.
  *
  * useEffect-based observability logs (`[prodoc shell] mount`,
  * `[prodoc shell] mode-switch`) are covered by manual QA per §12 of
@@ -51,7 +53,7 @@ describe('selectShellMode — pure mode routing', () => {
   });
 });
 
-describe('ProductionDocShell — transparent pass-through (Phase R0)', () => {
+describe('ProductionDocShell — children always rendered', () => {
   it('renders children when doc is null (brief mode)', () => {
     const html = renderToStaticMarkup(
       <ProductionDocShell doc={null}>
@@ -72,16 +74,69 @@ describe('ProductionDocShell — transparent pass-through (Phase R0)', () => {
     expect(html).toContain('legacy page render');
   });
 
-  it('does not inject any visible chrome around children (R0 contract)', () => {
-    // R0 contract: the shell is presentation-transparent until R1+ fills
-    // it in. If this assertion ever fails because a future phase added
-    // chrome, update this test deliberately — do not paper over.
+  it('Studio Mode is still a transparent pass-through (until R2)', () => {
+    // Studio Mode does not inject chrome yet — page.tsx still renders
+    // the legacy grid inside the children. R2 will replace this with
+    // the new top bar + left rail + render dock. When that phase lands,
+    // update this assertion deliberately.
     const html = renderToStaticMarkup(
-      <ProductionDocShell doc={null}>
+      <ProductionDocShell doc={SAMPLE_DOC}>
         <span>only-child</span>
       </ProductionDocShell>,
     );
     expect(html).toBe('<span>only-child</span>');
+  });
+});
+
+describe('ProductionDocShell — Brief Mode header injection (R1)', () => {
+  it('Brief Mode injects the BriefHeader above the children', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={null}>
+        <span data-testid="legacy-inputs">legacy inputs</span>
+      </ProductionDocShell>,
+    );
+    // Header text appears.
+    expect(html).toContain('Production Doc');
+    expect(html).toContain('Plan, write, and produce a video end to end.');
+    // Children still render after the header.
+    expect(html).toContain('data-testid="legacy-inputs"');
+    // Header precedes the children in the DOM order — important so the
+    // user reads the page top-to-bottom as Brief, then inputs.
+    const headerIdx = html.indexOf('Production Doc');
+    const childIdx = html.indexOf('legacy-inputs');
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    expect(childIdx).toBeGreaterThan(headerIdx);
+  });
+
+  it('omits the New session button when onNewSession is not provided', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={null}>
+        <span>inputs</span>
+      </ProductionDocShell>,
+    );
+    expect(html).not.toContain('New session');
+  });
+
+  it('renders the New session button when onNewSession is provided', () => {
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={null} onNewSession={() => {}}>
+        <span>inputs</span>
+      </ProductionDocShell>,
+    );
+    expect(html).toContain('New session');
+  });
+
+  it('Studio Mode does not render the BriefHeader even with onNewSession set', () => {
+    // Brief and Studio are mutually exclusive. The new-session callback
+    // for Studio Mode will live in the Studio top bar (R2), not in
+    // the Brief header.
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC} onNewSession={() => {}}>
+        <span>studio content</span>
+      </ProductionDocShell>,
+    );
+    expect(html).not.toContain('Production Doc');
+    expect(html).not.toContain('New session');
   });
 });
 

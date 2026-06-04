@@ -10155,7 +10155,12 @@ function ProductionDocPage() {
         );
       })()}
 
-      {/* ── Header */}
+      {/* ── Header
+          Phase R1 of the redesign hides this when the flag is on. The
+          shell mounts `BriefHeader` (in Brief Mode) which carries the
+          same New-session button — Studio Mode will get its own top
+          bar in R2. Plan: `_plans/2026-06-04-production-doc-redesign.md`. */}
+      {!PROD_DOC_REDESIGN_V1_PUBLIC && (
       <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-bold" style={{ color: 'var(--text-primary)' }}>
@@ -10214,6 +10219,7 @@ function ProductionDocPage() {
           </button>
         </div>
       </div>
+      )}
 
       {/* ── Input Panel */}
       <div className="glass rounded-xl p-5 mb-6 space-y-5">
@@ -14216,6 +14222,8 @@ function ProductionDocPage() {
   );
 
   return PROD_DOC_REDESIGN_V1_PUBLIC ? (
-    <ProductionDocShell doc={doc}>{pageContent}</ProductionDocShell>
+    <ProductionDocShell doc={doc} onNewSession={resetSession}>
+      {pageContent}
+    </ProductionDocShell>
   ) : pageContent;
 }
