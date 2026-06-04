@@ -38,6 +38,15 @@ export interface TopicCard {
   icon_concept: string;
   /** Optional per-card accent color. Falls back to the global palette accent. */
   accent_color?: string;
+  /** Original uploaded photo URL (R2-mirrored). Persists across `fillStyle`
+   *  toggles so re-applying a cutout doesn't require a fresh upload. Only
+   *  populated when the user uploads a photo for this card. */
+  sourceImageUrl?: string;
+  /** Background-removed PNG URL (R2-mirrored). Populated by the
+   *  `/api/thumbnails/grid-rmbg` route the first time the user picks the
+   *  `cutout` fill style on this card. Cached so toggling fillStyle is free
+   *  after the first call. */
+  cutoutImageUrl?: string;
 }
 
 /**
@@ -85,10 +94,143 @@ export interface GridLayout {
    *  the label centred in the gutter below. Defaults to `'square'` when
    *  omitted so older history entries hydrate cleanly. */
   cardShape?: CardShape;
+  /** Cartoon-outline thickness. `'thin'` ≈ 0.4% of cell width (subtle line),
+   *  `'thick'` ≈ 1.6% (bold doodle stroke). Default `'thin'`. */
+  borderWeight?: BorderWeight;
+  /** Where the card's label sits relative to the disc. `'below'` is the
+   *  classic floating label; `'overlap'` places the label so its top crosses
+   *  the disc's bottom edge by ~12 % of disc diameter, rendered with a
+   *  stroked outline so it stays readable. Default `'below'`. */
+  labelPosition?: LabelPosition;
+  /** `'title'` keeps the source string casing; `'upper'` applies
+   *  `text-transform: uppercase`. Source string is never mutated.
+   *  Default `'title'`. */
+  labelCase?: LabelCase;
+  /** How the disc is filled. `'photo'` (default) covers the disc with the
+   *  uploaded image. `'cutout'` paints `accent_color` and overlays the
+   *  background-removed subject. `'icon'` paints `accent_color` and centres
+   *  the AI-generated flat icon (existing `icon_concept` path). */
+  fillStyle?: FillStyle;
+  /** Only used when `labelPosition === 'overlap'`. Picks the colour pairing
+   *  for the stroked label. Default `'white-on-black'`. */
+  overlapLabelStroke?: OverlapLabelStroke;
 }
 
 /** Visual shape of each card. See `GridLayout.cardShape` for the contract. */
 export type CardShape = 'square' | 'circle';
+
+/** See `GridLayout.borderWeight`. */
+export type BorderWeight = 'thin' | 'thick';
+/** See `GridLayout.labelPosition`. */
+export type LabelPosition = 'below' | 'overlap';
+/** See `GridLayout.labelCase`. */
+export type LabelCase = 'title' | 'upper';
+/** See `GridLayout.fillStyle`. */
+export type FillStyle = 'photo' | 'cutout' | 'icon';
+/** See `GridLayout.overlapLabelStroke`. */
+export type OverlapLabelStroke = 'white-on-black' | 'black-on-white';
+
+/**
+ * Six named card-style presets that map to all 5 axes at once. The preset
+ * picker in the editor flips every axis when the user clicks one; per-axis
+ * controls remain editable below so users can fine-tune. The source of
+ * truth for the rendered state is the six axis fields themselves, not the
+ * preset name — clicking a preset is a one-shot writer.
+ *
+ * Each preset is named after the competitor reference style it produces.
+ */
+export type CardStylePreset =
+  | 'photo-tile'
+  | 'cutout-pop'
+  | 'icon-grid'
+  | 'caps-overlay'
+  | 'mystery-doc'
+  | 'cartoon-bold';
+
+/** Resolve a preset name to the six axis values it sets. The
+ *  `cardShape` is always `'circle'` for these presets — the parity work
+ *  is all about the circle genre. */
+export function cardStylePresetAxes(preset: CardStylePreset): {
+  cardShape: CardShape;
+  borderWeight: BorderWeight;
+  labelPosition: LabelPosition;
+  labelCase: LabelCase;
+  fillStyle: FillStyle;
+  overlapLabelStroke: OverlapLabelStroke;
+} {
+  switch (preset) {
+    case 'photo-tile':
+      return {
+        cardShape: 'circle',
+        borderWeight: 'thin',
+        labelPosition: 'below',
+        labelCase: 'title',
+        fillStyle: 'photo',
+        overlapLabelStroke: 'white-on-black',
+      };
+    case 'cutout-pop':
+      return {
+        cardShape: 'circle',
+        borderWeight: 'thick',
+        labelPosition: 'below',
+        labelCase: 'title',
+        fillStyle: 'cutout',
+        overlapLabelStroke: 'white-on-black',
+      };
+    case 'icon-grid':
+      return {
+        cardShape: 'circle',
+        borderWeight: 'thick',
+        labelPosition: 'below',
+        labelCase: 'title',
+        fillStyle: 'icon',
+        overlapLabelStroke: 'white-on-black',
+      };
+    case 'caps-overlay':
+      return {
+        cardShape: 'circle',
+        borderWeight: 'thin',
+        labelPosition: 'overlap',
+        labelCase: 'upper',
+        fillStyle: 'photo',
+        overlapLabelStroke: 'white-on-black',
+      };
+    case 'mystery-doc':
+      return {
+        cardShape: 'circle',
+        borderWeight: 'thin',
+        labelPosition: 'overlap',
+        labelCase: 'upper',
+        fillStyle: 'photo',
+        overlapLabelStroke: 'white-on-black',
+      };
+    case 'cartoon-bold':
+      return {
+        cardShape: 'circle',
+        borderWeight: 'thick',
+        labelPosition: 'below',
+        labelCase: 'title',
+        fillStyle: 'photo',
+        overlapLabelStroke: 'white-on-black',
+      };
+  }
+}
+
+/** UI-display metadata for each preset — used by the preset row in
+ *  `TopicCardGridPanel`. Stays alongside `cardStylePresetAxes` so the
+ *  two never drift out of sync. */
+export const CARD_STYLE_PRESETS: Array<{
+  id: CardStylePreset;
+  label: string;
+  description: string;
+}> = [
+  { id: 'photo-tile', label: 'Photo Tile', description: 'Thin border, photo fill, label below.' },
+  { id: 'cutout-pop', label: 'Cutout Pop', description: 'Thick border, subject on solid colour.' },
+  { id: 'icon-grid', label: 'Icon Grid', description: 'Thick border, flat icon on solid colour.' },
+  { id: 'caps-overlay', label: 'Caps Overlay', description: 'Stroked uppercase label overlapping the disc.' },
+  { id: 'mystery-doc', label: 'Mystery Doc', description: 'Doc-style overlap labels; pair with a B&W filter.' },
+  { id: 'cartoon-bold', label: 'Cartoon Bold', description: 'Heavy cartoon outline, photo fill, title-case.' },
+];
 
 // ─── Layout math ────────────────────────────────────────────────────────────
 
