@@ -481,6 +481,44 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     }
   }, [row, stylePick, loadRow]);
 
+  // ── action: sync video length to the actual voiceover audio ───────
+  // The render path + preview Player read from voiceover_duration_seconds.
+  // This button calls the sync-duration endpoint which downloads the
+  // voiceover, runs ffmpeg to measure it, and writes the exact value to
+  // the row. After this click, the preview Player + the final mp4 are
+  // the same length as the audio — no padding, no estimate drift.
+  const [syncDurationBusy, setSyncDurationBusy] = useState(false);
+  const syncDuration = useCallback(async () => {
+    if (!row?.voiceover_audio_url) return;
+    setSyncDurationBusy(true);
+    try {
+      const res = await fetch(
+        `/api/shorts/${encodeURIComponent(row.id)}/sync-duration`,
+        { method: 'POST' },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      await loadRow();
+      const before = typeof data.before_seconds === 'number' ? data.before_seconds : null;
+      const after = typeof data.seconds === 'number' ? data.seconds : null;
+      if (before !== null && after !== null) {
+        const delta = after - before;
+        const arrow = delta > 0 ? '+' : '';
+        toast.success(
+          `Synced. Video duration ${before.toFixed(1)}s → ${after.toFixed(1)}s (${arrow}${delta.toFixed(1)}s).`,
+        );
+      } else if (after !== null) {
+        toast.success(`Synced. Video duration set to ${after.toFixed(1)}s.`);
+      } else {
+        toast.success('Synced.');
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Sync failed');
+    } finally {
+      setSyncDurationBusy(false);
+    }
+  }, [row?.id, row?.voiceover_audio_url, loadRow]);
+
   // ── action: generate voiceover ─────────────────────────────────────
   const generateVoiceover = useCallback(async () => {
     if (!row || !selectedVoice) return;
@@ -812,6 +850,42 @@ export function ShortEditor({ shortId }: { shortId: string }) {
             src={row.voiceover_audio_url}
             style={{ width: '100%', marginTop: 10 }}
           />
+        )}
+        {row.voiceover_audio_url && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: 12,
+              borderRadius: 10,
+              background: 'rgba(255,255,255,0.025)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>
+                Sync video length to voiceover
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                Measures the actual audio (
+                {row.voiceover_duration_seconds
+                  ? `currently stored as ${row.voiceover_duration_seconds.toFixed(1)}s`
+                  : 'duration unknown'}
+                ) and updates the preview + the final render to match exactly.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={syncDuration}
+              disabled={syncDurationBusy}
+              style={primaryButton(syncDurationBusy)}
+            >
+              {syncDurationBusy ? 'Syncing…' : 'Sync duration'}
+            </button>
+          </div>
         )}
       </EditorSection>
     ),
