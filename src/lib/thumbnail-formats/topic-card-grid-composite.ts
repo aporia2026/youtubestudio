@@ -175,6 +175,20 @@ export function circularMaskSvg(diameter: number): Buffer {
 }
 
 /**
+ * Build a black-stroked circle SVG of the given diameter, drawn INSIDE
+ * the disc edge so the stroke's outer rim aligns with the masked image's
+ * edge. Used to paint the cartoon-style border that every reference
+ * circle thumbnail in the genre uses. Pixel-parity with the browser
+ * preview's `<circle stroke="#000000" strokeWidth={borderPx}>` element.
+ */
+export function circularBorderSvg(diameter: number, strokeWidth: number): Buffer {
+  const r = (diameter - strokeWidth) / 2;
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${diameter}" height="${diameter}"><circle cx="${diameter / 2}" cy="${diameter / 2}" r="${r}" fill="none" stroke="#000000" stroke-width="${strokeWidth}"/></svg>`,
+  );
+}
+
+/**
  * Resize uploaded bytes to exactly fit the target rectangle with the
  * caller-specified fit strategy, then optionally recolour through a
  * single image filter.
@@ -1500,7 +1514,8 @@ async function buildSquareCellOverlay(
  *    equal to the disc diameter, then alpha-masked to a circle.
  *  - The label sits in the remaining strip beneath the disc, centred.
  *
- * No black border, no hairline — circles float on the white canvas.
+ * Every disc gets a black border (cartoon-style outline) — matches the
+ * browser preview and every reference thumbnail in the genre.
  */
 async function buildCircleCellOverlay(
   imageBytes: Buffer,
@@ -1523,9 +1538,18 @@ async function buildCircleCellOverlay(
   const square = await fitImage(imageBytes, discD, discD, fit, filter);
 
   // 2) Apply the circular alpha mask (dest-in keeps only the pixels under
-  //    the white circle, dropping the corners to transparent).
-  const masked = await sharp(square)
+  //    the white circle, dropping the corners to transparent), then
+  //    composite a black border ring on top so the disc has the cartoon-
+  //    style outline every reference thumbnail in the genre uses. Border
+  //    weight matches the browser preview's formula
+  //    (`max(3, round(w * 0.006))`) so preview and export agree.
+  const borderPx = Math.max(3, Math.round(cellW * 0.006));
+  const maskedNoBorder = await sharp(square)
     .composite([{ input: circularMaskSvg(discD), blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+  const masked = await sharp(maskedNoBorder)
+    .composite([{ input: circularBorderSvg(discD, borderPx) }])
     .png()
     .toBuffer();
 

@@ -914,6 +914,13 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
   const discDiameter = Math.min(w, illustrationH);
   const discCx = x + w / 2;
   const discCy = y + illustrationH / 2;
+  // Stable per-instance id for the circle's <clipPath>. Without this,
+  // the <image> below paints into the disc's bounding SQUARE — so wherever
+  // the disc curves up (most visibly along the bottom edge) the image
+  // overflows the circle into the cell corners and the disc looks
+  // flat-bottomed. The server-side Sharp composite already masks via
+  // an alpha layer; this brings the browser preview in line.
+  const circleClipId = useId();
   // Emoji sizes to ~60 % of the illustration area's shorter side — big
   // enough to read, small enough to leave breathing room.
   const emojiSize = Math.round(Math.min(w, illustrationH) * 0.55);
@@ -936,6 +943,15 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
         <>
           <rect x={x} y={y} width={w} height={h} fill="#ffffff" />
           <circle cx={discCx} cy={discCy} r={discDiameter / 2} fill={bg} />
+          {/* Clip region for the image / icon / emoji that follows.
+              Defining it under <defs> means the clipPath itself doesn't
+              paint — it only acts as a mask for any <g clip-path> that
+              references it below. */}
+          <defs>
+            <clipPath id={circleClipId}>
+              <circle cx={discCx} cy={discCy} r={discDiameter / 2} />
+            </clipPath>
+          </defs>
         </>
       ) : (
         <rect x={x} y={y} width={w} height={h} fill={bg} rx={cornerRadius} ry={cornerRadius} />
@@ -973,7 +989,7 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
             : cell.imageFit === 'fill'
               ? 'none'
               : 'xMidYMid slice';
-        return (
+        const imageGroup = (
           <g transform={transform}>
             <image
               href={cell.imageUrl}
@@ -985,6 +1001,13 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
             />
           </g>
         );
+        // In circle mode, clip the painted image to the disc so the
+        // bounding-square overflow (the flat-bottom artefact) is gone.
+        // Square / rounded modes don't need the clip — their bounding
+        // box and visible region already match.
+        return useDisc
+          ? <g clipPath={`url(#${circleClipId})`}>{imageGroup}</g>
+          : imageGroup;
       })()}
       {/* Lucide icon path — takes precedence over emoji when both are
           set. Same transform pipeline as the emoji branch (rotation
@@ -1115,14 +1138,17 @@ function FreeFormCellGroup({ cell }: { cell: FreeFormCell }): ReactElement {
       )}
       {/* Outer border. Square / rounded use a rect with optional
           corner radius; circle draws a stroked disc around the
-          illustration area (label band has no border). */}
+          illustration area (label band has no border). Circles force
+          black (`#000000`) — the per-cell `borderColor` override is
+          ignored here because every reference thumbnail in the genre
+          uses a black border and a coloured one reads as off-style. */}
       {shape === 'circle' ? (
         <circle
           cx={discCx}
           cy={discCy}
           r={discDiameter / 2 - borderPx / 2}
           fill="none"
-          stroke={borderColor}
+          stroke="#000000"
           strokeWidth={borderPx}
         />
       ) : (

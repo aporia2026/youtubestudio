@@ -490,3 +490,79 @@ describe('ThumbnailRenderer — title bar', () => {
     expect(bottom).not.toContain('translate(0, 0)');
   });
 });
+
+// ─── Free-form cells: circle clip + forced-black border ────────────────────
+
+/**
+ * Regression tests for the topic-card-grid circle parity work
+ * (`_plans/2026-06-04-topic-card-grid-circle-parity.md`).
+ *
+ * Before the fix, `<image>` inside a circle cell painted to the disc's
+ * bounding square without a `clipPath`, so the bottom edge of every
+ * circle showed a flat horizontal seam where the image extended past
+ * the disc curve. These tests pin down the fix so a regression resurrects
+ * itself loudly.
+ */
+describe('ThumbnailRenderer — circle cell clip + border invariant', () => {
+  it('emits a <clipPath> and wraps the image in <g clip-path="url(...)"> for circle cells', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            imageUrl: 'https://example.com/cell.png',
+            label: 'Test',
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain('<clipPath');
+    // The image must be inside a group that references the clipPath.
+    expect(html).toMatch(/<g clip-path="url\(#[^"]+\)"><g[^>]*><image/);
+  });
+
+  it('does NOT wrap the image in a clipPath for non-circle cells', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'square',
+            imageUrl: 'https://example.com/cell.png',
+            label: 'Test',
+          },
+        ]}
+      />,
+    );
+    // No clipPath element should be emitted for square cells.
+    expect(html).not.toContain('<clipPath');
+  });
+
+  it('forces black border on circles even when borderColor is overridden', () => {
+    const html = renderToStaticMarkup(
+      <ThumbnailRenderer
+        canvasWidth={400}
+        canvasHeight={225}
+        cells={[
+          {
+            bounds: { x: 0, y: 0, w: 200, h: 200 },
+            shape: 'circle',
+            borderColor: '#ff0000',
+            label: 'Test',
+          },
+        ]}
+      />,
+    );
+    // The border circle element must use the forced black stroke,
+    // not the per-cell override. SVG attribute order is implementation-
+    // defined, so we check on attribute presence within the same element
+    // rather than a positional regex.
+    expect(html).toMatch(/<circle[^>]*fill="none"[^>]*stroke="#000000"/);
+    expect(html).not.toContain('stroke="#ff0000"');
+  });
+});
