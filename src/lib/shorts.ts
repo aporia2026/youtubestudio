@@ -28,6 +28,7 @@ import {
 import { parseLlmJson } from './parse-llm-json';
 import { logger } from './logger';
 import { getEffectiveModelId } from './model-defaults';
+import { probeAudioDurationSeconds } from './audio-duration-probe';
 import {
   TARGET_DURATION_SECONDS_DEFAULT,
   WORDS_PER_SECOND,
@@ -564,12 +565,29 @@ export async function generateShortVoiceover(args: GenerateShortVoiceoverArgs): 
   const bucket = getNarrationBucket();
   const ext = mimeTypeToExt(result.mimeType);
   const r2Key = buildShortVoiceoverKey(args.shortId, args.voiceId, ext);
-  await uploadToBucket(bucket, r2Key, Buffer.from(audioBuffer), result.mimeType);
+  const audioBufferNode = Buffer.from(audioBuffer);
+  await uploadToBucket(bucket, r2Key, audioBufferNode, result.mimeType);
   const audioUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_NARRATION_PUBLIC_URL);
 
-  const durationSeconds = estimateShortDurationSeconds(
+  // Probe the actual audio duration from the bytes we just generated.
+  // The TTS providers return an estimate from char count (~$count/15
+  // sec/char for Google, similar for ElevenLabs); the renderer + the
+  // editor's elapsed-time chip use this number to decide the
+  // composition length, and an estimate that's even 2-3s off cuts the
+  // voiceover off mid-word. ffmpeg reads the real Duration from the
+  // mp3 header. Falls back to the estimate if the probe fails so we
+  // never block voiceover generation on a malformed buffer.
+  const probedDurationSeconds = await probeAudioDurationSeconds(audioBufferNode);
+  const fallbackDurationSeconds = estimateShortDurationSeconds(
     row.word_count ?? countSpokenWords(speakable),
   );
+  const durationSeconds = probedDurationSeconds ?? fallbackDurationSeconds;
+  logger.info('[shorts voiceover] duration resolved', {
+    shortId: args.shortId,
+    probed: probedDurationSeconds,
+    fallback_estimate: fallbackDurationSeconds,
+    used: durationSeconds,
+  });
 
   // Keep the `voiceover_blob_pathname` column populated with the R2
   // key — the column name is legacy from the Blob era, but the value

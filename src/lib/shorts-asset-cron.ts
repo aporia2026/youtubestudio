@@ -325,6 +325,14 @@ async function processClaimedShort(
     return 'error';
   };
 
+  // Wrap the whole tick loop in try/catch so an unexpected throw from the
+  // planner / base / variant code path lands as a visible `phase: 'error'`
+  // on the row instead of silently bubbling to the route handler — which
+  // would 5xx, get swallowed by the editor's tick `catch {}`, and leave
+  // the user staring at "Queued" forever. The Promise.allSettled inside
+  // the variants branch already absorbs per-variant failures; this guard
+  // is for the plan + base steps that use plain `await`.
+  try {
   while (Date.now() - tickStartMs < TICK_BUDGET_MS) {
     const view: JobView = {
       job,
@@ -503,6 +511,23 @@ async function processClaimedShort(
   await releaseClaim(short);
   logger.info('[shorts asset cron] yielded (tick budget)', { shortId: short.id, styleKey });
   return 'yielded';
+  } catch (err) {
+    // Unexpected throw from plan / base / a non-Promise.allSettled path.
+    // Persist a user-readable error on the row so the progress strip
+    // surfaces it + the Retry button works. Without this, the throw
+    // bubbles to the route layer, the editor's tick `catch {}` swallows
+    // the 5xx, and the row stays at phase='queued' forever — the exact
+    // "silently failing" the user reported on 2026-06-04.
+    const message = sanitizeError(err);
+    logger.error('[shorts asset cron] tick threw — finalizing error', {
+      shortId: short.id,
+      styleKey,
+      styleId,
+      detail: message,
+    });
+    await finalizeError(short, styleId, assets, message);
+    return 'error';
+  }
 }
 
 export interface ShortsAssetDrainResult {

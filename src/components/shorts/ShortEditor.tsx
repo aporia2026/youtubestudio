@@ -248,9 +248,27 @@ export function ShortEditor({ shortId }: { shortId: string }) {
     let cancelled = false;
     (async () => {
       try {
-        await fetch(`/api/shorts/${encodeURIComponent(row.id)}/run-asset-tick`, { method: 'POST' });
-      } catch {
-        /* swallow — the poll surfaces real state; the next tick retries */
+        const res = await fetch(
+          `/api/shorts/${encodeURIComponent(row.id)}/run-asset-tick`,
+          { method: 'POST' },
+        );
+        if (!res.ok) {
+          // Surface the server's error so a hard failure doesn't keep
+          // looping silently. The cron's catch already persists the
+          // error to the row (visible in the progress strip), but the
+          // toast covers the rare case where the route itself blew up
+          // before the persistence path ran.
+          const data = await res.json().catch(() => ({}));
+          const message =
+            typeof data?.error === 'string' ? data.error : `tick HTTP ${res.status}`;
+          console.error('[shorts editor tick] non-2xx', { status: res.status, error: message });
+          toast.error(`Asset generation tick failed: ${message}`);
+        }
+      } catch (err) {
+        // Network drop or aborted request — keep going; the cron will heal.
+        console.warn('[shorts editor tick] fetch threw', {
+          detail: err instanceof Error ? err.message : String(err),
+        });
       } finally {
         tickBusyRef.current = false;
         if (!cancelled) {
