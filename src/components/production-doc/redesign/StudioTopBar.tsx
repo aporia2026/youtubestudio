@@ -20,6 +20,7 @@ import type { ProductionDoc } from '@/remotion/utils';
  * is the only header users see in Studio Mode.
  */
 export type StudioSubMode = 'scene-strip' | 'bulk-grid';
+export type SceneStripOrientation = 'horizontal' | 'vertical';
 
 export interface StudioTopBarProps {
   doc: ProductionDoc;
@@ -31,6 +32,12 @@ export interface StudioTopBarProps {
   /** Toggle handler for the sub-mode button. R3 PR6. When omitted
    *  the toggle is not rendered (per rule 10). */
   onToggleSubMode?: () => void;
+  /** Current scene-strip orientation. R4 PR2. Only meaningful when
+   *  `subMode === 'scene-strip'`. */
+  sceneStripOrientation?: SceneStripOrientation;
+  /** Toggle handler for the orientation button. R4 PR2. When omitted
+   *  the toggle is not rendered. */
+  onToggleSceneStripOrientation?: () => void;
 }
 
 export const StudioTopBar: React.FC<StudioTopBarProps> = ({
@@ -38,6 +45,8 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
   onNewSession,
   subMode,
   onToggleSubMode,
+  sceneStripOrientation,
+  onToggleSceneStripOrientation,
 }) => {
   const sceneCount = doc.rows?.length ?? 0;
   const wordCount = doc.total_words ?? 0;
@@ -77,8 +86,33 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({
           )}
         </p>
       </div>
-      {(onNewSession || onToggleSubMode) && (
+      {(onNewSession || onToggleSubMode || onToggleSceneStripOrientation) && (
         <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {onToggleSceneStripOrientation && sceneStripOrientation && subMode !== 'bulk-grid' && (
+            <button
+              type="button"
+              onClick={onToggleSceneStripOrientation}
+              className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                color: 'var(--text-secondary)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+              aria-label={
+                sceneStripOrientation === 'horizontal'
+                  ? 'Switch scene strip to vertical list'
+                  : 'Switch scene strip to horizontal carousel'
+              }
+              title={
+                sceneStripOrientation === 'horizontal'
+                  ? 'Switch the scene strip to a vertical list (Notion-row style).'
+                  : 'Switch the scene strip back to a horizontal carousel.'
+              }
+            >
+              {sceneStripOrientation === 'horizontal' ? '⫾ Vertical' : '⫿ Horizontal'}
+            </button>
+          )}
           {onToggleSubMode && subMode && (
             <button
               type="button"

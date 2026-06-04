@@ -8,7 +8,11 @@ import type {
 } from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { getPref, setPref } from '@/lib/user-prefs';
-import { StudioTopBar, type StudioSubMode } from './StudioTopBar';
+import {
+  StudioTopBar,
+  type StudioSubMode,
+  type SceneStripOrientation,
+} from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
@@ -19,6 +23,7 @@ import type { StudioInspectorOverlayActions } from './StudioInspectorOverlay';
 import type { BrollCellProps } from '@/components/production-doc/BrollCell';
 
 const STUDIO_SUB_MODE_PREF_KEY = 'prodoc_studio_sub_mode';
+const SCENE_STRIP_ORIENTATION_PREF_KEY = 'prodoc_scene_strip_orientation';
 
 /**
  * Studio Mode — the post-generation Workspace surface.
@@ -79,6 +84,9 @@ export interface StudioModeProps {
    *  state hydrates from `getPref(STUDIO_SUB_MODE_PREF_KEY)` so the
    *  user's last choice survives reloads. R3 PR6. */
   initialSubMode?: StudioSubMode;
+  /** Test-only override for the initial scene-strip orientation. In
+   *  real usage the state hydrates from `getPref(SCENE_STRIP_…)`. R4 PR2. */
+  initialSceneStripOrientation?: SceneStripOrientation;
   /** Called when the user clicks a SceneCard in the scene strip.
    *  Page.tsx wires this to `setExpandedRow` so the inspector
    *  populates with the clicked row. R4 PR1. */
@@ -103,6 +111,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowOverlayActions,
   rowImagesByIndex,
   initialSubMode,
+  initialSceneStripOrientation,
   onSelectRow,
   editorWriters,
 }) => {
@@ -117,6 +126,23 @@ export const StudioMode: React.FC<StudioModeProps> = ({
       const next: StudioSubMode = prev === 'scene-strip' ? 'bulk-grid' : 'scene-strip';
       setPref(STUDIO_SUB_MODE_PREF_KEY, next);
       console.info('[prodoc studio] sub-mode-toggle', { to: next });
+      return next;
+    });
+  }, []);
+
+  // R4 PR2: scene-strip orientation toggle. Default 'horizontal'
+  // (per §15.2). Persisted via getPref/setPref so the user's choice
+  // follows them across reloads.
+  const [sceneStripOrientation, setSceneStripOrientation] = useState<SceneStripOrientation>(
+    () =>
+      initialSceneStripOrientation ??
+      getPref<SceneStripOrientation>(SCENE_STRIP_ORIENTATION_PREF_KEY, 'horizontal'),
+  );
+  const toggleSceneStripOrientation = useCallback(() => {
+    setSceneStripOrientation((prev) => {
+      const next: SceneStripOrientation = prev === 'horizontal' ? 'vertical' : 'horizontal';
+      setPref(SCENE_STRIP_ORIENTATION_PREF_KEY, next);
+      console.info('[prodoc studio] scene-strip-orientation-toggle', { to: next });
       return next;
     });
   }, []);
@@ -139,6 +165,8 @@ export const StudioMode: React.FC<StudioModeProps> = ({
         onNewSession={onNewSession}
         subMode={subMode}
         onToggleSubMode={toggleSubMode}
+        sceneStripOrientation={sceneStripOrientation}
+        onToggleSceneStripOrientation={toggleSceneStripOrientation}
       />
       {subMode === 'bulk-grid' ? (
         // Bulk Grid sub-mode: skip the 3-column StudioLayout entirely.
@@ -156,6 +184,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
                 rowImagesByIndex={rowImagesByIndex}
                 selectedRowIndex={selectedRowIndex}
                 onSelectRow={onSelectRow}
+                orientation={sceneStripOrientation}
               />
               {children}
             </div>

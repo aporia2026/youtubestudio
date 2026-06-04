@@ -134,3 +134,82 @@ describe('StudioMode — layout switch via subMode (R3 PR6)', () => {
     expect(html).toContain('Scene strip');
   });
 });
+
+describe('StudioMode — scene-strip orientation toggle (R4 PR2)', () => {
+  it('renders the orientation toggle in scene-strip mode by default', () => {
+    const html = renderToStaticMarkup(
+      <StudioMode doc={SAMPLE_DOC} initialSubMode="scene-strip">
+        <span>g</span>
+      </StudioMode>,
+    );
+    // Default orientation is horizontal; toggle label hints at the
+    // ACTION (switch to vertical).
+    expect(html).toContain('⫾ Vertical');
+  });
+
+  it('shows "⫿ Horizontal" label when starting in vertical orientation', () => {
+    const html = renderToStaticMarkup(
+      <StudioMode
+        doc={SAMPLE_DOC}
+        initialSubMode="scene-strip"
+        initialSceneStripOrientation="vertical"
+      >
+        <span>g</span>
+      </StudioMode>,
+    );
+    expect(html).toContain('⫿ Horizontal');
+    expect(html).not.toContain('⫾ Vertical');
+  });
+
+  it('hides the orientation toggle when in bulk-grid mode (no scene strip is visible)', () => {
+    const html = renderToStaticMarkup(
+      <StudioMode doc={SAMPLE_DOC} initialSubMode="bulk-grid">
+        <span>g</span>
+      </StudioMode>,
+    );
+    expect(html).not.toContain('⫾ Vertical');
+    expect(html).not.toContain('⫿ Horizontal');
+  });
+
+  it('propagates the orientation to the SceneStrip render in scene-strip mode', () => {
+    // SceneStrip only emits the data-orientation marker when there
+    // are rows to render — the empty state has no orientation.
+    const docWithRows: typeof SAMPLE_DOC = {
+      ...SAMPLE_DOC,
+      rows: [
+        {
+          timecode: '0:00',
+          script_text: '',
+          visual_type: 'B-Roll',
+          visual_description: '',
+          stock_search_terms: '',
+          ai_image_prompt: '',
+          on_screen_text: '',
+          notes: '',
+        } as never,
+      ],
+    };
+
+    const verticalHtml = renderToStaticMarkup(
+      <StudioMode
+        doc={docWithRows}
+        initialSubMode="scene-strip"
+        initialSceneStripOrientation="vertical"
+      >
+        <span>g</span>
+      </StudioMode>,
+    );
+    expect(verticalHtml).toMatch(/data-orientation="vertical"/);
+
+    const horizontalHtml = renderToStaticMarkup(
+      <StudioMode
+        doc={docWithRows}
+        initialSubMode="scene-strip"
+        initialSceneStripOrientation="horizontal"
+      >
+        <span>g</span>
+      </StudioMode>,
+    );
+    expect(horizontalHtml).toMatch(/data-orientation="horizontal"/);
+  });
+});

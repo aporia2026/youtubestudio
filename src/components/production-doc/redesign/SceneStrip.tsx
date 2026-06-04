@@ -3,7 +3,9 @@
 import React from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
-import { SceneCard } from './SceneCard';
+import { SceneCard, type SceneCardOrientation } from './SceneCard';
+
+export type SceneStripOrientation = SceneCardOrientation;
 
 /**
  * SceneStrip — horizontal scroll-bar of scene cards. See
@@ -28,6 +30,8 @@ export interface SceneStripProps {
   selectedRowIndex?: number | null;
   /** Called with the 0-based index when the user activates a card. */
   onSelectRow?: (rowIndex: number) => void;
+  /** Layout direction. Default `'horizontal'`. R4 PR2. */
+  orientation?: SceneStripOrientation;
 }
 
 export const SceneStrip: React.FC<SceneStripProps> = ({
@@ -35,6 +39,7 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
   rowImagesByIndex,
   selectedRowIndex = null,
   onSelectRow,
+  orientation = 'horizontal',
 }) => {
   const rows = doc.rows ?? [];
   if (rows.length === 0) {
@@ -78,19 +83,33 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
       <div
         role="list"
         aria-label="Scene cards"
-        className="px-3 pb-3 flex items-stretch gap-2 overflow-x-auto"
-        style={{
-          scrollSnapType: 'x mandatory',
-          // keep the scrollbar visible at the bottom so the affordance
-          // is obvious — overflow-x-auto by itself hides it on macOS.
-          scrollbarWidth: 'thin',
-        }}
+        data-orientation={orientation}
+        className={
+          orientation === 'vertical'
+            ? 'px-3 pb-3 flex flex-col gap-1.5 max-h-[480px] overflow-y-auto'
+            : 'px-3 pb-3 flex items-stretch gap-2 overflow-x-auto'
+        }
+        style={
+          orientation === 'vertical'
+            ? { scrollbarWidth: 'thin' }
+            : {
+                scrollSnapType: 'x mandatory',
+                // keep the scrollbar visible at the bottom so the
+                // affordance is obvious — overflow-x-auto by itself
+                // hides it on macOS.
+                scrollbarWidth: 'thin',
+              }
+        }
       >
         {rows.map((row, idx) => (
           <div
             key={idx}
             role="listitem"
-            style={{ scrollSnapAlign: 'start' }}
+            style={
+              orientation === 'horizontal'
+                ? { scrollSnapAlign: 'start' }
+                : undefined
+            }
           >
             <SceneCard
               rowIndex={idx}
@@ -98,6 +117,7 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
               imageState={rowImagesByIndex?.[idx]}
               selected={selectedRowIndex === idx}
               onSelect={onSelectRow}
+              orientation={orientation}
             />
           </div>
         ))}

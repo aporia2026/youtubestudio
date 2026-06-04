@@ -208,3 +208,42 @@ describe('SceneStrip — populated', () => {
     expect(html).toContain('src="https://x/1.png"');
   });
 });
+
+describe('SceneStrip — orientation prop (R4 PR2)', () => {
+  it('defaults to horizontal orientation (R4 PR1 contract)', () => {
+    const html = renderToStaticMarkup(
+      <SceneStrip doc={makeDoc([makeRow()])} />,
+    );
+    expect(html).toMatch(/data-orientation="horizontal"/);
+    // Horizontal lays out with flex (not flex-col).
+    expect(html).toMatch(/role="list"[^>]*class="[^"]*flex items-stretch/);
+  });
+
+  it('switches to a vertical column when orientation="vertical"', () => {
+    const html = renderToStaticMarkup(
+      <SceneStrip doc={makeDoc([makeRow()])} orientation="vertical" />,
+    );
+    // Both the SceneStrip list and the inner card carry the
+    // data-orientation attribute.
+    const verticalMarkers = (html.match(/data-orientation="vertical"/g) ?? []).length;
+    expect(verticalMarkers).toBeGreaterThanOrEqual(2);
+    expect(html).toMatch(/role="list"[^>]*class="[^"]*flex-col/);
+  });
+});
+
+describe('SceneCard — vertical orientation', () => {
+  it('renders the data-orientation marker for the vertical layout', () => {
+    const html = renderToStaticMarkup(
+      <SceneCard
+        rowIndex={2}
+        row={makeRow({ timecode: '0:10', script_text: 'hello world' })}
+        orientation="vertical"
+      />,
+    );
+    expect(html).toMatch(/data-orientation="vertical"/);
+    expect(html).toContain('hello world');
+    expect(html).toContain('0:10');
+    // The 1-based index badge still renders.
+    expect(html).toMatch(/<span[^>]*>\s*3\s*<\/span>/);
+  });
+});

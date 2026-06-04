@@ -26,6 +26,8 @@ import { getVisualTypeColor } from '@/lib/visual-type-colors';
  * polish PR; this PR keeps the card minimal to ship the layout
  * architecture cleanly.
  */
+export type SceneCardOrientation = 'horizontal' | 'vertical';
+
 export interface SceneCardProps {
   /** 0-based index into `doc.rows`. */
   rowIndex: number;
@@ -37,6 +39,10 @@ export interface SceneCardProps {
   selected?: boolean;
   /** Called with the 0-based index when the user activates the card. */
   onSelect?: (rowIndex: number) => void;
+  /** Layout direction. Default `'horizontal'` (R4 PR1 default).
+   *  Vertical mode renders a Notion-row layout: thumbnail left,
+   *  content middle, badges right. R4 PR2. */
+  orientation?: SceneCardOrientation;
 }
 
 const SCRIPT_PREVIEW_MAX = 80;
@@ -53,6 +59,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
   imageState,
   selected = false,
   onSelect,
+  orientation = 'horizontal',
 }) => {
   const displayIndex = rowIndex + 1;
   const visualType = row.visual_type?.trim() ?? '';
@@ -66,6 +73,129 @@ export const SceneCard: React.FC<SceneCardProps> = ({
 
   const label = `Scene ${displayIndex}${row.timecode ? ` at ${row.timecode}` : ''}`;
 
+  if (orientation === 'vertical') {
+    return (
+      <button
+        type="button"
+        onClick={onSelect ? () => onSelect(rowIndex) : undefined}
+        disabled={!onSelect}
+        aria-pressed={selected}
+        aria-label={label}
+        data-orientation="vertical"
+        className="flex items-stretch w-full text-left rounded overflow-hidden transition-colors"
+        style={{
+          minHeight: 56,
+          background: selected
+            ? 'rgba(124,58,237,0.10)'
+            : 'rgba(255,255,255,0.03)',
+          border: selected
+            ? '1px solid var(--accent-purple-bright, #a78bfa)'
+            : '1px solid rgba(255,255,255,0.08)',
+          cursor: onSelect ? 'pointer' : 'default',
+          borderLeftWidth: selected ? 3 : 1,
+        }}
+      >
+        <div
+          className="relative shrink-0"
+          style={{
+            width: 84,
+            aspectRatio: '16 / 9',
+            background: 'rgba(0,0,0,0.25)',
+          }}
+        >
+          {thumbnailUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={thumbnailUrl}
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div
+              className="absolute inset-0 flex items-center justify-center text-[9px]"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              no image
+            </div>
+          )}
+          <span
+            className="absolute top-0.5 left-0.5 inline-flex items-center justify-center rounded text-[9px] font-semibold"
+            style={{
+              minWidth: 16,
+              height: 14,
+              padding: '0 3px',
+              background: 'rgba(0,0,0,0.6)',
+              color: '#fff',
+            }}
+          >
+            {displayIndex}
+          </span>
+        </div>
+        <div className="flex-1 min-w-0 px-2 py-1.5 flex flex-col justify-center">
+          <div className="flex items-baseline gap-2">
+            {row.timecode && (
+              <span
+                className="text-[10px] font-mono shrink-0"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {row.timecode}
+              </span>
+            )}
+            {visualType && visualTypeColor && (
+              <span
+                className="inline-flex items-center text-[9px] px-1.5 py-px rounded-full shrink-0"
+                style={{
+                  background: visualTypeColor.bg,
+                  color: visualTypeColor.color,
+                }}
+              >
+                {visualType}
+              </span>
+            )}
+          </div>
+          <div
+            className="text-[11px] leading-snug truncate"
+            style={{ color: 'var(--text-primary)' }}
+          >
+            {truncate(row.script_text ?? '', SCRIPT_PREVIEW_MAX)}
+          </div>
+        </div>
+        <div
+          aria-hidden="true"
+          className="shrink-0 flex items-center gap-1 px-2"
+        >
+          {hasOst && (
+            <span
+              title="On-screen text"
+              className="text-[9px] px-1 rounded"
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                color: '#fbbf24',
+                border: '1px solid rgba(255,255,255,0.08)',
+              }}
+            >
+              T
+            </span>
+          )}
+          {hasOverlay && (
+            <span
+              title="Overlay"
+              className="text-[9px] px-1 rounded"
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                color: '#fbbf24',
+                border: '1px solid rgba(255,255,255,0.08)',
+              }}
+            >
+              ✦
+            </span>
+          )}
+        </div>
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -73,6 +203,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
       disabled={!onSelect}
       aria-pressed={selected}
       aria-label={label}
+      data-orientation="horizontal"
       className="flex flex-col text-left rounded overflow-hidden transition-colors"
       style={{
         width: 160,
