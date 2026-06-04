@@ -4,7 +4,7 @@ import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } fr
 import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
-import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC } from '@/lib/feature-flags';
+import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC, PROD_DOC_REDESIGN_V1_PUBLIC } from '@/lib/feature-flags';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
 import { mutate, getState as getOutboxState } from '@/lib/mutate';
 import { getPref, setPref } from '@/lib/user-prefs';
@@ -110,6 +110,10 @@ import {
 } from '@/remotion/utils';
 import type { EditorWriters } from '@/components/production-doc/editor/types';
 import { EditorView } from '@/components/production-doc/editor/EditorView';
+// Phase R0 of the production-doc redesign — see
+// `_plans/2026-06-04-production-doc-redesign.md`. Gated by
+// `PROD_DOC_REDESIGN_V1_PUBLIC` (default off).
+import { ProductionDocShell } from '@/components/production-doc/redesign/ProductionDocShell';
 // PR2 reliability (2026-06-03): pure helpers from the auto-pipeline
 // module. Safe to import client-side — no server-only deps.
 import { isExhausted, labelForErrorClass } from '@/lib/auto-pipeline/image-gen-errors';
@@ -9890,7 +9894,12 @@ function ProductionDocPage() {
     ? `${historyEntryId}:${doc.rows?.length ?? 0}`
     : null;
 
-  return (
+  // Phase R0 of the redesign: extract the page render to a const so the
+  // flag check below can wrap it in `ProductionDocShell` without
+  // duplicating ~4,300 lines of JSX. When the flag is off the shell is
+  // bypassed entirely and the const is returned as-is, so today's UX
+  // is unchanged. See `_plans/2026-06-04-production-doc-redesign.md`.
+  const pageContent = (
     <ScheduleLinkProvider item={scheduleItem}>
       <ImageGenThrottleToast />
       {/* ─── Stacked top-of-viewport banners (2026-06-03) ──────────
@@ -14205,4 +14214,8 @@ function ProductionDocPage() {
     })()}
     </ScheduleLinkProvider>
   );
+
+  return PROD_DOC_REDESIGN_V1_PUBLIC ? (
+    <ProductionDocShell doc={doc}>{pageContent}</ProductionDocShell>
+  ) : pageContent;
 }
