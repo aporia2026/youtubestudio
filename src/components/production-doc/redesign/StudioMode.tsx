@@ -102,6 +102,10 @@ export interface StudioModeProps {
    *  Page.tsx wires this to `setExpandedRow` so the inspector
    *  populates with the clicked row. R4 PR1. */
   onSelectRow?: (rowIndex: number) => void;
+  /** Called when the user drag-reorders a SceneCard. Page.tsx wires
+   *  this to `moveRowToIndex` which atomically shifts every
+   *  row-indexed state slice via `reorderProductionDocState`. */
+  onReorderRow?: (fromIndex: number, toIndex: number) => void;
   /** Full writer bundle used by the inspector tabs that need to drive
    *  variant management, section bulk-apply, overlay edits, etc.
    *  R3 (Variants editable). */
@@ -130,6 +134,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   subMode: controlledSubMode,
   onToggleSubMode: controlledOnToggleSubMode,
   onSelectRow,
+  onReorderRow,
   editorWriters,
   renderDock,
 }) => {
@@ -200,6 +205,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
                 rowVideoClipsByIndex={rowVideoClipsByIndex}
                 selectedRowIndex={selectedRowIndex}
                 onSelectRow={onSelectRow}
+                onReorderRow={onReorderRow}
                 orientation={sceneStripOrientation}
               />
               {children}

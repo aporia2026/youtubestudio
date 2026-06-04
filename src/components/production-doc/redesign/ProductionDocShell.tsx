@@ -83,6 +83,10 @@ export interface ProductionDocShellProps {
    *  to today's `setExpandedRow` in page.tsx. Ignored in Brief Mode.
    *  R4 PR1. */
   onSelectRow?: (rowIndex: number) => void;
+  /** Called when the user drag-reorders a SceneCard. Page.tsx wires
+   *  this to `moveRowToIndex` which atomically shifts every
+   *  row-indexed state slice. Ignored in Brief Mode. */
+  onReorderRow?: (fromIndex: number, toIndex: number) => void;
   /** Controlled Studio sub-mode. When provided together with
    *  `onToggleSubMode`, lifts the state to page.tsx so the same
    *  signal can gate other UI (e.g. hiding the legacy Results
@@ -122,6 +126,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   rowVideoClipsByIndex,
   editorWriters,
   onSelectRow,
+  onReorderRow,
   subMode,
   onToggleSubMode,
   renderDock,
@@ -204,6 +209,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
             rowVideoClipsByIndex={rowVideoClipsByIndex}
             editorWriters={editorWriters}
             onSelectRow={onSelectRow}
+            onReorderRow={onReorderRow}
             subMode={subMode}
             onToggleSubMode={onToggleSubMode}
             renderDock={renderDock}

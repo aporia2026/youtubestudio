@@ -114,6 +114,9 @@ import { EditorView } from '@/components/production-doc/editor/EditorView';
 // `_plans/2026-06-04-production-doc-redesign.md`. Gated by
 // `PROD_DOC_REDESIGN_V1_PUBLIC` (default off).
 import { ProductionDocShell } from '@/components/production-doc/redesign/ProductionDocShell';
+// Pure helper for the drag-to-reorder writer below — atomically
+// rekeys every row-indexed state slice when a card is moved.
+import { reorderProductionDocState } from '@/lib/production-doc-reorder';
 // R4 PR3: the Studio sub-mode hook is lifted out of StudioMode so
 // page.tsx can also read the same signal — needed to hide the legacy
 // grid when the user is in scene-strip mode.
@@ -3287,6 +3290,7 @@ function ProductionDocPage() {
     });
   }, [historyEntryId]);
 
+
   /**
    * PR2 reliability (2026-06-03) — bulk Retry handler for the failure
    * banner. Walks every row, finds rows that the auto-pipeline gave
@@ -4622,6 +4626,45 @@ function ProductionDocPage() {
   //   `initialClip` so the cell's adoption effect picks up the new task id
   //   and starts polling. Sparse, keyed by rowIndex.
   const [rowBatchStubs, setRowBatchStubs] = useState<Record<number, BrollClipRow | null>>({});
+
+  /**
+   * Drag-to-reorder writer for the SceneStrip. Atomically shifts
+   * `doc.rows`, `rowImages`, `rowVideoClips`, `rowOverlays`, and
+   * `rowBatchStubs` so the inspector keeps showing the right asset
+   * for the moved row. Selection (`expandedRow`) follows the
+   * dragged card. `rowLockSignatures` is keyed by content signature
+   * and naturally survives reorder — no rekeying needed.
+   *
+   * See `src/lib/production-doc-reorder.ts` for the pure helper +
+   * its 24 unit tests pinning the index-shift correctness.
+   */
+  const moveRowToIndex = useCallback((fromIndex: number, toIndex: number) => {
+    if (fromIndex === toIndex) return;
+    setDoc(prev => {
+      if (!prev) return prev;
+      const result = reorderProductionDocState(
+        {
+          rows: prev.rows,
+          rowImages,
+          rowVideoClips,
+          rowOverlays,
+          rowBatchStubs,
+          expandedRow,
+        },
+        fromIndex,
+        toIndex,
+      );
+      if (result.rowImages !== undefined) setRowImages(result.rowImages);
+      if (result.rowVideoClips !== undefined) setRowVideoClips(result.rowVideoClips);
+      if (result.rowOverlays !== undefined) setRowOverlays(result.rowOverlays);
+      if (result.rowBatchStubs !== undefined) setRowBatchStubs(result.rowBatchStubs);
+      if (result.expandedRow !== undefined) setExpandedRow(result.expandedRow);
+      const nextDoc = { ...prev, rows: result.rows };
+      persistDoc(nextDoc);
+      return nextDoc;
+    });
+  }, [rowImages, rowVideoClips, rowOverlays, rowBatchStubs, expandedRow]);
+
   // — User's resolved default model id (for "Animate all"'s cost preview
   //   and the model it uses on each row). Fetched once after mount; the
   //   BrollCell's own picker stays the source of truth for per-row overrides.
@@ -14376,6 +14419,11 @@ function ProductionDocPage() {
       // inspector and the legacy grid stay in sync (chevron + card
       // are equivalent selection affordances).
       onSelectRow={setExpandedRow}
+      // Drag-to-reorder: atomically shifts rows + every row-indexed
+      // state slice (rowImages, rowVideoClips, rowOverlays,
+      // rowBatchStubs, expandedRow) via the pure
+      // `reorderProductionDocState` helper.
+      onReorderRow={moveRowToIndex}
       // Polish: per-row video clip state for the V badge on scene cards.
       rowVideoClipsByIndex={rowVideoClips as Record<number, { status: string } | null>}
       // R4 PR3: controlled sub-mode. Both the shell (layout switch)

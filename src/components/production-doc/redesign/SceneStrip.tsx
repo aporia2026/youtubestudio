@@ -1,6 +1,23 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { ProductionDoc } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import {
@@ -12,20 +29,20 @@ import {
 export type SceneStripOrientation = SceneCardOrientation;
 
 /**
- * SceneStrip — horizontal scroll-bar of scene cards. See
- * `_plans/2026-06-04-production-doc-redesign.md` §4.2 / §15.1.
+ * SceneStrip — horizontal or vertical scene-card surface in Studio
+ * Mode. Phase R4 of `_plans/2026-06-04-production-doc-redesign.md`.
  *
- * R4 PR1 (this PR) ships the horizontal orientation only — that's
- * the documented default per §15.2. R4 PR2 adds the vertical
- * Notion-row variant plus the orientation toggle in the top bar
- * (the user opted into shipping both per §15.1).
+ * Drag-to-reorder: when `onReorderRow` is provided and no search
+ * filter is active, cards become sortable via `@dnd-kit/sortable`
+ * (pointer drag + keyboard navigation, accessible by default). The
+ * SceneStrip fires `onReorderRow(fromIndex, toIndex)` with ABSOLUTE
+ * row indices on drop; page.tsx atomically reorders every
+ * row-indexed state slice via `reorderProductionDocState`.
  *
- * Selection: clicking a card fires `onSelectRow` with the 0-based
- * row index. The shell maps that to `expandedRow` so the inspector
- * populates with the same row.
- *
- * Drag-to-reorder lands in a follow-up PR — the keyboard / aria
- * surface for reorder needs its own design pass.
+ * Dragging is intentionally disabled while a search query is active
+ * — moving a card to an "absolute" position from a filtered view
+ * produces surprising reorderings. Clearing the search restores
+ * draggability.
  */
 export interface SceneStripProps {
   doc: ProductionDoc;
@@ -36,9 +53,70 @@ export interface SceneStripProps {
   selectedRowIndex?: number | null;
   /** Called with the 0-based index when the user activates a card. */
   onSelectRow?: (rowIndex: number) => void;
+  /** Called with absolute (0-based) from/to indices on drag-end.
+   *  When omitted the strip renders without dnd wiring. */
+  onReorderRow?: (fromIndex: number, toIndex: number) => void;
   /** Layout direction. Default `'horizontal'`. R4 PR2. */
   orientation?: SceneStripOrientation;
 }
+
+interface SortableSceneCardProps {
+  id: string;
+  rowIndex: number;
+  row: ProductionDoc['rows'][number];
+  imageState?: RowImageStateView;
+  videoState?: SceneCardVideoState | null;
+  selected: boolean;
+  onSelect?: (rowIndex: number) => void;
+  orientation: SceneStripOrientation;
+}
+
+const SortableSceneCard: React.FC<SortableSceneCardProps> = ({
+  id,
+  rowIndex,
+  row,
+  imageState,
+  videoState,
+  selected,
+  onSelect,
+  orientation,
+}) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.45 : 1,
+    cursor: 'grab',
+    touchAction: 'none',
+  };
+  // `useSortable` applies its own role + aria attributes via
+  // `attributes`. We spread those first, then let any explicit prop
+  // override (here we don't override — the dnd-kit defaults make the
+  // wrapper a proper draggable item for screen readers).
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      style={
+        orientation === 'horizontal'
+          ? { ...style, scrollSnapAlign: 'start' }
+          : style
+      }
+    >
+      <SceneCard
+        rowIndex={rowIndex}
+        row={row}
+        imageState={imageState}
+        videoState={videoState}
+        selected={selected}
+        onSelect={onSelect}
+        orientation={orientation}
+      />
+    </div>
+  );
+};
 
 export const SceneStrip: React.FC<SceneStripProps> = ({
   doc,
@@ -46,13 +124,10 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
   rowVideoClipsByIndex,
   selectedRowIndex = null,
   onSelectRow,
+  onReorderRow,
   orientation = 'horizontal',
 }) => {
   const rows = doc.rows ?? [];
-  // Jump-to-scene search. Filters the visible cards by case-insensitive
-  // substring match against scene index, timecode, script_text,
-  // visual_description, and section_title. Hidden when there are
-  // fewer than 6 scenes (the strip is short enough to scan visually).
   const [searchQuery, setSearchQuery] = useState('');
   const filteredIndices = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -75,6 +150,27 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
   }, [rows, searchQuery]);
   const showSearch = rows.length >= 6;
   const hiddenCount = rows.length - filteredIndices.length;
+  const isFiltered = searchQuery.trim().length > 0;
+  const canReorder = !!onReorderRow && !isFiltered;
+
+  // dnd-kit sensors: pointer requires a 6px drag distance so a click
+  // on the card (to select the row) doesn't accidentally fire a
+  // drag. Keyboard sensor wires the standard arrow-key / space-bar
+  // ARIA pattern.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    if (!onReorderRow) return;
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const fromIndex = Number(active.id);
+    const toIndex = Number(over.id);
+    if (Number.isNaN(fromIndex) || Number.isNaN(toIndex)) return;
+    onReorderRow(fromIndex, toIndex);
+  };
 
   if (rows.length === 0) {
     return (
@@ -90,6 +186,70 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
       </div>
     );
   }
+
+  const renderCard = (idx: number) => {
+    const row = rows[idx];
+    const cardProps = {
+      rowIndex: idx,
+      row,
+      imageState: rowImagesByIndex?.[idx],
+      videoState: rowVideoClipsByIndex?.[idx] ?? null,
+      selected: selectedRowIndex === idx,
+      onSelect: onSelectRow,
+      orientation,
+    };
+    if (canReorder) {
+      return (
+        <SortableSceneCard
+          key={idx}
+          id={String(idx)}
+          {...cardProps}
+        />
+      );
+    }
+    return (
+      <div
+        key={idx}
+        role="listitem"
+        style={
+          orientation === 'horizontal' ? { scrollSnapAlign: 'start' } : undefined
+        }
+      >
+        <SceneCard {...cardProps} />
+      </div>
+    );
+  };
+
+  const listContent = (
+    <div
+      role="list"
+      aria-label="Scene cards"
+      data-orientation={orientation}
+      className={
+        orientation === 'vertical'
+          ? 'px-3 pb-3 flex flex-col gap-1.5 max-h-[480px] overflow-y-auto'
+          : 'px-3 pb-3 flex items-stretch gap-2 overflow-x-auto'
+      }
+      style={
+        orientation === 'vertical'
+          ? { scrollbarWidth: 'thin' }
+          : {
+              scrollSnapType: 'x mandatory',
+              scrollbarWidth: 'thin',
+            }
+      }
+    >
+      {filteredIndices.map(renderCard)}
+      {filteredIndices.length === 0 && searchQuery && (
+        <div
+          className="text-xs px-3 py-4 italic"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          No scenes match "{searchQuery}".
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <section
@@ -131,60 +291,26 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
             : `${rows.length} ${rows.length === 1 ? 'scene' : 'scenes'}`}
         </span>
       </header>
-      <div
-        role="list"
-        aria-label="Scene cards"
-        data-orientation={orientation}
-        className={
-          orientation === 'vertical'
-            ? 'px-3 pb-3 flex flex-col gap-1.5 max-h-[480px] overflow-y-auto'
-            : 'px-3 pb-3 flex items-stretch gap-2 overflow-x-auto'
-        }
-        style={
-          orientation === 'vertical'
-            ? { scrollbarWidth: 'thin' }
-            : {
-                scrollSnapType: 'x mandatory',
-                // keep the scrollbar visible at the bottom so the
-                // affordance is obvious — overflow-x-auto by itself
-                // hides it on macOS.
-                scrollbarWidth: 'thin',
-              }
-        }
-      >
-        {filteredIndices.map((idx) => {
-          const row = rows[idx];
-          return (
-            <div
-              key={idx}
-              role="listitem"
-              style={
-                orientation === 'horizontal'
-                  ? { scrollSnapAlign: 'start' }
-                  : undefined
-              }
-            >
-              <SceneCard
-                rowIndex={idx}
-                row={row}
-                imageState={rowImagesByIndex?.[idx]}
-                videoState={rowVideoClipsByIndex?.[idx] ?? null}
-                selected={selectedRowIndex === idx}
-                onSelect={onSelectRow}
-                orientation={orientation}
-              />
-            </div>
-          );
-        })}
-        {filteredIndices.length === 0 && searchQuery && (
-          <div
-            className="text-xs px-3 py-4 italic"
-            style={{ color: 'var(--text-muted)' }}
+      {canReorder ? (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext
+            items={filteredIndices.map(String)}
+            strategy={
+              orientation === 'vertical'
+                ? verticalListSortingStrategy
+                : horizontalListSortingStrategy
+            }
           >
-            No scenes match "{searchQuery}".
-          </div>
-        )}
-      </div>
+            {listContent}
+          </SortableContext>
+        </DndContext>
+      ) : (
+        listContent
+      )}
     </section>
   );
 };
