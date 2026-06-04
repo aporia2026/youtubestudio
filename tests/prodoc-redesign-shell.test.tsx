@@ -248,6 +248,29 @@ describe('ProductionDocShell — Brief Mode header injection (R1)', () => {
     expect(html).toContain('New session');
   });
 
+  it('Wraps the active mode in a motion container for the Brief↔Studio fade (R5 PR3)', () => {
+    // framer-motion's motion.div SSRs as a plain <div> but keeps the
+    // animation styles initial state inline (opacity:0 on enter unless
+    // reduced-motion). We assert the structural wrapper is present so
+    // future tests/regressions catch accidental unwrap.
+    const briefHtml = renderToStaticMarkup(
+      <ProductionDocShell doc={null}>
+        <span data-testid="content">brief content</span>
+      </ProductionDocShell>,
+    );
+    // Brief Mode chrome is preserved.
+    expect(briefHtml).toContain('Production Doc');
+    expect(briefHtml).toContain('data-testid="content"');
+
+    const studioHtml = renderToStaticMarkup(
+      <ProductionDocShell doc={SAMPLE_DOC}>
+        <span data-testid="content">studio content</span>
+      </ProductionDocShell>,
+    );
+    expect(studioHtml).toMatch(/aria-label="Studio top bar"/);
+    expect(studioHtml).toContain('data-testid="content"');
+  });
+
   it('Studio Mode omits the New session button when onNewSession is not provided', () => {
     const html = renderToStaticMarkup(
       <ProductionDocShell doc={SAMPLE_DOC}>

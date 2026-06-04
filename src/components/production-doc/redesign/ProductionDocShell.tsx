@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type {
   EditorWriters,
@@ -144,31 +145,68 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   }, [mode, doc]);
 
   // `mode === 'studio'` is true only when `doc` is non-null (see
-  // `selectShellMode`). The non-null assertion here is therefore safe
+  // `selectShellMode`). The non-null assertion below is therefore safe
   // and lets `StudioMode` declare `doc` as required, which keeps the
   // downstream API honest.
-  return mode === 'brief' ? (
-    <BriefMode onNewSession={onNewSession}>{children}</BriefMode>
-  ) : (
-    <StudioMode
-      doc={doc!}
-      onNewSession={onNewSession}
-      selectedRowIndex={selectedRowIndex}
-      onUpdateRow={onUpdateRow}
-      selectedRowImageState={selectedRowImageState}
-      selectedRowImageActions={selectedRowImageActions}
-      selectedRowVideoClip={selectedRowVideoClip}
-      selectedRowBrollContext={selectedRowBrollContext}
-      selectedRowOverlay={selectedRowOverlay}
-      selectedRowOverlayActions={selectedRowOverlayActions}
-      rowImagesByIndex={rowImagesByIndex}
-      editorWriters={editorWriters}
-      onSelectRow={onSelectRow}
-      subMode={subMode}
-      onToggleSubMode={onToggleSubMode}
-      renderDock={renderDock}
-    >
-      {children}
-    </StudioMode>
+  //
+  // R5 PR3: the mode switch is wrapped in `AnimatePresence` so the
+  // outgoing mode fades out while the incoming one fades in (~180ms,
+  // ease-out per §4.4 of the plan). `useReducedMotion` honors the
+  // user's OS-level preference and degrades to an instant swap.
+  const prefersReducedMotion = useReducedMotion();
+  const transition = prefersReducedMotion
+    ? { duration: 0 }
+    : { duration: 0.18, ease: [0.0, 0.0, 0.2, 1] as const };
+  const initial = prefersReducedMotion
+    ? { opacity: 1 }
+    : { opacity: 0, y: 8 };
+  const animate = { opacity: 1, y: 0 };
+  const exit = prefersReducedMotion
+    ? { opacity: 1 }
+    : { opacity: 0, y: -8 };
+
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      {mode === 'brief' ? (
+        <motion.div
+          key="brief"
+          initial={initial}
+          animate={animate}
+          exit={exit}
+          transition={transition}
+        >
+          <BriefMode onNewSession={onNewSession}>{children}</BriefMode>
+        </motion.div>
+      ) : (
+        <motion.div
+          key="studio"
+          initial={initial}
+          animate={animate}
+          exit={exit}
+          transition={transition}
+        >
+          <StudioMode
+            doc={doc!}
+            onNewSession={onNewSession}
+            selectedRowIndex={selectedRowIndex}
+            onUpdateRow={onUpdateRow}
+            selectedRowImageState={selectedRowImageState}
+            selectedRowImageActions={selectedRowImageActions}
+            selectedRowVideoClip={selectedRowVideoClip}
+            selectedRowBrollContext={selectedRowBrollContext}
+            selectedRowOverlay={selectedRowOverlay}
+            selectedRowOverlayActions={selectedRowOverlayActions}
+            rowImagesByIndex={rowImagesByIndex}
+            editorWriters={editorWriters}
+            onSelectRow={onSelectRow}
+            subMode={subMode}
+            onToggleSubMode={onToggleSubMode}
+            renderDock={renderDock}
+          >
+            {children}
+          </StudioMode>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
