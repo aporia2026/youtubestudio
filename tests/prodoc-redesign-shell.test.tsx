@@ -28,7 +28,7 @@ import {
   selectShellMode,
 } from '@/components/production-doc/redesign/ProductionDocShell';
 import { PROD_DOC_REDESIGN_V1_PUBLIC } from '@/lib/feature-flags';
-import type { ProductionDoc } from '@/remotion/utils';
+import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 
 const SAMPLE_DOC: ProductionDoc = {
   title: 'Test doc',
@@ -89,6 +89,36 @@ describe('ProductionDocShell — children always rendered', () => {
     const childIdx = html.indexOf('legacy-studio');
     expect(topBarIdx).toBeGreaterThanOrEqual(0);
     expect(childIdx).toBeGreaterThan(topBarIdx);
+  });
+
+  it('Studio Mode injects the StudioLegend between top bar and children (R2 PR2)', () => {
+    const docWithRows: typeof SAMPLE_DOC = {
+      ...SAMPLE_DOC,
+      rows: [
+        {
+          timecode: '0:00',
+          script_text: '',
+          visual_type: 'B-Roll',
+          visual_description: '',
+          stock_search_terms: '',
+          ai_image_prompt: '',
+          on_screen_text: '',
+          notes: '',
+        } as ProductionRow,
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <ProductionDocShell doc={docWithRows}>
+        <span data-testid="legacy-studio">grid</span>
+      </ProductionDocShell>,
+    );
+    expect(html).toMatch(/aria-label="Scene type breakdown"/);
+    // Order: top bar → legend → children.
+    const topBarIdx = html.indexOf('Studio top bar');
+    const legendIdx = html.indexOf('Scene type breakdown');
+    const childIdx = html.indexOf('legacy-studio');
+    expect(topBarIdx).toBeLessThan(legendIdx);
+    expect(legendIdx).toBeLessThan(childIdx);
   });
 });
 

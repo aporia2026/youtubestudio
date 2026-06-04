@@ -3,6 +3,7 @@
 import React from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import { StudioTopBar } from './StudioTopBar';
+import { StudioLegend } from './StudioLegend';
 
 /**
  * Studio Mode — the post-generation Workspace surface.
@@ -12,10 +13,11 @@ import { StudioTopBar } from './StudioTopBar';
  * contextual right inspector, pinned render dock). Built on top of the
  * existing Phase-3 `EditorView` shell — see §7.1 of the plan.
  *
- * Phase R2 first PR: the `StudioTopBar` is mounted above the legacy
- * grid (passed in via `children`). The left rail, preview-hero
- * restructure, scene-card strip, and render dock are subsequent R2
- * PRs.
+ * Phase R2 PR1 added `StudioTopBar`. Phase R2 PR2 (this PR) adds the
+ * `StudioLegend` — a horizontal scene-type breakdown — below the top
+ * bar. The left-rail Filters and Jump-to nav land in R3 when the
+ * inspector replaces the right side of the grid (the layout change
+ * fits naturally with that work).
  */
 export interface StudioModeProps {
   /** Studio Mode renders only when the user has a generated doc, so
@@ -33,6 +35,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   return (
     <>
       <StudioTopBar doc={doc} onNewSession={onNewSession} />
+      <StudioLegend doc={doc} />
       {children}
     </>
   );

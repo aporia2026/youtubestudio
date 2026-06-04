@@ -114,6 +114,9 @@ import { EditorView } from '@/components/production-doc/editor/EditorView';
 // `_plans/2026-06-04-production-doc-redesign.md`. Gated by
 // `PROD_DOC_REDESIGN_V1_PUBLIC` (default off).
 import { ProductionDocShell } from '@/components/production-doc/redesign/ProductionDocShell';
+// Visual-type color tokens — shared with the redesign's `StudioLegend`.
+// See `_plans/2026-06-04-production-doc-redesign.md` §R2 PR2.
+import { VISUAL_TYPE_COLORS } from '@/lib/visual-type-colors';
 // PR2 reliability (2026-06-03): pure helpers from the auto-pipeline
 // module. Safe to import client-side — no server-only deps.
 import { isExhausted, labelForErrorClass } from '@/lib/auto-pipeline/image-gen-errors';
@@ -684,17 +687,6 @@ const FALLBACK_BUILT_IN_STYLES: StyleSummary[] = [
   { id: 'animation_2d', label: '2D Animation', ai_image_suffix: '', allow_overlay_stock: false, origin: 'built-in' },
   { id: 'doodle_explainer', label: 'Doodle Explainer', ai_image_suffix: '', allow_overlay_stock: true, origin: 'built-in' },
 ];
-
-const VISUAL_TYPE_COLORS: Record<string, { bg: string; color: string }> = {
-  'Title Card':       { bg: 'rgba(124,58,237,0.15)', color: '#a78bfa' },
-  'B-Roll':           { bg: 'rgba(6,182,212,0.12)',  color: '#22d3ee' },
-  'Talking Head':     { bg: 'rgba(16,185,129,0.12)', color: '#34d399' },
-  'Screen Recording': { bg: 'rgba(245,158,11,0.12)', color: '#fbbf24' },
-  'Animation':        { bg: 'rgba(236,72,153,0.12)', color: '#f472b6' },
-  'Lower Third':      { bg: 'rgba(59,130,246,0.12)', color: '#60a5fa' },
-  'Statistics':       { bg: 'rgba(239,68,68,0.12)',  color: '#f87171' },
-  'Cutaway':          { bg: 'rgba(107,114,128,0.12)', color: '#9ca3af' },
-};
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
