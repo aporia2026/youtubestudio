@@ -1,15 +1,18 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import type { RowImageStateView } from '@/components/production-doc/editor/types';
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
-import { StudioTopBar } from './StudioTopBar';
+import { getPref, setPref } from '@/lib/user-prefs';
+import { StudioTopBar, type StudioSubMode } from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
 import { StudioInspector } from './StudioInspector';
 import type { StudioInspectorImageActions } from './StudioInspectorImage';
 import type { StudioInspectorVideoClipSlice } from './StudioInspectorVideo';
+
+const STUDIO_SUB_MODE_PREF_KEY = 'prodoc_studio_sub_mode';
 
 /**
  * Studio Mode — the post-generation Workspace surface.
@@ -60,6 +63,10 @@ export interface StudioModeProps {
    *  Variants tab to render mini-strip thumbnails for the group.
    *  R3 PR4d. */
   rowImagesByIndex?: ReadonlyArray<RowImageStateView | undefined>;
+  /** Test-only override for the initial sub-mode. In real usage the
+   *  state hydrates from `getPref(STUDIO_SUB_MODE_PREF_KEY)` so the
+   *  user's last choice survives reloads. R3 PR6. */
+  initialSubMode?: StudioSubMode;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -73,7 +80,22 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   selectedRowVideoClip = null,
   selectedRowOverlay = null,
   rowImagesByIndex,
+  initialSubMode,
 }) => {
+  // R3 PR6: Studio sub-mode toggle. Default 'scene-strip' (per §15.2
+  // of the plan). Persisted via getPref/setPref so the user's choice
+  // follows them across sessions and devices.
+  const [subMode, setSubMode] = useState<StudioSubMode>(
+    () => initialSubMode ?? getPref<StudioSubMode>(STUDIO_SUB_MODE_PREF_KEY, 'scene-strip'),
+  );
+  const toggleSubMode = useCallback(() => {
+    setSubMode((prev) => {
+      const next: StudioSubMode = prev === 'scene-strip' ? 'bulk-grid' : 'scene-strip';
+      setPref(STUDIO_SUB_MODE_PREF_KEY, next);
+      console.info('[prodoc studio] sub-mode-toggle', { to: next });
+      return next;
+    });
+  }, []);
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
       ? doc.rows[selectedRowIndex] ?? null
@@ -88,25 +110,38 @@ export const StudioMode: React.FC<StudioModeProps> = ({
 
   return (
     <>
-      <StudioTopBar doc={doc} onNewSession={onNewSession} />
-      <StudioLayout
-        leftRail={<StudioLeftRail doc={doc} />}
-        mainContent={children}
-        inspector={
-          <StudioInspector
-            selectedRow={selectedRow}
-            selectedRowIndex={displayIndex}
-            selectedRowLabel={displayLabel}
-            onUpdateRow={onUpdateRow}
-            selectedRowImageState={selectedRowImageState}
-            selectedRowImageActions={selectedRowImageActions}
-            selectedRowVideoClip={selectedRowVideoClip}
-            selectedRowOverlay={selectedRowOverlay}
-            doc={doc}
-            rowImagesByIndex={rowImagesByIndex}
-          />
-        }
+      <StudioTopBar
+        doc={doc}
+        onNewSession={onNewSession}
+        subMode={subMode}
+        onToggleSubMode={toggleSubMode}
       />
+      {subMode === 'bulk-grid' ? (
+        // Bulk Grid sub-mode: skip the 3-column StudioLayout entirely.
+        // Children (today's grid table) take the full width — the
+        // escape hatch from the squashed-center cost the layout pays
+        // in scene-strip mode. R3 PR6 of the plan.
+        <>{children}</>
+      ) : (
+        <StudioLayout
+          leftRail={<StudioLeftRail doc={doc} />}
+          mainContent={children}
+          inspector={
+            <StudioInspector
+              selectedRow={selectedRow}
+              selectedRowIndex={displayIndex}
+              selectedRowLabel={displayLabel}
+              onUpdateRow={onUpdateRow}
+              selectedRowImageState={selectedRowImageState}
+              selectedRowImageActions={selectedRowImageActions}
+              selectedRowVideoClip={selectedRowVideoClip}
+              selectedRowOverlay={selectedRowOverlay}
+              doc={doc}
+              rowImagesByIndex={rowImagesByIndex}
+            />
+          }
+        />
+      )}
     </>
   );
 };

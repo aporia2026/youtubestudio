@@ -19,14 +19,26 @@ import type { ProductionDoc } from '@/remotion/utils';
  * flag is on (see the conditional in `page.tsx`), so this top bar
  * is the only header users see in Studio Mode.
  */
+export type StudioSubMode = 'scene-strip' | 'bulk-grid';
+
 export interface StudioTopBarProps {
   doc: ProductionDoc;
   /** Same callback the BriefHeader uses — wired to today's
    *  `resetSession`. Optional so the bar stays renderable in tests. */
   onNewSession?: () => void;
+  /** Current Studio sub-mode. R3 PR6. */
+  subMode?: StudioSubMode;
+  /** Toggle handler for the sub-mode button. R3 PR6. When omitted
+   *  the toggle is not rendered (per rule 10). */
+  onToggleSubMode?: () => void;
 }
 
-export const StudioTopBar: React.FC<StudioTopBarProps> = ({ doc, onNewSession }) => {
+export const StudioTopBar: React.FC<StudioTopBarProps> = ({
+  doc,
+  onNewSession,
+  subMode,
+  onToggleSubMode,
+}) => {
   const sceneCount = doc.rows?.length ?? 0;
   const wordCount = doc.total_words ?? 0;
   const duration = doc.total_duration ?? '';
@@ -65,22 +77,54 @@ export const StudioTopBar: React.FC<StudioTopBarProps> = ({ doc, onNewSession })
           )}
         </p>
       </div>
-      {onNewSession && (
+      {(onNewSession || onToggleSubMode) && (
         <div className="flex items-center gap-2 flex-wrap shrink-0">
-          <button
-            type="button"
-            onClick={onNewSession}
-            className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
-            style={{
-              background: 'rgba(255,255,255,0.04)',
-              color: 'var(--text-secondary)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              cursor: 'pointer',
-            }}
-            title="Clear the current doc to start fresh. Previous generations stay in the history."
-          >
-            New session
-          </button>
+          {onToggleSubMode && subMode && (
+            <button
+              type="button"
+              onClick={onToggleSubMode}
+              className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+              style={{
+                background:
+                  subMode === 'bulk-grid'
+                    ? 'rgba(124,58,237,0.18)'
+                    : 'rgba(255,255,255,0.04)',
+                color:
+                  subMode === 'bulk-grid'
+                    ? 'var(--accent-purple-bright, #a78bfa)'
+                    : 'var(--text-secondary)',
+                border:
+                  subMode === 'bulk-grid'
+                    ? '1px solid rgba(124,58,237,0.35)'
+                    : '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+              aria-pressed={subMode === 'bulk-grid'}
+              title={
+                subMode === 'bulk-grid'
+                  ? 'Switch back to the scene-strip layout (inspector on the right).'
+                  : 'Switch to the full-width grid for bulk editing.'
+              }
+            >
+              {subMode === 'bulk-grid' ? '▦ Scene strip' : '▦ Bulk grid'}
+            </button>
+          )}
+          {onNewSession && (
+            <button
+              type="button"
+              onClick={onNewSession}
+              className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+              style={{
+                background: 'rgba(255,255,255,0.04)',
+                color: 'var(--text-secondary)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                cursor: 'pointer',
+              }}
+              title="Clear the current doc to start fresh. Previous generations stay in the history."
+            >
+              New session
+            </button>
+          )}
         </div>
       )}
     </header>
