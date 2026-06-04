@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import type { ProductionDoc } from '@/remotion/utils';
+import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import { StudioTopBar } from './StudioTopBar';
 import { StudioLayout } from './StudioLayout';
 import { StudioLeftRail } from './StudioLeftRail';
@@ -40,6 +40,10 @@ export interface StudioModeProps {
    *  state so the inspector populates whenever a user expands a row
    *  in the legacy grid. */
   selectedRowIndex?: number | null;
+  /** Optional row writer (same signature as today's `updateRow` in
+   *  page.tsx). When provided the Content tab's text fields become
+   *  editable in-place. R3 PR3b. */
+  onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
 }
 
 export const StudioMode: React.FC<StudioModeProps> = ({
@@ -47,6 +51,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
   children,
   onNewSession,
   selectedRowIndex = null,
+  onUpdateRow,
 }) => {
   const selectedRow =
     selectedRowIndex !== null && selectedRowIndex >= 0
@@ -71,6 +76,7 @@ export const StudioMode: React.FC<StudioModeProps> = ({
             selectedRow={selectedRow}
             selectedRowIndex={displayIndex}
             selectedRowLabel={displayLabel}
+            onUpdateRow={onUpdateRow}
           />
         }
       />

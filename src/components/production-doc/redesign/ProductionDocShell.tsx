@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import type { ProductionDoc } from '@/remotion/utils';
+import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import { BriefMode } from './BriefMode';
 import { StudioMode } from './StudioMode';
 
@@ -32,6 +32,10 @@ export interface ProductionDocShellProps {
    *  inspector so the Content / Image / Video / Overlay / Section /
    *  Variants tabs populate. Ignored in Brief Mode. */
   selectedRowIndex?: number | null;
+  /** Optional row writer. When provided, the inspector's Content tab
+   *  becomes editable. Same signature as today's `updateRow(rowIndex,
+   *  patch)` in page.tsx. Ignored in Brief Mode. */
+  onUpdateRow?: (rowIndex: number, patch: Partial<ProductionRow>) => void;
 }
 
 export type ProductionDocShellMode = 'brief' | 'studio';
@@ -50,6 +54,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
   children,
   onNewSession,
   selectedRowIndex,
+  onUpdateRow,
 }) => {
   const mode: ProductionDocShellMode = selectShellMode(doc);
   // Track the prior mode so the mode-switch log fires only on actual
@@ -84,6 +89,7 @@ export const ProductionDocShell: React.FC<ProductionDocShellProps> = ({
       doc={doc!}
       onNewSession={onNewSession}
       selectedRowIndex={selectedRowIndex}
+      onUpdateRow={onUpdateRow}
     >
       {children}
     </StudioMode>

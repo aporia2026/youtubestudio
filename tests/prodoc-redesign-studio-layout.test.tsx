@@ -150,8 +150,8 @@ describe('StudioInspector — chrome', () => {
     expect(html).toContain('id="inspector-panel-content"');
   });
 
-  it('honors the currentTab prop', () => {
-    const html = renderToStaticMarkup(<StudioInspector currentTab="overlay" />);
+  it('honors the initialTab prop', () => {
+    const html = renderToStaticMarkup(<StudioInspector initialTab="overlay" />);
     expect(html).toMatch(
       /role="tabpanel"[^>]*aria-labelledby="inspector-tab-overlay"/,
     );

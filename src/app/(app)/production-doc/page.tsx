@@ -14222,6 +14222,12 @@ function ProductionDocPage() {
       // in the legacy grid, the Studio inspector populates with that
       // row. R3 PR3 of `_plans/2026-06-04-production-doc-redesign.md`.
       selectedRowIndex={expandedRow}
+      // R3 PR3b: the inspector's Content tab text fields become
+      // editable by piping today's `updateRow` writer down through
+      // the shell. The Save button (and Ctrl+Enter) in the inspector
+      // fires the same atomic row-asset path the legacy ✎ inline
+      // editor uses.
+      onUpdateRow={updateRow}
     >
       {pageContent}
     </ProductionDocShell>

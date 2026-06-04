@@ -29,7 +29,7 @@ function makeRow(overrides: Partial<ProductionRow> = {}): ProductionRow {
 
 describe('StudioInspectorContent — rendering', () => {
   it('renders every populated field with its label', () => {
-    const html = renderToStaticMarkup(<StudioInspectorContent row={makeRow()} />);
+    const html = renderToStaticMarkup(<StudioInspectorContent rowIndex={0} row={makeRow()} />);
     expect(html).toContain('Visual type');
     expect(html).toContain('Title Card');
     expect(html).toContain('Script');
@@ -44,7 +44,7 @@ describe('StudioInspectorContent — rendering', () => {
 
   it('omits stock_search_terms when empty', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ stock_search_terms: '' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ stock_search_terms: '' })} />,
     );
     expect(html).not.toContain('Stock search terms');
   });
@@ -52,6 +52,7 @@ describe('StudioInspectorContent — rendering', () => {
   it('shows stock_search_terms when present', () => {
     const html = renderToStaticMarkup(
       <StudioInspectorContent
+        rowIndex={0}
         row={makeRow({ stock_search_terms: 'businessman handshake' })}
       />,
     );
@@ -61,12 +62,12 @@ describe('StudioInspectorContent — rendering', () => {
 
   it('omits notes when empty and shows them when present', () => {
     const emptyHtml = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ notes: '' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ notes: '' })} />,
     );
     expect(emptyHtml).not.toContain('Notes');
 
     const withNotesHtml = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ notes: 'rerender after voiceover lands' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ notes: 'rerender after voiceover lands' })} />,
     );
     expect(withNotesHtml).toContain('Notes');
     expect(withNotesHtml).toContain('rerender after voiceover lands');
@@ -76,7 +77,7 @@ describe('StudioInspectorContent — rendering', () => {
 describe('StudioInspectorContent — empty fields', () => {
   it('renders a — placeholder when script is blank instead of hiding the field', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ script_text: '' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ script_text: '' })} />,
     );
     // Script label still present, value renders the placeholder.
     expect(html).toContain('Script');
@@ -85,7 +86,7 @@ describe('StudioInspectorContent — empty fields', () => {
 
   it('treats whitespace-only fields as empty for placeholder purposes', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ on_screen_text: '   ' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ on_screen_text: '   ' })} />,
     );
     // The whitespace value should be replaced with the placeholder.
     expect(html).toMatch(/On-screen text[\s\S]*?—/);
@@ -95,14 +96,14 @@ describe('StudioInspectorContent — empty fields', () => {
 describe('StudioInspectorContent — visual type pill', () => {
   it('omits the pill chrome when the row has no visual type', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ visual_type: '' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ visual_type: '' })} />,
     );
     expect(html).not.toContain('Visual type');
   });
 
   it('uses a token-based color for known visual types', () => {
     const html = renderToStaticMarkup(
-      <StudioInspectorContent row={makeRow({ visual_type: 'B-Roll' })} />,
+      <StudioInspectorContent rowIndex={0} row={makeRow({ visual_type: 'B-Roll' })} />,
     );
     // B-Roll's documented color is #22d3ee per the shared token map.
     expect(html).toContain('#22d3ee');
@@ -116,7 +117,7 @@ describe('StudioInspector — selection wiring (R3 PR3)', () => {
         selectedRow={makeRow({ script_text: 'wired through correctly' })}
         selectedRowIndex={4}
         selectedRowLabel="0:42"
-        currentTab="content"
+        initialTab="content"
       />,
     );
     expect(html).toContain('Row 4');
@@ -126,7 +127,7 @@ describe('StudioInspector — selection wiring (R3 PR3)', () => {
   });
 
   it('keeps the empty-state prompt when no row is selected even with currentTab=content', () => {
-    const html = renderToStaticMarkup(<StudioInspector currentTab="content" />);
+    const html = renderToStaticMarkup(<StudioInspector initialTab="content" />);
     expect(html).toContain('Select a row');
     expect(html).not.toContain('Tab editing lands in');
   });
@@ -137,7 +138,7 @@ describe('StudioInspector — selection wiring (R3 PR3)', () => {
         selectedRow={makeRow()}
         selectedRowIndex={1}
         selectedRowLabel="0:00"
-        currentTab="image"
+        initialTab="image"
       />,
     );
     expect(html).toContain('Tab editing lands in R3 PR4');
