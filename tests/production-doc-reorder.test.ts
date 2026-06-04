@@ -136,6 +136,28 @@ describe('reorderRecord', () => {
     expect(out).toEqual(input);
     expect(out).not.toBe(input);
   });
+
+  it('preserves out-of-range keys instead of dropping them (defensive)', () => {
+    // QA hardening: corrupted or future-extended state shouldn't be
+    // silently nuked. Key 9 is outside the 0..3 row range — it stays.
+    const input = { 0: 'A', 1: 'B', 9: 'GHOST' };
+    const out = reorderRecord(input, 0, 1, 4);
+    // 0 → 1, 1 → 0, ghost key stays at 9.
+    expect(out[0]).toBe('B');
+    expect(out[1]).toBe('A');
+    expect(out[9]).toBe('GHOST');
+  });
+
+  it('skips non-integer keys without crashing', () => {
+    // Object.entries can yield string keys; defensive guard avoids
+    // crashes on weird inputs.
+    const input = { 0: 'A', 1: 'B', NaN: 'X' } as unknown as Record<number, string>;
+    const out = reorderRecord(input, 0, 1, 2);
+    expect(out[0]).toBe('B');
+    expect(out[1]).toBe('A');
+    // NaN string key dropped (Number('NaN') === NaN, not integer).
+    expect(Object.values(out)).not.toContain('X');
+  });
 });
 
 describe('reorderSingleIndex', () => {

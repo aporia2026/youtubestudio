@@ -124,7 +124,7 @@ export const StudioInspectorVideo: React.FC<StudioInspectorVideoProps> = ({
         className="text-[11px]"
         style={{ color: 'var(--text-muted)' }}
       >
-        Generate / Re-generate controls land in a follow-up PR. For now, use the row's actions in the grid below.
+        Generate / Re-generate controls land in a follow-up PR. For now, use the row&rsquo;s actions in the grid below.
       </p>
     </div>
   );

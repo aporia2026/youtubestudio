@@ -114,7 +114,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
         type="button"
         onClick={onSelect ? () => onSelect(rowIndex) : undefined}
         disabled={!onSelect}
-        aria-pressed={selected}
+        aria-pressed={onSelect ? selected : undefined}
         aria-label={label}
         data-orientation="vertical"
         className="flex items-stretch w-full text-left rounded overflow-hidden transition-colors"
@@ -249,7 +249,7 @@ export const SceneCard: React.FC<SceneCardProps> = ({
       type="button"
       onClick={onSelect ? () => onSelect(rowIndex) : undefined}
       disabled={!onSelect}
-      aria-pressed={selected}
+      aria-pressed={onSelect ? selected : undefined}
       aria-label={label}
       data-orientation="horizontal"
       className="flex flex-col text-left rounded overflow-hidden transition-colors"

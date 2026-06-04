@@ -214,6 +214,8 @@ export const RenderDock: React.FC<RenderDockProps> = ({
 
       {isError && errorMessage && (
         <span
+          role="status"
+          aria-live="assertive"
           className="text-[11px]"
           style={{ color: '#f87171' }}
           title={errorMessage}

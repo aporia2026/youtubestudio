@@ -90,14 +90,30 @@ const SortableSceneCard: React.FC<SortableSceneCardProps> = ({
     cursor: 'grab',
     touchAction: 'none',
   };
-  // `useSortable` applies its own role + aria attributes via
-  // `attributes`. We spread those first, then let any explicit prop
-  // override (here we don't override — the dnd-kit defaults make the
-  // wrapper a proper draggable item for screen readers).
+  // QA fix: `useSortable` applies `role="button"` + aria-roledescription
+  // via `attributes`. Spreading that onto the wrapper here would
+  // (a) create a button-inside-button (the SceneCard itself is a
+  // <button>), which is invalid HTML and confuses screen readers,
+  // and (b) drop the `role="listitem"` we need to keep the parent
+  // `role="list"` semantic intact.
+  //
+  // Resolution: spread `attributes` minus its `role`/`tabIndex`
+  // (the inner button already owns those) and apply `role="listitem"`
+  // ourselves. `listeners` carry the pointer/keyboard wiring and stay
+  // intact. The inner SceneCard remains the single focusable
+  // affordance.
+  const {
+    role: _dropRole,
+    tabIndex: _dropTabIndex,
+    ...wrapperAttrs
+  } = attributes;
+  void _dropRole;
+  void _dropTabIndex;
   return (
     <div
       ref={setNodeRef}
-      {...attributes}
+      role="listitem"
+      {...wrapperAttrs}
       {...listeners}
       style={
         orientation === 'horizontal'
@@ -245,7 +261,7 @@ export const SceneStrip: React.FC<SceneStripProps> = ({
           className="text-xs px-3 py-4 italic"
           style={{ color: 'var(--text-muted)' }}
         >
-          No scenes match "{searchQuery}".
+          No scenes match &ldquo;{searchQuery}&rdquo;.
         </div>
       )}
     </div>

@@ -62,8 +62,10 @@ export function reorderArray<T>(arr: ReadonlyArray<T>, from: number, to: number)
 }
 
 /** Apply the reorder map to an index-keyed record. Values absent in
- *  the input record are absent in the output (no synthetic
- *  defaults). */
+ *  the input record are absent in the output (no synthetic defaults).
+ *  Out-of-range keys (>= length, or non-integer / NaN) are preserved
+ *  unchanged so corrupted or future-extended state isn't silently
+ *  dropped. */
 export function reorderRecord<T>(
   record: Readonly<Record<number, T>>,
   from: number,
@@ -75,8 +77,9 @@ export function reorderRecord<T>(
   const result: Record<number, T> = {};
   for (const [oldKeyStr, value] of Object.entries(record)) {
     const oldKey = Number(oldKeyStr);
-    const newKey = map[oldKey];
-    if (newKey === undefined) continue;
+    if (!Number.isInteger(oldKey)) continue;
+    const mapped = map[oldKey];
+    const newKey = mapped !== undefined ? mapped : oldKey;
     result[newKey] = value;
   }
   return result;

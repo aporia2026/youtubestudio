@@ -250,6 +250,19 @@ describe('RenderDock — error message', () => {
     expect(html).toContain('Upstream Lambda returned 500');
   });
 
+  it('announces the error to assistive tech via aria-live="assertive" (QA fix)', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          status: 'error',
+          errorMessage: 'whoops',
+        })}
+      />,
+    );
+    expect(html).toMatch(/aria-live="assertive"/);
+    expect(html).toMatch(/role="status"/);
+  });
+
   it('omits the inline error when status is not error', () => {
     const html = renderToStaticMarkup(
       <RenderDock

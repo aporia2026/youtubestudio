@@ -134,6 +134,17 @@ describe('SceneCard — selection contract', () => {
     expect(html).toMatch(/<button[^>]*\bdisabled\b/);
   });
 
+  it('omits aria-pressed when the card is non-interactive (QA fix — no disabled-toggle confusion)', () => {
+    // QA fix: a disabled <button> with aria-pressed makes no sense to
+    // assistive tech ("toggle button that is pressed but you cannot
+    // press it"). When onSelect is undefined we don't claim the
+    // toggle role at all.
+    const html = renderToStaticMarkup(
+      <SceneCard rowIndex={0} row={makeRow()} selected />,
+    );
+    expect(html).not.toContain('aria-pressed');
+  });
+
   it('uses an accessible label that names the scene + timecode', () => {
     const html = renderToStaticMarkup(
       <SceneCard rowIndex={2} row={makeRow({ timecode: '0:42' })} onSelect={() => {}} />,
@@ -244,10 +255,26 @@ describe('SceneStrip — drag-to-reorder routing', () => {
     const html = renderToStaticMarkup(
       <SceneStrip doc={makeDoc(rows)} onReorderRow={() => {}} />,
     );
-    // dnd-kit's useSortable applies role="button" + aria-roledescription="sortable"
-    // and aria-describedby on every sortable item.
+    // dnd-kit's useSortable applies aria-roledescription="sortable"
+    // and aria-describedby on the wrapper.
     expect(html).toMatch(/aria-roledescription="sortable"/);
-    expect(html).toMatch(/role="button"/);
+  });
+
+  it('keeps role="listitem" on the sortable wrapper (a11y regression guard)', () => {
+    // QA fix: useSortable's `attributes` carry `role="button"`. We strip
+    // it and apply `role="listitem"` so the parent `role="list"`
+    // semantic survives AND we don't create a button-in-button with the
+    // inner SceneCard <button>.
+    const rows = [makeRow(), makeRow()];
+    const html = renderToStaticMarkup(
+      <SceneStrip doc={makeDoc(rows)} onReorderRow={() => {}} />,
+    );
+    // Both wrappers carry role="listitem".
+    const listitemCount = (html.match(/role="listitem"/g) ?? []).length;
+    expect(listitemCount).toBe(2);
+    // The wrapper does NOT carry role="button" (would conflict with the
+    // inner SceneCard's <button>).
+    expect(html).not.toMatch(/role="button"[\s\S]*?aria-roledescription="sortable"/);
   });
 
   it('disables drag wiring while a search filter is active (UX safety)', () => {
