@@ -24,6 +24,7 @@ import type {
   ChannelCloneJobState,
   ChannelCloneJobStatus,
   ChannelCloneVisualProfile,
+  ProgressLogEntry,
 } from '@/lib/channel-clone/types';
 import { CHANNEL_CLONE_CANDIDATE_PRESETS } from '@/lib/channel-clone/match-style-preset';
 
@@ -284,6 +285,9 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
           </div>
           {job.lastError && (
             <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{job.lastError}</p>
+          )}
+          {state?.progressLog && state.progressLog.length > 0 && (
+            <ProgressLogView entries={state.progressLog} active={ACTIVE_STATUSES.includes(job.status)} />
           )}
           {cost && cost.totals.calls > 0 && <CostSummaryView cost={cost} />}
           {hasIntake && state?.intake && (
@@ -560,6 +564,77 @@ function RegenerateLink({ onClick, busy }: { onClick: () => void; busy?: boolean
       <span aria-hidden>↻</span>
       <span>{busy ? 'Working…' : 'Regenerate'}</span>
     </button>
+  );
+}
+
+/** Live progress console — bound to `state_jsonb.progressLog`. Each
+ *  poll cycle refreshes the array, the list scrolls to bottom on new
+ *  entries, and the colour-coded `step` chip lets the user scan the
+ *  log for "where is it stuck?" at a glance. */
+function ProgressLogView({ entries, active }: { entries: ProgressLogEntry[]; active: boolean }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Anchor to bottom whenever a new entry lands so the user sees
+    // the live edge of the run without having to scroll manually.
+    el.scrollTop = el.scrollHeight;
+  }, [entries.length]);
+  // Render newest 100 entries — older are kept on the row for the
+  // server log but not worth scrolling through.
+  const visible = entries.slice(-100);
+  return (
+    <div className="rounded border border-neutral-800 bg-neutral-950">
+      <header className="flex items-center justify-between border-b border-neutral-800 px-3 py-1.5">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-neutral-400">
+          Live progress
+        </span>
+        <span className="font-mono text-[10px] text-neutral-500">
+          {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+          {active && (
+            <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400 align-middle" aria-label="running" />
+          )}
+        </span>
+      </header>
+      <div ref={scrollRef} className="max-h-48 overflow-y-auto px-3 py-1.5 font-mono text-[10px] leading-relaxed">
+        {visible.map((e, i) => (
+          <ProgressLogRow key={`${e.ts}-${i}`} entry={e} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProgressLogRow({ entry }: { entry: ProgressLogEntry }) {
+  const levelColour =
+    entry.level === 'error' ? 'text-red-300' : entry.level === 'warn' ? 'text-amber-300' : 'text-neutral-300';
+  // Step chip — predictable colour per known namespace; falls back
+  // to grey for new ones so the UI doesn't break on schema growth.
+  const stepColour =
+    entry.step === 'sandbox' ? 'bg-violet-900/50 text-violet-200 border-violet-800'
+    : entry.step === 'yt-dlp' ? 'bg-blue-900/50 text-blue-200 border-blue-800'
+    : entry.step === 'ffmpeg' ? 'bg-emerald-900/50 text-emerald-200 border-emerald-800'
+    : entry.step === 'intake' ? 'bg-amber-900/50 text-amber-200 border-amber-800'
+    : entry.step === 'analyze' || entry.step === 'topics' || entry.step === 'hooks' || entry.step === 'script' || entry.step === 'rowify' || entry.step === 'publish-pack' || entry.step === 'handoff'
+      ? 'bg-cyan-900/50 text-cyan-200 border-cyan-800'
+      : 'bg-neutral-800 text-neutral-300 border-neutral-700';
+  const time = entry.ts.slice(11, 19); // hh:mm:ss out of an ISO string
+  const dataString = entry.data && Object.keys(entry.data).length > 0
+    ? Object.entries(entry.data)
+        .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+        .join(' ')
+    : '';
+  return (
+    <div className={`flex items-baseline gap-2 ${levelColour}`}>
+      <span className="text-neutral-600">{time}</span>
+      <span className={`inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${stepColour}`}>
+        {entry.step}
+      </span>
+      <span className="truncate">
+        {entry.msg}
+        {dataString && <span className="ml-2 text-neutral-500">{dataString}</span>}
+      </span>
+    </div>
   );
 }
 

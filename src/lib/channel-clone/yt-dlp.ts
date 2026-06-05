@@ -22,6 +22,7 @@
 import type { Sandbox } from '@vercel/sandbox';
 import { logger } from '@/lib/logger';
 import { runInSandbox } from './sandbox-runtime';
+import type { JobLogger } from './job-logger';
 
 /** Hard timeout for the yt-dlp process. 5 min is generous for a
  *  480p ~11-min download under sandbox network. Longer means
@@ -55,7 +56,9 @@ export async function listChannelVideos(
   sandbox: Sandbox,
   canonicalChannelUrl: string,
   options: { maxVideos: number } = { maxVideos: 5 },
+  log?: JobLogger,
 ): Promise<YtDlpVideoMetadata[]> {
+  log?.info('yt-dlp', 'list channel videos', { url: canonicalChannelUrl, max: options.maxVideos });
   logger.info('[channel-clone yt-dlp] list-videos start', {
     url: canonicalChannelUrl,
     max: options.maxVideos,
@@ -99,6 +102,7 @@ export async function listChannelVideos(
     });
     if (metas.length >= options.maxVideos) break;
   }
+  log?.info('yt-dlp', 'list channel videos done', { count: metas.length });
   logger.info('[channel-clone yt-dlp] list-videos done', {
     url: canonicalChannelUrl,
     count: metas.length,
@@ -113,7 +117,9 @@ export async function downloadVideo(
   sandbox: Sandbox,
   canonicalVideoUrl: string,
   outDir: string,
+  log?: JobLogger,
 ): Promise<YtDlpDownloadResult> {
+  log?.info('yt-dlp', 'download start', { url: canonicalVideoUrl });
   logger.info('[channel-clone yt-dlp] download start', { url: canonicalVideoUrl, outDir });
   // 480p ceiling keeps file size manageable (~15-30 MB for an
   // 11-min explainer). Convert auto-subs to SRT for the cleaner.
@@ -165,6 +171,11 @@ export async function downloadVideo(
       break;
     }
   }
+  log?.info('yt-dlp', 'download done', {
+    videoId: id,
+    durationSec: Math.round(durationSec),
+    transcript: transcriptSandboxPath ? 'yes' : 'none',
+  });
   logger.info('[channel-clone yt-dlp] download done', {
     videoId: id,
     videoSandboxPath: filepath,

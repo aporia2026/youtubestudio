@@ -25,6 +25,7 @@
 
 import { Sandbox } from '@vercel/sandbox';
 import { logger } from '@/lib/logger';
+import type { JobLogger } from './job-logger';
 
 export interface IntakeSandbox {
   sandbox: Sandbox;
@@ -44,39 +45,52 @@ const PIP_INSTALL_TIMEOUT_MS = 90_000;
 
 /** Create a python3.13 sandbox preloaded with yt-dlp + ffmpeg.
  *  Throws when VERCEL_OIDC_TOKEN is missing (the SDK auth path
- *  requires it; locally `vercel env pull` provisions it). */
-export async function createIntakeSandbox(jobId: string): Promise<IntakeSandbox> {
+ *  requires it; locally `vercel env pull` provisions it).
+ *
+ *  The optional `log` is a JobLogger from the runner. Every meaningful
+ *  step is published both to the server log AND to the job's
+ *  progressLog so the panel renders live progress. When omitted (e.g.
+ *  in a future caller that doesn't own a job row), the helper falls
+ *  back to the bare `logger` and the user sees nothing live. */
+export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promise<IntakeSandbox> {
   if (!process.env.VERCEL_OIDC_TOKEN) {
     throw new Error(
       'VERCEL_OIDC_TOKEN missing. Locally: run `vercel env pull` to populate `.env.development.local`. In production: Vercel auto-injects this on every function invocation.',
     );
   }
 
+  log?.info('sandbox', 'create start');
   logger.info('[channel-clone sandbox] create start', { jobId });
   const sandbox = await Sandbox.create({
     runtime: 'python3.13',
     timeout: SANDBOX_LIFETIME_MS,
   });
   const workDir = '/home/vercel-sandbox';
+  log?.info('sandbox', 'created', { sandboxName: sandbox.name });
   logger.info('[channel-clone sandbox] created', { jobId, sandboxName: sandbox.name });
 
   // 1. ffmpeg via apt. The python3.13 runtime is Debian-based, so
   // apt-get works. --no-install-recommends keeps the install small.
+  log?.info('sandbox', 'apt install ffmpeg (this takes ~20s)');
   await runOrThrow(sandbox, 'apt install ffmpeg', {
     cmd: 'apt-get',
     args: ['install', '-y', '--no-install-recommends', 'ffmpeg'],
     sudo: true,
     timeoutMs: APT_INSTALL_TIMEOUT_MS,
   });
+  log?.info('sandbox', 'ffmpeg installed');
 
   // 2. yt-dlp via pip. The python3.13 runtime already has pip on the
   // PATH; --quiet keeps the install log tight.
+  log?.info('sandbox', 'pip install yt-dlp');
   await runOrThrow(sandbox, 'pip install yt-dlp', {
     cmd: 'pip',
     args: ['install', '--quiet', '--no-input', 'yt-dlp'],
     timeoutMs: PIP_INSTALL_TIMEOUT_MS,
   });
+  log?.info('sandbox', 'yt-dlp installed');
 
+  log?.info('sandbox', 'ready');
   logger.info('[channel-clone sandbox] ready', { jobId, sandboxName: sandbox.name });
   return { sandbox, workDir };
 }
@@ -84,15 +98,22 @@ export async function createIntakeSandbox(jobId: string): Promise<IntakeSandbox>
 /** Stop the sandbox + log billable usage. Swallows errors so the
  *  caller's failure path isn't masked by a stop-time exception —
  *  Vercel reaps orphans on the sandbox's own lifetime timeout anyway. */
-export async function destroyIntakeSandbox(jobId: string, ctx: IntakeSandbox): Promise<void> {
+export async function destroyIntakeSandbox(jobId: string, ctx: IntakeSandbox, log?: JobLogger): Promise<void> {
   try {
     await ctx.sandbox.stop();
+    log?.info('sandbox', 'stopped', {
+      sandboxName: ctx.sandbox.name,
+      activeCpuUsageMs: ctx.sandbox.activeCpuUsageMs ?? null,
+    });
     logger.info('[channel-clone sandbox] stopped', {
       jobId,
       sandboxName: ctx.sandbox.name,
       activeCpuUsageMs: ctx.sandbox.activeCpuUsageMs ?? null,
     });
   } catch (err) {
+    log?.warn('sandbox', 'stop failed; relying on lifetime auto-reap', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     logger.warn('[channel-clone sandbox] stop failed; relying on lifetime auto-reap', {
       jobId,
       sandboxName: ctx.sandbox.name,

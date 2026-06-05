@@ -17,6 +17,7 @@
 import type { Sandbox } from '@vercel/sandbox';
 import { logger } from '@/lib/logger';
 import { runInSandbox } from './sandbox-runtime';
+import type { JobLogger } from './job-logger';
 
 /** Hard timeout for the ffmpeg process. 480p frame extraction is
  *  CPU-cheap; 60 s covers a long input on a single sandbox vCPU. */
@@ -48,6 +49,7 @@ export async function extractFrames(
   videoSandboxPath: string,
   outDir: string,
   options: FrameExtractionOptions = {},
+  log?: JobLogger,
 ): Promise<FrameExtractionResult> {
   const intervalSec = options.intervalSec ?? 10;
   const widthPx = options.widthPx ?? 480;
@@ -78,6 +80,7 @@ export async function extractFrames(
     outputPattern,
   ];
 
+  log?.info('ffmpeg', 'extract frames start', { intervalSec, widthPx });
   logger.info('[channel-clone ffmpeg] extract start', {
     videoSandboxPath,
     outDir,
@@ -116,6 +119,7 @@ export async function extractFrames(
     .sort()
     .map((name) => `${outDir}/${name}`);
 
+  log?.info('ffmpeg', 'extract frames done', { frameCount: frameSandboxPaths.length, durationMs });
   logger.info('[channel-clone ffmpeg] extract done', {
     videoSandboxPath,
     frameCount: frameSandboxPaths.length,

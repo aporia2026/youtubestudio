@@ -12,7 +12,7 @@
  */
 
 import { sql } from '@/lib/db';
-import type { ChannelCloneJobState, ChannelCloneJobStatus } from './types';
+import type { ChannelCloneJobState, ChannelCloneJobStatus, ProgressLogEntry } from './types';
 
 /** Row shape as returned by SELECT *. */
 export interface ChannelCloneJobRow {
@@ -133,6 +133,33 @@ export async function mergeChannelCloneJobState(
     [JSON.stringify(patch), jobId, workspaceId],
   );
   return (rowCount ?? 0) > 0;
+}
+
+/** Append one progress-log entry to `state_jsonb.progressLog`.
+ *  Atomic at the SQL level: reads the current array, concats the
+ *  new entry, writes back — so concurrent appenders won't lose
+ *  entries (only one runner ever writes a given job, but this also
+ *  works under retries / hot-reloads in dev). The append is
+ *  intentionally fire-and-forget at the caller layer so a slow
+ *  database write never blocks pipeline progress. */
+export async function appendChannelCloneJobLog(
+  jobId: string,
+  workspaceId: string,
+  entry: ProgressLogEntry,
+): Promise<void> {
+  await sql.query(
+    `
+    UPDATE channel_clone_jobs
+       SET state_jsonb = jsonb_set(
+             state_jsonb,
+             '{progressLog}',
+             COALESCE(state_jsonb->'progressLog', '[]'::jsonb) || $1::jsonb
+           ),
+           updated_at = now()
+     WHERE id = $2::uuid AND workspace_id = $3::uuid
+    `,
+    [JSON.stringify([entry]), jobId, workspaceId],
+  );
 }
 
 /** Overwrite `state_jsonb` with the supplied object. Use when the

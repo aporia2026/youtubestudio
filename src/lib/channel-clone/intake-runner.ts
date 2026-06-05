@@ -27,10 +27,10 @@ import { logger } from '@/lib/logger';
 import { cleanCaptions } from './clean-captions';
 import { extractFrames } from './ffmpeg';
 import {
-  getChannelCloneJob,
-  replaceChannelCloneJobState,
+  mergeChannelCloneJobState,
   setChannelCloneJobStatus,
 } from './job-store';
+import { makeJobLogger, type JobLogger } from './job-logger';
 import { createIntakeSandbox, destroyIntakeSandbox, type IntakeSandbox } from './sandbox-runtime';
 import type { ChannelCloneIntakeResult, ChannelCloneSampleVideo } from './types';
 import { downloadVideo, listChannelVideos } from './yt-dlp';
@@ -57,10 +57,18 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
 
   await setChannelCloneJobStatus(jobId, workspaceId, 'intake_running');
 
+  // Job-scoped logger writes to BOTH the server log AND the job row's
+  // progressLog so the panel can stream live progress. Created here
+  // (rather than inside createIntakeSandbox) so it's available for the
+  // sandbox-creation failure path too.
+  const log: JobLogger = makeJobLogger(jobId, workspaceId, 'intake');
+  log.info('intake', 'start', { canonicalUrl, kind, sampleVideoCount, frameIntervalSec });
+
   let intakeSandbox: IntakeSandbox;
   try {
-    intakeSandbox = await createIntakeSandbox(jobId);
+    intakeSandbox = await createIntakeSandbox(jobId, log);
   } catch (err) {
+    log.error('sandbox', 'create failed', { error: errorMessage(err) });
     return failJob(jobId, workspaceId, `Could not start intake sandbox: ${errorMessage(err)}`);
   }
 
@@ -76,14 +84,17 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     let channelUrl = canonicalUrl;
     if (kind === 'video') {
       try {
-        const [probed] = await listChannelVideos(sandbox, canonicalUrl, { maxVideos: 1 });
+        log.info('intake', 'resolving video → owner channel');
+        const [probed] = await listChannelVideos(sandbox, canonicalUrl, { maxVideos: 1 }, log);
         if (probed?.channelUrl) {
           channelUrl = probed.channelUrl;
+          log.info('intake', 'resolved owner channel', { channelUrl });
         }
       } catch (err) {
         // Non-fatal: fall back to using the video URL itself as the
         // "channel" probe target. yt-dlp's list will return that one
         // video and we'll proceed with sampleVideoCount=1.
+        log.warn('intake', 'video→channel resolution failed; using video URL as channel', { error: errorMessage(err) });
         logger.warn('[channel-clone intake] video→channel resolution failed; using video URL as channel', {
           jobId,
           canonicalUrl,
@@ -95,11 +106,13 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     // 2. List the latest sampleVideoCount long-form videos.
     let videoMetas;
     try {
-      videoMetas = await listChannelVideos(sandbox, channelUrl, { maxVideos: sampleVideoCount });
+      videoMetas = await listChannelVideos(sandbox, channelUrl, { maxVideos: sampleVideoCount }, log);
     } catch (err) {
+      log.error('yt-dlp', 'list channel videos failed', { error: errorMessage(err) });
       return failJob(jobId, workspaceId, `Could not list channel videos: ${errorMessage(err)}`);
     }
     if (videoMetas.length === 0) {
+      log.error('intake', 'no long-form videos found on this channel');
       return failJob(jobId, workspaceId, 'No long-form videos found on this channel.');
     }
 
@@ -107,11 +120,12 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     const sampleVideos: ChannelCloneSampleVideo[] = [];
     let sourceChannelHandle: string | null = null;
     let sourceChannelName: string | null = null;
-    for (const meta of videoMetas) {
+    for (const [i, meta] of videoMetas.entries()) {
+      log.info('intake', `processing video ${i + 1}/${videoMetas.length}`, { videoId: meta.videoId, title: meta.title });
       try {
-        const dl = await downloadVideo(sandbox, meta.videoUrl, sandboxJobDir);
+        const dl = await downloadVideo(sandbox, meta.videoUrl, sandboxJobDir, log);
         const frameDir = `${sandboxJobDir}/frames-${meta.videoId}`;
-        const framesResult = await extractFrames(sandbox, dl.videoSandboxPath, frameDir, { intervalSec: frameIntervalSec });
+        const framesResult = await extractFrames(sandbox, dl.videoSandboxPath, frameDir, { intervalSec: frameIntervalSec }, log);
 
         // Read the cleaned transcript (small) into memory.
         let transcript = null;
@@ -167,7 +181,13 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
         // Derive channel display fields from the first successful probe.
         sourceChannelName = sourceChannelName ?? dl.metadata.uploader;
         sourceChannelHandle = sourceChannelHandle ?? extractHandleFromChannelUrl(dl.metadata.channelUrl);
+        log.info('intake', `video ${i + 1}/${videoMetas.length} done`, {
+          videoId: meta.videoId,
+          frames: frames.length,
+          transcript: transcript ? `${transcript.wordCount} words` : 'none',
+        });
       } catch (err) {
+        log.warn('intake', `video ${i + 1}/${videoMetas.length} failed; skipping`, { videoId: meta.videoId, error: errorMessage(err) });
         logger.warn('[channel-clone intake] per-video work failed; skipping', {
           jobId,
           videoId: meta.videoId,
@@ -178,6 +198,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     }
 
     if (sampleVideos.length === 0) {
+      log.error('intake', 'all sample videos failed during download/frame-extract');
       return failJob(jobId, workspaceId, 'All sample videos failed during download/frame-extract.');
     }
 
@@ -190,14 +211,18 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
       fetchedAt: new Date().toISOString(),
     };
 
-    const existing = await getChannelCloneJob(jobId, workspaceId);
-    if (!existing) {
-      logger.error('[channel-clone intake] job vanished mid-run', { jobId });
-      return;
-    }
-    const nextState = { ...existing.state_jsonb, intake: intakeResult };
-    await replaceChannelCloneJobState(jobId, workspaceId, nextState);
+    // Shallow-merge so the live progressLog appends we've been
+    // streaming throughout the run aren't clobbered by a stale
+    // snapshot of state_jsonb. The intake field is fully replaced;
+    // everything else (progressLog, future stages) is preserved.
+    await mergeChannelCloneJobState(jobId, workspaceId, { intake: intakeResult });
     await setChannelCloneJobStatus(jobId, workspaceId, 'intake_complete');
+    log.info('intake', 'done', {
+      sampleVideoCount: sampleVideos.length,
+      totalFrames: sampleVideos.reduce((acc, v) => acc + v.frameCount, 0),
+      transcriptsAvailable: sampleVideos.filter((v) => v.transcript).length,
+      framesAvailable: sampleVideos.filter((v) => v.representativeFrameBase64).length,
+    });
     logger.info('[channel-clone intake] done', {
       jobId,
       sampleVideoCount: sampleVideos.length,
@@ -209,7 +234,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     // Always stop the sandbox so a thrown error doesn't orphan a
     // microVM. Vercel reaps on the sandbox's own lifetime timeout
     // either way, but explicit stop refunds CPU billing sooner.
-    await destroyIntakeSandbox(jobId, intakeSandbox);
+    await destroyIntakeSandbox(jobId, intakeSandbox, log);
   }
 }
 

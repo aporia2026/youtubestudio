@@ -178,9 +178,32 @@ export type ChannelCloneJobStatus =
   | 'publish_pack_failed'
   | 'handoff_failed';
 
+/** Single entry in the per-job live progress log. The intake +
+ *  later stages append one of these on every meaningful step; the
+ *  panel reads them off the polled job row and renders a scrolling
+ *  console so the user sees what's happening live (rather than the
+ *  job sitting silently in "intake_running" for 90s).
+ *
+ *  `step` is a short namespace ("sandbox", "yt-dlp", "ffmpeg",
+ *  "intake", "analyze", etc.) — the UI uses it to colour-code rows.
+ *
+ *  `data` is structured detail (counts, durations, ids); rendered
+ *  as a `key=value` tail on the message line. */
+export interface ProgressLogEntry {
+  ts: string;
+  level: 'info' | 'warn' | 'error';
+  step: string;
+  msg: string;
+  data?: Record<string, unknown>;
+}
+
 /** Persisted shape of the JSONB blob on `channel_clone_jobs.state_jsonb`. */
 export interface ChannelCloneJobState {
   intake?: ChannelCloneIntakeResult;
+  /** Live-progress log appended by the runner on every key step.
+   *  Unbounded for now — a 5-video intake produces ~30 entries; even
+   *  a chatty full pipeline tops out around 200. */
+  progressLog?: ProgressLogEntry[];
   analysis?: ChannelCloneAnalysis;
   visualProfile?: ChannelCloneVisualProfile;
   /** All currently-known topics (from the topic-generation stage). */
