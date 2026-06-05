@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import {
+  cutRow,
   resetRowDuration,
   setRowMuted,
+  splitRowAtPlayheadMs,
   trimRowDuration,
 } from '@/components/timeline-editor/timeline-mutations';
 import { framesToMs } from '@/lib/timeline-editor/frame-math';
+import { computeRowIntervals } from '@/components/timeline-editor/timeline-data-adapter';
 
 function row(overrides: Partial<ProductionRow> = {}): ProductionRow {
   return {
@@ -112,6 +115,119 @@ describe('resetRowDuration', () => {
   it('returns the same doc when rowIndex is out of range', () => {
     const doc = makeDoc([row({ duration_override_ms: 8000 })]);
     expect(resetRowDuration(doc, 99)).toBe(doc);
+  });
+});
+
+describe('splitRowAtPlayheadMs', () => {
+  it('splits a 3-second row exactly in half', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    const out = splitRowAtPlayheadMs(doc, 1500, { fps: 30 });
+    expect(out.rows).toHaveLength(2);
+    expect(out.rows[0].duration_override_ms).toBe(1500);
+    expect(out.rows[0].pin_duration).toBe(true);
+    expect(out.rows[1].duration_override_ms).toBe(1500);
+    expect(out.rows[1].pin_duration).toBe(true);
+  });
+
+  it('preserves total duration after split', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:05' })]);
+    const out = splitRowAtPlayheadMs(doc, 1666, { fps: 30 });
+    const total = computeRowIntervals(out).reduce((acc, iv) => acc + iv.durationMs, 0);
+    expect(total).toBe(5000);
+  });
+
+  it('snaps the cut point to the nearest frame at 30 fps', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    // 1234ms cut at 30fps: 1234ms × 30/1000 = 37.02 frames → 37 → 1233.33ms
+    const out = splitRowAtPlayheadMs(doc, 1234, { fps: 30 });
+    expect(out.rows[0].duration_override_ms).toBeCloseTo(1233.33, 1);
+  });
+
+  it('clones script_text + ai_image_prompt into both halves', () => {
+    const doc = makeDoc([row({ script_text: 'hello world', ai_image_prompt: 'pretty image' })]);
+    const out = splitRowAtPlayheadMs(doc, 1500, { fps: 30 });
+    expect(out.rows[0].script_text).toBe('hello world');
+    expect(out.rows[1].script_text).toBe('hello world');
+    expect(out.rows[0].ai_image_prompt).toBe('pretty image');
+    expect(out.rows[1].ai_image_prompt).toBe('pretty image');
+  });
+
+  it('splits inside the second row, not the first', () => {
+    const doc = makeDoc([
+      row({ timecode: '0:00-0:03', script_text: 'first' }),
+      row({ timecode: '0:03-0:08', script_text: 'second' }),
+    ]);
+    // Playhead at 5000ms = 2000ms into row 2.
+    const out = splitRowAtPlayheadMs(doc, 5000, { fps: 30 });
+    expect(out.rows).toHaveLength(3);
+    expect(out.rows[0].script_text).toBe('first');
+    expect(out.rows[1].script_text).toBe('second');
+    expect(out.rows[1].duration_override_ms).toBe(2000);
+    expect(out.rows[2].script_text).toBe('second');
+    expect(out.rows[2].duration_override_ms).toBe(3000);
+  });
+
+  it('refuses to split within one frame of the start edge', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    expect(splitRowAtPlayheadMs(doc, 5, { fps: 30 })).toBe(doc); // <1 frame
+  });
+
+  it('refuses to split within one frame of the end edge', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    expect(splitRowAtPlayheadMs(doc, 2995, { fps: 30 })).toBe(doc); // within 1 frame of end
+  });
+
+  it('returns the same doc when playhead is past the last row', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    expect(splitRowAtPlayheadMs(doc, 10_000, { fps: 30 })).toBe(doc);
+  });
+
+  it('returns the same doc when playhead is before the first row', () => {
+    const doc = makeDoc([row()]);
+    expect(splitRowAtPlayheadMs(doc, -100, { fps: 30 })).toBe(doc);
+  });
+
+  it('respects a custom minDurationMs', () => {
+    const doc = makeDoc([row({ timecode: '0:00-0:05' })]);
+    // Cut at 800ms with min=1000ms should refuse.
+    expect(splitRowAtPlayheadMs(doc, 800, { fps: 30, minDurationMs: 1000 })).toBe(doc);
+    // Cut at 1500ms with min=1000ms should succeed.
+    const out = splitRowAtPlayheadMs(doc, 1500, { fps: 30, minDurationMs: 1000 });
+    expect(out.rows).toHaveLength(2);
+  });
+});
+
+describe('cutRow', () => {
+  it('removes the row at the given index', () => {
+    const doc = makeDoc([
+      row({ script_text: 'a' }),
+      row({ script_text: 'b' }),
+      row({ script_text: 'c' }),
+    ]);
+    const out = cutRow(doc, 1);
+    expect(out.rows).toHaveLength(2);
+    expect(out.rows[0].script_text).toBe('a');
+    expect(out.rows[1].script_text).toBe('c');
+  });
+
+  it('refuses to cut the last remaining row', () => {
+    const doc = makeDoc([row()]);
+    expect(cutRow(doc, 0)).toBe(doc);
+  });
+
+  it('returns the same doc for out-of-range indices', () => {
+    const doc = makeDoc([row(), row()]);
+    expect(cutRow(doc, -1)).toBe(doc);
+    expect(cutRow(doc, 99)).toBe(doc);
+  });
+
+  it('does not mutate the input rows array (immutable)', () => {
+    const doc = makeDoc([row({ script_text: 'a' }), row({ script_text: 'b' })]);
+    const inputRows = doc.rows;
+    const inputRowsLength = inputRows.length;
+    cutRow(doc, 0);
+    expect(inputRows).toHaveLength(inputRowsLength);
+    expect(doc.rows).toBe(inputRows);
   });
 });
 

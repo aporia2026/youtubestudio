@@ -12,6 +12,7 @@
 
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import { DEFAULT_FPS, framesToMs, snapMsToFrame } from '@/lib/timeline-editor/frame-math';
+import { rowDurationMs, rowIndexAtMs } from './timeline-data-adapter';
 
 export interface MutationOptions {
   fps?: number;
@@ -66,6 +67,73 @@ export function resetRowDuration(doc: ProductionDoc, rowIndex: number): Producti
     delete next.duration_override_ms;
     return next;
   });
+  return { ...doc, rows: nextRows };
+}
+
+/** Split the row under `playheadMsAbsolute` into two rows at the
+ *  cut point. The first half inherits the original's content
+ *  (same script_text, ai_image_prompt, image_url, etc.) and gets a
+ *  `duration_override_ms` of `localCutMs`. The second half clones
+ *  the same content and gets a `duration_override_ms` of the
+ *  remainder. Both halves pin their durations so the auto-cascade
+ *  doesn't reflow them on the next render.
+ *
+ *  Returns the input doc unchanged when:
+ *    - The playhead is outside every row.
+ *    - The cut point lands within `minDurationMs` of either edge
+ *      (no point creating a one-frame sliver).
+ *
+ *  Exported for unit tests; the component calls it via the `S` key.
+ */
+export function splitRowAtPlayheadMs(
+  doc: ProductionDoc,
+  playheadMsAbsolute: number,
+  opts: MutationOptions = {},
+): ProductionDoc {
+  const { fps, minDurationMs } = resolveOpts(opts);
+  const idx = rowIndexAtMs(doc, playheadMsAbsolute);
+  if (idx < 0) return doc;
+  const row = doc.rows[idx];
+  // Recompute rowStart since rowIndexAtMs doesn't return it.
+  let rowStartMs = 0;
+  for (let i = 0; i < idx; i++) rowStartMs += rowDurationMs(doc.rows[i]);
+  const originalDuration = rowDurationMs(row);
+  const localCutMs = snapMsToFrame(playheadMsAbsolute - rowStartMs, fps);
+  if (localCutMs < minDurationMs) return doc;
+  if (localCutMs > originalDuration - minDurationMs) return doc;
+
+  const firstHalf: ProductionRow = {
+    ...row,
+    duration_override_ms: localCutMs,
+    pin_duration: true,
+  };
+  const secondHalfDuration = snapMsToFrame(originalDuration - localCutMs, fps);
+  const secondHalf: ProductionRow = {
+    ...row,
+    duration_override_ms: secondHalfDuration,
+    pin_duration: true,
+  };
+  // Per-row image fields: the second half re-uses the same image
+  // (it's the same scene, just continuing). variant_index would
+  // need bumping if we wanted to mark them as siblings — defer to
+  // a future enhancement when we add variant chains here.
+  const nextRows: ProductionRow[] = [
+    ...doc.rows.slice(0, idx),
+    firstHalf,
+    secondHalf,
+    ...doc.rows.slice(idx + 1),
+  ];
+  return { ...doc, rows: nextRows };
+}
+
+/** Remove the row at `rowIndex` from the doc — wires the `Del`
+ *  keyboard shortcut and the right-click "Cut clip" menu (M4). */
+export function cutRow(doc: ProductionDoc, rowIndex: number): ProductionDoc {
+  if (rowIndex < 0 || rowIndex >= doc.rows.length) return doc;
+  // Refuse to cut the last remaining row — the editor needs at
+  // least one clip on the timeline or there's nothing to render.
+  if (doc.rows.length === 1) return doc;
+  const nextRows = [...doc.rows.slice(0, rowIndex), ...doc.rows.slice(rowIndex + 1)];
   return { ...doc, rows: nextRows };
 }
 
