@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import {
   computeRowIntervals,
+  computeVoiceoverIntervals,
   docToTimelineRows,
+  ensureVoiceoverSeeded,
   parseTimecodeDurationMs,
   rowDurationMs,
   rowIndexAtMs,
   totalDocDurationMs,
+  voiceoverSegmentIndexAtMs,
 } from '@/components/timeline-editor/timeline-data-adapter';
 
 function row(overrides: Partial<ProductionRow> = {}): ProductionRow {
@@ -144,6 +147,79 @@ describe('totalDocDurationMs', () => {
   });
 });
 
+describe('computeVoiceoverIntervals', () => {
+  it('walks segments cumulatively', () => {
+    const doc = {
+      ...makeDoc([row()]),
+      voiceover_segments: [
+        { id: 'a', sourceUrl: 'x', sourceOffsetMs: 0, durationMs: 1000 },
+        { id: 'b', sourceUrl: 'x', sourceOffsetMs: 1000, durationMs: 2000 },
+        { id: 'c', sourceUrl: 'x', sourceOffsetMs: 3000, durationMs: 500 },
+      ],
+    };
+    const out = computeVoiceoverIntervals(doc);
+    expect(out).toHaveLength(3);
+    expect(out[0].startMs).toBe(0);
+    expect(out[1].startMs).toBe(1000);
+    expect(out[2].startMs).toBe(3000);
+    expect(out[2].segmentId).toBe('c');
+  });
+
+  it('returns empty array when no segments', () => {
+    const doc = makeDoc([row()]);
+    expect(computeVoiceoverIntervals(doc)).toEqual([]);
+  });
+});
+
+describe('voiceoverSegmentIndexAtMs', () => {
+  const doc = {
+    ...makeDoc([row()]),
+    voiceover_segments: [
+      { id: 'a', sourceUrl: 'x', sourceOffsetMs: 0, durationMs: 1000 },
+      { id: 'b', sourceUrl: 'x', sourceOffsetMs: 1000, durationMs: 2000 },
+    ],
+  };
+
+  it('returns the segment containing the supplied ms', () => {
+    expect(voiceoverSegmentIndexAtMs(doc, 0)).toBe(0);
+    expect(voiceoverSegmentIndexAtMs(doc, 999)).toBe(0);
+    expect(voiceoverSegmentIndexAtMs(doc, 1000)).toBe(1);
+    expect(voiceoverSegmentIndexAtMs(doc, 2999)).toBe(1);
+  });
+
+  it('returns -1 before first or after last', () => {
+    expect(voiceoverSegmentIndexAtMs(doc, -1)).toBe(-1);
+    expect(voiceoverSegmentIndexAtMs(doc, 9000)).toBe(-1);
+  });
+});
+
+describe('ensureVoiceoverSeeded', () => {
+  it('adds one segment covering the entire video duration', () => {
+    const doc = makeDoc([
+      row({ timecode: '0:00-0:03' }),
+      row({ timecode: '0:03-0:05' }),
+    ]);
+    const out = ensureVoiceoverSeeded(doc, 'https://example/voice.mp3');
+    expect(out.voiceover_segments).toHaveLength(1);
+    expect(out.voiceover_segments?.[0].sourceUrl).toBe('https://example/voice.mp3');
+    expect(out.voiceover_segments?.[0].durationMs).toBe(5000);
+    expect(out.voiceover_segments?.[0].sourceOffsetMs).toBe(0);
+  });
+
+  it('returns same doc when segments already exist', () => {
+    const doc = {
+      ...makeDoc([row()]),
+      voiceover_segments: [{ id: 'x', sourceUrl: 'a', sourceOffsetMs: 0, durationMs: 1000 }],
+    };
+    expect(ensureVoiceoverSeeded(doc, 'something')).toBe(doc);
+  });
+
+  it('returns same doc when sourceUrl is empty', () => {
+    const doc = makeDoc([row()]);
+    expect(ensureVoiceoverSeeded(doc, '')).toBe(doc);
+  });
+});
+
 describe('docToTimelineRows', () => {
   it('produces one video row containing every ProductionRow as a clip', () => {
     const doc = makeDoc([
@@ -156,10 +232,34 @@ describe('docToTimelineRows', () => {
     expect(tracks[0].actions).toHaveLength(2);
     expect(tracks[0].actions[0].start).toBe(0);
     expect(tracks[0].actions[0].end).toBe(3);
-    expect(tracks[0].actions[0].data.muted).toBe(true);
+    if (tracks[0].actions[0].data.kind === 'video') {
+      expect(tracks[0].actions[0].data.muted).toBe(true);
+    }
     expect(tracks[0].actions[1].start).toBe(3);
     expect(tracks[0].actions[1].end).toBe(8);
-    expect(tracks[0].actions[1].data.scriptText).toBe('second');
+    if (tracks[0].actions[1].data.kind === 'video') {
+      expect(tracks[0].actions[1].data.scriptText).toBe('second');
+    }
+  });
+
+  it('produces a second voiceover row when voiceover_segments are present', () => {
+    const doc = {
+      ...makeDoc([row()]),
+      voiceover_segments: [
+        { id: 'a', sourceUrl: 'https://x/audio.mp3', sourceOffsetMs: 0, durationMs: 2000 },
+        { id: 'b', sourceUrl: 'https://x/audio.mp3', sourceOffsetMs: 2000, durationMs: 3000 },
+      ],
+    };
+    const tracks = docToTimelineRows(doc);
+    expect(tracks).toHaveLength(2);
+    expect(tracks[1].id).toBe('voiceover');
+    expect(tracks[1].actions).toHaveLength(2);
+    expect(tracks[1].actions[0].start).toBe(0);
+    expect(tracks[1].actions[0].end).toBe(2);
+    if (tracks[1].actions[0].data.kind === 'voiceover') {
+      expect(tracks[1].actions[0].data.segmentIndex).toBe(0);
+      expect(tracks[1].actions[0].data.sourceOffsetMs).toBe(0);
+    }
   });
 
   it('handles an empty doc gracefully', () => {

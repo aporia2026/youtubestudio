@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import {
   cutRow,
+  cutVoiceoverSegment,
   moveRow,
+  moveVoiceoverSegment,
   resetRowDuration,
   setRowMuted,
   setRowTransitionIn,
   splitRowAtPlayheadMs,
+  splitVoiceoverSegmentAtPlayheadMs,
   trimRowDuration,
+  trimVoiceoverSegmentDuration,
 } from '@/components/timeline-editor/timeline-mutations';
 import { framesToMs } from '@/lib/timeline-editor/frame-math';
 import {
@@ -334,6 +338,153 @@ describe('setRowTransitionIn', () => {
   it('returns same doc on out-of-range index', () => {
     const doc = makeDoc([row()]);
     expect(setRowTransitionIn(doc, 99, 'cross-fade')).toBe(doc);
+  });
+});
+
+describe('trimVoiceoverSegmentDuration', () => {
+  function docWithSegments(durations: number[]) {
+    return {
+      ...makeDoc([row()]),
+      voiceover_segments: durations.map((d, i) => ({
+        id: `vo-${i}`,
+        sourceUrl: 'https://example/audio.mp3',
+        sourceOffsetMs: 0,
+        durationMs: d,
+      })),
+    };
+  }
+
+  it('sets durationMs snapped to frame', () => {
+    const doc = docWithSegments([5000]);
+    const out = trimVoiceoverSegmentDuration(doc, 0, 3000, { fps: 30 });
+    expect(out.voiceover_segments?.[0].durationMs).toBe(3000);
+  });
+
+  it('floors at one frame', () => {
+    const doc = docWithSegments([5000]);
+    const out = trimVoiceoverSegmentDuration(doc, 0, 1, { fps: 30 });
+    expect(out.voiceover_segments?.[0].durationMs).toBeCloseTo(33.333, 1);
+  });
+
+  it('returns same doc on no-op', () => {
+    const doc = docWithSegments([5000]);
+    expect(trimVoiceoverSegmentDuration(doc, 0, 5000)).toBe(doc);
+  });
+
+  it('returns same doc on out-of-range segmentIndex', () => {
+    const doc = docWithSegments([5000]);
+    expect(trimVoiceoverSegmentDuration(doc, 99, 3000)).toBe(doc);
+    expect(trimVoiceoverSegmentDuration(doc, -1, 3000)).toBe(doc);
+  });
+
+  it('returns same doc when there are no segments', () => {
+    const doc = makeDoc([row()]);
+    expect(trimVoiceoverSegmentDuration(doc, 0, 3000)).toBe(doc);
+  });
+});
+
+describe('splitVoiceoverSegmentAtPlayheadMs', () => {
+  function docWithSegments(durations: number[], sourceOffset = 0) {
+    return {
+      ...makeDoc([row()]),
+      voiceover_segments: durations.map((d, i) => ({
+        id: `vo-${i}`,
+        sourceUrl: 'https://example/audio.mp3',
+        sourceOffsetMs: sourceOffset,
+        durationMs: d,
+      })),
+    };
+  }
+
+  it('splits a 5s segment in half', () => {
+    const doc = docWithSegments([5000]);
+    const out = splitVoiceoverSegmentAtPlayheadMs(doc, 2500, { fps: 30 });
+    expect(out.voiceover_segments).toHaveLength(2);
+    expect(out.voiceover_segments?.[0].durationMs).toBe(2500);
+    expect(out.voiceover_segments?.[1].durationMs).toBe(2500);
+  });
+
+  it('preserves total duration', () => {
+    const doc = docWithSegments([5000]);
+    const out = splitVoiceoverSegmentAtPlayheadMs(doc, 1666, { fps: 30 });
+    const total = out.voiceover_segments!.reduce((a, s) => a + s.durationMs, 0);
+    expect(total).toBe(5000);
+  });
+
+  it('advances sourceOffsetMs on the second half so audio continues from the cut', () => {
+    const doc = docWithSegments([5000], 1000); // segment sourced from offset 1000ms
+    const out = splitVoiceoverSegmentAtPlayheadMs(doc, 2500, { fps: 30 });
+    expect(out.voiceover_segments?.[0].sourceOffsetMs).toBe(1000);
+    expect(out.voiceover_segments?.[1].sourceOffsetMs).toBe(1000 + 2500);
+  });
+
+  it('refuses to split within one frame of either edge', () => {
+    const doc = docWithSegments([3000]);
+    expect(splitVoiceoverSegmentAtPlayheadMs(doc, 5)).toBe(doc); // <1 frame
+    expect(splitVoiceoverSegmentAtPlayheadMs(doc, 2995)).toBe(doc); // within 1 frame of end
+  });
+
+  it('returns same doc when there are no segments', () => {
+    const doc = makeDoc([row()]);
+    expect(splitVoiceoverSegmentAtPlayheadMs(doc, 1000)).toBe(doc);
+  });
+});
+
+describe('cutVoiceoverSegment', () => {
+  function docWithSegments(durations: number[]) {
+    return {
+      ...makeDoc([row()]),
+      voiceover_segments: durations.map((d, i) => ({
+        id: `vo-${i}`,
+        sourceUrl: 'https://example/audio.mp3',
+        sourceOffsetMs: 0,
+        durationMs: d,
+      })),
+    };
+  }
+
+  it('removes the segment at the supplied index', () => {
+    const doc = docWithSegments([1000, 2000, 3000]);
+    const out = cutVoiceoverSegment(doc, 1);
+    expect(out.voiceover_segments?.map((s) => s.durationMs)).toEqual([1000, 3000]);
+  });
+
+  it('refuses to delete the last remaining segment', () => {
+    const doc = docWithSegments([1000]);
+    expect(cutVoiceoverSegment(doc, 0)).toBe(doc);
+  });
+
+  it('returns same doc on out-of-range', () => {
+    const doc = docWithSegments([1000, 2000]);
+    expect(cutVoiceoverSegment(doc, 99)).toBe(doc);
+    expect(cutVoiceoverSegment(doc, -1)).toBe(doc);
+  });
+});
+
+describe('moveVoiceoverSegment', () => {
+  function docWithSegments(ids: string[]) {
+    return {
+      ...makeDoc([row()]),
+      voiceover_segments: ids.map((id) => ({
+        id,
+        sourceUrl: 'https://example/audio.mp3',
+        sourceOffsetMs: 0,
+        durationMs: 1000,
+      })),
+    };
+  }
+
+  it('reorders the segment from one index to another', () => {
+    const doc = docWithSegments(['a', 'b', 'c', 'd']);
+    const out = moveVoiceoverSegment(doc, 0, 2);
+    expect(out.voiceover_segments?.map((s) => s.id)).toEqual(['b', 'c', 'a', 'd']);
+  });
+
+  it('returns same doc on no-op or out-of-range', () => {
+    const doc = docWithSegments(['a', 'b']);
+    expect(moveVoiceoverSegment(doc, 0, 0)).toBe(doc);
+    expect(moveVoiceoverSegment(doc, -1, 0)).toBe(doc);
+    expect(moveVoiceoverSegment(doc, 0, 99)).toBe(doc);
   });
 });
 

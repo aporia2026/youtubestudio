@@ -10,9 +10,13 @@
  * Plan: _plans/2026-06-05-capcut-timeline-editor.md.
  */
 
-import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import type { ProductionDoc, ProductionRow, VoiceoverSegment } from '@/remotion/utils';
 import { DEFAULT_FPS, framesToMs, snapMsToFrame } from '@/lib/timeline-editor/frame-math';
-import { rowDurationMs, rowIndexAtMs } from './timeline-data-adapter';
+import {
+  rowDurationMs,
+  rowIndexAtMs,
+  voiceoverSegmentIndexAtMs,
+} from './timeline-data-adapter';
 
 export interface MutationOptions {
   fps?: number;
@@ -183,6 +187,116 @@ export function setRowTransitionIn(
   });
   return { ...doc, rows: nextRows };
 }
+
+// ─── Voiceover segment mutations (M6) ────────────────────────────────
+//
+// Parallels the row mutations. Voiceover segments share the same
+// cumulative duration model as ProductionRows — splitting at the
+// playhead bisects a segment, trimming changes durationMs, cutting
+// removes a segment from the array, moving re-orders.
+
+let voiceoverIdCounter = 1;
+function nextVoiceoverId(): string {
+  // Monotonically increasing in-process counter — segments share
+  // process lifetime so collisions don't matter; we just need
+  // stable React keys.
+  voiceoverIdCounter += 1;
+  return `vo-${Date.now().toString(36)}-${voiceoverIdCounter.toString(36)}`;
+}
+
+/** Trim a voiceover segment's duration in place. Same semantics as
+ *  trimRowDuration: snap to frame, enforce ≥1 frame floor, return
+ *  object-identity on no-op. */
+export function trimVoiceoverSegmentDuration(
+  doc: ProductionDoc,
+  segmentIndex: number,
+  newDurationMs: number,
+  opts: MutationOptions = {},
+): ProductionDoc {
+  const segments = doc.voiceover_segments;
+  if (!segments || segmentIndex < 0 || segmentIndex >= segments.length) return doc;
+  const { fps, minDurationMs } = resolveOpts(opts);
+  const snapped = Math.max(minDurationMs, snapMsToFrame(newDurationMs, fps));
+  if (segments[segmentIndex].durationMs === snapped) return doc;
+  const next: VoiceoverSegment[] = segments.map((seg, i) =>
+    i === segmentIndex ? { ...seg, durationMs: snapped } : seg,
+  );
+  return { ...doc, voiceover_segments: next };
+}
+
+/** Split the voiceover segment under `playheadMsAbsolute` at the
+ *  cut point. The first half keeps the source offset; the second
+ *  half advances source offset by the cut amount so playback
+ *  continues from where the first half left off (no audio gap).
+ *
+ *  Returns the same doc on out-of-range playhead or when the cut
+ *  would land within `minDurationMs` of either edge. */
+export function splitVoiceoverSegmentAtPlayheadMs(
+  doc: ProductionDoc,
+  playheadMsAbsolute: number,
+  opts: MutationOptions = {},
+): ProductionDoc {
+  const segments = doc.voiceover_segments;
+  if (!segments || segments.length === 0) return doc;
+  const { fps, minDurationMs } = resolveOpts(opts);
+  const idx = voiceoverSegmentIndexAtMs(doc, playheadMsAbsolute);
+  if (idx < 0) return doc;
+  const seg = segments[idx];
+  let segStartMs = 0;
+  for (let i = 0; i < idx; i++) segStartMs += segments[i].durationMs;
+  const localCutMs = snapMsToFrame(playheadMsAbsolute - segStartMs, fps);
+  if (localCutMs < minDurationMs) return doc;
+  if (localCutMs > seg.durationMs - minDurationMs) return doc;
+  const firstHalf: VoiceoverSegment = {
+    ...seg,
+    id: nextVoiceoverId(),
+    durationMs: localCutMs,
+  };
+  const secondHalfDuration = snapMsToFrame(seg.durationMs - localCutMs, fps);
+  const secondHalf: VoiceoverSegment = {
+    ...seg,
+    id: nextVoiceoverId(),
+    sourceOffsetMs: seg.sourceOffsetMs + localCutMs,
+    durationMs: secondHalfDuration,
+  };
+  const nextSegments = [
+    ...segments.slice(0, idx),
+    firstHalf,
+    secondHalf,
+    ...segments.slice(idx + 1),
+  ];
+  return { ...doc, voiceover_segments: nextSegments };
+}
+
+/** Remove the voiceover segment at `segmentIndex`. Refuses to
+ *  delete the last segment so the audio track always has at least
+ *  one entry (or the track collapses entirely). */
+export function cutVoiceoverSegment(doc: ProductionDoc, segmentIndex: number): ProductionDoc {
+  const segments = doc.voiceover_segments;
+  if (!segments || segmentIndex < 0 || segmentIndex >= segments.length) return doc;
+  if (segments.length === 1) return doc;
+  const nextSegments = [...segments.slice(0, segmentIndex), ...segments.slice(segmentIndex + 1)];
+  return { ...doc, voiceover_segments: nextSegments };
+}
+
+/** Move a voiceover segment from one index to another. Pure array
+ *  shuffle, same shape as `moveRow`. */
+export function moveVoiceoverSegment(doc: ProductionDoc, fromIndex: number, toIndex: number): ProductionDoc {
+  const segments = doc.voiceover_segments;
+  if (!segments) return doc;
+  if (fromIndex < 0 || fromIndex >= segments.length) return doc;
+  if (toIndex < 0 || toIndex >= segments.length) return doc;
+  if (fromIndex === toIndex) return doc;
+  const without = [...segments.slice(0, fromIndex), ...segments.slice(fromIndex + 1)];
+  const nextSegments = [
+    ...without.slice(0, toIndex),
+    segments[fromIndex],
+    ...without.slice(toIndex),
+  ];
+  return { ...doc, voiceover_segments: nextSegments };
+}
+
+// ─── Existing row mutations (M2-M4) ──────────────────────────────────
 
 /** Mute or unmute a row's audio. v1 maps to `row.muted` which the
  *  Remotion scenes already read. Useful keyboard shortcut: `M`. */

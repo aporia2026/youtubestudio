@@ -41,22 +41,37 @@ export interface TimelineRowData {
   actions: TimelineActionData[];
 }
 
+/** Discriminated kind so handlers can branch on which track an
+ *  action belongs to. v1 has video + voiceover; M7 could add music. */
+export type TimelineActionKind = 'video' | 'voiceover';
+
+export interface TimelineActionDataVideo {
+  kind: 'video';
+  rowIndex: number;
+  scriptText: string;
+  visualType: string;
+  imageUrl: string;
+  onScreenText: string;
+  muted: boolean;
+  /** Incoming transition kind — surfaced on the clip card so the
+   *  user can see at a glance which clips cross-fade in. */
+  transitionIn: 'cross-fade' | null;
+}
+
+export interface TimelineActionDataVoiceover {
+  kind: 'voiceover';
+  segmentIndex: number;
+  sourceUrl: string;
+  sourceOffsetMs: number;
+  durationMs: number;
+}
+
 export interface TimelineActionData {
   id: string;
   start: number; // seconds
   end: number;   // seconds
   effectId: 'video' | 'voiceover';
-  data: {
-    rowIndex: number;
-    scriptText: string;
-    visualType: string;
-    imageUrl: string;
-    onScreenText: string;
-    muted: boolean;
-    /** Incoming transition kind — surfaced on the clip card so the
-     *  user can see at a glance which clips cross-fade in. */
-    transitionIn: 'cross-fade' | null;
-  };
+  data: TimelineActionDataVideo | TimelineActionDataVoiceover;
 }
 
 /** Parse a timecode like "0:00-0:03" or "01:23-01:25" into the
@@ -170,19 +185,55 @@ export function targetIndexFromDropMs(
   return bestGap;
 }
 
+/** Per-voiceover-segment interval (cumulative start, duration). */
+export interface ComputedVoiceoverInterval {
+  segmentIndex: number;
+  segmentId: string;
+  startMs: number;
+  durationMs: number;
+}
+
+export function computeVoiceoverIntervals(doc: Pick<ProductionDoc, 'voiceover_segments'>): ComputedVoiceoverInterval[] {
+  const segments = doc.voiceover_segments ?? [];
+  const out: ComputedVoiceoverInterval[] = [];
+  let cursor = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    out.push({ segmentIndex: i, segmentId: s.id, startMs: cursor, durationMs: s.durationMs });
+    cursor += s.durationMs;
+  }
+  return out;
+}
+
+/** Map a playhead ms to the voiceover segment under it (or -1 when
+ *  the playhead is outside every segment). Mirrors rowIndexAtMs. */
+export function voiceoverSegmentIndexAtMs(doc: Pick<ProductionDoc, 'voiceover_segments'>, atMs: number): number {
+  const segments = doc.voiceover_segments ?? [];
+  if (atMs < 0) return -1;
+  let cursor = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const d = segments[i].durationMs;
+    if (atMs >= cursor && atMs < cursor + d) return i;
+    cursor += d;
+  }
+  return -1;
+}
+
 /** Build the full TimelineRowData[] for the library. v1 produces
- *  one row (the video track) containing every ProductionRow as a
- *  clip. M6 will add the voiceover row. */
+ *  two rows — video (one clip per ProductionRow) and voiceover
+ *  (one clip per VoiceoverSegment). The voiceover row is omitted
+ *  when `doc.voiceover_segments` is undefined OR empty. */
 export function docToTimelineRows(doc: ProductionDoc): TimelineRowData[] {
   const intervals = computeRowIntervals(doc);
   const videoActions: TimelineActionData[] = intervals.map((iv) => {
     const row = doc.rows[iv.rowIndex];
     return {
-      id: iv.rowId,
+      id: `video:${iv.rowId}`,
       start: msToSec(iv.startMs),
       end: msToSec(iv.startMs + iv.durationMs),
       effectId: 'video',
       data: {
+        kind: 'video',
         rowIndex: iv.rowIndex,
         scriptText: row.script_text ?? '',
         visualType: row.visual_type ?? 'ai_image',
@@ -193,7 +244,43 @@ export function docToTimelineRows(doc: ProductionDoc): TimelineRowData[] {
       },
     };
   });
-  return [
-    { id: 'video', actions: videoActions },
-  ];
+  const voiceIntervals = computeVoiceoverIntervals(doc);
+  const voiceoverActions: TimelineActionData[] = voiceIntervals.map((iv) => {
+    const seg = doc.voiceover_segments![iv.segmentIndex];
+    return {
+      id: `voiceover:${iv.segmentId}`,
+      start: msToSec(iv.startMs),
+      end: msToSec(iv.startMs + iv.durationMs),
+      effectId: 'voiceover',
+      data: {
+        kind: 'voiceover',
+        segmentIndex: iv.segmentIndex,
+        sourceUrl: seg.sourceUrl,
+        sourceOffsetMs: seg.sourceOffsetMs,
+        durationMs: seg.durationMs,
+      },
+    };
+  });
+  const tracks: TimelineRowData[] = [{ id: 'video', actions: videoActions }];
+  if (voiceoverActions.length > 0) {
+    tracks.push({ id: 'voiceover', actions: voiceoverActions });
+  }
+  return tracks;
+}
+
+/** Seed `voiceover_segments` with a single segment covering the
+ *  entire video, anchored at `sourceUrl`. Used the first time the
+ *  user lands on the timeline editor with a voiceover URL but no
+ *  prior segments. Returns the same doc when segments already exist. */
+export function ensureVoiceoverSeeded(doc: ProductionDoc, sourceUrl: string): ProductionDoc {
+  if (doc.voiceover_segments && doc.voiceover_segments.length > 0) return doc;
+  if (!sourceUrl) return doc;
+  const totalDurationMs = computeRowIntervals(doc).reduce((acc, iv) => acc + iv.durationMs, 0);
+  if (totalDurationMs <= 0) return doc;
+  return {
+    ...doc,
+    voiceover_segments: [
+      { id: 'vo-1', sourceUrl, sourceOffsetMs: 0, durationMs: totalDurationMs },
+    ],
+  };
 }

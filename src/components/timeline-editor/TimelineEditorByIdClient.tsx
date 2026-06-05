@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProductionDoc, RowImageState } from '@/remotion/utils';
 import { productionDocToVideoConfig } from '@/remotion/utils';
 import { useDocHistory } from '@/lib/timeline-editor/use-doc-history';
+import { ensureVoiceoverSeeded } from './timeline-data-adapter';
 import {
   getTimelineDefaultZoomMsPerPx,
   getTimelineFps,
@@ -121,7 +122,14 @@ function Editor({
     }),
     [],
   );
-  const history = useDocHistory<ProductionDoc>(loaded.doc, prefs.undoDepth);
+  // Seed voiceover_segments with a single full-duration segment so
+  // the audio track shows up immediately, even on docs that have
+  // never been touched by the timeline editor. The seeding is
+  // idempotent — when segments already exist it returns the doc
+  // unchanged so user edits are preserved.
+  const voiceoverUrl = typeof loaded.rest.voiceoverUrl === 'string' ? loaded.rest.voiceoverUrl : '';
+  const seededDoc = useMemo(() => ensureVoiceoverSeeded(loaded.doc, voiceoverUrl), [loaded.doc, voiceoverUrl]);
+  const history = useDocHistory<ProductionDoc>(seededDoc, prefs.undoDepth);
 
   // Build a VideoConfig for the Remotion <Player /> from the current
   // doc head. Recomputes on every edit so the preview reflects trim /

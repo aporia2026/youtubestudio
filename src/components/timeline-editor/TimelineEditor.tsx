@@ -25,10 +25,14 @@ import {
 } from './timeline-data-adapter';
 import {
   cutRow,
+  cutVoiceoverSegment,
   moveRow,
+  moveVoiceoverSegment,
   setRowTransitionIn,
   splitRowAtPlayheadMs,
+  splitVoiceoverSegmentAtPlayheadMs,
   trimRowDuration,
+  trimVoiceoverSegmentDuration,
 } from './timeline-mutations';
 import { msToSec, secToMs, DEFAULT_FPS } from '@/lib/timeline-editor/frame-math';
 
@@ -129,7 +133,14 @@ export function TimelineEditor({
   //                  consumes keystrokes when it has focus / hover.
   const timelineRef = useRef<TimelineState>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
+  // Selection is track-aware so Del / F / split / drag operate on
+  // the right entity. Video-row selection still drives the "selected
+  // clip #N" header indicator; voiceover selection drives audio-row
+  // operations.
+  type Selection =
+    | { track: 'video'; rowIndex: number }
+    | { track: 'voiceover'; segmentIndex: number };
+  const [selection, setSelection] = useState<Selection | null>(null);
   const [playheadSec, setPlayheadSec] = useState(0);
 
   // The library exposes the per-frame action coordinates as
@@ -156,10 +167,12 @@ export function TimelineEditor({
   const handleResizing = useCallback(
     (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number; end: number; dir: 'left' | 'right' }) => {
       if (!onDocChange) return false; // read-only
-      const rowIndex = args.action.data?.rowIndex ?? -1;
-      if (rowIndex < 0) return false;
+      const data = args.action.data;
+      if (!data) return false;
       const newDurationMs = secToMs(args.end - args.start);
-      const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
+      const next = data.kind === 'video'
+        ? trimRowDuration(docRef.current, data.rowIndex, newDurationMs, { fps })
+        : trimVoiceoverSegmentDuration(docRef.current, data.segmentIndex, newDurationMs, { fps });
       if (next !== docRef.current) {
         // Live preview during the drag — does NOT push to the undo
         // stack (the pre-drag snapshot was pushed by handleResizeStart
@@ -177,13 +190,15 @@ export function TimelineEditor({
     (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number; end: number; dir: 'left' | 'right' }) => {
       // Final snap on release — onActionResizing already snaps every
       // tick, but the library reports the unrounded values on
-      // ResizeEnd. Re-running trimRowDuration here is a no-op when
-      // the value matches but cheap insurance against drift.
+      // ResizeEnd. Re-running here is a no-op when the value matches
+      // but cheap insurance against drift.
       if (!onDocChange) return;
-      const rowIndex = args.action.data?.rowIndex ?? -1;
-      if (rowIndex < 0) return;
+      const data = args.action.data;
+      if (!data) return;
       const newDurationMs = secToMs(args.end - args.start);
-      const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
+      const next = data.kind === 'video'
+        ? trimRowDuration(docRef.current, data.rowIndex, newDurationMs, { fps })
+        : trimVoiceoverSegmentDuration(docRef.current, data.segmentIndex, newDurationMs, { fps });
       // Commit the final value to undo. Even on a no-op we want to
       // promote the live-head into a committed entry so a Cmd+Z
       // takes you back to where you started the drag.
@@ -261,26 +276,33 @@ export function TimelineEditor({
       }
       if (e.key === 's' || e.key === 'S') {
         if (isMeta) return; // let Cmd+S fall through to the browser
-        const next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
+        // S splits BOTH tracks at the playhead. If the playhead is
+        // inside a video clip AND inside a voiceover segment, both
+        // get split; if only one applies, only that one mutates.
+        let next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
+        next = splitVoiceoverSegmentAtPlayheadMs(next, secToMs(playheadSec), { fps });
         if (next !== docRef.current) {
           e.preventDefault();
           onDocChange(next, { commit: true });
         }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedRowIndex === null) return;
-        const next = cutRow(docRef.current, selectedRowIndex);
+        if (selection === null) return;
+        const next = selection.track === 'video'
+          ? cutRow(docRef.current, selection.rowIndex)
+          : cutVoiceoverSegment(docRef.current, selection.segmentIndex);
         if (next !== docRef.current) {
           e.preventDefault();
           onDocChange(next, { commit: true });
-          setSelectedRowIndex(null);
+          setSelection(null);
         }
       } else if (e.key === 'f' || e.key === 'F') {
-        // F toggles cross-fade on the SELECTED row's incoming
-        // transition. Same shortcut CapCut uses for the fade tool.
-        if (selectedRowIndex === null) return;
-        const current = docRef.current.rows[selectedRowIndex]?.transition_in ?? null;
+        // F toggles cross-fade on the SELECTED video row's incoming
+        // transition. No-op when the selection is on the voiceover
+        // track (audio cross-fades aren't modeled in v1).
+        if (selection === null || selection.track !== 'video') return;
+        const current = docRef.current.rows[selection.rowIndex]?.transition_in ?? null;
         const nextTransition: 'cross-fade' | null = current === 'cross-fade' ? null : 'cross-fade';
-        const next = setRowTransitionIn(docRef.current, selectedRowIndex, nextTransition);
+        const next = setRowTransitionIn(docRef.current, selection.rowIndex, nextTransition);
         if (next !== docRef.current) {
           e.preventDefault();
           onDocChange(next, { commit: true });
@@ -289,12 +311,23 @@ export function TimelineEditor({
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, [editable, onDocChange, onUndo, onRedo, fps, playheadSec, selectedRowIndex, zoomIn, zoomOut]);
+  }, [editable, onDocChange, onUndo, onRedo, fps, playheadSec, selection, zoomIn, zoomOut]);
 
-  // Click on a clip selects it (the Del key uses this).
+  // Click on a clip selects it (the Del key uses this). Track-aware
+  // so clicking a voiceover segment doesn't make Del delete a video
+  // row, and vice versa.
   const handleClickAction = useCallback(
     (_e: React.MouseEvent, args: { action: { id: string; data?: TimelineActionData['data'] } }) => {
-      setSelectedRowIndex(args.action.data?.rowIndex ?? null);
+      const data = args.action.data;
+      if (!data) {
+        setSelection(null);
+        return;
+      }
+      if (data.kind === 'video') {
+        setSelection({ track: 'video', rowIndex: data.rowIndex });
+      } else {
+        setSelection({ track: 'voiceover', segmentIndex: data.segmentIndex });
+      }
     },
     [],
   );
@@ -307,44 +340,77 @@ export function TimelineEditor({
   const handleMoveEnd = useCallback(
     (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number }) => {
       if (!onDocChange) return;
-      const fromIndex = args.action.data?.rowIndex ?? -1;
-      if (fromIndex < 0) return;
+      const data = args.action.data;
+      if (!data) return;
       const dropMs = secToMs(args.start);
-      const toIndex = targetIndexFromDropMs(docRef.current, fromIndex, dropMs);
-      if (toIndex === fromIndex) return;
-      const next = moveRow(docRef.current, fromIndex, toIndex);
-      if (next !== docRef.current) {
-        onDocChange(next, { commit: true });
-        setSelectedRowIndex(toIndex);
+      if (data.kind === 'video') {
+        const fromIndex = data.rowIndex;
+        const toIndex = targetIndexFromDropMs(docRef.current, fromIndex, dropMs);
+        if (toIndex === fromIndex) return;
+        const next = moveRow(docRef.current, fromIndex, toIndex);
+        if (next !== docRef.current) {
+          onDocChange(next, { commit: true });
+          setSelection({ track: 'video', rowIndex: toIndex });
+        }
+      } else {
+        // Voiceover reorder. targetIndexFromDropMs is video-specific;
+        // for v1 we just snap to "nearest segment slot" via a parallel
+        // walk over the voiceover_segments durations.
+        const fromIndex = data.segmentIndex;
+        const segs = docRef.current.voiceover_segments ?? [];
+        const withoutDragged = segs.filter((_, i) => i !== fromIndex);
+        const gapStarts: number[] = [0];
+        let cursor = 0;
+        for (const s of withoutDragged) {
+          cursor += s.durationMs;
+          gapStarts.push(cursor);
+        }
+        let bestGap = 0;
+        let bestDist = Math.abs(dropMs - gapStarts[0]);
+        for (let i = 1; i < gapStarts.length; i++) {
+          const d = Math.abs(dropMs - gapStarts[i]);
+          if (d < bestDist) { bestGap = i; bestDist = d; }
+        }
+        if (bestGap === fromIndex) return;
+        const next = moveVoiceoverSegment(docRef.current, fromIndex, bestGap);
+        if (next !== docRef.current) {
+          onDocChange(next, { commit: true });
+          setSelection({ track: 'voiceover', segmentIndex: bestGap });
+        }
       }
     },
     [onDocChange],
   );
 
   const handleFadeClick = useCallback(() => {
-    if (!onDocChange || selectedRowIndex === null) return;
-    const current = docRef.current.rows[selectedRowIndex]?.transition_in ?? null;
+    if (!onDocChange || selection === null || selection.track !== 'video') return;
+    const current = docRef.current.rows[selection.rowIndex]?.transition_in ?? null;
     const nextTransition: 'cross-fade' | null = current === 'cross-fade' ? null : 'cross-fade';
-    const next = setRowTransitionIn(docRef.current, selectedRowIndex, nextTransition);
+    const next = setRowTransitionIn(docRef.current, selection.rowIndex, nextTransition);
     if (next !== docRef.current) onDocChange(next, { commit: true });
-  }, [onDocChange, selectedRowIndex]);
+  }, [onDocChange, selection]);
 
   // Header buttons for users without keyboards (or who want explicit
   // affordances). Wraps the same mutation helpers the keymap calls.
   const handleSplitClick = useCallback(() => {
     if (!onDocChange) return;
-    const next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
+    // Split both tracks. Either or both can no-op depending on which
+    // tracks the playhead is currently inside.
+    let next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
+    next = splitVoiceoverSegmentAtPlayheadMs(next, secToMs(playheadSec), { fps });
     if (next !== docRef.current) onDocChange(next, { commit: true });
   }, [onDocChange, fps, playheadSec]);
 
   const handleCutClick = useCallback(() => {
-    if (!onDocChange || selectedRowIndex === null) return;
-    const next = cutRow(docRef.current, selectedRowIndex);
+    if (!onDocChange || selection === null) return;
+    const next = selection.track === 'video'
+      ? cutRow(docRef.current, selection.rowIndex)
+      : cutVoiceoverSegment(docRef.current, selection.segmentIndex);
     if (next !== docRef.current) {
       onDocChange(next, { commit: true });
-      setSelectedRowIndex(null);
+      setSelection(null);
     }
-  }, [onDocChange, selectedRowIndex]);
+  }, [onDocChange, selection]);
 
   // Pixel math: `scale` = seconds per major tick, `scaleWidth` = px
   // per major tick. Together they define ms-per-px.
@@ -364,7 +430,8 @@ export function TimelineEditor({
           <h3 className="text-sm font-medium text-neutral-100">Timeline</h3>
           <p className="text-xs text-neutral-400">
             {doc.rows.length} clips · {totalSec.toFixed(1)}s · {fps} fps · playhead {playheadSec.toFixed(2)}s
-            {selectedRowIndex !== null && <> · selected clip #{selectedRowIndex + 1}</>}
+            {selection?.track === 'video' && <> · selected clip #{selection.rowIndex + 1}</>}
+            {selection?.track === 'voiceover' && <> · selected audio segment #{selection.segmentIndex + 1}</>}
           </p>
         </div>
         {editable && (
@@ -427,7 +494,7 @@ export function TimelineEditor({
             <button
               type="button"
               onClick={handleCutClick}
-              disabled={selectedRowIndex === null}
+              disabled={selection === null}
               title="Delete selected clip (Del)"
               className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-200 hover:border-red-700 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -436,7 +503,7 @@ export function TimelineEditor({
             <button
               type="button"
               onClick={handleFadeClick}
-              disabled={selectedRowIndex === null}
+              disabled={selection?.track !== 'video'}
               title="Toggle cross-fade on selected clip (F)"
               className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-200 hover:border-sky-700 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -468,16 +535,12 @@ export function TimelineEditor({
           // tooltip. width:auto lets the library compute its own.
           style={{ height: 240, width: '100%' }}
           getActionRender={(action) => {
-            const data = (action as { data?: TimelineActionData['data'] }).data ?? {
-              rowIndex: -1,
-              scriptText: '',
-              visualType: 'ai_image',
-              imageUrl: '',
-              onScreenText: '',
-              muted: false,
-              transitionIn: null,
-            };
-            return <ClipCard data={data} selected={selectedRowIndex === data.rowIndex} />;
+            const data = (action as { data?: TimelineActionData['data'] }).data;
+            if (!data) return null;
+            const isSelected =
+              (data.kind === 'video' && selection?.track === 'video' && selection.rowIndex === data.rowIndex)
+              || (data.kind === 'voiceover' && selection?.track === 'voiceover' && selection.segmentIndex === data.segmentIndex);
+            return <ClipCard data={data} selected={isSelected} />;
           }}
           // M2: drag-trim/drag-resize wired into trimRowDuration.
           // Library hands us (start, end) seconds; we convert to
@@ -507,6 +570,7 @@ export function TimelineEditor({
 }
 
 function ClipCard({ data, selected }: { data: TimelineActionData['data']; selected: boolean }) {
+  if (data.kind === 'voiceover') return <VoiceoverClipCard data={data} selected={selected} />;
   const baseColour =
     data.visualType === 'stock'
       ? 'bg-amber-950/60'
@@ -537,6 +601,29 @@ function ClipCard({ data, selected }: { data: TimelineActionData['data']; select
       {data.muted && (
         <p className="text-[9px] text-neutral-500">muted</p>
       )}
+    </div>
+  );
+}
+
+function VoiceoverClipCard({ data, selected }: { data: Extract<TimelineActionData['data'], { kind: 'voiceover' }>; selected: boolean }) {
+  const borderColour = selected ? 'border-neutral-200 ring-1 ring-neutral-200/50' : 'border-cyan-700';
+  return (
+    <div className={`h-full overflow-hidden rounded border ${borderColour} bg-cyan-950/60 px-2 py-1 text-[10px] leading-tight`}>
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[9px] text-neutral-500">🎙</span>
+        <span className="truncate text-cyan-100">audio #{data.segmentIndex + 1}</span>
+        <span className="ml-auto font-mono text-[8px] text-cyan-400">
+          {(data.durationMs / 1000).toFixed(1)}s
+        </span>
+      </div>
+      {/* Faux waveform indicator — six narrow bars at decreasing
+          opacity. v1 doesn't decode the audio; wavesurfer.js comes
+          later. Visual cue only. */}
+      <div className="mt-1 flex h-3 items-center gap-[2px]">
+        {[80, 50, 90, 60, 75, 45, 85, 55, 70, 50, 80, 60].map((h, i) => (
+          <span key={i} className="block flex-1 bg-cyan-400/60" style={{ height: `${h}%`, opacity: 0.5 }} />
+        ))}
+      </div>
     </div>
   );
 }

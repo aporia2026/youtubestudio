@@ -1557,6 +1557,38 @@ export interface ProductionDoc {
    *  on legacy / non-doodle_explainer_2 docs. See
    *  `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
   doodle_explainer_2_motion_collage_settings?: DoodleExplainer2MotionCollageSettings;
+  /** Ordered audio-track segments produced by the CapCut-style
+   *  timeline editor (M6 of the timeline plan). When undefined the
+   *  renderer falls back to playing the source voiceover URL straight
+   *  through; when present, each segment plays its slice of the
+   *  source via `<Audio startFrom>` offsets.
+   *
+   *  Each segment is a slice of one or more source audio files —
+   *  trim/split/cut on the voiceover track mutates `durationMs` /
+   *  splits a segment in two / removes an entry, exactly mirroring
+   *  the row-track operations. v1 uses a single `sourceUrl` shared
+   *  by every segment (the doc's narration); a future M7 could add
+   *  multi-source music tracks.
+   *
+   *  See _plans/2026-06-05-capcut-timeline-editor.md (M6). */
+  voiceover_segments?: VoiceoverSegment[];
+}
+
+/** One slice of the audio timeline. Cumulative position is derived
+ *  from preceding segments' `durationMs` (same pattern the video
+ *  rows use). */
+export interface VoiceoverSegment {
+  /** Stable id used for selection + library keying. */
+  id: string;
+  /** Source audio URL. v1 always matches the doc's narration URL. */
+  sourceUrl: string;
+  /** ms offset INTO the source audio file. Trim-from-start grows
+   *  this; trim-from-end leaves it alone. */
+  sourceOffsetMs: number;
+  /** Playback duration in ms. Trim/split/resize on the timeline
+   *  mutate this value; the renderer maps it to
+   *  `durationInFrames` on a `<Sequence>`. */
+  durationMs: number;
 }
 
 /** Canonical defaults applied by `resolvePaintExplainerV1Settings`.
