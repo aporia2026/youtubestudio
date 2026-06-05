@@ -11,6 +11,10 @@
  */
 
 import { Timeline, type TimelineState } from '@xzdarcy/react-timeline-editor';
+// The library ships its own CSS (clip rectangles, playhead, ruler,
+// scrollbar) but doesn't auto-inject. Without this import the
+// timeline area renders empty even though the data is there.
+import '@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import {
@@ -39,8 +43,11 @@ export interface TimelineEditorProps {
   /** Called after the user commits any edit (M2+). M1 keeps this
    *  optional because the editor is mounted read-only first. */
   onDocChange?: (doc: ProductionDoc) => void;
-  /** ms per pixel at the default zoom. Default fits a 60-second
-   *  doc in ~960 px (typical /video-studio container width). */
+  /** ms per pixel at the default zoom. Default = 10 (so 1 second
+   *  occupies 100 px on screen, matching CapCut's default zoom).
+   *  A 30-second doc fits in ~3000 px which scrolls horizontally
+   *  inside the container; we don't try to fit-to-width because
+   *  CapCut feel comes from a consistent zoom not a compressed view. */
   msPerPx?: number;
   /** Frames per second for snap. Defaults to the renderer's fps. */
   fps?: number;
@@ -49,7 +56,7 @@ export interface TimelineEditorProps {
 export function TimelineEditor({
   doc,
   onDocChange,
-  msPerPx = 62.5,
+  msPerPx = 10,
   fps = DEFAULT_FPS,
 }: TimelineEditorProps) {
   const rows = useMemo(() => docToTimelineRows(doc), [doc]);
@@ -248,7 +255,11 @@ export function TimelineEditor({
           dragLine
           gridSnap
           autoScroll
-          style={{ height: 140, width: '100%' }}
+          // Library default is 600px tall, which over-extends our
+          // container. 240 fits one video track + the 32px ruler
+          // + an audio track in M6 with room left for a hover
+          // tooltip. width:auto lets the library compute its own.
+          style={{ height: 240, width: '100%' }}
           getActionRender={(action) => {
             const data = (action as { data?: TimelineActionData['data'] }).data ?? {
               rowIndex: -1,
