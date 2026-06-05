@@ -25,8 +25,6 @@
  * `last_error`.
  */
 
-import fs from 'fs/promises';
-import path from 'path';
 import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
@@ -189,20 +187,21 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
   });
 }
 
-/** Pick the median frame of the median sample video as the
- *  representative still. Returns base64 + mime type ready for
- *  generateText's `image` option. Throws on read failure so the
- *  caller can fall back to text-only. */
+/** Pick the median sample video's representative middle frame. The
+ *  intake stage already base64-encoded one frame per video into the
+ *  job state (so the analyze runner doesn't have to re-mount the
+ *  ephemeral sandbox to fetch it). Throws when none of the videos
+ *  carry a frame, so the caller can fall back to text-only. */
 async function loadRepresentativeFrame(intake: ChannelCloneIntakeResult): Promise<{ base64: string; mimeType: string }> {
-  const videos = intake.sampleVideos.filter((v) => v.frameLocalPaths.length > 0);
+  const videos = intake.sampleVideos.filter((v) => v.representativeFrameBase64 !== null && v.representativeFrameMimeType !== null);
   if (videos.length === 0) {
-    throw new Error('no sample videos have extracted frames');
+    throw new Error('no sample videos carry a representative frame');
   }
   const video = videos[Math.floor(videos.length / 2)];
-  const frame = video.frameLocalPaths[Math.floor(video.frameLocalPaths.length / 2)];
-  const buf = await fs.readFile(frame);
-  const mimeType = path.extname(frame).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
-  return { base64: buf.toString('base64'), mimeType };
+  return {
+    base64: video.representativeFrameBase64!,
+    mimeType: video.representativeFrameMimeType!,
+  };
 }
 
 function buildAnalyzeUserPrompt(transcripts: { i: number; title: string; text: string }[]): string {

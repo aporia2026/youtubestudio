@@ -59,18 +59,41 @@ export interface CleanedTranscript {
   lines: TranscriptLine[];
 }
 
-/** Per-video sample fetched during the intake stage. */
+/** Per-video sample fetched during the intake stage.
+ *
+ * The intake stage runs yt-dlp + ffmpeg inside a Vercel Sandbox
+ * microVM. Files on the sandbox's disk are not accessible after the
+ * sandbox stops, so we extract the analyze stage's minimum dependency
+ * (one representative frame) into the doc and discard the rest:
+ *
+ *  - `frameCount` — how many frames were sampled (for UI display +
+ *    sanity check on a "do we have a visual signal at all" question).
+ *  - `representativeFrameBase64` — the middle frame of the video,
+ *    base64-encoded, ready to feed the multimodal analyze model
+ *    without another sandbox round-trip.
+ *  - `representativeFrameMimeType` — `image/jpeg` for ffmpeg's
+ *    default; preserved so the analyze stage can hand the model the
+ *    right mime hint.
+ *
+ * Legacy jobs created before 2026-06-06 carry `frameLocalPaths` and
+ * `videoLocalPath` instead. Both are now ignored — the analyze stage
+ * falls back to text-only when no `representativeFrameBase64` is
+ * present.
+ */
 export interface ChannelCloneSampleVideo {
   videoUrl: string;
   videoId: string;
   title: string;
   durationSec: number;
-  /** Local cache path under the per-job temp directory. Resolved at
-   *  the time of intake; the analyze stage re-reads it via the path
-   *  recorded here. */
-  videoLocalPath: string;
-  /** Frames extracted every N seconds (configurable per job). */
-  frameLocalPaths: string[];
+  /** Number of frames the ffmpeg step produced. Surfaced to the UI. */
+  frameCount: number;
+  /** Middle frame of the video, base64-encoded. Null when frame
+   *  extraction failed but the transcript still came through. */
+  representativeFrameBase64: string | null;
+  /** Mime type of `representativeFrameBase64`. Always `image/jpeg`
+   *  for ffmpeg's default output; surfaced so the analyze stage
+   *  passes the right hint to the multimodal model. */
+  representativeFrameMimeType: 'image/jpeg' | 'image/png' | null;
   transcript: CleanedTranscript | null;
 }
 
@@ -80,10 +103,6 @@ export interface ChannelCloneIntakeResult {
   sourceChannelName: string | null;
   sampleVideos: ChannelCloneSampleVideo[];
   fetchedAt: string;
-  /** Path to the per-job temp directory housing all downloaded
-   *  assets. The job's cleanup hook removes this when the job is
-   *  archived/deleted. */
-  tempDirPath: string;
 }
 
 export interface ChannelCloneAnalysis {

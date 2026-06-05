@@ -1,29 +1,25 @@
 /**
- * ffmpeg subprocess wrapper for channel-clone frame extraction.
+ * ffmpeg wrapper for channel-clone frame extraction — runs inside the
+ * Vercel Sandbox alongside yt-dlp. See `sandbox-runtime.ts` for the
+ * sandbox lifecycle and `yt-dlp.ts` for the sibling.
  *
- * One job per pipeline: take a downloaded video file, sample frames
- * at a configurable interval (default 10s) at 480px wide, write
- * them as JPEGs into the per-job temp directory. The frames feed
- * the analyze stage's visual style profile (the LLM is multimodal
- * and reads the JPEGs directly).
- *
- * Like yt-dlp, ffmpeg can only run in dev mode locally. See
- * `assertIntakeAvailable()` in `./yt-dlp.ts` for the production
- * guard rationale.
+ * Same job per pipeline as before: sample frames at a configurable
+ * interval (default 10s) at 480 px wide, write them as JPEGs. The
+ * frames feed the analyze stage's visual style profile (the LLM is
+ * multimodal and reads the representative middle frame).
  *
  * Security:
- *   - Spawned with argv array (`shell: false`) so a hostile
- *     videoPath can't inject shell metacharacters.
- *   - The output filename pattern uses ffmpeg's own `%03d` token,
- *     never a user-supplied string interpolation.
+ *   - Spawned via argv array — no shell parsing of `videoSandboxPath`.
+ *   - The output filename pattern uses ffmpeg's own `%03d` token, not
+ *     a user-supplied string interpolation.
  */
 
-import { spawn } from 'child_process';
-import fs from 'fs/promises';
+import type { Sandbox } from '@vercel/sandbox';
 import { logger } from '@/lib/logger';
+import { runInSandbox } from './sandbox-runtime';
 
 /** Hard timeout for the ffmpeg process. 480p frame extraction is
- *  CPU-cheap; 60s covers an hour-long input on a laptop. */
+ *  CPU-cheap; 60 s covers a long input on a single sandbox vCPU. */
 const FFMPEG_TIMEOUT_MS = 60_000;
 
 export interface FrameExtractionOptions {
@@ -37,26 +33,19 @@ export interface FrameExtractionOptions {
 }
 
 export interface FrameExtractionResult {
-  /** Absolute paths to the extracted frames in playback order. */
-  framePaths: string[];
-  /** ms wall-clock the ffmpeg invocation took. Surfaced for
-   *  observability — long extractions are worth flagging. */
+  /** Sandbox-relative paths to the extracted frames in playback
+   *  order. Caller reads back via sandbox.readFileToBuffer. */
+  frameSandboxPaths: string[];
+  /** ms wall-clock the ffmpeg invocation took — surfaced for
+   *  observability; long extractions are worth flagging. */
   durationMs: number;
 }
 
-/** Resolve the ffmpeg binary path. Prefers `process.env.FFMPEG_PATH`
- *  for explicit override; falls back to `ffmpeg` on PATH. The
- *  WinGet install on Windows places ffmpeg under
- *  `C:\Users\…\WinGet\Packages\Gyan.FFmpeg…` which is normally
- *  added to PATH by WinGet; mismatches surface here as a clean
- *  "ffmpeg not found" error from the spawn() ENOENT. */
-function resolveFfmpegPath(): string {
-  return process.env.FFMPEG_PATH || 'ffmpeg';
-}
-
-/** Spawn ffmpeg to extract sampled frames from a video file. */
+/** Run ffmpeg in the sandbox to extract sampled frames from a
+ *  sandbox-resident video. */
 export async function extractFrames(
-  videoLocalPath: string,
+  sandbox: Sandbox,
+  videoSandboxPath: string,
   outDir: string,
   options: FrameExtractionOptions = {},
 ): Promise<FrameExtractionResult> {
@@ -74,22 +63,23 @@ export async function extractFrames(
     throw new Error(`jpegQuality must be an integer in [2, 31], got ${jpegQuality}`);
   }
 
-  await fs.mkdir(outDir, { recursive: true });
+  // Create the output directory inside the sandbox. mkDir is
+  // idempotent — calling on an existing path is a no-op.
+  await sandbox.mkDir(outDir);
 
   const filter = `fps=1/${intervalSec},scale=${widthPx}:-2`;
   const outputPattern = `${outDir}/f%03d.jpg`;
-  const ffmpeg = resolveFfmpegPath();
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
-    '-i', videoLocalPath,
+    '-i', videoSandboxPath,
     '-vf', filter,
     '-q:v', String(jpegQuality),
     outputPattern,
   ];
 
   logger.info('[channel-clone ffmpeg] extract start', {
-    videoLocalPath,
+    videoSandboxPath,
     outDir,
     intervalSec,
     widthPx,
@@ -97,39 +87,40 @@ export async function extractFrames(
   });
 
   const startedAt = Date.now();
-  await runFfmpeg(ffmpeg, args);
+  const { stderr, exitCode } = await runInSandbox(sandbox, {
+    cmd: 'ffmpeg',
+    args,
+    timeoutMs: FFMPEG_TIMEOUT_MS,
+  });
   const durationMs = Date.now() - startedAt;
+  if (exitCode !== 0) {
+    throw new Error(`ffmpeg exited with code ${exitCode}: ${stderr.slice(-500).trim()}`);
+  }
 
-  // List the produced frames in lexicographic order (== playback order
-  // given our `%03d` pattern).
-  const entries = await fs.readdir(outDir);
-  const framePaths = entries
+  // Probe the output directory to discover what ffmpeg actually
+  // produced. We can't ls the sandbox filesystem directly via the
+  // SDK, so we run `ls` as a command and parse its stdout. The
+  // `-1` flag prints one name per line.
+  const lsResult = await runInSandbox(sandbox, {
+    cmd: 'ls',
+    args: ['-1', outDir],
+    timeoutMs: 5_000,
+  });
+  if (lsResult.exitCode !== 0) {
+    throw new Error(`could not list frame outputs: ${lsResult.stderr.slice(-500).trim()}`);
+  }
+  const frameSandboxPaths = lsResult.stdout
+    .split('\n')
+    .map((s) => s.trim())
     .filter((name) => /^f\d{3}\.jpg$/.test(name))
     .sort()
     .map((name) => `${outDir}/${name}`);
 
   logger.info('[channel-clone ffmpeg] extract done', {
-    videoLocalPath,
-    frameCount: framePaths.length,
+    videoSandboxPath,
+    frameCount: frameSandboxPaths.length,
     durationMs,
   });
 
-  return { framePaths, durationMs };
-}
-
-function runFfmpeg(command: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      timeout: FFMPEG_TIMEOUT_MS,
-      shell: false,
-    });
-    let stderr = '';
-    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    proc.once('error', (err) => reject(err));
-    proc.once('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-500).trim()}`));
-    });
-  });
+  return { frameSandboxPaths, durationMs };
 }

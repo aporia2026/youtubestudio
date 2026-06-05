@@ -298,7 +298,7 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
                 <span className="text-neutral-400">Sample videos:</span>{' '}
                 {state.intake.sampleVideos.length} — transcripts:{' '}
                 {state.intake.sampleVideos.filter((v) => v.transcript).length} — frames total:{' '}
-                {state.intake.sampleVideos.reduce((a, v) => a + v.frameLocalPaths.length, 0)}
+                {state.intake.sampleVideos.reduce((a, v) => a + v.frameCount, 0)}
               </p>
             </div>
           )}
