@@ -55,6 +55,19 @@ export type AppFeature =
   | 'shorts-ideas'
   | 'shorts-doodle-prompt'
   | 'video-composer'
+  // Channel-clone (the 8 LLM stages of the channel-clone pipeline —
+  // see _plans/2026-06-05-channel-clone-pipeline.md). Each gets its own
+  // AppFeature so the existing Settings → Model Defaults panel renders
+  // a per-stage picker automatically. Defaults are Opus 4.8 per the
+  // 2026-06-05 user decision.
+  | 'channel-clone-intake-summary'
+  | 'channel-clone-analyze'
+  | 'channel-clone-topic-generation'
+  | 'channel-clone-hook-engineering'
+  | 'channel-clone-script-generation'
+  | 'channel-clone-script-audit'
+  | 'channel-clone-rowify'
+  | 'channel-clone-publish-pack'
   // Grow
   | 'channel-analyze'
   | 'channel-description'
@@ -92,6 +105,7 @@ export interface AppFeatureSpec {
 
 const HAIKU = 'claude-haiku-4-5-20251001';
 const SONNET = 'claude-sonnet-4-6';
+const OPUS_48 = 'claude-opus-4-8';
 const KIE_GEMINI_FLASH = 'kie-gemini-2.5-flash';
 
 export const APP_FEATURES: AppFeatureSpec[] = [
@@ -121,6 +135,20 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'shorts-ideas', label: 'Shorts Ideas', description: 'Hook-first vertical idea generation tuned for the 60-second algorithm', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'shorts-doodle-prompt', label: 'Shorts Doodle Prompt', description: 'Builds the Doodle base-frame scene + per-chunk variant edit prompts for the vertical Doodle render', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'video-composer', label: 'Video Composer', description: 'Composer pipeline (intake → analyze → plan → compose → critic → chair)', section: 'create', defaultModelId: SONNET },
+
+  // Channel-clone — eight LLM stages that turn a competitor URL into a
+  // ready-to-render production-doc draft. Defaults are Opus 4.8 across
+  // the board per the 2026-06-05 user decision; the per-stage picker
+  // in Settings → Model Defaults lets each stage be retuned independently.
+  // See _plans/2026-06-05-channel-clone-pipeline.md.
+  { id: 'channel-clone-intake-summary', label: 'Channel Clone — Intake Summary', description: 'Light summarization of competitor video metadata during intake', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-analyze', label: 'Channel Clone — Deep Channel Analysis', description: 'Deep style DNA + audience psychology + visual style profile from transcripts and frames', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-topic-generation', label: 'Channel Clone — Topic Ideation', description: '10 ranked topic ideas with hooks and difficulty scores for the cloned channel', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-hook-engineering', label: 'Channel Clone — Hook Engineering', description: '5 hook archetypes (Contrarian / Story / Stat / Challenge / Mystery) per chosen topic', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-script-generation', label: 'Channel Clone — Script Generation', description: 'Full style-locked script generated from the chosen hook + style DNA', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-script-audit', label: 'Channel Clone — Script Audit', description: '10-point quality audit that drives the fix-and-rescore loop until threshold', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-rowify', label: 'Channel Clone — Script → Production Rows', description: 'Converts the approved script into production-doc rows matched to the chosen style preset', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-publish-pack', label: 'Channel Clone — Publish Pack', description: 'Titles, description, SEO tags, pinned comment, and 30-day content calendar', section: 'create', defaultModelId: OPUS_48 },
 
   // ─── Grow ────────────────────────────────────────────────────────────
   { id: 'channel-analyze', label: 'Channel Analyze', description: 'Analyzes a YouTube channel for positioning + opportunities', section: 'grow', defaultModelId: SONNET },
@@ -157,11 +185,15 @@ export function getFeatureSpec(id: AppFeature): AppFeatureSpec | undefined {
 
 export const AI_MODELS: AIModel[] = [
   // Anthropic
-  // Pricing for Opus 4.7 / 4.6 verified from platform.claude.com/docs/en/about-claude/pricing
-  // on 2026-05-26: $5/MTok input, $25/MTok output, $0.50/MTok cache reads, 1M context.
-  // (Earlier Opus tiers — 4.1, 4 — remained at $15/$75.) Added for Lever D of the QA
-  // hardening plan: critic drafts + deliberation can upgrade to Opus 4.7 in nuclear mode.
-  { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'anthropic', contextWindow: '1M', description: 'Anthropic flagship — strongest model for nuclear-mode QA critics', tier: 'flagship', inputCostPerMTok: 5, outputCostPerMTok: 25 },
+  // Pricing for Opus 4.8 / 4.7 / 4.6 verified from anthropic.com/news/claude-opus-4-8
+  // and platform.claude.com/docs on 2026-06-05: $5/MTok input, $25/MTok output, 1M context.
+  // Opus 4.8 shipped 2026-05-28; release notes: ~4× less likely than 4.7 to leave flaws
+  // in its own code unremarked, sharper agentic judgment, fewer tool-calling steps. Added
+  // here as the new Anthropic flagship; existing features keep their previous defaults
+  // unless the user picks 4.8 explicitly (or the channel-clone-* features which default
+  // to it per the 2026-06-05 channel-clone-pipeline plan).
+  { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'anthropic', contextWindow: '1M', description: 'Newest Anthropic flagship — sharper judgement, fewer tool-call steps, stronger self-evaluation than 4.7', tier: 'flagship', inputCostPerMTok: 5, outputCostPerMTok: 25 },
+  { id: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'anthropic', contextWindow: '1M', description: 'Previous Anthropic flagship — strong for nuclear-mode QA critics', tier: 'flagship', inputCostPerMTok: 5, outputCostPerMTok: 25 },
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Most capable — best for complex analysis', tier: 'flagship', inputCostPerMTok: 5, outputCostPerMTok: 25 },
   { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', provider: 'anthropic', contextWindow: '1M', description: 'Balanced speed & quality', tier: 'balanced', inputCostPerMTok: 3, outputCostPerMTok: 15 },
   { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', provider: 'anthropic', contextWindow: '1M', description: 'Fast & cost-effective', tier: 'fast', inputCostPerMTok: 1, outputCostPerMTok: 5 },
