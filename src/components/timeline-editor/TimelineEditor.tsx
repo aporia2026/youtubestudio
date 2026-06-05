@@ -11,14 +11,16 @@
  */
 
 import { Timeline } from '@xzdarcy/react-timeline-editor';
-import { useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import {
+  computeRowIntervals,
   docToTimelineRows,
   totalDocDurationMs,
   type TimelineActionData,
 } from './timeline-data-adapter';
-import { msToSec, DEFAULT_FPS } from '@/lib/timeline-editor/frame-math';
+import { trimRowDuration } from './timeline-mutations';
+import { msToSec, secToMs, DEFAULT_FPS } from '@/lib/timeline-editor/frame-math';
 
 /** Local shape for the library's `effects` prop. The library imports
  *  `TimelineEffect` from `@xzdarcy/timeline-engine` (a transitive dep)
@@ -47,13 +49,66 @@ export interface TimelineEditorProps {
 
 export function TimelineEditor({
   doc,
-  // M2 will start using onDocChange; intentionally unused here.
-  onDocChange: _onDocChange,
+  onDocChange,
   msPerPx = 62.5,
   fps = DEFAULT_FPS,
 }: TimelineEditorProps) {
   const rows = useMemo(() => docToTimelineRows(doc), [doc]);
   const totalSec = useMemo(() => msToSec(totalDocDurationMs(doc)), [doc]);
+
+  // Compute row intervals up-front for the resize handler — we need
+  // the row's absolute start in ms to convert the library's
+  // (start, end) seconds into a row-local duration.
+  const intervals = useMemo(() => computeRowIntervals(doc), [doc]);
+
+  // The library exposes the per-frame action coordinates as
+  // (start, end) in seconds, both ABSOLUTE on the timeline. For a
+  // single-track cumulative model (this row's start == prior rows'
+  // total duration), the row's new duration is just (end - start)
+  // regardless of which edge the user dragged.
+  //
+  // Hold a ref to the latest doc so the resize handler closure (the
+  // library captures it once) can mutate against the freshest state
+  // when the user drags multiple times in a row.
+  const docRef = useRef(doc);
+  docRef.current = doc;
+
+  const handleResizing = useCallback(
+    (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number; end: number; dir: 'left' | 'right' }) => {
+      if (!onDocChange) return false; // read-only
+      const rowIndex = args.action.data?.rowIndex ?? -1;
+      if (rowIndex < 0) return false;
+      const newDurationMs = secToMs(args.end - args.start);
+      const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
+      if (next !== docRef.current) {
+        onDocChange(next);
+      }
+      // Return value is consumed by the library to allow/block the
+      // visual move. Returning `undefined` (default) keeps it allowed.
+      return undefined;
+    },
+    [onDocChange, fps],
+  );
+
+  const handleResizeEnd = useCallback(
+    (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number; end: number; dir: 'left' | 'right' }) => {
+      // Final snap on release — onActionResizing already snaps every
+      // tick, but the library reports the unrounded values on
+      // ResizeEnd. Re-running trimRowDuration here is a no-op when
+      // the value matches but cheap insurance against drift.
+      if (!onDocChange) return;
+      const rowIndex = args.action.data?.rowIndex ?? -1;
+      if (rowIndex < 0) return;
+      const newDurationMs = secToMs(args.end - args.start);
+      const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
+      if (next !== docRef.current) {
+        onDocChange(next);
+      }
+    },
+    [onDocChange, fps],
+  );
+
+  const editable = onDocChange !== undefined;
 
   // Pixel math: `scale` = seconds per major tick, `scaleWidth` = px
   // per major tick. Together they define ms-per-px.
@@ -71,8 +126,10 @@ export function TimelineEditor({
             {doc.rows.length} clips · {totalSec.toFixed(1)}s · {fps} fps
           </p>
         </div>
-        <p className="text-[10px] text-amber-400">
-          M1 — read-only. Trim/split/cut/reorder coming in M2–M5.
+        <p className="text-[10px] text-emerald-400">
+          {editable
+            ? 'M2 — drag a clip edge to trim. Split / cut / reorder coming in M3–M5.'
+            : 'Read-only.'}
         </p>
       </header>
 
@@ -102,11 +159,21 @@ export function TimelineEditor({
             };
             return <ClipCard data={data} />;
           }}
-          // Block edits in M1 — return false from every change
-          // callback so a user can pan/zoom but can't accidentally
-          // mutate state before the wiring lands in M2.
-          onActionResizing={() => false}
+          // M2: drag-trim/drag-resize wired into trimRowDuration.
+          // Library hands us (start, end) seconds; we convert to
+          // ms, snap to frame, write `duration_override_ms`.
+          // dir='left' and dir='right' collapse to the same op
+          // because the doc model is cumulative — moving the left
+          // edge or the right edge both change THIS row's duration.
+          // M3 will add split (S key) + cut (Del); M4 wires reorder
+          // by un-blocking onActionMoving.
+          onActionResizing={editable ? handleResizing : () => false}
+          onActionResizeEnd={editable ? handleResizeEnd : undefined}
           onActionMoving={() => false}
+          // The library wants `onChange` for its internal book-
+          // keeping (selection, drag-line). We just no-op here
+          // because every doc mutation goes through onDocChange.
+          // M4 will hook this up for drag-reorder.
         />
       </div>
     </div>
