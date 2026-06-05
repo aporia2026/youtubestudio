@@ -173,13 +173,54 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
        *  otherwise target gain = `dbToLinearGain(volumeDb)`; fade-in
        *  ramps 0 → target over the first `fadeInMs`; fade-out ramps
        *  target → 0 over the last `fadeOutMs` of the project. */}
-      {config.voiceoverUrl && (
-        <Audio
-          src={config.voiceoverUrl}
-          volume={makeVoiceoverVolume(config, fps)}
-          pauseWhenBuffering
-        />
-      )}
+      {/* Voiceover rendering: when the doc carries
+       *  `voiceoverSegments` (produced by the timeline editor's
+       *  cut/trim/split operations on the audio track) we wrap
+       *  each segment in its own <Sequence> + <Audio
+       *  startFrom={offsetFrames}>. Cumulative `from` position is
+       *  walked across segments so each plays at its own slot.
+       *  Otherwise fall back to the legacy single-audio behaviour.
+       *
+       *  Volume function (makeVoiceoverVolume) is shared across
+       *  every segment so the doc-level fade-in/out + gain curve
+       *  continue to apply across cuts. Remotion evaluates the
+       *  function with the parent-composition frame so the fades
+       *  hit at the right moments even when audio is segmented.
+       *
+       *  See _plans/2026-06-05-capcut-timeline-editor.md (M6
+       *  Remotion wiring). */}
+      {config.voiceoverSegments && config.voiceoverSegments.length > 0
+        ? (() => {
+            const volumeFn = makeVoiceoverVolume(config, fps);
+            let cursorFrames = 0;
+            return config.voiceoverSegments.map((seg) => {
+              const fromFrame = cursorFrames;
+              const durationInFrames = Math.max(1, msToFrame(seg.durationMs, fps));
+              cursorFrames += durationInFrames;
+              return (
+                <Sequence
+                  key={seg.id}
+                  from={fromFrame}
+                  durationInFrames={durationInFrames}
+                  layout="none"
+                >
+                  <Audio
+                    src={seg.sourceUrl}
+                    startFrom={msToFrame(seg.sourceOffsetMs, fps)}
+                    volume={volumeFn}
+                    pauseWhenBuffering
+                  />
+                </Sequence>
+              );
+            });
+          })()
+        : config.voiceoverUrl && (
+            <Audio
+              src={config.voiceoverUrl}
+              volume={makeVoiceoverVolume(config, fps)}
+              pauseWhenBuffering
+            />
+          )}
 
       {/* Background music — ducked under voiceover. Same buffering
        *  guarantee as the voiceover so mid-render seeks don't drift. */}

@@ -35,6 +35,8 @@ import {
   trimVoiceoverSegmentDuration,
 } from './timeline-mutations';
 import { msToSec, secToMs, DEFAULT_FPS } from '@/lib/timeline-editor/frame-math';
+import { slicePeaks } from '@/lib/timeline-editor/audio-peaks';
+import { useAudioPeaks } from '@/lib/timeline-editor/use-audio-peaks';
 
 /** Local shape for the library's `effects` prop. The library imports
  *  `TimelineEffect` from `@xzdarcy/timeline-engine` (a transitive dep)
@@ -616,14 +618,58 @@ function VoiceoverClipCard({ data, selected }: { data: Extract<TimelineActionDat
           {(data.durationMs / 1000).toFixed(1)}s
         </span>
       </div>
-      {/* Faux waveform indicator — six narrow bars at decreasing
-          opacity. v1 doesn't decode the audio; wavesurfer.js comes
-          later. Visual cue only. */}
-      <div className="mt-1 flex h-3 items-center gap-[2px]">
-        {[80, 50, 90, 60, 75, 45, 85, 55, 70, 50, 80, 60].map((h, i) => (
-          <span key={i} className="block flex-1 bg-cyan-400/60" style={{ height: `${h}%`, opacity: 0.5 }} />
-        ))}
-      </div>
+      {/* Real waveform decoded from the source URL once + cached.
+          Falls back to a static faux pattern while loading or on
+          error so the card never goes blank. */}
+      <VoiceoverWaveform
+        sourceUrl={data.sourceUrl}
+        sourceOffsetMs={data.sourceOffsetMs}
+        durationMs={data.durationMs}
+      />
+    </div>
+  );
+}
+
+/** Static fallback peaks for the loading / error case so the
+ *  card never looks broken — same vibe as the M6 ship had before
+ *  the deferral landed. */
+const FAUX_PEAKS = new Float32Array([0.8, 0.5, 0.9, 0.6, 0.75, 0.45, 0.85, 0.55, 0.7, 0.5, 0.8, 0.6, 0.5, 0.7, 0.55, 0.85, 0.45, 0.75, 0.6, 0.9]);
+
+/** Bucket count rendered as SVG bars per clip. Small enough to
+ *  stay cheap on long timelines (100 clips × 32 bars = 3200 rect
+ *  elements — well under any DOM budget) while giving enough
+ *  resolution to differentiate loud vs quiet sections. */
+const WAVE_BUCKETS = 32;
+
+function VoiceoverWaveform({
+  sourceUrl, sourceOffsetMs, durationMs,
+}: {
+  sourceUrl: string;
+  sourceOffsetMs: number;
+  durationMs: number;
+}) {
+  const { peaks, durationMs: totalDurationMs, loading, error } = useAudioPeaks(sourceUrl);
+  const sliced = useMemo(() => {
+    if (!peaks || totalDurationMs <= 0) return null;
+    return slicePeaks(peaks, sourceOffsetMs, durationMs, totalDurationMs, WAVE_BUCKETS);
+  }, [peaks, totalDurationMs, sourceOffsetMs, durationMs]);
+
+  const bars = sliced ?? FAUX_PEAKS;
+  const isReal = sliced !== null;
+
+  return (
+    <div className="mt-1 flex h-3 items-end gap-[1px]" title={isReal ? undefined : (loading ? 'Loading waveform…' : error ?? 'Faux waveform (audio not yet decoded)')}>
+      {Array.from({ length: bars.length }, (_, i) => {
+        const v = bars[i];
+        const h = Math.max(4, Math.round(v * 100)); // floor at 4% so silence still shows a sliver
+        return (
+          <span
+            key={i}
+            className={isReal ? 'block flex-1 bg-cyan-300' : 'block flex-1 bg-cyan-500/40'}
+            style={{ height: `${h}%`, opacity: isReal ? 0.8 : 0.5 }}
+          />
+        );
+      })}
     </div>
   );
 }

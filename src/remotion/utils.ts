@@ -2528,6 +2528,10 @@ export function productionDocToVideoConfig(
     height: 1080,
     shots,
     voiceoverUrl: opts.voiceoverUrl,
+    // Pass voiceover_segments through verbatim — YouTubeVideo.tsx
+    // honours them with per-segment <Sequence><Audio startFrom>
+    // when present, otherwise falls back to the single voiceoverUrl.
+    voiceoverSegments: doc.voiceover_segments,
     voiceoverMuted: doc.voiceover_muted === true,
     voiceoverVolumeDb,
     voiceoverFadeInMs,

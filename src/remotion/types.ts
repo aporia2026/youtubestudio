@@ -492,6 +492,16 @@ export interface DoodleExplainer2MotionCollageSettings {
 
 // ─── Video Config ──────────────────────────────────────────────────────────────
 
+/** Per-segment voiceover slice — mirrors VoiceoverSegment in
+ *  remotion/utils but stays in the renderer types so the renderer
+ *  doesn't pull from doc-shape types. */
+export interface VoiceoverConfigSegment {
+  id: string;
+  sourceUrl: string;
+  sourceOffsetMs: number;
+  durationMs: number;
+}
+
 export interface VideoConfig {
   /** Frames per second — 30 for YouTube, 60 for gaming content */
   fps: number;
@@ -515,6 +525,13 @@ export interface VideoConfig {
   shots: VideoShot[];
   /** Voiceover audio URL (Vercel Blob public URL) */
   voiceoverUrl?: string;
+  /** Per-segment voiceover playback — when present and non-empty,
+   *  the renderer wraps each segment in its own <Sequence><Audio
+   *  startFrom={…}/></Sequence> instead of playing
+   *  `voiceoverUrl` straight through. Produced by the CapCut-style
+   *  timeline editor (cut / trim / split on the voiceover track).
+   *  See `_plans/2026-06-05-capcut-timeline-editor.md` (M6). */
+  voiceoverSegments?: VoiceoverConfigSegment[];
   /** Mute voiceover at render time (composition outputs zero gain).
    *  Forwarded from `ProductionDoc.voiceover_muted`. Default false. */
   voiceoverMuted?: boolean;
