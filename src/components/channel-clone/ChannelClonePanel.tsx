@@ -47,6 +47,7 @@ const ACTIVE_STATUSES: ChannelCloneJobStatus[] = [
   'script_running',
   'rowify_running',
   'publish_pack_running',
+  'handoff_running',
 ];
 
 const POLL_INTERVAL_MS = 4000;
@@ -64,7 +65,7 @@ export function ChannelClonePanel() {
   const [job, setJob] = useState<JobView | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify'>(null);
+  const [busy, setBusy] = useState<null | 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify' | 'handoff' | 'publish-pack'>(null);
   const pollHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -128,7 +129,7 @@ export function ChannelClonePanel() {
 
   const runStage = useCallback(
     async (
-      stage: 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify',
+      stage: 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify' | 'handoff' | 'publish-pack',
       body: Record<string, unknown>,
     ) => {
       if (!job) return;
@@ -163,6 +164,7 @@ export function ChannelClonePanel() {
   const hasHooks = !!state?.hooks && state.hooks.length > 0;
   const hasApprovedScript = !!state?.approvedScript;
   const hasRows = !!state?.productionRows && state.productionRows.length > 0;
+  const hasPublishPack = !!state?.publishPack;
 
   return (
     <div className="space-y-6 rounded-lg border border-neutral-800 bg-neutral-950/40 p-5 text-sm">
@@ -338,6 +340,44 @@ export function ChannelClonePanel() {
               presetId={state.chosenStylePresetId ?? 'unknown'}
             />
           )}
+
+          {/* ── Stage 6: Handoff to auto-pipeline ─────────────────── */}
+          {hasRows && !state?.handoff && (
+            <div className="space-y-2 border-t border-neutral-800 pt-3">
+              <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Send to production pipeline</h4>
+              <p className="text-xs text-neutral-500">
+                Promote the rowified doc into the existing auto-pipeline. Creates a new project, script, and pipeline_run_videos row at <code className="text-neutral-300">generating_production_doc_images</code> so the cron picks it up and runs image generation. Requires at least one pipeline_preset in this workspace.
+              </p>
+              <button
+                type="button"
+                onClick={() => runStage('handoff', {})}
+                disabled={busy === 'handoff'}
+                className="w-full rounded bg-neutral-200 px-4 py-2 font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+              >
+                {busy === 'handoff' ? 'Handing off…' : 'Send to production pipeline'}
+              </button>
+            </div>
+          )}
+          {state?.handoff && <HandoffView handoff={state.handoff} />}
+
+          {/* ── Stage 7: Publish pack ─────────────────────────────── */}
+          {hasApprovedScript && !hasPublishPack && (
+            <div className="space-y-2 border-t border-neutral-800 pt-3">
+              <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Publish pack</h4>
+              <p className="text-xs text-neutral-500">
+                Generate the launch packaging: 5 thumbnail concepts, 5 title candidates, description, ~30 SEO tags, 3 pinned-comment options, optimal upload time, and a 30-day content calendar — all in one shot.
+              </p>
+              <button
+                type="button"
+                onClick={() => runStage('publish-pack', {})}
+                disabled={busy === 'publish-pack'}
+                className="w-full rounded bg-neutral-200 px-4 py-2 font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+              >
+                {busy === 'publish-pack' ? 'Building publish pack…' : 'Build publish pack'}
+              </button>
+            </div>
+          )}
+          {state?.publishPack && <PublishPackView pack={state.publishPack} />}
         </section>
       )}
     </div>
@@ -564,6 +604,112 @@ function ApprovedScriptView({ approvedScript }: { approvedScript: NonNullable<Ch
       <pre className="whitespace-pre-wrap rounded border border-neutral-800 bg-neutral-950 p-3 text-xs leading-relaxed text-neutral-200">
         {approvedScript.text}
       </pre>
+    </div>
+  );
+}
+
+function PublishPackView({ pack }: { pack: NonNullable<ChannelCloneJobState['publishPack']> }) {
+  return (
+    <div className="space-y-3 border-t border-neutral-800 pt-3">
+      <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Publish pack</h4>
+
+      <details open className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-neutral-200">Titles ({pack.titles.length})</summary>
+        <ol className="mt-2 space-y-1 pl-4">
+          {pack.titles.map((t, i) => (
+            <li key={i}>
+              <div className="text-neutral-200">{t.text}</div>
+              <div className="text-[10px] italic text-neutral-500">{t.ctrReasoning}</div>
+            </li>
+          ))}
+        </ol>
+      </details>
+
+      <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-neutral-200">Description + SEO</summary>
+        <div className="mt-2 space-y-2">
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-neutral-500">Description</p>
+            <pre className="mt-1 whitespace-pre-wrap text-neutral-300">{pack.description}</pre>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-neutral-500">Tags ({pack.tags.length})</p>
+            <p className="text-neutral-400">{pack.tags.join(', ')}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-neutral-500">Category</p>
+            <p className="text-neutral-300">{pack.categoryRecommendation}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-neutral-500">Optimal upload time</p>
+            <p className="text-neutral-300">{pack.optimalUploadTime}</p>
+          </div>
+        </div>
+      </details>
+
+      <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-neutral-200">Pinned comment options (3)</summary>
+        <ol className="mt-2 space-y-1 pl-4 text-neutral-300">
+          {pack.pinnedCommentOptions.map((c, i) => <li key={i}>{c}</li>)}
+        </ol>
+      </details>
+
+      <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-neutral-200">Thumbnail concepts ({pack.thumbnailConcepts.length})</summary>
+        <ul className="mt-2 space-y-2">
+          {pack.thumbnailConcepts.map((c, i) => (
+            <li key={i} className="rounded border border-neutral-800 bg-neutral-900 p-2">
+              <div className="flex items-baseline justify-between">
+                <span className="font-mono text-[10px] text-neutral-500">concept {i + 1}</span>
+                <span className="rounded border border-amber-800 bg-amber-950/40 px-2 py-0.5 font-mono text-[10px] uppercase text-amber-300">{c.emotionTrigger}</span>
+              </div>
+              <p className="text-neutral-200">{c.visualConcept}</p>
+              <p className="text-[10px] text-neutral-500">Text overlay: <span className="text-amber-300">{c.textOverlay}</span></p>
+              <p className="text-[10px] text-neutral-500">Contrast: {c.colorContrastStrategy}</p>
+              <details>
+                <summary className="cursor-pointer text-[10px] text-neutral-500 hover:text-neutral-300">image prompt</summary>
+                <p className="mt-1 whitespace-pre-wrap text-[10px] text-neutral-400">{c.fullImagePrompt}</p>
+              </details>
+              <p className="text-[10px] italic text-neutral-500">{c.ctrReasoning}</p>
+            </li>
+          ))}
+        </ul>
+      </details>
+
+      <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-neutral-200">30-day content calendar</summary>
+        <ul className="mt-2 space-y-1">
+          {pack.contentCalendar.map((c) => (
+            <li key={c.day} className="grid grid-cols-[max-content_1fr_max-content_max-content] gap-x-3 text-[11px]">
+              <span className="font-mono text-neutral-500">d{c.day.toString().padStart(2, '0')}</span>
+              <span className="text-neutral-200">{c.title}</span>
+              <span className="text-neutral-500">{c.contentPillar}</span>
+              <span className="font-mono text-neutral-500">{c.difficulty}/10</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
+function HandoffView({ handoff }: { handoff: NonNullable<ChannelCloneJobState['handoff']> }) {
+  return (
+    <div className="space-y-2 rounded border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-neutral-200">
+      <h4 className="text-xs font-medium uppercase tracking-wide text-emerald-300">Handed off to production pipeline</h4>
+      <p>The auto-pipeline cron will pick up this video on its next tick and run image generation.</p>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[10px] text-neutral-300">
+        <dt className="text-neutral-500">Run</dt><dd>{handoff.pipelineRunId}</dd>
+        <dt className="text-neutral-500">Video</dt><dd>{handoff.pipelineRunVideoId}</dd>
+        <dt className="text-neutral-500">Project</dt><dd>{handoff.projectId}</dd>
+        <dt className="text-neutral-500">Script</dt><dd>{handoff.scriptId}</dd>
+        <dt className="text-neutral-500">Idea</dt><dd>{handoff.ideaId}</dd>
+        <dt className="text-neutral-500">Preset</dt><dd>{handoff.presetId}</dd>
+        <dt className="text-neutral-500">When</dt><dd>{new Date(handoff.handedOffAt).toLocaleString()}</dd>
+      </dl>
+      <p className="pt-1">
+        <a href="/pipeline" className="text-blue-400 hover:underline">Open auto-pipeline dashboard →</a>
+      </p>
     </div>
   );
 }

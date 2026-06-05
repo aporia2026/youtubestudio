@@ -145,6 +145,8 @@ export type ChannelCloneJobStatus =
   | 'rowify_complete'
   | 'publish_pack_running'
   | 'publish_pack_complete'
+  | 'handoff_running'
+  | 'handoff_complete'
   // Terminal:
   | 'archived'
   // Failure (each carries a `lastError` on the job row):
@@ -154,7 +156,8 @@ export type ChannelCloneJobStatus =
   | 'hooks_failed'
   | 'script_failed'
   | 'rowify_failed'
-  | 'publish_pack_failed';
+  | 'publish_pack_failed'
+  | 'handoff_failed';
 
 /** Persisted shape of the JSONB blob on `channel_clone_jobs.state_jsonb`. */
 export interface ChannelCloneJobState {
@@ -207,6 +210,23 @@ export interface ChannelCloneJobState {
    *  so the value tolerates the registry growing — the rowify runner
    *  guards with isCandidateStylePresetId on read. */
   chosenStylePresetId?: string;
+  /** Result of the optional handoff to the auto-pipeline. Set when
+   *  the user pushed the rowified doc into the production pipeline
+   *  via POST /api/channel-clone/handoff. Once set, the existing
+   *  cron picks up `pipelineRunVideoId` at stage
+   *  `generating_production_doc_images` and runs image generation. */
+  handoff?: {
+    pipelineRunId: string;
+    pipelineRunVideoId: string;
+    projectId: string;
+    scriptId: string;
+    ideaId: string;
+    /** Whichever pipeline_preset_id the handoff picked (first in
+     *  workspace by default). Surfaced so the user can switch later
+     *  by re-handing-off after editing the doc. */
+    presetId: string;
+    handedOffAt: string;
+  };
   /** Per-row breakdown produced by the rowify stage. This is a
    *  channel-clone-local shape, not the full ProductionRow union —
    *  the existing image-gen pipeline reads these fields directly and
@@ -230,11 +250,48 @@ export interface ChannelCloneJobState {
     /** Free-form notes — usually the LLM explaining its rationale. */
     notes: string;
   }[];
+  /** Full publish-pack output from STATEs 18 (thumbnails) + 19 (SEO)
+   *  + 21 (30-day calendar). Generated in a single LLM call so the
+   *  same context informs each piece — keeps the calendar and the
+   *  thumbnail concepts coherent with the just-approved script. */
   publishPack?: {
-    titles: string[];
+    /** 5 candidate titles ranked by predicted CTR. */
+    titles: { text: string; ctrReasoning: string }[];
     description: string;
+    /** ~30 SEO tags/keywords. */
     tags: string[];
+    /** 3 candidate pinned comments that align with the channel's
+     *  voice (engagement bait the audience expects). */
     pinnedCommentOptions: string[];
-    contentCalendar?: { day: number; topic: string; angle: string }[];
+    categoryRecommendation: string;
+    /** When the audience is most active — a free-form time-of-week
+     *  string from the model rather than a structured schedule. */
+    optimalUploadTime: string;
+    /** 5 thumbnail design concepts. The fullImagePrompt is meant to
+     *  be passed verbatim to an image generator; styleMatched=true
+     *  means the prompt already incorporates the chosen style preset's
+     *  ai_image_suffix. */
+    thumbnailConcepts: {
+      visualConcept: string;
+      textOverlay: string;
+      emotionTrigger: string;
+      colorContrastStrategy: string;
+      fullImagePrompt: string;
+      ctrReasoning: string;
+    }[];
+    /** 30 days of follow-up video ideas keeping the channel on its
+     *  WPS / hook / niche track. */
+    contentCalendar: {
+      day: number;
+      title: string;
+      angle: string;
+      difficulty: number;
+      bestUploadTime: string;
+      contentPillar: string;
+    }[];
+    /** Whichever model the LLM call ran on (per the user's per-stage
+     *  picker). */
+    modelUsed: string;
+    generatedAt: string;
   };
 }
