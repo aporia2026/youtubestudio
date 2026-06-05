@@ -1,8 +1,14 @@
 # CapCut-quality Timeline Editor — Plan
 
 **Date:** 2026-06-05
-**Status:** Awaiting sign-off
-**Source ask:** "Cutting, trimming, splitting wherever I need on the timeline and resizing those pieces (shortening etc.) with dragging — extremely flawlessly, exactly like CapCut."
+**Status:** Approved 2026-06-05. M1 in progress.
+**Source ask:** "Cutting, trimming, splitting wherever I need on the timeline and resizing those pieces (shortening etc.) with dragging — extremely flawlessly, exactly like CapCut." Plus: "final behavior should be exactly like CapCut also with audio."
+
+## Locked decisions (2026-06-05)
+
+- **Mount:** BOTH `/video-studio` (primary, below existing Player) AND a deep link from `/production-doc` page.
+- **Undo/redo:** Client-side stack of 50, batched save on blur or explicit Save. Unsaved-changes indicator.
+- **Voiceover track:** waveform display + audio editing (trim / split / cut / drag-resize) — same operations as video, applied to the voiceover. Adds M6 scope: new `voiceover_segments[]` field on the production-doc + Remotion-side wiring so audio offsets respect the segments.
 
 ## Goals
 
@@ -241,9 +247,10 @@ Mounted in `Settings → Editor` (new sub-page). Reads via `getPref()` / writes 
 | M3 — Split-at-playhead + cut | 1 day | `S` key splits; `Del` cuts; both round-tripped through render |
 | M4 — Drag-reorder + transitions | 1 day | onActionMoveEnd → reorderProductionDocState; cross-fade toggle on transition_in |
 | M5 — Undo/redo + keybindings + snap | 1–2 days | Cmd+Z/Cmd+Shift+Z stack of 50; arrow-key nudge; aux-line snap tuning |
-| M6 — Settings + observability + polish | 1 day | Settings → Editor sub-page; all logs namespaced; performance regression test |
-| M7 — Manual QA on a real rendered doc | 1 day | Drive the editor against a real channel-clone output, render, watch the MP4 |
-| **Total** | **7–10 focused days** | v1 ready |
+| M6 — Audio editing (voiceover_segments schema + Remotion wiring + waveform + trim/split/cut on the voiceover track) | 2 days | Voiceover track on timeline with CapCut-style trim/split/cut. New `voiceover_segments[]` field on doc; `YouTubeVideo.tsx` plays segments via `<Audio startFrom>` offsets. wavesurfer.js for the visual waveform (~30KB). |
+| M7 — Settings + observability + polish | 1 day | Settings → Editor sub-page; all logs namespaced; performance regression test |
+| M8 — Manual QA on a real rendered doc | 1 day | Drive the editor against a real channel-clone output, render, watch the MP4 |
+| **Total** | **9–13 focused days** | v1 ready |
 
 ## Out of scope (v1)
 
