@@ -9,6 +9,7 @@
 
 import type { Metadata } from 'next';
 import { ChannelClonePanel } from '@/components/channel-clone/ChannelClonePanel';
+import { ChannelCloneConfigView } from '@/components/channel-clone/ChannelCloneConfigView';
 
 export const metadata: Metadata = {
   title: 'Channel Clone — Resume',
@@ -26,6 +27,7 @@ export default async function ChannelCloneResumePage({ params }: PageProps) {
         <h1 className="text-xl font-semibold text-neutral-100">Channel Clone — Job</h1>
         <p className="font-mono text-xs text-neutral-500">{id}</p>
       </header>
+      <ChannelCloneConfigView />
       <ChannelClonePanel initialJobId={id} />
     </div>
   );

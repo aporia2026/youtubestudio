@@ -14,6 +14,7 @@
 import type { Metadata } from 'next';
 import { ChannelClonePanel } from '@/components/channel-clone/ChannelClonePanel';
 import { ChannelCloneJobList } from '@/components/channel-clone/ChannelCloneJobList';
+import { ChannelCloneConfigView } from '@/components/channel-clone/ChannelCloneConfigView';
 
 export const metadata: Metadata = {
   title: 'Channel Clone',
@@ -38,6 +39,8 @@ export default function ChannelClonePage() {
           run anywhere.
         </p>
       </header>
+
+      <ChannelCloneConfigView />
 
       <section className="space-y-2">
         <h2 className="text-sm font-medium text-neutral-200">Recent runs</h2>
