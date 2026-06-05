@@ -118,6 +118,7 @@ import migration0115 from './0115_shorts_generation_lease';
 import migration0116 from './0116_add_pipeline_preset_pacing_profile';
 import migration0117 from './0117_add_shorts_assets_context';
 import migration0118 from './0118_shorts_duration_columns_to_real';
+import migration0119 from './0119_create_channel_clone_jobs';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -243,6 +244,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0116,
   migration0117,
   migration0118,
+  migration0119,
 ]);
 
 /**
