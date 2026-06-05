@@ -10,6 +10,7 @@ import {
   HISTORY_KINDS,
   KIND_CAPS,
   MAX_PAYLOAD_BYTES,
+  MAX_PAYLOAD_BYTES_BY_KIND,
   isHistoryKind,
 } from '@/lib/user-history';
 import { isUuid } from '@/lib/user-history-types';
@@ -107,6 +108,50 @@ describe('MAX_PAYLOAD_BYTES', () => {
 
   it('is small enough to refuse a 10MB blob', () => {
     expect(MAX_PAYLOAD_BYTES).toBeLessThan(10 * 1024 * 1024);
+  });
+
+  it('aliases the script-kind cap', () => {
+    // Back-compat — old callers (and this assertion) treat the bare
+    // MAX_PAYLOAD_BYTES as the script ceiling.
+    expect(MAX_PAYLOAD_BYTES).toBe(MAX_PAYLOAD_BYTES_BY_KIND.script);
+  });
+});
+
+describe('MAX_PAYLOAD_BYTES_BY_KIND', () => {
+  it('has a positive cap for every kind', () => {
+    for (const k of HISTORY_KINDS) {
+      expect(MAX_PAYLOAD_BYTES_BY_KIND[k], `${k} cap`).toBeGreaterThan(0);
+    }
+  });
+
+  it('has no extra keys beyond HISTORY_KINDS', () => {
+    expect(Object.keys(MAX_PAYLOAD_BYTES_BY_KIND).sort()).toEqual([...HISTORY_KINDS].sort());
+  });
+
+  it('gives production_doc enough headroom for ~200-shot doodle docs', () => {
+    // A real 200-shot paint_explainer_v1 doc lands at ~300–500 KB
+    // because each shot carries motion beats + vision anchors + prop
+    // cache. The original 256 KB cap rejected the timeline editor's
+    // save; we raised it so saves work without the user trimming
+    // anything.
+    expect(MAX_PAYLOAD_BYTES_BY_KIND.production_doc).toBeGreaterThanOrEqual(1024 * 1024);
+  });
+
+  it('keeps every non-production_doc cap small (no defense regression)', () => {
+    // Defense in depth — the lighter kinds have well-defined client-
+    // side length limits, so their caps stay tight. Only
+    // production_doc was raised; everyone else still rejects multi-MB
+    // payloads.
+    for (const k of HISTORY_KINDS) {
+      if (k === 'production_doc') continue;
+      expect(MAX_PAYLOAD_BYTES_BY_KIND[k], `${k} cap`).toBeLessThanOrEqual(256 * 1024);
+    }
+  });
+
+  it('every cap is small enough to refuse a 10MB blob', () => {
+    for (const k of HISTORY_KINDS) {
+      expect(MAX_PAYLOAD_BYTES_BY_KIND[k], `${k} cap`).toBeLessThan(10 * 1024 * 1024);
+    }
   });
 });
 

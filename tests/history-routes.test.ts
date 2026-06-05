@@ -296,12 +296,16 @@ describe('history routes — input validation (authed)', () => {
       params: Promise.resolve({ id: VALID_UUID }),
     });
     expect(res.status).toBe(404);
-    // The UPDATE must scope by both workspace AND collaborator — a
-    // leaked id from another user must NOT mutate a row.
+    // The kind-lookup SELECT must scope by both workspace AND
+    // collaborator — a leaked id from another user must NOT reach the
+    // UPDATE at all. With the SELECT returning no rows, the UPDATE is
+    // short-circuited.
+    const selCall = sqlCalls.find((c) => c.strings.join('').includes('SELECT kind'));
+    expect(selCall, 'no scoping SELECT recorded').toBeDefined();
+    expect(selCall!.values).toContain(VALID_WS);
+    expect(selCall!.values).toContain(VALID_UID);
     const upCall = sqlCalls.find((c) => c.strings.join('').includes('UPDATE user_history'));
-    expect(upCall, 'no UPDATE call recorded').toBeDefined();
-    expect(upCall!.values).toContain(VALID_WS);
-    expect(upCall!.values).toContain(VALID_UID);
+    expect(upCall, 'UPDATE must NOT run when scope-SELECT returns no rows').toBeUndefined();
   });
 
   it('DELETE /api/history/[id] returns 404 for a non-UUID id (before SQL)', async () => {
@@ -328,9 +332,66 @@ describe('history routes — input validation (authed)', () => {
     expect(delCall!.values).toContain(VALID_UID);
   });
 
-  it('PATCH /api/history/[id] rejects a >MAX_PAYLOAD_BYTES payload with 413', async () => {
-    sqlImpl = async () => ({ rows: [], rowCount: 0 });
+  it('PATCH /api/history/[id] rejects a >MAX_PAYLOAD_BYTES_BY_KIND[kind] payload with 413', async () => {
+    // The PATCH path SELECTs the existing row's kind first (so the
+    // per-kind cap can be applied); mock that lookup to a 'script'
+    // row, then the 300 KB payload trips the 256 KB script cap.
+    sqlImpl = async (strings) => {
+      const sqlText = strings.join('');
+      if (sqlText.includes('SELECT kind')) {
+        return { rows: [{ kind: 'script' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    };
     const huge = { script: 'a'.repeat(300 * 1024) };
+    const req = new NextRequest(`http://localhost/api/history/${VALID_UUID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: huge }),
+    });
+    const res = await historyByIdRoute.PATCH(req, {
+      params: Promise.resolve({ id: VALID_UUID }),
+    });
+    expect(res.status).toBe(413);
+  });
+
+  it('PATCH /api/history/[id] accepts a >256KB production_doc payload', async () => {
+    // production_doc gets a 2 MB cap so the timeline editor can save
+    // realistic 200+ shot docs (~300–500 KB). This is the regression
+    // test for the original "Save → payload too large: 312253 > 262144"
+    // bug.
+    sqlImpl = async (strings) => {
+      const sqlText = strings.join('');
+      if (sqlText.includes('SELECT kind')) {
+        return { rows: [{ kind: 'production_doc' }], rowCount: 1 };
+      }
+      // UPDATE returns rowCount=1 → 200.
+      return { rows: [], rowCount: 1 };
+    };
+    // 500 KB payload — comfortably over the lighter kinds' 256 KB cap
+    // but well under production_doc's 2 MB cap.
+    const big = { doc: { rows: 'x'.repeat(500 * 1024) } };
+    const req = new NextRequest(`http://localhost/api/history/${VALID_UUID}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: big }),
+    });
+    const res = await historyByIdRoute.PATCH(req, {
+      params: Promise.resolve({ id: VALID_UUID }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('PATCH /api/history/[id] rejects a >2MB production_doc payload with 413', async () => {
+    sqlImpl = async (strings) => {
+      const sqlText = strings.join('');
+      if (sqlText.includes('SELECT kind')) {
+        return { rows: [{ kind: 'production_doc' }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    };
+    // 3 MB payload — over production_doc's 2 MB cap.
+    const huge = { doc: { rows: 'x'.repeat(3 * 1024 * 1024) } };
     const req = new NextRequest(`http://localhost/api/history/${VALID_UUID}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },

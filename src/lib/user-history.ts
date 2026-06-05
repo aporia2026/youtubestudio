@@ -45,14 +45,41 @@ export const KIND_CAPS: Record<HistoryKind, number> = {
  * via `Buffer.byteLength(json, 'utf8')` (NOT `json.length`, which
  * counts UTF-16 code units and would let a 256K-emoji blob through).
  *
- * Defence against pathological clients (e.g. someone pasting a 10MB
- * script body). The script-history MAX_SCRIPT_LENGTH is already 15K
- * chars; this leaves comfortable margin for the surrounding metadata
- * + the heavier kinds (qa, production_doc) that store full result
- * blobs. A row above this is rejected with a 413-style error at the
- * API layer.
+ * Per-kind because `production_doc` is fundamentally heavier than the
+ * other kinds: each shot can carry voiceover text, image prompt,
+ * motion beats (~5–10 per shot), vision-pass anchors, mouth-removed
+ * URL, and per-character / prop caches. A real 200-shot doodle-style
+ * doc lands around 300–500 KB; the 256 KB cap that fits a script
+ * comfortably rejects it. The other kinds keep the 256 KB ceiling
+ * because their payloads (script body, ideas list, voiceover SSML,
+ * SEO bundle, thumbnail descriptor, QA result, shorts batch) all
+ * have well-defined client-side length limits well under that.
+ *
+ * Defence against pathological clients is still in place — even the
+ * generous production_doc cap rejects a 10 MB blob. A row above the
+ * cap is rejected with a 413-style error at the API layer.
  */
-export const MAX_PAYLOAD_BYTES = 256 * 1024; // 256 KB per row
+export const MAX_PAYLOAD_BYTES_BY_KIND: Record<HistoryKind, number> = {
+  script: 256 * 1024,
+  ideas: 256 * 1024,
+  voiceover: 256 * 1024,
+  seo: 256 * 1024,
+  thumbnail: 256 * 1024,
+  qa: 256 * 1024,
+  // Headroom for a ~1300-shot doc at current per-shot density. Well
+  // under Vercel's request-body limit so PATCH never hits the
+  // platform-level 413 before we hit ours.
+  production_doc: 2 * 1024 * 1024,
+  shorts_ideas: 256 * 1024,
+};
+
+/**
+ * Back-compat alias — the script-kind cap. New callers should index
+ * `MAX_PAYLOAD_BYTES_BY_KIND` directly so the per-kind ceiling is
+ * applied; this export stays so existing imports (and the historic
+ * test suite) keep compiling.
+ */
+export const MAX_PAYLOAD_BYTES = MAX_PAYLOAD_BYTES_BY_KIND.script;
 
 export interface UserHistoryRow {
   id: string;
@@ -109,8 +136,9 @@ export async function saveUserHistory(
   // payload of mostly-emoji slip past with ~4× more bytes than the
   // cap allows.
   const payloadBytes = Buffer.byteLength(payloadJson, 'utf8');
-  if (payloadBytes > MAX_PAYLOAD_BYTES) {
-    throw new Error(`payload too large: ${payloadBytes} > ${MAX_PAYLOAD_BYTES} bytes`);
+  const cap = MAX_PAYLOAD_BYTES_BY_KIND[kind];
+  if (payloadBytes > cap) {
+    throw new Error(`payload too large: ${payloadBytes} > ${cap} bytes`);
   }
 
   // Idempotent insert: ON CONFLICT triggers when (workspace,
@@ -195,14 +223,31 @@ export async function updateUserHistoryEntry(
   id: string,
   payload: unknown,
 ): Promise<boolean> {
+  // Fetch the row's kind first so the byte-cap check uses the right
+  // per-kind ceiling. The SELECT is scoped to (workspace,
+  // collaborator) so a leaked id from another scope short-circuits to
+  // false (→ 404 at the route layer) without revealing the row's kind
+  // or running the UPDATE.
+  const existing = await sql<{ kind: HistoryKind }>`
+    SELECT kind
+      FROM user_history
+     WHERE id = ${id}
+       AND workspace_id = ${workspaceId}
+       AND collaborator_id = ${collaboratorId}
+     LIMIT 1
+  `;
+  const existingKind = existing.rows[0]?.kind;
+  if (!existingKind) return false;
+
   const payloadJson = JSON.stringify(payload);
   // `Buffer.byteLength(_, 'utf8')` measures the actual on-the-wire
   // byte size; `json.length` would count UTF-16 code units and let a
   // payload of mostly-emoji slip past with ~4× more bytes than the
   // cap allows.
   const payloadBytes = Buffer.byteLength(payloadJson, 'utf8');
-  if (payloadBytes > MAX_PAYLOAD_BYTES) {
-    throw new Error(`payload too large: ${payloadBytes} > ${MAX_PAYLOAD_BYTES} bytes`);
+  const cap = MAX_PAYLOAD_BYTES_BY_KIND[existingKind];
+  if (payloadBytes > cap) {
+    throw new Error(`payload too large: ${payloadBytes} > ${cap} bytes`);
   }
   const { rowCount } = await sql`
     UPDATE user_history
