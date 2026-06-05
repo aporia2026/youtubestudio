@@ -121,6 +121,14 @@ import {
   deleteRowFromProductionDocState,
   reorderProductionDocState,
 } from '@/lib/production-doc-reorder';
+// Scoped image-generation batches for the redesign's RenderDock
+// "Generate images ▾" dropdown. See
+// `_plans/2026-06-05-prodoc-scoped-image-generation.md`.
+import {
+  getAllScopeCounts,
+  getRowsMatchingScope,
+  type ImageScopeKind,
+} from '@/lib/production-doc-image-scopes';
 // R4 PR3: the Studio sub-mode hook is lifted out of StudioMode so
 // page.tsx can also read the same signal — needed to hide the legacy
 // grid when the user is in scene-strip mode.
@@ -4620,6 +4628,13 @@ function ProductionDocPage() {
   // — "Animate all" batch state. While `animatingAll` is non-null the user
   //   is mid-batch; the button shows progress and we block re-entrance.
   const [animatingAll, setAnimatingAll] = useState<{ done: number; total: number } | null>(null);
+  // — Scoped image-generation batch (the "Generate images ▾" dropdown in
+  //   the redesigned RenderDock). Carries the scope tag so the dock can
+  //   show "Generating N/M…" with the right verb. See
+  //   `_plans/2026-06-05-prodoc-scoped-image-generation.md`.
+  const [imageScopeInFlight, setImageScopeInFlight] = useState<
+    { scope: ImageScopeKind; done: number; total: number } | null
+  >(null);
   // — "Retry failed videos" / "Retry failed images" batch state. Same shape
   //   as `animatingAll` (done/total progress) but tracked separately so the
   //   two retry buttons can run independently of each other while still
@@ -5335,6 +5350,14 @@ function ProductionDocPage() {
     return findUntaggedDescriptions(doc.rows, doc.doodle_explainer_2_character_descriptions);
   }, [doc]);
 
+  // Live row-counts per image-scope, fed into the RenderDock's
+  // "Generate images ▾" dropdown. One O(n) pass per doc or rowImages
+  // change. See `_plans/2026-06-05-prodoc-scoped-image-generation.md`.
+  const imageScopeCounts = React.useMemo(() => {
+    if (!doc) return undefined;
+    return getAllScopeCounts(doc.rows, rowImages);
+  }, [doc, rowImages]);
+
   // Rows that have an AI prompt but no still yet — surfaces the
   // "Generate empty" bulk action. Distinct from `failedImagePlan` (which
   // is only 'error' state): includes 'idle' and missing entries, which
@@ -5847,6 +5870,108 @@ function ProductionDocPage() {
     // change mid-batch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryingImages, imagesGenerating, emptyImagePlan, doc?.collage_mode, imageModel, doc?.rows, generateVariantImage]);
+
+  /**
+   * Scoped image-generation batch — drives the RenderDock's
+   * "Generate images ▾" dropdown. `'empty'` and `'failed'` delegate
+   * to the existing batch helpers (which already handle collage-mode
+   * batching, motion-collage panels, and variant fallback). Every
+   * other scope iterates the matching indices and dispatches the
+   * right per-row generator. See
+   * `_plans/2026-06-05-prodoc-scoped-image-generation.md`.
+   */
+  const runImageScope = useCallback(async (scope: ImageScopeKind) => {
+    if (animatingAll || retryingImages || retryingVideos || imageScopeInFlight) return;
+    if (!doc) return;
+    if (scope === 'empty') {
+      console.info('[prodoc image-scope] scope-dispatched', { scope, rowIndices: 'via runGenerateEmptyImages' });
+      await runGenerateEmptyImages();
+      return;
+    }
+    if (scope === 'failed') {
+      console.info('[prodoc image-scope] scope-dispatched', { scope, rowIndices: 'via runRetryFailedImages' });
+      await runRetryFailedImages();
+      return;
+    }
+    const indices = getRowsMatchingScope(doc.rows, rowImages, scope);
+    if (indices.length === 0) return;
+    console.info('[prodoc image-scope] scope-dispatched', { scope, rowIndices: indices });
+    setImageScopeInFlight({ scope, done: 0, total: indices.length });
+    let succeeded = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (let i = 0; i < indices.length; i += 1) {
+      const idx = indices[i]!;
+      const r = doc.rows[idx];
+      if (!r) {
+        skipped += 1;
+        setImageScopeInFlight({ scope, done: i + 1, total: indices.length });
+        continue;
+      }
+      try {
+        if (r.shot_kind === 'motion_collage') {
+          if (!r.motion_collage_grid || !r.motion_collage_panel_prompts?.length) {
+            console.info('[prodoc image-scope] skipped-no-prompt', {
+              rowIndex: idx,
+              reason: 'motion_collage row has no grid or panel prompts',
+            });
+            skipped += 1;
+          } else {
+            const ok = await generateMotionCollageForRow(idx);
+            if (ok) succeeded += 1;
+            else failed += 1;
+          }
+        } else if ((r.variant_index ?? 0) > 0) {
+          await generateVariantImage(idx);
+          // Best-effort outcome read — generateVariantImage doesn't
+          // return a status. Re-read after the await.
+          let updated: RowImageState[] = [];
+          setRowImages(prev => { updated = prev; return prev; });
+          if (updated[idx]?.imageUrl) succeeded += 1;
+          else failed += 1;
+        } else {
+          const prompt = r.ai_image_prompt?.trim();
+          if (!prompt) {
+            console.info('[prodoc image-scope] skipped-no-prompt', {
+              rowIndex: idx,
+              reason: 'row has no ai_image_prompt',
+            });
+            skipped += 1;
+          } else {
+            await generateImageForRow(idx, prompt);
+            let updated: RowImageState[] = [];
+            setRowImages(prev => { updated = prev; return prev; });
+            if (updated[idx]?.imageUrl) succeeded += 1;
+            else failed += 1;
+          }
+        }
+      } catch (err) {
+        console.error('[prodoc image-scope] dispatch-error', { rowIndex: idx, err });
+        failed += 1;
+      }
+      setImageScopeInFlight({ scope, done: i + 1, total: indices.length });
+    }
+    setImageScopeInFlight(null);
+    console.info('[prodoc image-scope] scope-complete', { scope, succeeded, failed, skipped });
+    const noun = succeeded === 1 ? 'image' : 'images';
+    toast.success(
+      `Generated ${succeeded} ${noun}${failed > 0 ? ` · ${failed} failed` : ''}${skipped > 0 ? ` · ${skipped} skipped` : ''}.`,
+    );
+    // generateImageForRow / generateMotionCollageForRow are per-render async
+    // and intentionally omitted from deps (same pattern as the existing
+    // batch helpers above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    animatingAll,
+    retryingImages,
+    retryingVideos,
+    imageScopeInFlight,
+    doc,
+    rowImages,
+    runGenerateEmptyImages,
+    runRetryFailedImages,
+    generateVariantImage,
+  ]);
 
   const runRetryFailedVideos = useCallback(async () => {
     if (animatingAll || retryingVideos) return;
@@ -14581,13 +14706,17 @@ function ProductionDocPage() {
               onRetryFailedImages: () => { void runRetryFailedImages(); },
               onRetryFailedVideos: () => { void runRetryFailedVideos(); },
               onAnimateAll: () => { void runAnimateAll(); },
-              batchInFlight: animatingAll
-                ? { kind: 'animate', done: animatingAll.done, total: animatingAll.total }
-                : retryingImages
-                  ? { kind: 'retry-images', done: retryingImages.done, total: retryingImages.total }
-                  : retryingVideos
-                    ? { kind: 'retry-videos', done: retryingVideos.done, total: retryingVideos.total }
-                    : null,
+              batchInFlight: imageScopeInFlight
+                ? { kind: 'image-scope', done: imageScopeInFlight.done, total: imageScopeInFlight.total }
+                : animatingAll
+                  ? { kind: 'animate', done: animatingAll.done, total: animatingAll.total }
+                  : retryingImages
+                    ? { kind: 'retry-images', done: retryingImages.done, total: retryingImages.total }
+                    : retryingVideos
+                      ? { kind: 'retry-videos', done: retryingVideos.done, total: retryingVideos.total }
+                      : null,
+              imageScopeCounts,
+              onGenerateImagesByScope: (scope) => { void runImageScope(scope); },
             }
           : undefined
       }

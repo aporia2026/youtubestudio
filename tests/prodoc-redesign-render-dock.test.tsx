@@ -275,3 +275,78 @@ describe('RenderDock — error message', () => {
     expect(html).not.toContain('stale error from earlier');
   });
 });
+
+describe('RenderDock — scoped image-generation dropdown', () => {
+  const fullCounts = {
+    empty: 12,
+    failed: 3,
+    animation: 180,
+    motion_collage: 24,
+    base_variant: 45,
+    non_base_variant: 61,
+    title_card: 9,
+    all: 306,
+  };
+
+  it('hides the dropdown trigger when imageScopeCounts is undefined (rule 10)', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          onGenerateImagesByScope: () => {},
+        })}
+      />,
+    );
+    expect(html).not.toContain('Generate images');
+  });
+
+  it('hides the dropdown trigger when the dispatcher is undefined', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageScopeCounts: fullCounts,
+        })}
+      />,
+    );
+    expect(html).not.toContain('Generate images');
+  });
+
+  it('renders the dropdown trigger when both counts and dispatcher are wired', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageScopeCounts: fullCounts,
+          onGenerateImagesByScope: () => {},
+        })}
+      />,
+    );
+    expect(html).toContain('Generate images');
+    expect(html).toMatch(/aria-haspopup="menu"/);
+    expect(html).toMatch(/aria-expanded="false"/);
+  });
+
+  it('shows the in-flight progress label when batchInFlight.kind === image-scope', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageScopeCounts: fullCounts,
+          onGenerateImagesByScope: () => {},
+          batchInFlight: { kind: 'image-scope', done: 7, total: 24 },
+        })}
+      />,
+    );
+    expect(html).toContain('Generating 7/24…');
+  });
+
+  it('disables the trigger while any batch is in flight', () => {
+    const html = renderToStaticMarkup(
+      <RenderDock
+        {...makeProps({
+          imageScopeCounts: fullCounts,
+          onGenerateImagesByScope: () => {},
+          batchInFlight: { kind: 'animate', done: 1, total: 4 },
+        })}
+      />,
+    );
+    expect(html).toMatch(/<button[^>]*\bdisabled\b[^>]*aria-haspopup="menu"/);
+  });
+});

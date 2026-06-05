@@ -1,6 +1,11 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  type ImageScopeKind,
+  scopeLabel,
+  scopeOverwritesExistingImages,
+} from '@/lib/production-doc-image-scopes';
 
 /**
  * RenderDock — pinned-bottom batch + render bar in Studio Mode. See
@@ -34,7 +39,8 @@ export interface RenderDockMediaStats {
 export type RenderDockBatchKind =
   | 'animate'
   | 'retry-images'
-  | 'retry-videos';
+  | 'retry-videos'
+  | 'image-scope';
 
 export interface RenderDockBatchProgress {
   kind: RenderDockBatchKind;
@@ -66,6 +72,16 @@ export interface RenderDockProps {
   /** When non-null, a batch is in flight. The matching button shows
    *  a progress label; all batch buttons disable. R5 PR2. */
   batchInFlight?: RenderDockBatchProgress | null;
+  /** Live row-counts per image-generation scope. Drives the
+   *  "Generate images ▾" dropdown items. When undefined the
+   *  dropdown is hidden. See `_plans/2026-06-05-prodoc-scoped-image-generation.md`. */
+  imageScopeCounts?: Record<ImageScopeKind, number>;
+  /** Dispatcher for a scoped image-generation batch. The dock
+   *  handles the confirm-once safety for overwriting scopes
+   *  before calling this; page.tsx routes to the right
+   *  helper (runGenerateEmptyImages / runRetryFailedImages / the
+   *  new type-based loop). */
+  onGenerateImagesByScope?: (scope: ImageScopeKind) => void;
 }
 
 function pluralize(n: number, singular: string, plural?: string): string {
@@ -118,7 +134,64 @@ export const RenderDock: React.FC<RenderDockProps> = ({
   onRetryFailedVideos,
   onAnimateAll,
   batchInFlight = null,
+  imageScopeCounts,
+  onGenerateImagesByScope,
 }) => {
+  // Generate-images dropdown state. Plain React state; the popover
+  // is local DOM, no portal — outside-click closes via a document
+  // listener so the popover behaves like a real menu.
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
+  const scopeMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!scopeMenuOpen) return;
+    function handleDocClick(e: MouseEvent) {
+      if (!scopeMenuRef.current) return;
+      if (!scopeMenuRef.current.contains(e.target as Node)) {
+        setScopeMenuOpen(false);
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setScopeMenuOpen(false);
+    }
+    document.addEventListener('mousedown', handleDocClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDocClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [scopeMenuOpen]);
+
+  const handleScopeClick = (scope: ImageScopeKind, count: number) => {
+    if (count === 0) return;
+    if (!onGenerateImagesByScope) return;
+    console.info('[prodoc image-scope] scope-selected', { scope, count });
+    if (scopeOverwritesExistingImages(scope)) {
+      const label = scopeLabel(scope);
+      const noun = count === 1 ? 'row' : 'rows';
+      const msg =
+        scope === 'all'
+          ? `Re-generate images for ALL ${count} ${noun}? This will replace every existing image in the doc.`
+          : `Re-generate ${label.toLowerCase()} (${count} ${noun})? Any existing images on these rows will be replaced.`;
+      console.info('[prodoc image-scope] confirm-shown', { scope, count });
+      const confirmed = window.confirm(msg);
+      if (!confirmed) {
+        console.info('[prodoc image-scope] confirm-cancelled', { scope });
+        return;
+      }
+    }
+    setScopeMenuOpen(false);
+    onGenerateImagesByScope(scope);
+  };
+
+  const stateScopes: ImageScopeKind[] = ['empty', 'failed'];
+  const typeScopes: ImageScopeKind[] = [
+    'animation',
+    'motion_collage',
+    'base_variant',
+    'non_base_variant',
+    'title_card',
+  ];
+
   const isRendering = status === 'rendering';
   const isDone = status === 'done';
   const isError = status === 'error';
@@ -232,6 +305,158 @@ export const RenderDock: React.FC<RenderDockProps> = ({
       )}
 
       <div className="flex items-center gap-2 flex-wrap">
+        {imageScopeCounts && onGenerateImagesByScope && (
+          <div className="relative" ref={scopeMenuRef}>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !scopeMenuOpen;
+                if (next) console.info('[prodoc image-scope] dropdown-open', { counts: imageScopeCounts });
+                setScopeMenuOpen(next);
+              }}
+              disabled={!!batchInFlight}
+              aria-haspopup="menu"
+              aria-expanded={scopeMenuOpen}
+              className="text-xs px-3 py-1.5 rounded whitespace-nowrap"
+              style={{
+                ...COUNTER_PILL_STYLE,
+                cursor: batchInFlight ? 'not-allowed' : 'pointer',
+                opacity: batchInFlight ? 0.5 : 1,
+              }}
+              title="Generate images for a subset of rows"
+            >
+              {batchInFlight?.kind === 'image-scope'
+                ? `Generating ${batchInFlight.done}/${batchInFlight.total}…`
+                : '✨ Generate images ▾'}
+            </button>
+            {scopeMenuOpen && (
+              <div
+                role="menu"
+                aria-label="Scoped image generation"
+                className="absolute right-0 rounded shadow-lg"
+                style={{
+                  bottom: 'calc(100% + 6px)',
+                  background: 'rgba(20,20,24,0.98)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  backdropFilter: 'blur(8px)',
+                  minWidth: 260,
+                  zIndex: 50,
+                  padding: '4px 0',
+                }}
+              >
+                {stateScopes.map((scope) => {
+                  const count = imageScopeCounts[scope] ?? 0;
+                  const disabled = count === 0;
+                  return (
+                    <button
+                      key={scope}
+                      type="button"
+                      role="menuitem"
+                      disabled={disabled}
+                      onClick={() => handleScopeClick(scope, count)}
+                      className="w-full text-left text-xs px-3 py-1.5 flex justify-between items-center"
+                      style={{
+                        background: 'transparent',
+                        color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
+                        cursor: disabled ? 'not-allowed' : 'pointer',
+                        border: 'none',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!disabled) e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      <span>{scopeLabel(scope)}</span>
+                      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                        ({count})
+                      </span>
+                    </button>
+                  );
+                })}
+                <div
+                  role="separator"
+                  style={{
+                    height: 1,
+                    margin: '4px 0',
+                    background: 'rgba(255,255,255,0.08)',
+                  }}
+                />
+                {typeScopes.map((scope) => {
+                  const count = imageScopeCounts[scope] ?? 0;
+                  const disabled = count === 0;
+                  return (
+                    <button
+                      key={scope}
+                      type="button"
+                      role="menuitem"
+                      disabled={disabled}
+                      onClick={() => handleScopeClick(scope, count)}
+                      className="w-full text-left text-xs px-3 py-1.5 flex justify-between items-center"
+                      style={{
+                        background: 'transparent',
+                        color: disabled ? 'var(--text-muted)' : 'var(--text-primary)',
+                        cursor: disabled ? 'not-allowed' : 'pointer',
+                        border: 'none',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!disabled) e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      <span>{scopeLabel(scope)}</span>
+                      <span style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                        ({count})
+                      </span>
+                    </button>
+                  );
+                })}
+                <div
+                  role="separator"
+                  style={{
+                    height: 1,
+                    margin: '4px 0',
+                    background: 'rgba(255,255,255,0.08)',
+                  }}
+                />
+                {(() => {
+                  const count = imageScopeCounts.all ?? 0;
+                  const disabled = count === 0;
+                  return (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={disabled}
+                      onClick={() => handleScopeClick('all', count)}
+                      className="w-full text-left text-xs px-3 py-1.5 flex justify-between items-center"
+                      style={{
+                        background: 'transparent',
+                        color: disabled ? 'var(--text-muted)' : '#f87171',
+                        cursor: disabled ? 'not-allowed' : 'pointer',
+                        border: 'none',
+                        fontWeight: 600,
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!disabled) e.currentTarget.style.background = 'rgba(239,68,68,0.08)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'transparent';
+                      }}
+                    >
+                      <span>⚠ {scopeLabel('all')}</span>
+                      <span style={{ fontFamily: 'monospace' }}>
+                        ({count})
+                      </span>
+                    </button>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+        )}
         {onRetryFailedImages && imageStats.failed > 0 && (
           <button
             type="button"
