@@ -3100,6 +3100,13 @@ function ProductionDocPage() {
       });
       return;
     }
+    // Hotfix (2026-06-05): track whether this is the first version
+    // observation per project, so the heavy state sync (doc, rowImages,
+    // etc.) only runs on REAL drift — not on the post-restore observation
+    // where local doc was just hand-set by the restore handler. The
+    // light state (flag toggles + brand colors) is always safe to apply
+    // because it's idempotent for the restore case.
+    const previousSyncedVersion = lastSyncedVersionRef.current;
     lastSyncedVersionRef.current = version;
     const derived = deriveLocalStateFromPayload(payload);
     if (typeof derived.animateScenes === 'boolean') {
@@ -3123,13 +3130,28 @@ function ProductionDocPage() {
         return next;
       });
     }
-    // Phase 5 sync (2026-06-05): also re-sync the heavy state — doc,
+    // Hotfix (2026-06-05): skip the HEAVY state sync on first
+    // observation for this project. The restore handler set local
+    // state from the cached entry — clobbering it with the server's
+    // potentially-different payload caused a "Cannot read properties
+    // of undefined" crash on the next render (and silent data loss
+    // before that). Heavy sync only runs on a real version bump
+    // detected mid-session.
+    if (previousSyncedVersion === null) {
+      console.info('[sync rehydrate] first observation, light-only', {
+        historyEntryId,
+        version,
+      });
+      return;
+    }
+    // Phase 5 sync (2026-06-05): re-sync the heavy state — doc,
     // row maps, voiceover, alignment, visualKitOverride. Without this,
     // a poll / broadcast that detected a version bump (e.g., editor
     // edited a row, then production-doc's poll noticed) would update
     // `project.payload` but leave the page rendering stale local
     // doc state. Gated on `!isDirty` above so user typing isn't
-    // clobbered.
+    // clobbered, and on `previousSyncedVersion !== null` so a fresh
+    // mount or post-restore observation doesn't clobber the local doc.
     setDoc(payload.doc);
     setRowImages(
       payload.doc.rows.map((row, i) => {
@@ -3174,6 +3196,7 @@ function ProductionDocPage() {
     console.info('[sync rehydrate]', {
       historyEntryId,
       version,
+      previousSyncedVersion,
       animateScenes: derived.animateScenes ?? null,
       suppressLowerThirds: derived.suppressLowerThirds ?? null,
       visualKitOverridePresent: Boolean(payload.visualKitOverride),
@@ -9073,7 +9096,7 @@ function ProductionDocPage() {
   }
 
   async function generate() {
-    if (!script.trim() || !niche.trim()) {
+    if (!script?.trim() || !niche?.trim()) {
       toast.error('Script and niche are required');
       return;
     }
@@ -11153,7 +11176,7 @@ function ProductionDocPage() {
           </div>
           <button
             onClick={generate}
-            disabled={generating || !script.trim() || !niche.trim()}
+            disabled={generating || !script?.trim() || !niche?.trim()}
             className="btn-primary px-6 shrink-0"
           >
             {generating ? (
@@ -14104,8 +14127,15 @@ function ProductionDocPage() {
               !confirm('Replace the current production doc with this restored entry?')) {
             return;
           }
-          setNiche(entry.niche);
-          setTopic(entry.topic);
+          // Hotfix (2026-06-05): canonical entries carry niche/topic
+          // under `entry.doc.*`; legacy entries carry them top-level.
+          // Without the fallback chain, `setNiche(undefined)` would
+          // make `niche` state undefined and the next render at
+          // `niche.trim()` (Generate button's disabled prop) would
+          // crash with "Cannot read properties of undefined".
+          const nested = entry.doc as Partial<ProductionDoc> | undefined;
+          setNiche(entry.niche ?? nested?.niche ?? '');
+          setTopic(entry.topic ?? '');
           if (entry.modelId) setModelId(entry.modelId);
           // v2 (2026-05-22) — prefer the doc-persisted `style_preset`
           // over the legacy entry-level `stylePreset` when both are
@@ -14170,7 +14200,15 @@ function ProductionDocPage() {
             // unexpected, so a corrupt payload silently falls back to
             // an empty override.
             setVisualKitOverride(parseVisualBrandKit(entry.visualBrandKitOverride));
-            toast.success(`Restored — ${entry.shotCount} shots, ${entry.totalDuration}`);
+            // Hotfix (2026-06-05): fall back to entry.doc.* for
+            // canonical entries where shotCount/totalDuration are
+            // only carried under the nested doc. Without these the
+            // toast shows "Restored — undefined shots, undefined".
+            const shotCountForToast =
+              entry.shotCount || nested?.rows?.length || restoredDoc.rows?.length || 0;
+            const totalDurationForToast =
+              entry.totalDuration || nested?.total_duration || restoredDoc.total_duration || '0';
+            toast.success(`Restored — ${shotCountForToast} shots, ${totalDurationForToast}`);
           } else {
             setDoc(null);
             setRowImages([]);
