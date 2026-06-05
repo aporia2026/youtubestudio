@@ -18,6 +18,12 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { applyCommand, persistableFromState, type EditorCommand, type EditorState } from './store';
 import { saveEditorPayload, type SaveResult } from './save-client';
 import { isGestureActive } from './gesture-state';
+import {
+  broadcastChannelName,
+  decideBroadcastAction,
+  newTabId,
+  type ProjectPatchedBroadcast,
+} from '@/lib/project/broadcast-sync';
 
 const AUTO_SAVE_DEBOUNCE_MS = 800;
 
@@ -87,6 +93,18 @@ export function useEditorStore(
   const reloadFromServerRef = useRef<(() => Promise<void>) | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightAbortRef = useRef<AbortController | null>(null);
+
+  // Phase 2/3 sync (2026-06-05): BroadcastChannel wiring so the editor
+  // notifies same-browser production-doc tabs of saves and gets
+  // notified back. Without this, edits in the editor only reach
+  // production-doc on the latter's 3s poll tick. The tab id is per-
+  // mount-lifetime and lets the sender ignore its own echo via
+  // `decideBroadcastAction`.
+  const tabIdRef = useRef<string>('');
+  if (tabIdRef.current === '') {
+    tabIdRef.current = newTabId();
+  }
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
   const apply = useCallback((cmd: EditorCommand) => {
     console.info('[editor store] command', { type: cmd.type });
@@ -168,6 +186,31 @@ export function useEditorStore(
         // is the natural reducer behavior. So we just dispatch.
         dispatch({ type: 'MARK_SAVED', version: result.version, savedAt });
         setSaveStatus({ kind: 'saved', at: savedAt });
+        // Phase 2/3 sync (2026-06-05): wake same-browser tabs (e.g.,
+        // an open production-doc) immediately. The receiving tab's
+        // `decideBroadcastAction` will reload or auto-rebase.
+        const channel = broadcastChannelRef.current;
+        if (channel) {
+          try {
+            const msg: ProjectPatchedBroadcast = {
+              type: 'patched',
+              tabId: tabIdRef.current,
+              version: result.version,
+            };
+            channel.postMessage(msg);
+            console.info('[sync broadcast-tx]', {
+              projectId,
+              version: result.version,
+              tabId: tabIdRef.current,
+              source: 'editor',
+            });
+          } catch (err) {
+            console.warn('[sync broadcast-tx failed]', {
+              projectId,
+              detail: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
         break;
       }
       case 'conflict':
@@ -461,6 +504,92 @@ export function useEditorStore(
   // handler in performSave (declared before reloadFromServer) reads
   // through this to schedule an auto-reload on safe (clean) conflicts.
   reloadFromServerRef.current = reloadFromServer;
+
+  // Phase 2/3 sync (2026-06-05): subscribe to same-browser broadcasts
+  // from other tabs (e.g., production-doc) so the editor reloads when
+  // another tab patches the same project. Gates on projectId so the
+  // channel is keyed correctly and torn down on prop change. Decision
+  // logic (self-echo, stale, malformed, dirty → defer, clean →
+  // reload) lives in `decideBroadcastAction` for test coverage.
+  useEffect(() => {
+    if (!projectId || !projectId.trim()) return;
+    if (typeof window === 'undefined') return;
+    if (typeof BroadcastChannel === 'undefined') {
+      console.info('[sync broadcast] editor: BroadcastChannel unavailable', { projectId });
+      return;
+    }
+    const channel = new BroadcastChannel(broadcastChannelName(projectId));
+    broadcastChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent) => {
+      const decision = decideBroadcastAction(
+        event.data,
+        tabIdRef.current,
+        stateRef.current.version,
+        stateRef.current.isDirty,
+      );
+      if (decision.kind === 'ignore') {
+        console.debug('[sync broadcast-rx]', {
+          projectId,
+          source: 'editor',
+          action: 'ignore',
+          reason: decision.reason,
+        });
+        return;
+      }
+      const data = event.data as Record<string, unknown>;
+      const remoteVersion = typeof data.version === 'number' ? data.version : null;
+      if (decision.kind === 'conflict') {
+        // Editor's own conflict handler already auto-reloads on PATCH
+        // 409 with a warning toast. Same posture here: log + defer
+        // to that path on the next save. We don't proactively reload
+        // a dirty editor — the user is mid-gesture and a reload would
+        // wipe their work without their intent.
+        console.info('[sync broadcast-rx]', {
+          projectId,
+          source: 'editor',
+          localVersion: stateRef.current.version,
+          remoteVersion,
+          isDirty: true,
+          action: 'defer-to-save',
+        });
+        return;
+      }
+      // QA fix (2026-06-05): guard against the in-flight save window.
+      // `isDirty === false` is necessary but not sufficient — there's
+      // a window between `performSave` dispatch and the MARK_SAVED
+      // commit where isDirty is false BUT a PATCH is still in flight.
+      // Reloading in that window would discard the save's effects
+      // (server has them but local state would jump back to the
+      // pre-save snapshot). Defer the reload — the next broadcast or
+      // poll-style tick after the save lands will pick it up.
+      if (inFlightAbortRef.current !== null) {
+        console.info('[sync broadcast-rx]', {
+          projectId,
+          source: 'editor',
+          localVersion: stateRef.current.version,
+          remoteVersion,
+          isDirty: false,
+          action: 'defer-to-save-in-flight',
+        });
+        return;
+      }
+      console.info('[sync broadcast-rx]', {
+        projectId,
+        source: 'editor',
+        localVersion: stateRef.current.version,
+        remoteVersion,
+        isDirty: false,
+        action: 'reload',
+      });
+      void reloadFromServerRef.current?.();
+    };
+    return () => {
+      channel.close();
+      if (broadcastChannelRef.current === channel) {
+        broadcastChannelRef.current = null;
+      }
+    };
+  }, [projectId]);
 
   return {
     state,

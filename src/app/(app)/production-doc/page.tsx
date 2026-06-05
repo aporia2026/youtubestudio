@@ -188,6 +188,8 @@ import { VoiceoverPicker } from '@/components/voiceover/VoiceoverPicker';
 // single canonical sink — every canonical field is mirrored into it
 // by the reactive effect below.
 import { useProject } from '@/lib/project/use-project';
+import { deriveLocalStateFromPayload } from '@/lib/project/derive-local-state-from-payload';
+import { SyncPill } from '@/components/sync/SyncPill';
 import type { RowVideoClipState } from '@/remotion/utils';
 
 // Dynamically import VideoPlayer — Remotion uses browser-only APIs (WebGL, Canvas)
@@ -2900,16 +2902,25 @@ function ProductionDocPage() {
   // conflict is logged at the hook level and the save status flips
   // to 'conflict' silently.
   const project = useProject(historyEntryId ?? '', {
-    // Conflict surfacing lives on the existing yellow banner driven
-    // by `project.saveStatus.kind === 'conflict'` further down the
-    // page. We only need this callback for logging — without it, a
-    // conflict during an off-screen poll would be invisible in the
-    // browser console history when the user later reports trouble.
+    // Phase 3 sync (2026-06-05): the conflict banner was replaced by
+    // the silent auto-rebase + 3s toast path per Decision C of
+    // `_plans/2026-06-05-strengthen-doc-editor-sync.md`. onConflict
+    // now only fires on the rare case where auto-rebase fetch itself
+    // fails (network blip during conflict recovery).
     onConflict: (currentVersion, currentPayload) => {
       console.warn('[doc-sync conflict]', {
         currentVersion,
         remoteRows: currentPayload.doc?.rows?.length ?? 0,
       });
+    },
+    onAutoRebase: (newVersion, preservedFields) => {
+      console.info('[sync auto-rebase] toast', {
+        newVersion,
+        preservedFields,
+      });
+      // 3-second info toast — Decision C. Lazy-user-friendly:
+      // the merge already happened; this just tells them.
+      toast.info('Merged a change from another tab', { duration: 3000 });
     },
   });
 
@@ -2982,6 +2993,38 @@ function ProductionDocPage() {
     // page expects).
     setRowOverlays({ ...payload.rowOverlays } as Record<number, RowOverlayState>);
     setRowVideoClips({ ...payload.rowVideoClips });
+    // Phase 1b sync (2026-06-05): hydrate `rowLockSignatures` from
+    // `payload.flags.rowLockedAsStill`. The payload is keyed by row
+    // INDEX; the local state is keyed by SIGNATURE (so locks survive
+    // doc regeneration as long as timecode + visual_description still
+    // match). The conversion uses each row's own signature so the
+    // local map and the patch effect's outgoing map round-trip cleanly.
+    // Without this, a lock set in tab A reached the payload (via
+    // patch) but tab B's `rowLockSignatures` stayed empty, so tab B
+    // showed the row as unlocked even after auto-rebase.
+    //
+    // QA fix (2026-06-05): we deliberately do NOT call
+    // `writeBrollLockMap(fromPayload)` here. localStorage is the
+    // WRITER's persistence (toggleRowLock owns the write); doing it
+    // here too would race with a user lock toggle that hadn't yet
+    // reached the payload, silently dropping the in-flight change.
+    {
+      const fromPayload: Record<string, boolean> = {};
+      const remoteLocks = payload.flags?.rowLockedAsStill ?? {};
+      payload.doc.rows.forEach((row, i) => {
+        const v = remoteLocks[i];
+        if (typeof v === 'boolean') {
+          const sig = brollRowSignatureInput({
+            timecode: row.timecode,
+            visual_description: row.visual_description,
+          });
+          fromPayload[sig] = v;
+        }
+      });
+      if (Object.keys(fromPayload).length > 0) {
+        setRowLockSignatures(fromPayload);
+      }
+    }
     // Voiceover URL + alignment must come across or the in-app player
     // shows blank audio and the scene/narration timing drifts (the
     // realigner needs alignment to retime scene boundaries from the
@@ -2990,8 +3033,155 @@ function ProductionDocPage() {
     if (payload.voiceoverUrl) setVoiceoverUrl(payload.voiceoverUrl);
     if (payload.voiceoverAlignment) setVoiceoverAlignment(payload.voiceoverAlignment);
     if (payload.visualKitOverride) setVisualKitOverride(payload.visualKitOverride);
+    // Phase 1a sync (2026-06-05): hydrate the legacy flag/brand state
+    // from the canonical payload too. Without this, the autosave
+    // already wrote `flags.animateScenes` / `flags.suppressLowerThirds`
+    // through `projectPatch`, but the receiving tab kept showing the
+    // localStorage default because the hydration effect skipped them.
+    // Derivation is shared with the ongoing rehydration effect below
+    // via `deriveLocalStateFromPayload` so the two paths can't drift.
+    {
+      const derived = deriveLocalStateFromPayload(payload);
+      if (typeof derived.animateScenes === 'boolean') {
+        setAnimateScenes(derived.animateScenes);
+      }
+      if (typeof derived.suppressLowerThirds === 'boolean') {
+        setSuppressLowerThirds(derived.suppressLowerThirds);
+      }
+      if (Object.keys(derived.brandKitColors).length > 0) {
+        setBrandKit((prev) => ({ ...prev, ...derived.brandKitColors }));
+      }
+      console.info('[sync hydrate]', {
+        historyEntryId,
+        source: 'initial',
+        animateScenes: derived.animateScenes ?? null,
+        suppressLowerThirds: derived.suppressLowerThirds ?? null,
+        hadVisualKitOverride: Boolean(payload.visualKitOverride),
+      });
+    }
     hydratedForHistoryIdRef.current = historyEntryId;
   }, [project.payload, historyEntryId, doc]);
+
+  // Phase 1a sync (2026-06-05) — ongoing payload-driven re-sync for the
+  // toggles + brand-kit colors. The initial hydration above runs once
+  // per `historyEntryId`; this effect fires whenever `project.payload`
+  // changes thereafter (cross-tab poll tick, conflict resolution, or
+  // our own patch landing) so the receiving tab actually reflects the
+  // server's truth. Limited to fields whose UI semantics are
+  // "toggle / color" — there is no in-flight typing to clobber, so a
+  // last-write-wins re-apply is safe. Text fields (script, OST,
+  // section_title) stay out — they need a typing-aware merge.
+  const lastSyncedVersionRef = useRef<number | null>(null);
+  // QA fix (2026-06-05): reset the version ref when historyEntryId
+  // changes. Without this, switching from doc A (at version 5) to doc
+  // B (also at version 5) skipped the rehydration silently because the
+  // version-equality gate below trapped on the previous doc's number.
+  // The page would then render doc B with doc A's hydrated row state
+  // until a version drift fired the next sync.
+  useEffect(() => {
+    lastSyncedVersionRef.current = null;
+  }, [historyEntryId]);
+  useEffect(() => {
+    const payload = project.payload;
+    const version = project.version;
+    if (!payload || version === null) return;
+    if (lastSyncedVersionRef.current === version) return;
+    // Skip the very first run for a given historyEntryId — the initial
+    // hydration effect above owns that one and writes the same state.
+    if (hydratedForHistoryIdRef.current !== historyEntryId) return;
+    // Phase 5 sync (2026-06-05): skip when local state is dirty. A
+    // re-sync would clobber the user's in-flight edits. Auto-rebase
+    // (Phase 3) handles the dirty case; this effect handles the clean
+    // case — what most receiver-tabs are in most of the time.
+    if (project.isDirty) {
+      console.info('[sync rehydrate] skip — dirty', {
+        historyEntryId,
+        version,
+      });
+      return;
+    }
+    lastSyncedVersionRef.current = version;
+    const derived = deriveLocalStateFromPayload(payload);
+    if (typeof derived.animateScenes === 'boolean') {
+      setAnimateScenes(derived.animateScenes);
+    }
+    if (typeof derived.suppressLowerThirds === 'boolean') {
+      setSuppressLowerThirds(derived.suppressLowerThirds);
+    }
+    if (Object.keys(derived.brandKitColors).length > 0) {
+      setBrandKit((prev) => {
+        const next = { ...prev, ...derived.brandKitColors };
+        // Skip the setState if nothing actually changed — prevents a
+        // re-render loop when our own patch round-trips back through
+        // this rehydration effect.
+        if (
+          prev.primaryColor === next.primaryColor &&
+          prev.backgroundColor === next.backgroundColor
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    }
+    // Phase 5 sync (2026-06-05): also re-sync the heavy state — doc,
+    // row maps, voiceover, alignment, visualKitOverride. Without this,
+    // a poll / broadcast that detected a version bump (e.g., editor
+    // edited a row, then production-doc's poll noticed) would update
+    // `project.payload` but leave the page rendering stale local
+    // doc state. Gated on `!isDirty` above so user typing isn't
+    // clobbered.
+    setDoc(payload.doc);
+    setRowImages(
+      payload.doc.rows.map((row, i) => {
+        const url = payload.rowImages[i];
+        if (url) return { status: 'done', imageUrl: url };
+        if ((row.variant_index ?? 0) > 0) return { status: 'pending' };
+        return { status: 'idle' };
+      }),
+    );
+    setRowOverlays({ ...payload.rowOverlays } as Record<number, RowOverlayState>);
+    setRowVideoClips({ ...payload.rowVideoClips });
+    if (payload.voiceoverUrl !== undefined) setVoiceoverUrl(payload.voiceoverUrl);
+    if (payload.voiceoverAlignment !== undefined) setVoiceoverAlignment(payload.voiceoverAlignment);
+    if (payload.visualKitOverride) setVisualKitOverride(payload.visualKitOverride);
+    // Phase 1b sync (2026-06-05): same conversion as the initial
+    // hydration effect — payload index-keyed → local signature-keyed.
+    // Runs on every version bump so tab B sees tab A's lock toggles
+    // without manual reload.
+    //
+    // QA fix (2026-06-05): no `writeBrollLockMap` here — see the same
+    // rationale in the initial hydration block above. Rehydration is
+    // gated on `!project.isDirty` so it would normally be safe to
+    // rewrite localStorage, but keeping the writer-only contract
+    // makes the data flow easier to reason about and protects against
+    // future call-sites that mutate `rowLockSignatures` without
+    // marking the payload dirty.
+    {
+      const fromPayload: Record<string, boolean> = {};
+      const remoteLocks = payload.flags?.rowLockedAsStill ?? {};
+      payload.doc.rows.forEach((row, i) => {
+        const v = remoteLocks[i];
+        if (typeof v === 'boolean') {
+          const sig = brollRowSignatureInput({
+            timecode: row.timecode,
+            visual_description: row.visual_description,
+          });
+          fromPayload[sig] = v;
+        }
+      });
+      setRowLockSignatures(fromPayload);
+    }
+    console.info('[sync rehydrate]', {
+      historyEntryId,
+      version,
+      animateScenes: derived.animateScenes ?? null,
+      suppressLowerThirds: derived.suppressLowerThirds ?? null,
+      visualKitOverridePresent: Boolean(payload.visualKitOverride),
+      rowCount: payload.doc.rows.length,
+      imageCount: Object.keys(payload.rowImages).length,
+      lockCount: Object.keys(payload.flags?.rowLockedAsStill ?? {}).length,
+    });
+  }, [project.payload, project.version, project.isDirty, historyEntryId]);
 
   // ─── Atomic server-side asset persistence (2026-05-22) ────────────
   //
@@ -4557,11 +4747,18 @@ function ProductionDocPage() {
     [persistRowAsset],
   );
 
-  // — Per-user "Animate scenes" toggle. When OFF, B-roll cells are hidden
+  // — Per-doc "Animate scenes" toggle. When OFF, B-roll cells are hidden
   //   and the Remotion render ignores any clips already generated for this
   //   doc — every shot renders as a still with Ken Burns (the pre-animation
-  //   default behaviour). Stored in localStorage so the preference sticks
-  //   across reloads and across docs.
+  //   default behaviour).
+  //
+  //   Phase 1a sync (2026-06-05): canonical storage is
+  //   `payload.flags.animateScenes`, written via the `projectPatch`
+  //   autosave below and hydrated through both the initial hydration
+  //   effect and the ongoing payload-rehydration effect above. The
+  //   localStorage read here is a one-shot mount default so a fresh
+  //   doc (no payload yet) honors the last value the user picked
+  //   before the autosave round-trips.
   const [animateScenes, setAnimateScenes] = useState<boolean>(true);
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -4571,22 +4768,20 @@ function ProductionDocPage() {
   const toggleAnimateScenes = useCallback(() => {
     setAnimateScenes((prev) => {
       const next = !prev;
-      try {
-        window.localStorage.setItem('prodoc_animate_scenes_v1', next ? '1' : '0');
-      } catch {
-        /* best-effort */
-      }
+      console.info('[sync flag-toggle]', { field: 'animateScenes', next });
       return next;
     });
   }, []);
 
-  // — Per-user "Suppress on-screen-text overlay" toggle. When ON, the
+  // — Per-doc "Suppress on-screen-text overlay" toggle. When ON, the
   //   Remotion renderer skips the dark lower-third band that normally
   //   appears with on_screen_text. Useful when the OST is already baked
   //   into the AI image (the LLM prompt does this when present) — a
-  //   second Remotion-rendered overlay would just be a duplicate. Stored
-  //   in localStorage so the preference sticks across reloads. Default
-  //   is OFF (overlays shown) for backwards compatibility.
+  //   second Remotion-rendered overlay would just be a duplicate.
+  //
+  //   Phase 1a sync (2026-06-05): canonical storage is
+  //   `payload.flags.suppressLowerThirds`. See note on `animateScenes`
+  //   above — same pattern, localStorage is a one-shot mount default.
   const [suppressLowerThirds, setSuppressLowerThirds] = useState<boolean>(false);
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -4596,31 +4791,37 @@ function ProductionDocPage() {
   const toggleSuppressLowerThirds = useCallback(() => {
     setSuppressLowerThirds((prev) => {
       const next = !prev;
-      try {
-        window.localStorage.setItem('prodoc_suppress_lower_thirds_v1', next ? '1' : '0');
-      } catch {
-        /* best-effort */
-      }
+      console.info('[sync flag-toggle]', { field: 'suppressLowerThirds', next });
       return next;
     });
   }, []);
 
-  // — Per-row "lock as still" map (rowSignature → true). When true for a
-  //   row, the renderer ignores any generated clip and falls back to the
-  //   still + Ken Burns path. Persisted in localStorage so locks survive
-  //   reload and doc regeneration (as long as the row signature still
-  //   matches — same key space as the clip map). The page also reflects
-  //   this as a rowIndex-keyed boolean array for the renderer call sites.
-  const [rowLockSignatures, setRowLockSignatures] = useState<Record<string, true>>({});
+  // — Per-row "lock as still" map (rowSignature → boolean).
+  //
+  //   true:    user actively locked this row → renderer ignores any
+  //            generated clip, falls back to still + Ken Burns.
+  //   false:   user actively unlocked this row → distinct from absent;
+  //            the page-level patch effect forwards this to
+  //            `payload.flags.rowLockedAsStill` so the server-side
+  //            merge (Phase 4) knows to clear the lock instead of
+  //            preserving the server's prior value.
+  //   absent:  user never touched this row → merge keeps server's value.
+  //
+  //   Phase 1b sync (2026-06-05): shape used to be `Record<string, true>`
+  //   with `delete` on unlock. The keyspace-collapse meant the server
+  //   merge couldn't distinguish unlock-everything from never-touched,
+  //   so an unlock in one tab silently re-locked rows the other tab
+  //   had set. Switching to `Record<string, boolean>` + explicit false
+  //   closes the gap end-to-end.
+  const [rowLockSignatures, setRowLockSignatures] = useState<Record<string, boolean>>({});
   useEffect(() => {
     setRowLockSignatures(readBrollLockMap());
   }, []);
   const toggleRowLock = useCallback((rowSignature: string, locked: boolean) => {
     setRowLockSignatures((prev) => {
-      const next = { ...prev };
-      if (locked) next[rowSignature] = true;
-      else delete next[rowSignature];
+      const next = { ...prev, [rowSignature]: locked };
       writeBrollLockMap(next);
+      console.info('[sync row-lock-toggle]', { rowSignature, locked });
       return next;
     });
   }, []);
@@ -6855,7 +7056,16 @@ function ProductionDocPage() {
           timecode: row.timecode,
           visual_description: row.visual_description,
         });
-        if (rowLockSignatures[sig]) rowLockedAsStill[i] = true;
+        // Phase 1b sync (2026-06-05): forward both true AND explicit
+        // false. Absent entries in `rowLockSignatures` are "never
+        // touched" — they don't appear in the outgoing patch, which
+        // lets the server-side merge (Phase 4) preserve another tab's
+        // value for those keys. Explicit false is "user actively
+        // unlocked" — server merges it in and the next read sees
+        // unlock (the page filters falsy on render via `Boolean(...)`,
+        // so the renderer never animates a row marked false).
+        if (rowLockSignatures[sig] === true) rowLockedAsStill[i] = true;
+        else if (rowLockSignatures[sig] === false) rowLockedAsStill[i] = false;
       });
     }
 
@@ -10133,86 +10343,13 @@ function ProductionDocPage() {
           pointerEvents: 'none', // child banners restore via inline style
         }}
       >
-        {/* Remote-update banner (PR1 doc-sync).
-            Surfaces `saveStatus.kind === 'conflict'` from `useProject`.
-            The polling effect flips to 'conflict' when an external
-            write (pipeline tick, second tab) bumps the row version
-            while the user has dirty local edits.
-              - Reload: confirm dialog, clear local doc, re-hydrate.
-                Discards uncommitted edits.
-              - Continue editing: dismisses via acknowledgeConflict().
-                Next save lands via last-write-wins. */}
-        {project.saveStatus.kind === 'conflict' && (
-          <div
-            role="alert"
-            aria-live="polite"
-            style={{
-              pointerEvents: 'auto',
-              background: '#f59e0b',
-              color: '#111',
-              padding: '10px 16px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              fontSize: 13,
-              lineHeight: 1.4,
-              boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
-              flexWrap: 'wrap',
-            }}
-          >
-            <div style={{ minWidth: 0, flex: '1 1 auto' }}>
-              <strong>This doc changed elsewhere.</strong>
-              <span style={{ marginLeft: 8, opacity: 0.9 }}>
-                The pipeline or another tab updated it while you were editing. Reload to see the latest, or continue to overwrite on next save.
-              </span>
-            </div>
-            <div style={{ display: 'flex', gap: 8, flex: '0 0 auto' }}>
-              <button
-                type="button"
-                onClick={() => project.acknowledgeConflict()}
-                style={{
-                  background: 'transparent',
-                  color: '#111',
-                  border: '1px solid rgba(0,0,0,0.35)',
-                  padding: '5px 12px',
-                  borderRadius: 4,
-                  fontSize: 13,
-                  cursor: 'pointer',
-                }}
-              >
-                Continue editing
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!window.confirm('Reload this doc? Any local edits you have not saved will be discarded.')) return;
-                  console.info('[doc-sync banner]', { reason: 'user-reload', historyEntryId });
-                  // Force-rehydrate flag bypasses both gates in the
-                  // hydration effect (ref-already-matched +
-                  // doc-already-set). Avoids the previous setDoc(null)
-                  // which crashes unguarded render branches that
-                  // assume doc is non-null.
-                  hydratedForHistoryIdRef.current = null;
-                  forceRehydrateRef.current = true;
-                  void project.reload();
-                }}
-                style={{
-                  background: '#111',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '5px 12px',
-                  borderRadius: 4,
-                  fontSize: 13,
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                }}
-              >
-                Reload
-              </button>
-            </div>
-          </div>
-        )}
+        {/* Phase 3 sync (2026-06-05): the old "This doc changed
+            elsewhere" reload-or-continue banner that used to live
+            here was removed in favor of the silent auto-rebase + 3s
+            toast path per Decision C of
+            `_plans/2026-06-05-strengthen-doc-editor-sync.md`. The
+            toast is fired from the `onAutoRebase` callback wired
+            into `useProject` above. */}
 
         {/* Bulk failed-row banner (PR2 reliability).
             Shows when `failedRowCount > 0` — rows whose
@@ -10385,6 +10522,14 @@ function ProductionDocPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Sync pill — Decision A of `_plans/2026-06-05-strengthen-doc-editor-sync.md`.
+              Surfaces useProject's saveStatus so a lazy user can see
+              at a glance that the cross-tab connection is alive. Only
+              mounted when there's a doc on the server to sync (no
+              historyEntryId → nothing to PATCH). */}
+          {historyEntryId && (
+            <SyncPill status={project.saveStatus} />
+          )}
           {/* Phase 3 follow-up — opt-in toggle for the new multi-pane
               editor view. Hidden until a doc is loaded (the editor
               view needs a doc to render anything meaningful). The
@@ -13703,7 +13848,26 @@ function ProductionDocPage() {
 
                 {/* Brand kit quick-config (legacy local tweak, sits on top of channel + override). */}
                 <VideoPreviewBrandBar
-                  onBrandChange={(brand) => setBrandKit(b => ({ ...b, ...brand }))}
+                  onBrandChange={(brand) => {
+                    setBrandKit(b => ({ ...b, ...brand }));
+                    // Phase 1a sync (2026-06-05): mirror brand-bar colors
+                    // into the per-doc canonical `visualKitOverride`. The
+                    // legacy local `brandKit` was never patched into the
+                    // payload — cross-tab and back-from-editor would lose
+                    // the change. `visualKitOverride` rides on
+                    // `projectPatch` and the rehydration effect picks it
+                    // up on the receiving tab.
+                    setVisualKitOverride((prev) => {
+                      const next: ChannelVisualBrandKit = { ...prev };
+                      if (brand.primaryColor) next.primaryColor = brand.primaryColor;
+                      if (brand.backgroundColor) next.backgroundColor = brand.backgroundColor;
+                      return next;
+                    });
+                    console.info('[sync brand-bar]', {
+                      primaryColor: brand.primaryColor,
+                      backgroundColor: brand.backgroundColor,
+                    });
+                  }}
                 />
 
                 {/* The actual player */}

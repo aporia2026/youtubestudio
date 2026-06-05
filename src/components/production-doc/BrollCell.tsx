@@ -193,9 +193,20 @@ export async function kickoffBrollGeneration(args: KickoffBrollGenerationArgs): 
 // share a single source of truth. Keyed by `rowSignature` (same key space
 // as the clip map) so locks survive doc regeneration when the row's
 // timecode + visual_description still match.
+//
+// Phase 1b sync (2026-06-05): shape is `Record<string, boolean>` (not
+// `Record<string, true>` as it used to be). An explicit `false` entry
+// means "the user actively unlocked this row" — distinct from "the
+// row is not in the map at all" (= never touched). Combined with the
+// page-level patch effect that forwards both true and false into
+// `payload.flags.rowLockedAsStill`, this lets Phase 4's server-side
+// merge distinguish unlocks from absent entries. Without that
+// distinction, an empty incoming map would silently re-lock rows
+// because the merge couldn't tell "I unlocked everything" from
+// "I never touched any locks."
 
 const BROLL_LOCK_LS_KEY = 'prodoc_broll_lock_v1';
-type BrollLockMap = Record<string, true>;
+type BrollLockMap = Record<string, boolean>;
 
 export function readBrollLockMap(): BrollLockMap {
   if (typeof window === 'undefined') return {};
@@ -206,7 +217,7 @@ export function readBrollLockMap(): BrollLockMap {
     if (!parsed || typeof parsed !== 'object') return {};
     const out: BrollLockMap = {};
     for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (v === true) out[k] = true;
+      if (typeof v === 'boolean') out[k] = v;
     }
     return out;
   } catch {

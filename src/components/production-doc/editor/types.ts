@@ -122,10 +122,17 @@ export interface EditorViewProps {
   rowVideoClips: Record<number, RowVideoClipView | null>;
   rowOverlays: Record<number, RowOverlayState>;
   rowLockedAsStill: boolean[];
-  /** Map of `rowSignature → true` for rows whose broll is locked-as-still.
+  /** Map of `rowSignature → boolean` for rows whose broll is locked-as-still.
    *  Passed through to BrollCell which keys off the signature, not the
-   *  positional index, so the lock survives row-position changes. */
-  rowLockSignatures: Record<string, true>;
+   *  positional index, so the lock survives row-position changes.
+   *
+   *  Phase 1b sync (2026-06-05): shape widened from `true` to `boolean`.
+   *  Explicit `false` means "actively unlocked by the user" — distinct
+   *  from absent entries (= never touched). The page's patch effect
+   *  forwards both to `payload.flags.rowLockedAsStill` so the server
+   *  merge can tell unlock from no-information. Render-side: still
+   *  truthy-check (false = unlocked = animate). */
+  rowLockSignatures: Record<string, boolean>;
   voiceoverUrl: string;
   voiceoverAlignment?: import('@/lib/elevenlabs').ForcedAlignmentResponse | null;
   brandKit: Partial<BrandKit>;

@@ -38,6 +38,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProjectPayload } from './payload';
+import {
+  broadcastChannelName,
+  decideBroadcastAction,
+  newTabId,
+  type ProjectPatchedBroadcast,
+} from './broadcast-sync';
+import { rebasePayload } from './rebase-payload';
 
 // ─── Save-status (mirrors the editor's existing shape) ──────────────
 
@@ -79,15 +86,25 @@ export interface UseProjectReturn {
 
 // ─── Internals ──────────────────────────────────────────────────────
 
-const AUTO_SAVE_DEBOUNCE_MS = 800;
+/** Phase 3 sync (2026-06-05): 800 ms → 250 ms.
+ *  Same-browser tabs sync via `BroadcastChannel` in <50 ms; the
+ *  network round-trip cost is the only thing the debounce protects
+ *  against. 250 ms strikes the balance — still feels instantaneous
+ *  to a user typing a sentence, but reduces the cross-tab lag the
+ *  old 800 ms window introduced. The PATCH endpoint is sub-200 ms
+ *  in p95 and the body stays small, so the increased call volume is
+ *  well within the Fluid Compute envelope. */
+const AUTO_SAVE_DEBOUNCE_MS = 250;
 
-/** Cross-tab + pipeline-vs-editor polling cadence (2026-06-03).
- *  Every 8 s the hook hits the slim `?versionOnly=1` endpoint to
- *  detect external writes. 8 s strikes the cost vs. responsiveness
- *  trade for a 1–2-user tool: cheap (one int per check, paused when
- *  the tab is hidden) and tight enough that a pipeline tick or a
- *  second-tab save lands in the UI without manual refresh. */
-const POLL_INTERVAL_MS = 8_000;
+/** Phase 3 sync (2026-06-05): 8 s → 3 s.
+ *  The BroadcastChannel sync covers same-browser two-tab. Polling
+ *  exists as the fallback for (a) same-user two-browser / two-device,
+ *  and (b) background pipeline writes (auto-pipeline running while
+ *  the user has the page open). 3 s is the highest cadence we can run
+ *  at without burning the prompt cache for nothing — the ping body
+ *  is ~50 bytes, paused while the tab is hidden, and the slim
+ *  endpoint reads `current_value(version)` from the row's JSONB. */
+const POLL_INTERVAL_MS = 3_000;
 
 interface LoadResponse {
   payload: unknown;
@@ -114,9 +131,19 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
 
 export interface UseProjectOptions {
   /** Called when the server rejects a save due to a stale version.
-   *  The hook also flips `saveStatus` to `{ kind: 'conflict' }` so a
-   *  banner can render without listening for the callback. */
+   *  Used to be tied to a "Reload or continue" banner; Phase 3 sync
+   *  flipped the default UX to silent auto-rebase + a toast (see
+   *  `onAutoRebase`). The callback fires only on the rare path where
+   *  auto-rebase itself fails (network error during the conflict
+   *  recovery fetch). */
   onConflict?: (currentVersion: number, currentPayload: ProjectPayload) => void;
+  /** Phase 3 sync (2026-06-05): called after the hook has loaded the
+   *  remote payload at `newVersion` and re-applied the local edits
+   *  for `preservedFields` on top of it. The consumer should show a
+   *  3-second toast so the user knows a merge happened. The hook
+   *  marks the rebased payload dirty so the next debounce cycle
+   *  PATCHes it back up. */
+  onAutoRebase?: (newVersion: number, preservedFields: string[]) => void;
   /** Endpoint to hit. Defaults to the editor's PATCH route. Exposed
    *  so the production-doc page can route through a different URL if
    *  we ever split them. */
@@ -146,6 +173,24 @@ export function useProject(
 
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightAbortRef = useRef<AbortController | null>(null);
+
+  // Phase 2 sync (2026-06-05): same-browser instant sync via
+  // BroadcastChannel. The save path posts a `patched` message after
+  // every successful PATCH; a dedicated effect below subscribes and
+  // routes incoming messages through `decideBroadcastAction`. The tab
+  // id is per-tab-lifetime and lets the sender ignore its own echo.
+  const tabIdRef = useRef<string>('');
+  if (tabIdRef.current === '') {
+    tabIdRef.current = newTabId();
+  }
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+
+  // Phase 3 sync (2026-06-05): top-level `ProjectPayload` field names
+  // the user has touched since the last successful save. Drives
+  // `rebasePayload` on conflict: only these fields are preserved from
+  // local state; everything else takes the remote value. Cleared by
+  // `performSave` on HTTP 200 and on `reload`.
+  const dirtyFieldsRef = useRef<Set<string>>(new Set());
 
   // ─── Load ────────────────────────────────────────────────────────
 
@@ -177,11 +222,16 @@ export function useProject(
       // without the option set, so it always applies — that path
       // intentionally discards local edits with the confirm dialog.
       if (opts?.abortIfDirty && isDirtyRef.current) {
-        console.info('[doc-sync poll] aborted apply — became dirty during fetch', {
+        console.info('[doc-sync poll] aborted apply — became dirty during fetch, deferring to auto-rebase', {
           projectId,
           remoteVersion: body.version,
         });
-        setSaveStatus({ kind: 'conflict' });
+        // Phase 3 sync (2026-06-05): instead of stranding the user
+        // with a conflict status, kick off the auto-rebase which
+        // re-fetches and merges. The re-fetch is wasteful here but
+        // this branch is narrow (typed during a poll fetch) so the
+        // cost is negligible and the UX consistency wins.
+        void doAutoRebaseRef.current?.();
         return;
       }
       console.info('[project payload load] client received', {
@@ -191,11 +241,112 @@ export function useProject(
       setPayload(body.payload as unknown as ProjectPayload);
       setVersion(body.version);
       setIsDirty(false);
+      // Phase 3 sync: doLoad replaces the in-memory payload with the
+      // server's truth, so any pending "dirty field" tracking would
+      // describe state that no longer exists. Clear it to match.
+      dirtyFieldsRef.current.clear();
       setSaveStatus({ kind: 'idle' });
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
   }, [endpoint, projectId]);
+
+  // ─── Auto-rebase (Phase 3) ──────────────────────────────────────
+  //
+  // The "conflict" path under Decision C of
+  // `_plans/2026-06-05-strengthen-doc-editor-sync.md`: when we detect
+  // the server's version is ahead of ours AND we have unsaved local
+  // edits, fetch the remote payload, re-apply the local edits for the
+  // fields we tracked as dirty, and signal the consumer to show a
+  // 3-second toast. The rebased payload is marked dirty so the next
+  // debounce cycle PATCHes it back up — no manual user action needed.
+  //
+  // Replaces the "Reload or continue" banner. The consumer can still
+  // listen for the rare unrecoverable conflict via `onConflict` /
+  // `saveStatus: 'error'` when the rebase fetch itself fails.
+  const doAutoRebase = useCallback(async (): Promise<void> => {
+    if (!projectId || !projectId.trim()) return;
+    // Cancel any in-flight save — its result would race with our
+    // freshly-loaded baseline.
+    if (inFlightAbortRef.current) {
+      inFlightAbortRef.current.abort();
+      inFlightAbortRef.current = null;
+    }
+    try {
+      const res = await fetch(endpoint(projectId), {
+        method: 'GET',
+        credentials: 'same-origin',
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        console.warn('[sync auto-rebase] fetch failed', {
+          projectId,
+          status: res.status,
+          detail: text,
+        });
+        setSaveStatus({ kind: 'error', message: 'Auto-rebase fetch failed' });
+        return;
+      }
+      const body = (await res.json()) as LoadResponse;
+      if (!isPlainObject(body.payload) || typeof body.version !== 'number') {
+        console.warn('[sync auto-rebase] bad payload shape', { projectId });
+        setSaveStatus({ kind: 'error', message: 'Auto-rebase: server returned unexpected shape' });
+        return;
+      }
+      const remote = body.payload as unknown as ProjectPayload;
+      const local = payloadRef.current;
+      // QA fix (2026-06-05): defensive freshness check. If a save
+      // landed during our GET (e.g., the broadcast that triggered
+      // this rebase arrived in the same window as our own save's
+      // response), the local version may now be at or past the
+      // remote version we just fetched. Applying the older payload
+      // would silently downgrade the page's view of the server. The
+      // next poll/broadcast catches it back up, but bail here to skip
+      // the wasted setState + the misleading rebase toast.
+      const localVersionNow = versionRef.current;
+      if (localVersionNow !== null && body.version < localVersionNow) {
+        console.info('[sync auto-rebase] skip — local advanced past remote during fetch', {
+          projectId,
+          localVersionNow,
+          remoteVersion: body.version,
+        });
+        return;
+      }
+      const preservedFields = Array.from(dirtyFieldsRef.current);
+      const rebased = rebasePayload(remote, local, preservedFields);
+      setPayload(rebased);
+      setVersion(body.version);
+      // Stay dirty until the rebased payload lands on the server —
+      // the debounce timer below re-arms the save.
+      setIsDirty(preservedFields.length > 0);
+      setSaveStatus({ kind: preservedFields.length > 0 ? 'pending' : 'idle' });
+      console.info('[sync auto-rebase]', {
+        projectId,
+        newVersion: body.version,
+        preservedFields,
+      });
+      onAutoRebaseRef.current?.(body.version, preservedFields);
+      // Re-arm the debounce so the rebased payload PATCHes back up.
+      // performSave is captured by ref to dodge the use-before-define
+      // ordering on the useCallback declarations.
+      if (preservedFields.length > 0) {
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = setTimeout(() => {
+          debounceTimerRef.current = null;
+          void performSaveRef.current?.();
+        }, AUTO_SAVE_DEBOUNCE_MS);
+      }
+    } catch (err) {
+      console.warn('[sync auto-rebase] threw', {
+        projectId,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+      setSaveStatus({ kind: 'error', message: 'Auto-rebase failed' });
+    }
+  }, [endpoint, projectId]);
+  const performSaveRef = useRef<(() => Promise<FlushResult>) | null>(null);
+  const doAutoRebaseRef = useRef<(() => Promise<void>) | null>(null);
+  doAutoRebaseRef.current = doAutoRebase;
 
   useEffect(() => {
     void doLoad();
@@ -211,6 +362,12 @@ export function useProject(
     setPayload((prev) => {
       if (!prev) return prev;
       const delta = typeof input === 'function' ? input(prev) : input;
+      // Phase 3 sync (2026-06-05): track which top-level fields this
+      // patch touched so the auto-rebase merge knows which fields the
+      // user owns vs which can be safely taken from the remote.
+      for (const k of Object.keys(delta)) {
+        if (k !== 'version') dirtyFieldsRef.current.add(k);
+      }
       const next: ProjectPayload = { ...prev, ...delta };
       return next;
     });
@@ -283,13 +440,49 @@ export function useProject(
         // We compare versions: when `versionRef.current` still equals
         // what we just persisted, no new edits landed since this save
         // started, so the local state is in sync.
-        setIsDirty((prev) => (prev ? versionRef.current === currentVersion : false));
+        const cleanAfterSave = versionRef.current === currentVersion;
+        setIsDirty((prev) => (prev ? !cleanAfterSave : false));
+        // Phase 3 sync (2026-06-05): once we know the save succeeded,
+        // the local fields we sent are no longer dirty. If the user
+        // typed mid-save, those new keystrokes are already in the
+        // tracking set (added by `patch` during the in-flight save)
+        // and stay in the set so the next debounce knows what to
+        // preserve under a potential rebase.
+        if (cleanAfterSave) {
+          dirtyFieldsRef.current.clear();
+        }
         const at = Date.now();
         setSaveStatus({ kind: 'saved', at });
         console.info('[project payload save] client committed', {
           projectId,
           newVersion: body.version,
         });
+        // Phase 2 sync (2026-06-05): wake same-browser tabs immediately
+        // instead of waiting for the 8s poll. `tabId` lets the receiver
+        // skip its own echo via `decideBroadcastAction`. Wrapped in
+        // try/catch — postMessage can throw if the channel is closed
+        // mid-flight (tab teardown).
+        const channel = broadcastChannelRef.current;
+        if (channel) {
+          try {
+            const msg: ProjectPatchedBroadcast = {
+              type: 'patched',
+              tabId: tabIdRef.current,
+              version: body.version,
+            };
+            channel.postMessage(msg);
+            console.info('[sync broadcast-tx]', {
+              projectId,
+              version: body.version,
+              tabId: tabIdRef.current,
+            });
+          } catch (err) {
+            console.warn('[sync broadcast-tx failed]', {
+              projectId,
+              detail: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
         return { kind: 'saved', newVersion: body.version };
       }
 
@@ -300,14 +493,13 @@ export function useProject(
           clientVersion: currentVersion,
           serverVersion: body.currentVersion,
         });
-        setSaveStatus({ kind: 'conflict' });
-        if (
-          options.onConflict &&
-          isPlainObject(body.currentPayload) &&
-          typeof body.currentVersion === 'number'
-        ) {
-          options.onConflict(body.currentVersion, body.currentPayload as unknown as ProjectPayload);
-        }
+        // Phase 3 sync (2026-06-05): auto-rebase instead of flipping a
+        // conflict banner. The current LWW server rarely returns 409
+        // anymore — this path is kept for defense-in-depth in case a
+        // future server tightens to versioned writes again. The
+        // rebase replays the user's edits on top of the remote
+        // payload and re-arms the save.
+        void doAutoRebaseRef.current?.();
         return { kind: 'conflict' };
       }
 
@@ -330,6 +522,10 @@ export function useProject(
       return { kind: 'error', message };
     }
   }, [endpoint, options, projectId]);
+  // Phase 3 sync: keep a ref to performSave so the doAutoRebase
+  // closure (declared earlier) can re-arm the debounce without a
+  // use-before-define on the useCallback ordering.
+  performSaveRef.current = performSave;
 
   // ─── Flush ──────────────────────────────────────────────────────
 
@@ -475,6 +671,8 @@ export function useProject(
   doLoadRef.current = doLoad;
   const onConflictRef = useRef(options.onConflict);
   onConflictRef.current = options.onConflict;
+  const onAutoRebaseRef = useRef(options.onAutoRebase);
+  onAutoRebaseRef.current = options.onAutoRebase;
 
   useEffect(() => {
     if (!projectId || !projectId.trim()) return;
@@ -513,19 +711,13 @@ export function useProject(
             remoteVersion,
             changed: true,
             isDirty: true,
-            action: 'banner',
+            action: 'auto-rebase',
           });
-          setSaveStatus({ kind: 'conflict' });
-          // We don't have the current payload here (the slim endpoint
-          // doesn't return it). The consumer's banner Reload button
-          // calls `reload()` which fetches it. If a caller wired
-          // `onConflict` expecting the payload, we still fire the
-          // callback with the local stale payload + remote version so
-          // the caller can decide; the standard recovery path is
-          // `reload()` regardless.
-          if (onConflictRef.current && payloadRef.current) {
-            onConflictRef.current(remoteVersion, payloadRef.current);
-          }
+          // Phase 3 sync (2026-06-05): replaced the banner with the
+          // silent auto-rebase + toast path per Decision C. doAutoRebase
+          // fetches the remote payload, re-applies the user's dirty
+          // fields on top, and signals the consumer to toast.
+          void doAutoRebaseRef.current?.();
           return;
         }
 
@@ -563,6 +755,87 @@ export function useProject(
       cancelled = true;
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [projectId]);
+
+  // ─── Same-browser instant sync via BroadcastChannel (Phase 2) ──────
+  //
+  // Subscribes to `broadcastChannelName(projectId)` for the lifetime
+  // of the hook. When another tab in the same browser successfully
+  // PATCHes the same project, this tab pulls the fresh payload within
+  // a microtask instead of waiting for the 8s poll. The decision logic
+  // (self-echo, stale, malformed, dirty → conflict, clean → reload)
+  // lives in `decideBroadcastAction` so it can be unit-tested.
+  //
+  // No-op when `BroadcastChannel` is unavailable (SSR, older browsers)
+  // — the poll loop still provides eventual consistency at 8s.
+  //
+  // Security: BroadcastChannel is same-origin only; messages from
+  // other origins never reach this handler. We still defensively
+  // validate every incoming message via `decideBroadcastAction`.
+  useEffect(() => {
+    if (!projectId || !projectId.trim()) return;
+    if (typeof window === 'undefined') return;
+    if (typeof BroadcastChannel === 'undefined') {
+      console.info('[sync broadcast] BroadcastChannel unavailable, falling back to 8s poll', {
+        projectId,
+      });
+      return;
+    }
+    const channel = new BroadcastChannel(broadcastChannelName(projectId));
+    broadcastChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent) => {
+      const decision = decideBroadcastAction(
+        event.data,
+        tabIdRef.current,
+        versionRef.current,
+        isDirtyRef.current,
+      );
+      if (decision.kind === 'ignore') {
+        // Self-echos are by far the most common case; log at debug
+        // level via console.debug so a busy console isn't flooded
+        // but the trail is still grep-able when needed.
+        console.debug('[sync broadcast-rx]', {
+          projectId,
+          action: 'ignore',
+          reason: decision.reason,
+        });
+        return;
+      }
+      const data = event.data as Record<string, unknown>;
+      const remoteVersion = typeof data.version === 'number' ? data.version : null;
+      if (decision.kind === 'conflict') {
+        console.info('[sync broadcast-rx]', {
+          projectId,
+          localVersion: versionRef.current,
+          remoteVersion,
+          isDirty: true,
+          action: 'auto-rebase',
+        });
+        // Phase 3 sync (2026-06-05): replaced the banner path with
+        // the silent auto-rebase + toast under Decision C. Same as
+        // the poll-driven dirty branch above.
+        void doAutoRebaseRef.current?.();
+        return;
+      }
+      // decision.kind === 'reload'
+      console.info('[sync broadcast-rx]', {
+        projectId,
+        localVersion: versionRef.current,
+        remoteVersion,
+        isDirty: false,
+        action: 'reload',
+      });
+      // abortIfDirty=true matches the poll's race guard — covers the
+      // narrow window where the user starts typing between the message
+      // landing and the fetch resolving.
+      void doLoadRef.current({ abortIfDirty: true });
+    };
+    return () => {
+      channel.close();
+      if (broadcastChannelRef.current === channel) {
+        broadcastChannelRef.current = null;
+      }
     };
   }, [projectId]);
 

@@ -41,6 +41,7 @@ import {
   type ProjectPayload,
 } from './payload';
 import { backfillFromPayload, loadProjectAssets } from './assets';
+import { mergeRowLockedAsStill } from './rebase-payload';
 
 // ─── Constants ───────────────────────────────────────────────────────
 
@@ -358,11 +359,27 @@ export async function saveProjectPatch(args: {
   // Build the outgoing payload: client wins on non-asset fields, server
   // keeps full authority over the three asset maps. The row-asset
   // endpoint is the only path that mutates these.
+  //
+  // Phase 4 sync (2026-06-05): `flags.rowLockedAsStill` is a sparse
+  // dict keyed by row index. Two tabs locking different rows used to
+  // race — last save would overwrite the other. Merge per-key:
+  // incoming wins for shared keys, server's keys for untouched rows
+  // survive. Partial mitigation — unlock semantics (key deletion) still
+  // lose other tabs' concurrent unlocks until Phase 1b lands. See
+  // `_plans/2026-06-05-strengthen-doc-editor-sync.md` §Phase 4.
+  const mergedRowLockedAsStill = mergeRowLockedAsStill(
+    currentPayload.flags.rowLockedAsStill,
+    validation.payload.flags.rowLockedAsStill,
+  );
   const outgoing: ProjectPayload = {
     ...validation.payload,
     rowImages: currentPayload.rowImages,
     rowOverlays: currentPayload.rowOverlays,
     rowVideoClips: currentPayload.rowVideoClips,
+    flags: {
+      ...validation.payload.flags,
+      rowLockedAsStill: mergedRowLockedAsStill,
+    },
   };
 
   const outgoingJson = JSON.stringify(outgoing);
