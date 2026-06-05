@@ -18,6 +18,7 @@ import '@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import {
+  computeRowIntervals,
   docToTimelineRows,
   targetIndexFromDropMs,
   totalDocDurationMs,
@@ -80,6 +81,19 @@ export interface TimelineEditorProps {
   msPerPx?: number;
   /** Frames per second for snap. Defaults to the renderer's fps. */
   fps?: number;
+  /** External playhead position, in seconds. Set this from the
+   *  sibling video preview's frameupdate event so the timeline's blue
+   *  playhead mirrors the Player as it plays. When undefined the
+   *  timeline runs in standalone mode (the user can still drag the
+   *  playhead with no consumer). */
+  playheadSecExternal?: number;
+  /** Called when the user actively moves the playhead — either by
+   *  dragging the blue line or by clicking a clip (which jumps the
+   *  playhead to the clip's start). The host wires this to a Player
+   *  seekTo so the preview follows. Programmatic playhead updates
+   *  driven by `playheadSecExternal` do NOT fire this callback —
+   *  they're echo-suppressed to avoid a feedback loop. */
+  onPlayheadSeek?: (sec: number) => void;
 }
 
 /** Allowed msPerPx zoom stops. CapCut-style discrete zoom levels
@@ -99,6 +113,8 @@ export function TimelineEditor({
   onBeginBatch,
   msPerPx,
   fps = DEFAULT_FPS,
+  playheadSecExternal,
+  onPlayheadSeek,
 }: TimelineEditorProps) {
   // Zoom is internal state, seeded from the optional `msPerPx`
   // prop. If the caller pins it, we honour that prop and disable
@@ -211,19 +227,57 @@ export function TimelineEditor({
 
   const editable = onDocChange !== undefined;
 
-  // M3: subscribe to the library's tick + cursor-drag events so we
-  // know where the playhead sits when the user presses `S`. The
-  // listener is mounted once on first render; offAll on unmount.
+  // Echo guard for the Player → Timeline → Player feedback loop.
+  // When the host echoes the Player's frame into `playheadSecExternal`,
+  // we call tl.setTime() which synchronously fires `afterSetTime`.
+  // Without this guard, the listener would then call `onPlayheadSeek`,
+  // the host would seek the Player, the Player would emit another
+  // frameupdate, and we'd loop. The ref is flipped on right around
+  // the programmatic setTime call and consumed on the next listener
+  // tick.
+  const suppressEchoRef = useRef(false);
+
+  // M3 + sync: subscribe to the library's tick + cursor-drag events.
+  //  - setTimeByTick: fires during the library's own playback (we
+  //    don't use it but keeping the playhead state aligned costs
+  //    nothing). Not treated as a user seek.
+  //  - afterSetTime: fires both when the user drags the playhead AND
+  //    when we programmatically setTime(). The suppressEchoRef
+  //    distinguishes the two; only user-initiated time changes
+  //    surface to the host as a seek.
   useEffect(() => {
     const tl = timelineRef.current;
     if (!tl) return;
     const onTick = ({ time }: { time: number }) => setPlayheadSec(time);
+    const onAfterSet = ({ time }: { time: number }) => {
+      setPlayheadSec(time);
+      if (suppressEchoRef.current) {
+        suppressEchoRef.current = false;
+        return;
+      }
+      onPlayheadSeek?.(time);
+    };
     tl.listener.on('setTimeByTick', onTick);
-    tl.listener.on('afterSetTime', onTick);
+    tl.listener.on('afterSetTime', onAfterSet);
     return () => {
       tl.listener.offAll();
     };
-  }, []);
+  }, [onPlayheadSeek]);
+
+  // Mirror the external playhead (driven by the Player's frameupdate
+  // in the host) into the library. Guarded by an identity check so
+  // a repeated same-frame update doesn't churn the lib. The echo
+  // suppression ref protects against the loop described above.
+  useEffect(() => {
+    if (playheadSecExternal === undefined || playheadSecExternal === null) return;
+    const tl = timelineRef.current;
+    if (!tl) return;
+    // 1 ms tolerance so frame-snapped seconds (e.g. 0.0333... at 30 fps)
+    // don't bounce against each other.
+    if (Math.abs(tl.getTime() - playheadSecExternal) < 0.001) return;
+    suppressEchoRef.current = true;
+    tl.setTime(playheadSecExternal);
+  }, [playheadSecExternal]);
 
   // M3: S splits the row under the playhead; Del deletes the
   // currently selected row. Keydown is listened on the container
@@ -347,9 +401,14 @@ export function TimelineEditor({
     return () => el.removeEventListener('keydown', onKey);
   }, [editable, onDocChange, onUndo, onRedo, fps, playheadSec, selection, zoomIn, zoomOut]);
 
-  // Click on a clip selects it (the Del key uses this). Track-aware
-  // so clicking a voiceover segment doesn't make Del delete a video
-  // row, and vice versa.
+  // Click on a clip selects it AND jumps the preview to the clip's
+  // start. CapCut UX: clicking a clip in the timeline immediately
+  // updates the player to that point — there's no "select then
+  // separately seek" gesture. The seek travels via `onPlayheadSeek`
+  // → host → Player.seekTo, and the host echoes the new frame back
+  // through `playheadSecExternal` so the timeline's blue line
+  // catches up. Track-aware so clicking a voiceover segment doesn't
+  // make Del delete a video row, and vice versa.
   const handleClickAction = useCallback(
     (_e: React.MouseEvent, args: { action: { id: string; data?: TimelineActionData['data'] } }) => {
       const data = args.action.data;
@@ -359,11 +418,21 @@ export function TimelineEditor({
       }
       if (data.kind === 'video') {
         setSelection({ track: 'video', rowIndex: data.rowIndex });
+        const intervals = computeRowIntervals(docRef.current);
+        const interval = intervals[data.rowIndex];
+        if (interval && onPlayheadSeek) {
+          onPlayheadSeek(interval.startMs / 1000);
+        }
       } else {
         setSelection({ track: 'voiceover', segmentIndex: data.segmentIndex });
+        // Voiceover clicks also seek so audio + video stay in sync.
+        const segments = docRef.current.voiceover_segments ?? [];
+        let startMs = 0;
+        for (let i = 0; i < data.segmentIndex; i++) startMs += segments[i]?.durationMs ?? 0;
+        if (onPlayheadSeek) onPlayheadSeek(startMs / 1000);
       }
     },
-    [],
+    [onPlayheadSeek],
   );
 
   // M4: drag-reorder. During the drag we let the library render

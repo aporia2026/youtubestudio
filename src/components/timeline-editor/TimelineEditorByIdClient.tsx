@@ -23,6 +23,7 @@ import {
   getTimelineFps,
   getTimelineUndoDepth,
 } from '@/lib/timeline-editor/editor-prefs';
+import type { PlayerController } from '@/lib/notes/player-controller';
 
 const TimelineEditor = dynamic(
   () => import('./TimelineEditor').then((m) => m.TimelineEditor),
@@ -146,6 +147,51 @@ function Editor({
   const dirty = useMemo(() => history.pointer > 0 || history.size > 1, [history.pointer, history.size]);
   const savedDocRef = useRef(loaded.doc);
 
+  // ── Player ↔ Timeline playhead sync ───────────────────────────────
+  //
+  // Without this wiring, the preview and the timeline are two
+  // independent surfaces: the user plays the video, the blue line
+  // stays at 0; the user drags the blue line, the preview ignores it.
+  // CapCut feel requires them to be the same logical playhead.
+  //
+  //  - `frame` is the shared source of truth (parent state).
+  //  - VideoPlayer fires `onFrameUpdate` on every playback tick AND
+  //    every internal seek → we setFrame → TimelineEditor receives the
+  //    new `playheadSecExternal` → its useEffect calls tl.setTime().
+  //  - TimelineEditor fires `onPlayheadSeek` when the USER drags the
+  //    playhead or clicks a clip → we seek the Player via the cached
+  //    controller. The Player then emits frameupdate so the loop
+  //    closes — TimelineEditor's echo-suppression ref breaks the
+  //    Player → Timeline → Player feedback cycle.
+  //  - `seekTargetFrame` pulses the Player to the user-picked frame
+  //    even on the very first interaction (before the Player ever
+  //    fires a frameupdate of its own).
+  const [frame, setFrame] = useState(0);
+  const [seekTargetFrame, setSeekTargetFrame] = useState<number | null>(null);
+  const playerControllerRef = useRef<PlayerController | null>(null);
+  const fps = prefs.fps;
+  const handleFrameUpdate = useCallback((f: number) => setFrame(f), []);
+  const handleControllerReady = useCallback((ctrl: PlayerController | null) => {
+    playerControllerRef.current = ctrl;
+  }, []);
+  const handlePlayheadSeek = useCallback(
+    (sec: number) => {
+      const targetFrame = Math.max(0, Math.round(sec * fps));
+      setFrame(targetFrame);
+      const ctrl = playerControllerRef.current;
+      if (ctrl) {
+        ctrl.seekToFrame(targetFrame);
+      } else {
+        // First click can land before onControllerReady has fired —
+        // pulse via seekTargetFrame so the Player picks it up the
+        // moment it mounts.
+        setSeekTargetFrame(targetFrame);
+      }
+    },
+    [fps],
+  );
+  const handleSeekConsumed = useCallback(() => setSeekTargetFrame(null), []);
+
   const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
@@ -207,7 +253,14 @@ function Editor({
         )}
       </div>
       <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950">
-        <VideoPlayer config={videoConfig} />
+        <VideoPlayer
+          config={videoConfig}
+          initialFrame={0}
+          onFrameUpdate={handleFrameUpdate}
+          onControllerReady={handleControllerReady}
+          seekTargetFrame={seekTargetFrame}
+          onSeekConsumed={handleSeekConsumed}
+        />
       </div>
       <TimelineEditor
         doc={history.current}
@@ -219,6 +272,8 @@ function Editor({
         onBeginBatch={history.beginBatch}
         fps={prefs.fps}
         msPerPx={prefs.defaultMsPerPx}
+        playheadSecExternal={frame / prefs.fps}
+        onPlayheadSeek={handlePlayheadSeek}
       />
     </div>
   );

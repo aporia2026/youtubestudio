@@ -29,6 +29,13 @@ interface VideoPlayerProps {
    *  hand to the notes dock (pause + seek + getCurrentFrame). Fires
    *  again with `null` on unmount so the host clears its reference. */
   onControllerReady?: (controller: PlayerController | null) => void;
+  /** Fires on every Player frame change (playback tick + seek) so the
+   *  host can mirror the Player's position into a sibling timeline /
+   *  scrubber. Wired via the `frameupdate` event the @remotion/player
+   *  emitter exposes — no rAF polling. The host is responsible for
+   *  passing a stable identity callback (useCallback) to avoid
+   *  re-binding the listener every render. */
+  onFrameUpdate?: (frame: number) => void;
 }
 
 /**
@@ -46,6 +53,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   seekTargetFrame,
   onSeekConsumed,
   onControllerReady,
+  onFrameUpdate,
 }) => {
   const playerRef = useRef<PlayerRef>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -57,6 +65,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onSeekConsumed?.();
     }
   }, [seekTargetFrame, onSeekConsumed]);
+
+  // Mirror the Player's current frame into the host (timeline editor
+  // wants to move its playhead with playback). `frameupdate` fires
+  // for both natural playback ticks AND programmatic seeks, so this
+  // single subscription covers everything. Without it the timeline's
+  // blue playhead stays pinned at 0 while the preview plays.
+  useEffect(() => {
+    if (!onFrameUpdate) return;
+    const player = playerRef.current;
+    if (!player) return;
+    const onFrame: Parameters<typeof player.addEventListener<'frameupdate'>>[1] = (e) => {
+      onFrameUpdate(e.detail.frame);
+    };
+    player.addEventListener('frameupdate', onFrame);
+    return () => player.removeEventListener('frameupdate', onFrame);
+  }, [onFrameUpdate]);
 
   // Expose a stable PlayerController to the host. The closure reads
   // playerRef.current lazily, so the controller object itself is
