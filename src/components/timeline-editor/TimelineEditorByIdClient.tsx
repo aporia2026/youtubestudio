@@ -14,14 +14,32 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ProductionDoc } from '@/remotion/utils';
+import type { ProductionDoc, RowImageState } from '@/remotion/utils';
+import { productionDocToVideoConfig } from '@/remotion/utils';
 import { useDocHistory } from '@/lib/timeline-editor/use-doc-history';
+import {
+  getTimelineDefaultZoomMsPerPx,
+  getTimelineFps,
+  getTimelineUndoDepth,
+} from '@/lib/timeline-editor/editor-prefs';
 
 const TimelineEditor = dynamic(
   () => import('./TimelineEditor').then((m) => m.TimelineEditor),
   {
     ssr: false,
     loading: () => <p className="text-xs text-neutral-500">Loading timeline…</p>,
+  },
+);
+
+const VideoPlayer = dynamic(
+  () => import('@/components/video/VideoPlayer').then((m) => m.VideoPlayer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-48 items-center justify-center rounded border border-neutral-800 bg-neutral-900 text-xs text-neutral-500">
+        Loading preview…
+      </div>
+    ),
   },
 );
 
@@ -95,7 +113,28 @@ function Editor({
   lastSavedAt: number | null;
   setLastSavedAt: (v: number | null) => void;
 }) {
-  const history = useDocHistory<ProductionDoc>(loaded.doc);
+  const prefs = useMemo(
+    () => ({
+      fps: getTimelineFps(),
+      undoDepth: getTimelineUndoDepth(),
+      defaultMsPerPx: getTimelineDefaultZoomMsPerPx(),
+    }),
+    [],
+  );
+  const history = useDocHistory<ProductionDoc>(loaded.doc, prefs.undoDepth);
+
+  // Build a VideoConfig for the Remotion <Player /> from the current
+  // doc head. Recomputes on every edit so the preview reflects trim /
+  // split / cut / reorder live. Image rows pass through their
+  // image_url as 'done' state; rows without an image stay null and
+  // the renderer will show the still-placeholder fallback.
+  const videoConfig = useMemo(() => {
+    const rowImages: (RowImageState | null)[] = history.current.rows.map((r) =>
+      r.image_url ? { status: 'done', imageUrl: r.image_url } : null,
+    );
+    const voiceoverUrl = typeof loaded.rest.voiceoverUrl === 'string' ? loaded.rest.voiceoverUrl : undefined;
+    return productionDocToVideoConfig(history.current, rowImages, voiceoverUrl);
+  }, [history.current, loaded.rest]);
   const dirty = useMemo(() => history.pointer > 0 || history.size > 1, [history.pointer, history.size]);
   const savedDocRef = useRef(loaded.doc);
 
@@ -159,6 +198,9 @@ function Editor({
           <span className="text-[10px] text-red-300">{saveError}</span>
         )}
       </div>
+      <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950">
+        <VideoPlayer config={videoConfig} />
+      </div>
       <TimelineEditor
         doc={history.current}
         onDocChange={history.setDoc}
@@ -166,6 +208,9 @@ function Editor({
         onRedo={history.redo}
         canUndo={history.canUndo}
         canRedo={history.canRedo}
+        onBeginBatch={history.beginBatch}
+        fps={prefs.fps}
+        msPerPx={prefs.defaultMsPerPx}
       />
     </div>
   );

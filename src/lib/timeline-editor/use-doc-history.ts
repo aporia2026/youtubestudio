@@ -30,6 +30,11 @@ export interface UseDocHistoryReturn<T> {
   canUndo: boolean;
   canRedo: boolean;
   setDoc: (next: T, opts?: { commit?: boolean }) => void;
+  /** Snapshot the current head so a subsequent run of `live`
+   *  updates (drag tick stream) can mutate the new head freely
+   *  while the pre-drag state stays one undo away. Call once at
+   *  drag-start. */
+  beginBatch: () => void;
   undo: () => void;
   redo: () => void;
   reset: (next: T) => void;
@@ -47,6 +52,7 @@ export function useDocHistory<T>(initial: T, maxDepth: number = DEFAULT_HISTORY_
     dispatch({ kind: commit ? 'commit' : 'live', next });
   }, []);
 
+  const beginBatch = useCallback(() => dispatch({ kind: 'beginBatch' }), []);
   const undo = useCallback(() => dispatch({ kind: 'undo' }), []);
   const redo = useCallback(() => dispatch({ kind: 'redo' }), []);
   const reset = useCallback((next: T) => dispatch({ kind: 'reset', next }), []);
@@ -58,6 +64,7 @@ export function useDocHistory<T>(initial: T, maxDepth: number = DEFAULT_HISTORY_
     canUndo: docHistoryCanUndo(state),
     canRedo: docHistoryCanRedo(state),
     setDoc,
+    beginBatch,
     undo,
     redo,
     reset,

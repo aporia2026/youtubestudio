@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { ModelDefaultsPanel } from '@/components/settings/ModelDefaultsPanel';
 import { TemplatesPanel } from '@/components/settings/TemplatesPanel';
 import { EditorPrefsPanel } from '@/components/settings/EditorPrefsPanel';
+import { TimelineEditorPrefsPanel } from '@/components/settings/TimelineEditorPrefsPanel';
 import { VoiceoverSettingsPanel } from '@/components/settings/VoiceoverSettingsPanel';
 import { QaSettingsPanel } from '@/components/settings/QaSettingsPanel';
 import { ShortsSettingsPanel } from '@/components/shorts/ShortsSettingsPanel';
@@ -27,7 +28,7 @@ export default function SettingsPage() {
   const [newNicheDesc, setNewNicheDesc] = useState('');
   const [newNicheKeywords, setNewNicheKeywords] = useState('');
   const [addingNiche, setAddingNiche] = useState(false);
-  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'editor' | 'voiceover' | 'qa' | 'shorts' | 'notifications' | 'integrations' | 'about'>('niches');
+  const [activeSection, setActiveSection] = useState<'niches' | 'api' | 'models' | 'templates' | 'editor' | 'timeline-editor' | 'voiceover' | 'qa' | 'shorts' | 'notifications' | 'integrations' | 'about'>('niches');
   const [keyStatus, setKeyStatus] = useState<KeyStatus>({});
   const [keyStatusLoading, setKeyStatusLoading] = useState(true);
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
@@ -265,6 +266,7 @@ export default function SettingsPage() {
     { id: 'models' as const, label: '🤖 Model Defaults' },
     { id: 'templates' as const, label: '📋 Templates' },
     { id: 'editor' as const, label: '🎬 Editor' },
+    { id: 'timeline-editor' as const, label: '✂ Timeline Editor' },
     { id: 'voiceover' as const, label: '🎙️ Voiceover' },
     { id: 'qa' as const, label: '☢️ QA' },
     { id: 'shorts' as const, label: '📱 Shorts' },
@@ -618,6 +620,7 @@ export default function SettingsPage() {
 
           {activeSection === 'models' && <ModelDefaultsPanel />}
           {activeSection === 'editor' && <EditorPrefsPanel />}
+          {activeSection === 'timeline-editor' && <TimelineEditorPrefsPanel />}
           {activeSection === 'voiceover' && <VoiceoverSettingsPanel />}
           {activeSection === 'qa' && <QaSettingsPanel />}
           {activeSection === 'shorts' && <ShortsSettingsPanel />}

@@ -26,6 +26,13 @@ export type DocHistoryAction<T> =
   /** Truncate everything ahead of the pointer, push the new
    *  value, advance. Stack is clipped to maxDepth. */
   | { kind: 'commit'; next: T }
+  /** Push the CURRENT head as a duplicate entry and advance the
+   *  pointer. Used at the start of a drag so the pre-drag state
+   *  is preserved in history while subsequent 'live' actions
+   *  mutate the new head. Without this, drag-resize would lose
+   *  the pre-drag state because every live tick replaces the
+   *  head in place. */
+  | { kind: 'beginBatch' }
   | { kind: 'undo' }
   | { kind: 'redo' }
   /** Throw the entire stack away and start over at `next`. */
@@ -56,6 +63,24 @@ export function reduceDocHistory<T>(state: DocHistoryState<T>, action: DocHistor
       // Clip from the front if we've exceeded the depth cap. We
       // keep the most recent N entries, which means the pointer
       // shifts left when we drop something.
+      let stack = truncated;
+      let pointer = state.pointer + 1;
+      if (truncated.length > state.maxDepth) {
+        const drop = truncated.length - state.maxDepth;
+        stack = truncated.slice(drop);
+        pointer = Math.max(0, pointer - drop);
+      }
+      return { ...state, stack, pointer };
+    }
+    case 'beginBatch': {
+      // Duplicate the head and advance the pointer. The new head
+      // is what subsequent `live` actions will mutate; the old
+      // head remains one entry behind so undo lands the user at
+      // the pre-batch state. Truncate the redo branch first
+      // (any forward history is invalidated by starting a new
+      // batch). Then clip from the front if we've exceeded depth.
+      const truncated = state.stack.slice(0, state.pointer + 1);
+      truncated.push(truncated[truncated.length - 1]);
       let stack = truncated;
       let pointer = state.pointer + 1;
       if (truncated.length > state.maxDepth) {

@@ -13,8 +13,14 @@
  */
 
 import dynamic from 'next/dynamic';
+import { useMemo } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import { useDocHistory } from '@/lib/timeline-editor/use-doc-history';
+import {
+  getTimelineDefaultZoomMsPerPx,
+  getTimelineFps,
+  getTimelineUndoDepth,
+} from '@/lib/timeline-editor/editor-prefs';
 
 const TimelineEditor = dynamic(
   () => import('./TimelineEditor').then((m) => m.TimelineEditor),
@@ -25,7 +31,18 @@ const TimelineEditor = dynamic(
 );
 
 export function TimelineEditorDemo({ initialDoc }: { initialDoc: ProductionDoc }) {
-  const history = useDocHistory<ProductionDoc>(initialDoc);
+  // Read per-device prefs once on mount. Localstorage isn't reactive
+  // — a user who changes the setting and comes back gets the new
+  // value on next mount. useMemo so we don't re-read on every render.
+  const prefs = useMemo(
+    () => ({
+      fps: getTimelineFps(),
+      undoDepth: getTimelineUndoDepth(),
+      defaultMsPerPx: getTimelineDefaultZoomMsPerPx(),
+    }),
+    [],
+  );
+  const history = useDocHistory<ProductionDoc>(initialDoc, prefs.undoDepth);
   return (
     <TimelineEditor
       doc={history.current}
@@ -34,6 +51,9 @@ export function TimelineEditorDemo({ initialDoc }: { initialDoc: ProductionDoc }
       onRedo={history.redo}
       canUndo={history.canUndo}
       canRedo={history.canRedo}
+      onBeginBatch={history.beginBatch}
+      fps={prefs.fps}
+      msPerPx={prefs.defaultMsPerPx}
     />
   );
 }

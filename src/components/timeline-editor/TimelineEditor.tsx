@@ -60,6 +60,12 @@ export interface TimelineEditorProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+  /** Called at the start of a multi-step batched edit (drag-resize,
+   *  future drag-move-live). The history layer should snapshot the
+   *  current head so a single Cmd+Z after the drag restores the
+   *  pre-drag state. Without this, every live tick of the drag
+   *  overwrites the head and the original is lost. */
+  onBeginBatch?: () => void;
   /** ms per pixel at the default zoom. Default = 10 (so 1 second
    *  occupies 100 px on screen, matching CapCut's default zoom).
    *  A 30-second doc fits in ~3000 px which scrolls horizontally
@@ -70,6 +76,13 @@ export interface TimelineEditorProps {
   fps?: number;
 }
 
+/** Allowed msPerPx zoom stops. CapCut-style discrete zoom levels
+ *  let users hit familiar densities (50 px/sec, 100 px/sec, etc.)
+ *  rather than slowly scrubbing a slider. Smaller index = closer
+ *  zoom (more pixels per second). */
+const ZOOM_LEVELS_MS_PER_PX = [2, 5, 10, 20, 50, 100, 200];
+const DEFAULT_ZOOM_INDEX = 2; // 10 ms/px = 100 px/sec, matches CapCut default.
+
 export function TimelineEditor({
   doc,
   onDocChange,
@@ -77,9 +90,34 @@ export function TimelineEditor({
   onRedo,
   canUndo = false,
   canRedo = false,
-  msPerPx = 10,
+  onBeginBatch,
+  msPerPx,
   fps = DEFAULT_FPS,
 }: TimelineEditorProps) {
+  // Zoom is internal state, seeded from the optional `msPerPx`
+  // prop. If the caller pins it, we honour that prop and disable
+  // the in/out buttons (rare; mostly for tests).
+  const initialZoomIndex = useMemo(() => {
+    if (msPerPx === undefined) return DEFAULT_ZOOM_INDEX;
+    // Snap any prop value to the closest level so the buttons stay
+    // consistent.
+    let best = 0;
+    let bestDelta = Math.abs(ZOOM_LEVELS_MS_PER_PX[0] - msPerPx);
+    for (let i = 1; i < ZOOM_LEVELS_MS_PER_PX.length; i++) {
+      const d = Math.abs(ZOOM_LEVELS_MS_PER_PX[i] - msPerPx);
+      if (d < bestDelta) {
+        best = i;
+        bestDelta = d;
+      }
+    }
+    return best;
+  }, [msPerPx]);
+  const [zoomIndex, setZoomIndex] = useState(initialZoomIndex);
+  const effectiveMsPerPx = ZOOM_LEVELS_MS_PER_PX[zoomIndex];
+  const zoomIn = useCallback(() => setZoomIndex((i) => Math.max(0, i - 1)), []);
+  const zoomOut = useCallback(() => setZoomIndex((i) => Math.min(ZOOM_LEVELS_MS_PER_PX.length - 1, i + 1)), []);
+  const canZoomIn = zoomIndex > 0;
+  const canZoomOut = zoomIndex < ZOOM_LEVELS_MS_PER_PX.length - 1;
   const rows = useMemo(() => docToTimelineRows(doc), [doc]);
   const totalSec = useMemo(() => msToSec(totalDocDurationMs(doc)), [doc]);
 
@@ -106,6 +144,15 @@ export function TimelineEditor({
   const docRef = useRef(doc);
   docRef.current = doc;
 
+  // M5 polish: snapshot the pre-drag state at resize start so a
+  // single Cmd+Z after the drag restores it. Without this, every
+  // live tick during the drag overwrites the head and the pre-drag
+  // state is lost.
+  const handleResizeStart = useCallback(() => {
+    if (!onDocChange || !onBeginBatch) return;
+    onBeginBatch();
+  }, [onDocChange, onBeginBatch]);
+
   const handleResizing = useCallback(
     (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number; end: number; dir: 'left' | 'right' }) => {
       if (!onDocChange) return false; // read-only
@@ -115,7 +162,8 @@ export function TimelineEditor({
       const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
       if (next !== docRef.current) {
         // Live preview during the drag — does NOT push to the undo
-        // stack. The single commit lands on onActionResizeEnd.
+        // stack (the pre-drag snapshot was pushed by handleResizeStart
+        // → onBeginBatch). Live updates mutate the new head in place.
         onDocChange(next, { commit: false });
       }
       // Return value is consumed by the library to allow/block the
@@ -192,6 +240,25 @@ export function TimelineEditor({
         onRedo?.();
         return;
       }
+      // Zoom: Ctrl/Cmd + '=' (or '+') zooms in; '-' zooms out.
+      // '0' resets to the default level. Matches CapCut + most
+      // editors. The key is '=' on unshifted keyboards because
+      // browsers report e.key='+' only when Shift is held.
+      if (isMeta && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        zoomIn();
+        return;
+      }
+      if (isMeta && e.key === '-') {
+        e.preventDefault();
+        zoomOut();
+        return;
+      }
+      if (isMeta && e.key === '0') {
+        e.preventDefault();
+        setZoomIndex(DEFAULT_ZOOM_INDEX);
+        return;
+      }
       if (e.key === 's' || e.key === 'S') {
         if (isMeta) return; // let Cmd+S fall through to the browser
         const next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
@@ -222,7 +289,7 @@ export function TimelineEditor({
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, [editable, onDocChange, onUndo, onRedo, fps, playheadSec, selectedRowIndex]);
+  }, [editable, onDocChange, onUndo, onRedo, fps, playheadSec, selectedRowIndex, zoomIn, zoomOut]);
 
   // Click on a clip selects it (the Del key uses this).
   const handleClickAction = useCallback(
@@ -284,7 +351,7 @@ export function TimelineEditor({
   //   secondsPerTick × pxPerTick = pxPerSecond → 1000 / pxPerSecond = msPerPx
   // We hold scale at 1 second and derive scaleWidth from msPerPx.
   const scale = 1;
-  const scaleWidth = 1000 / msPerPx; // px per second
+  const scaleWidth = 1000 / effectiveMsPerPx; // px per second
 
   return (
     <div
@@ -302,6 +369,30 @@ export function TimelineEditor({
         </div>
         {editable && (
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={zoomOut}
+                disabled={!canZoomOut}
+                title="Zoom out (Ctrl/Cmd + −)"
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                −
+              </button>
+              <span className="font-mono text-[10px] text-neutral-500" title="pixels per second">
+                {(1000 / effectiveMsPerPx).toFixed(0)} px/s
+              </span>
+              <button
+                type="button"
+                onClick={zoomIn}
+                disabled={!canZoomIn}
+                title="Zoom in (Ctrl/Cmd + +)"
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <span className="text-neutral-700">·</span>
             {onUndo && (
               <button
                 type="button"
@@ -396,6 +487,7 @@ export function TimelineEditor({
           // edge or the right edge both change THIS row's duration.
           // M3 will add split (S key) + cut (Del); M4 wires reorder
           // by un-blocking onActionMoving.
+          onActionResizeStart={editable ? handleResizeStart : undefined}
           onActionResizing={editable ? handleResizing : () => false}
           onActionResizeEnd={editable ? handleResizeEnd : undefined}
           // M4: allow horizontal drag (no return), snap on drop via

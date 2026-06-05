@@ -126,6 +126,61 @@ describe('reduceDocHistory — undo / redo', () => {
   });
 });
 
+describe('reduceDocHistory — beginBatch', () => {
+  it('pushes a duplicate of the current head and advances the pointer', () => {
+    let s = initDocHistory(7);
+    s = reduceDocHistory(s, { kind: 'beginBatch' });
+    expect(s.stack).toEqual([7, 7]);
+    expect(s.pointer).toBe(1);
+  });
+
+  it('preserves pre-batch state when live updates mutate the new head', () => {
+    // Simulates the drag-resize flow:
+    //   start  → stack=[A], pointer=0
+    //   resizeStart → beginBatch → stack=[A, A], pointer=1
+    //   resizing × 3 → live → stack=[A, B_final], pointer=1
+    //   resizeEnd → commit (no-op because head === next)
+    //   undo → pointer=0 → user sees A again ✓
+    let s = initDocHistory('A');
+    s = reduceDocHistory(s, { kind: 'beginBatch' });
+    s = reduceDocHistory(s, { kind: 'live', next: 'B1' });
+    s = reduceDocHistory(s, { kind: 'live', next: 'B2' });
+    s = reduceDocHistory(s, { kind: 'live', next: 'B_final' });
+    expect(s.stack).toEqual(['A', 'B_final']);
+    expect(s.pointer).toBe(1);
+    // The commit-with-same-value bail still works correctly.
+    s = reduceDocHistory(s, { kind: 'commit', next: 'B_final' });
+    expect(s.stack).toEqual(['A', 'B_final']);
+    // Undo brings the user back to A.
+    s = reduceDocHistory(s, { kind: 'undo' });
+    expect(docHistoryCurrent(s)).toBe('A');
+    // Redo goes forward to the final drag state.
+    s = reduceDocHistory(s, { kind: 'redo' });
+    expect(docHistoryCurrent(s)).toBe('B_final');
+  });
+
+  it('truncates the redo branch on beginBatch (just like commit)', () => {
+    let s = initDocHistory(0);
+    s = reduceDocHistory(s, { kind: 'commit', next: 1 });
+    s = reduceDocHistory(s, { kind: 'commit', next: 2 });
+    s = reduceDocHistory(s, { kind: 'undo' });
+    // Pointer is now at 1 (value 1); 2 is in the future.
+    s = reduceDocHistory(s, { kind: 'beginBatch' });
+    expect(s.stack).toEqual([0, 1, 1]);
+    expect(s.pointer).toBe(2);
+  });
+
+  it('respects maxDepth by clipping from the front', () => {
+    let s = initDocHistory(0, 3);
+    s = reduceDocHistory(s, { kind: 'commit', next: 1 });
+    s = reduceDocHistory(s, { kind: 'commit', next: 2 });
+    expect(s.stack).toEqual([0, 1, 2]);
+    s = reduceDocHistory(s, { kind: 'beginBatch' });
+    expect(s.stack).toEqual([1, 2, 2]);
+    expect(s.pointer).toBe(2);
+  });
+});
+
 describe('reduceDocHistory — reset', () => {
   it('throws the stack away and starts over', () => {
     let s = initDocHistory(0);
