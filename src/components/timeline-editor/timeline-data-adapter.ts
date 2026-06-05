@@ -53,6 +53,9 @@ export interface TimelineActionData {
     imageUrl: string;
     onScreenText: string;
     muted: boolean;
+    /** Incoming transition kind — surfaced on the clip card so the
+     *  user can see at a glance which clips cross-fade in. */
+    transitionIn: 'cross-fade' | null;
   };
 }
 
@@ -128,6 +131,45 @@ export function rowIndexAtMs(doc: Pick<ProductionDoc, 'rows'>, atMs: number): nu
   return -1;
 }
 
+/** Given a doc, the index of a row currently being dragged, and the
+ *  new absolute startMs the user dropped it at, return the row index
+ *  where the row should be inserted (post-removal indexing).
+ *
+ *  Used by drag-reorder (M4). The cumulative data model can't hold a
+ *  row at an arbitrary timeline position; we snap to the nearest
+ *  insertion slot between existing rows. Slot N's anchor is the
+ *  cumulative start of `rows-without-dragged[0..N-1]`.
+ *
+ *  Returns `fromIndex` unchanged when the closest slot is the row's
+ *  current position (no-op), so the caller can compare to detect
+ *  a moot drag and skip persistence. */
+export function targetIndexFromDropMs(
+  doc: Pick<ProductionDoc, 'rows'>,
+  fromIndex: number,
+  newStartMs: number,
+): number {
+  if (fromIndex < 0 || fromIndex >= doc.rows.length) return fromIndex;
+  const withoutDragged = doc.rows.filter((_, i) => i !== fromIndex);
+  // Gap k sits at the cumulative end of withoutDragged[0..k-1].
+  const gapStarts: number[] = [0];
+  let cursor = 0;
+  for (const r of withoutDragged) {
+    cursor += rowDurationMs(r);
+    gapStarts.push(cursor);
+  }
+  // Closest gap. Tie-break to the left (smaller index).
+  let bestGap = 0;
+  let bestDist = Math.abs(newStartMs - gapStarts[0]);
+  for (let i = 1; i < gapStarts.length; i++) {
+    const d = Math.abs(newStartMs - gapStarts[i]);
+    if (d < bestDist) {
+      bestGap = i;
+      bestDist = d;
+    }
+  }
+  return bestGap;
+}
+
 /** Build the full TimelineRowData[] for the library. v1 produces
  *  one row (the video track) containing every ProductionRow as a
  *  clip. M6 will add the voiceover row. */
@@ -147,6 +189,7 @@ export function docToTimelineRows(doc: ProductionDoc): TimelineRowData[] {
         imageUrl: row.image_url ?? '',
         onScreenText: row.on_screen_text ?? '',
         muted: row.muted === true,
+        transitionIn: row.transition_in === 'cross-fade' ? 'cross-fade' : null,
       },
     };
   });

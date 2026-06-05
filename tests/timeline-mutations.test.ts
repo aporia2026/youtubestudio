@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
 import {
   cutRow,
+  moveRow,
   resetRowDuration,
   setRowMuted,
+  setRowTransitionIn,
   splitRowAtPlayheadMs,
   trimRowDuration,
 } from '@/components/timeline-editor/timeline-mutations';
 import { framesToMs } from '@/lib/timeline-editor/frame-math';
-import { computeRowIntervals } from '@/components/timeline-editor/timeline-data-adapter';
+import {
+  computeRowIntervals,
+  targetIndexFromDropMs,
+} from '@/components/timeline-editor/timeline-data-adapter';
 
 function row(overrides: Partial<ProductionRow> = {}): ProductionRow {
   return {
@@ -228,6 +233,107 @@ describe('cutRow', () => {
     cutRow(doc, 0);
     expect(inputRows).toHaveLength(inputRowsLength);
     expect(doc.rows).toBe(inputRows);
+  });
+});
+
+describe('moveRow', () => {
+  it('moves a row from later index to earlier (drag-left)', () => {
+    const doc = makeDoc([
+      row({ script_text: 'a' }),
+      row({ script_text: 'b' }),
+      row({ script_text: 'c' }),
+      row({ script_text: 'd' }),
+    ]);
+    const out = moveRow(doc, 2, 0);
+    expect(out.rows.map((r) => r.script_text)).toEqual(['c', 'a', 'b', 'd']);
+  });
+
+  it('moves a row from earlier index to later (drag-right)', () => {
+    const doc = makeDoc([
+      row({ script_text: 'a' }),
+      row({ script_text: 'b' }),
+      row({ script_text: 'c' }),
+      row({ script_text: 'd' }),
+    ]);
+    const out = moveRow(doc, 1, 3);
+    expect(out.rows.map((r) => r.script_text)).toEqual(['a', 'c', 'd', 'b']);
+  });
+
+  it('returns same doc on no-op (fromIndex === toIndex)', () => {
+    const doc = makeDoc([row(), row(), row()]);
+    expect(moveRow(doc, 1, 1)).toBe(doc);
+  });
+
+  it('returns same doc on out-of-range indices', () => {
+    const doc = makeDoc([row(), row()]);
+    expect(moveRow(doc, -1, 0)).toBe(doc);
+    expect(moveRow(doc, 0, 99)).toBe(doc);
+    expect(moveRow(doc, 99, 0)).toBe(doc);
+  });
+
+  it('preserves all rows (no loss, no dup)', () => {
+    const doc = makeDoc([
+      row({ script_text: 'a' }),
+      row({ script_text: 'b' }),
+      row({ script_text: 'c' }),
+      row({ script_text: 'd' }),
+      row({ script_text: 'e' }),
+    ]);
+    const out = moveRow(doc, 0, 4);
+    expect(out.rows.map((r) => r.script_text).sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
+  });
+});
+
+describe('targetIndexFromDropMs', () => {
+  const doc = makeDoc([
+    row({ timecode: '0:00-0:03' }), // 3000ms, slot anchors after removal: 0, 5000, 6000
+    row({ timecode: '0:03-0:08' }), // dragged
+    row({ timecode: '0:08-0:09' }),
+  ]);
+
+  it('snaps drop near 0 to slot 0 (move to start)', () => {
+    expect(targetIndexFromDropMs(doc, 1, 100)).toBe(0);
+  });
+
+  it('snaps drop near the end to the last slot', () => {
+    expect(targetIndexFromDropMs(doc, 1, 99_000)).toBe(2);
+  });
+
+  it('snaps to the middle slot when closest', () => {
+    // Drop at 2500ms: gaps are at 0, 3000 (after row 0), 4000 (after row 0+row 2). Closest = 3000.
+    expect(targetIndexFromDropMs(doc, 1, 2500)).toBe(1);
+  });
+
+  it('returns fromIndex on out-of-range fromIndex', () => {
+    expect(targetIndexFromDropMs(doc, -1, 0)).toBe(-1);
+    expect(targetIndexFromDropMs(doc, 99, 0)).toBe(99);
+  });
+});
+
+describe('setRowTransitionIn', () => {
+  it('applies cross-fade', () => {
+    const doc = makeDoc([row(), row()]);
+    const out = setRowTransitionIn(doc, 1, 'cross-fade');
+    expect(out.rows[1].transition_in).toBe('cross-fade');
+    expect(out.rows[0].transition_in).toBeUndefined();
+  });
+
+  it('clears the transition when given null', () => {
+    const doc = makeDoc([row({ transition_in: 'cross-fade' })]);
+    const out = setRowTransitionIn(doc, 0, null);
+    expect(out.rows[0].transition_in).toBeUndefined();
+  });
+
+  it('returns same doc on no-op', () => {
+    const doc = makeDoc([row({ transition_in: 'cross-fade' })]);
+    expect(setRowTransitionIn(doc, 0, 'cross-fade')).toBe(doc);
+    const docNoTrans = makeDoc([row()]);
+    expect(setRowTransitionIn(docNoTrans, 0, null)).toBe(docNoTrans);
+  });
+
+  it('returns same doc on out-of-range index', () => {
+    const doc = makeDoc([row()]);
+    expect(setRowTransitionIn(doc, 99, 'cross-fade')).toBe(doc);
   });
 });
 

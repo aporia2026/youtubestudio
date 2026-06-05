@@ -19,10 +19,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
 import {
   docToTimelineRows,
+  targetIndexFromDropMs,
   totalDocDurationMs,
   type TimelineActionData,
 } from './timeline-data-adapter';
-import { cutRow, splitRowAtPlayheadMs, trimRowDuration } from './timeline-mutations';
+import {
+  cutRow,
+  moveRow,
+  setRowTransitionIn,
+  splitRowAtPlayheadMs,
+  trimRowDuration,
+} from './timeline-mutations';
 import { msToSec, secToMs, DEFAULT_FPS } from '@/lib/timeline-editor/frame-math';
 
 /** Local shape for the library's `effects` prop. The library imports
@@ -164,6 +171,17 @@ export function TimelineEditor({
           onDocChange(next);
           setSelectedRowIndex(null);
         }
+      } else if (e.key === 'f' || e.key === 'F') {
+        // F toggles cross-fade on the SELECTED row's incoming
+        // transition. Same shortcut CapCut uses for the fade tool.
+        if (selectedRowIndex === null) return;
+        const current = docRef.current.rows[selectedRowIndex]?.transition_in ?? null;
+        const nextTransition: 'cross-fade' | null = current === 'cross-fade' ? null : 'cross-fade';
+        const next = setRowTransitionIn(docRef.current, selectedRowIndex, nextTransition);
+        if (next !== docRef.current) {
+          e.preventDefault();
+          onDocChange(next);
+        }
       }
     };
     el.addEventListener('keydown', onKey);
@@ -177,6 +195,36 @@ export function TimelineEditor({
     },
     [],
   );
+
+  // M4: drag-reorder. During the drag we let the library render
+  // the clip wherever the user moves it (return undefined from
+  // onActionMoving). On drop we compute the target row index from
+  // the dropped position via targetIndexFromDropMs and call moveRow.
+  // Single-track in v1, so we ignore the `row` arg.
+  const handleMoveEnd = useCallback(
+    (args: { action: { id: string; data?: TimelineActionData['data'] }; start: number }) => {
+      if (!onDocChange) return;
+      const fromIndex = args.action.data?.rowIndex ?? -1;
+      if (fromIndex < 0) return;
+      const dropMs = secToMs(args.start);
+      const toIndex = targetIndexFromDropMs(docRef.current, fromIndex, dropMs);
+      if (toIndex === fromIndex) return;
+      const next = moveRow(docRef.current, fromIndex, toIndex);
+      if (next !== docRef.current) {
+        onDocChange(next);
+        setSelectedRowIndex(toIndex);
+      }
+    },
+    [onDocChange],
+  );
+
+  const handleFadeClick = useCallback(() => {
+    if (!onDocChange || selectedRowIndex === null) return;
+    const current = docRef.current.rows[selectedRowIndex]?.transition_in ?? null;
+    const nextTransition: 'cross-fade' | null = current === 'cross-fade' ? null : 'cross-fade';
+    const next = setRowTransitionIn(docRef.current, selectedRowIndex, nextTransition);
+    if (next !== docRef.current) onDocChange(next);
+  }, [onDocChange, selectedRowIndex]);
 
   // Header buttons for users without keyboards (or who want explicit
   // affordances). Wraps the same mutation helpers the keymap calls.
@@ -235,6 +283,15 @@ export function TimelineEditor({
             >
               ✕ Cut · Del
             </button>
+            <button
+              type="button"
+              onClick={handleFadeClick}
+              disabled={selectedRowIndex === null}
+              title="Toggle cross-fade on selected clip (F)"
+              className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-200 hover:border-sky-700 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ⤬ Fade · F
+            </button>
           </div>
         )}
       </header>
@@ -268,6 +325,7 @@ export function TimelineEditor({
               imageUrl: '',
               onScreenText: '',
               muted: false,
+              transitionIn: null,
             };
             return <ClipCard data={data} selected={selectedRowIndex === data.rowIndex} />;
           }}
@@ -281,7 +339,12 @@ export function TimelineEditor({
           // by un-blocking onActionMoving.
           onActionResizing={editable ? handleResizing : () => false}
           onActionResizeEnd={editable ? handleResizeEnd : undefined}
-          onActionMoving={() => false}
+          // M4: allow horizontal drag (no return), snap on drop via
+          // handleMoveEnd → targetIndexFromDropMs → moveRow. Single-
+          // track in v1 so cross-track drag is moot; on drop the row
+          // resnap to its slot in the cumulative cascade.
+          onActionMoving={editable ? undefined : () => false}
+          onActionMoveEnd={editable ? handleMoveEnd : undefined}
           // The library wants `onChange` for its internal book-
           // keeping (selection, drag-line). We just no-op here
           // because every doc mutation goes through onDocChange.
@@ -311,6 +374,11 @@ function ClipCard({ data, selected }: { data: TimelineActionData['data']; select
       <div className="flex items-baseline gap-2">
         <span className="font-mono text-[9px] text-neutral-500">#{data.rowIndex + 1}</span>
         <span className="truncate text-neutral-200">{data.scriptText || '(no script)'}</span>
+        {data.transitionIn === 'cross-fade' && (
+          <span title="Cross-fade in" className="ml-auto shrink-0 rounded border border-sky-700 bg-sky-950/60 px-1 font-mono text-[8px] uppercase text-sky-300">
+            fade
+          </span>
+        )}
       </div>
       {data.onScreenText && (
         <p className="truncate text-[9px] text-amber-300">{data.onScreenText}</p>

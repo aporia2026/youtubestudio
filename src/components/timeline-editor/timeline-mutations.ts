@@ -137,6 +137,53 @@ export function cutRow(doc: ProductionDoc, rowIndex: number): ProductionDoc {
   return { ...doc, rows: nextRows };
 }
 
+/** Re-order a row from `fromIndex` to `toIndex`. `toIndex` is the
+ *  POST-REMOVAL index: 0 means "before everything," N-1 (where N is
+ *  the doc's row count) means "after everything." Returns the same
+ *  doc when the move is a no-op or either index is out of range.
+ *
+ *  Used by drag-reorder (M4). Pair with `targetIndexFromDropMs`
+ *  to compute `toIndex` from a library drop event's startMs. */
+export function moveRow(doc: ProductionDoc, fromIndex: number, toIndex: number): ProductionDoc {
+  if (fromIndex < 0 || fromIndex >= doc.rows.length) return doc;
+  // Allowable toIndex range is [0, rows.length - 1] after removal,
+  // i.e. [0, rows.length - 1].
+  if (toIndex < 0 || toIndex >= doc.rows.length) return doc;
+  if (fromIndex === toIndex) return doc;
+  const without = [...doc.rows.slice(0, fromIndex), ...doc.rows.slice(fromIndex + 1)];
+  const nextRows = [
+    ...without.slice(0, toIndex),
+    doc.rows[fromIndex],
+    ...without.slice(toIndex),
+  ];
+  return { ...doc, rows: nextRows };
+}
+
+/** Set or clear a row's incoming transition. v1 supports only
+ *  `'cross-fade'` and `null` — the same domain the existing Remotion
+ *  scenes read via `row.transition_in`. */
+export function setRowTransitionIn(
+  doc: ProductionDoc,
+  rowIndex: number,
+  transition: 'cross-fade' | null,
+): ProductionDoc {
+  if (rowIndex < 0 || rowIndex >= doc.rows.length) return doc;
+  const target = doc.rows[rowIndex];
+  const current = target.transition_in ?? null;
+  if (current === transition) return doc;
+  const nextRows: ProductionRow[] = doc.rows.map((row, i) => {
+    if (i !== rowIndex) return row;
+    const next = { ...row };
+    if (transition === null) {
+      delete next.transition_in;
+    } else {
+      next.transition_in = transition;
+    }
+    return next;
+  });
+  return { ...doc, rows: nextRows };
+}
+
 /** Mute or unmute a row's audio. v1 maps to `row.muted` which the
  *  Remotion scenes already read. Useful keyboard shortcut: `M`. */
 export function setRowMuted(doc: ProductionDoc, rowIndex: number, muted: boolean): ProductionDoc {
