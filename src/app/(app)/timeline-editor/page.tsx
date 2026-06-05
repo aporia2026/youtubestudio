@@ -9,16 +9,16 @@
  * on /production-doc and /video-studio.
  *
  * Plan: _plans/2026-06-05-capcut-timeline-editor.md.
+ *
+ * Build note: TimelineEditorDemo is a client component ('use client').
+ * The dynamic+ssr:false trick that the timeline library needs lives
+ * inside TimelineEditorDemo, not here — Next.js 16 forbids
+ * `dynamic(..., { ssr: false })` in Server Components.
  */
 
 import type { Metadata } from 'next';
-import dynamic from 'next/dynamic';
 import type { ProductionDoc } from '@/remotion/utils';
-
-const TimelineEditorDemo = dynamic(
-  () => import('@/components/timeline-editor/TimelineEditorDemo').then((m) => m.TimelineEditorDemo),
-  { ssr: false, loading: () => <p className="text-xs text-neutral-500">Loading editor…</p> },
-);
+import { TimelineEditorDemo } from '@/components/timeline-editor/TimelineEditorDemo';
 
 export const metadata: Metadata = {
   title: 'Timeline editor (M1 demo)',
