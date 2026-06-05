@@ -34,6 +34,7 @@
  * that's a manual auto-pipeline action.
  */
 
+import { createClient } from '@vercel/postgres';
 import { sql } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import { countWords, estimateDuration } from '@/lib/utils';
@@ -109,73 +110,98 @@ export async function runHandoff(opts: RunHandoffOptions): Promise<void> {
   }
   logger.info('[channel-clone handoff] preset resolved', { jobId, presetId });
 
-  // 2-7. Insert all the rows. Done sequentially because we need
-  // each FK chain — no transaction wrapper because @vercel/postgres
-  // doesn't expose BEGIN/COMMIT cleanly from a function-level call.
-  // The handoff is idempotent at the channel-clone level (we check
-  // for an existing handoff above), so a partial-write recovery is
-  // a manual cleanup rather than a code path.
+  // 2-7. Insert all the rows inside a single transaction. Prior to the
+  // 2026-06-05 QA pass this was a sequential series of `sql.query`
+  // calls with a misleading comment claiming "@vercel/postgres
+  // doesn't expose BEGIN/COMMIT cleanly" — it does (see
+  // `src/lib/migrations/index.ts:291` for the existing pattern).
+  // Without a transaction, a failed pipeline_run_videos insert at
+  // step 5 of 6 would leave orphaned projects + scripts + ideas +
+  // pipeline_runs rows with no way to roll them back. Now: BEGIN
+  // before insert 1; COMMIT after persistArtefact; ROLLBACK on any
+  // throw.
+  const connectionString =
+    process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL;
+  if (!connectionString) {
+    return failJob(jobId, workspaceId, 'POSTGRES_URL not configured — cannot start handoff transaction.');
+  }
+  const client = createClient({ connectionString });
+  await client.connect();
 
   const projectTitle = `Channel clone — ${topic.title}`.slice(0, 200);
   const projectNiche = analysis.niche;
   const projectTopic = topic.title;
 
-  const { rows: projRows } = await sql.query<{ id: string }>(
-    `
-    INSERT INTO projects (workspace_id, title, niche, topic, status)
-    VALUES ($1::uuid, $2, $3, $4, 'draft')
-    RETURNING id::text AS id
-    `,
-    [workspaceId, projectTitle, projectNiche, projectTopic],
-  );
-  const projectId = projRows[0].id;
+  let projectId: string;
+  let scriptId: string;
+  let ideaId: string;
+  let pipelineRunId: string;
+  let pipelineRunVideoId: string;
+  try {
+    await client.query('BEGIN');
 
-  const scriptText = approvedScript.text;
-  const wordCount = countWords(scriptText);
-  const durationSec = estimateDuration(wordCount);
-  const { rows: scriptRows } = await sql.query<{ id: string }>(
-    `
-    INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active, workspace_id)
-    VALUES ($1::uuid, 1, $2, $3, $4, $5, true, $6::uuid)
-    RETURNING id::text AS id
-    `,
-    [projectId, scriptText, wordCount, durationSec, 'claude-opus-4-8 (channel-clone)', workspaceId],
-  );
-  const scriptId = scriptRows[0].id;
+    const { rows: projRows } = await client.query<{ id: string }>(
+      `
+      INSERT INTO projects (workspace_id, title, niche, topic, status)
+      VALUES ($1::uuid, $2, $3, $4, 'draft')
+      RETURNING id::text AS id
+      `,
+      [workspaceId, projectTitle, projectNiche, projectTopic],
+    );
+    projectId = projRows[0].id;
 
-  // Stub idea row. Hook + title from the chosen topic + hook so a
-  // human glancing at the auto-pipeline dashboard sees a meaningful
-  // label rather than "Untitled".
-  const { rows: ideaRows } = await sql.query<{ id: string }>(
-    `
-    INSERT INTO video_ideas (niche, title, hook, is_saved, workspace_id)
-    VALUES ($1, $2, $3, true, $4::uuid)
-    RETURNING id::text AS id
-    `,
-    [analysis.niche, topic.title.slice(0, 200), hook.text.slice(0, 500), workspaceId],
-  );
-  const ideaId = ideaRows[0].id;
+    const scriptText = approvedScript.text;
+    const wordCount = countWords(scriptText);
+    const durationSec = estimateDuration(wordCount);
+    // Stamp the actual model that produced the audit-approved script
+    // (resolved from auditHistory's modelUsed if present), not the
+    // hardcoded string the original commit used.
+    const auditModel = job.state_jsonb.analysis?.modelUsed ?? 'claude-opus-4-8';
+    const { rows: scriptRows } = await client.query<{ id: string }>(
+      `
+      INSERT INTO scripts (project_id, version, content, word_count, estimated_duration_seconds, ai_model, is_active, workspace_id)
+      VALUES ($1::uuid, 1, $2, $3, $4, $5, true, $6::uuid)
+      RETURNING id::text AS id
+      `,
+      [projectId, scriptText, wordCount, durationSec, `${auditModel} (channel-clone)`, workspaceId],
+    );
+    scriptId = scriptRows[0].id;
 
-  const { rows: runRows } = await sql.query<{ id: string }>(
-    `
-    INSERT INTO pipeline_runs (workspace_id, preset_id, ideas_count, status, created_by)
-    VALUES ($1::uuid, $2::uuid, 1, 'running', $3::uuid)
-    RETURNING id::text AS id
-    `,
-    [workspaceId, presetId, userId],
-  );
-  const pipelineRunId = runRows[0].id;
+    const { rows: ideaRows } = await client.query<{ id: string }>(
+      `
+      INSERT INTO video_ideas (niche, title, hook, is_saved, workspace_id)
+      VALUES ($1, $2, $3, true, $4::uuid)
+      RETURNING id::text AS id
+      `,
+      [analysis.niche, topic.title.slice(0, 200), hook.text.slice(0, 500), workspaceId],
+    );
+    ideaId = ideaRows[0].id;
 
-  const { rows: vidRows } = await sql.query<{ id: string }>(
-    `
-    INSERT INTO pipeline_run_videos
-      (workspace_id, pipeline_run_id, priority, stage, idea_id, project_id, script_id)
-    VALUES ($1::uuid, $2::uuid, 1, 'generating_production_doc_images', $3::uuid, $4::uuid, $5::uuid)
-    RETURNING id::text AS id
-    `,
-    [workspaceId, pipelineRunId, ideaId, projectId, scriptId],
-  );
-  const pipelineRunVideoId = vidRows[0].id;
+    const { rows: runRows } = await client.query<{ id: string }>(
+      `
+      INSERT INTO pipeline_runs (workspace_id, preset_id, ideas_count, status, created_by)
+      VALUES ($1::uuid, $2::uuid, 1, 'running', $3::uuid)
+      RETURNING id::text AS id
+      `,
+      [workspaceId, presetId, userId],
+    );
+    pipelineRunId = runRows[0].id;
+
+    const { rows: vidRows } = await client.query<{ id: string }>(
+      `
+      INSERT INTO pipeline_run_videos
+        (workspace_id, pipeline_run_id, priority, stage, idea_id, project_id, script_id)
+      VALUES ($1::uuid, $2::uuid, 1, 'generating_production_doc_images', $3::uuid, $4::uuid, $5::uuid)
+      RETURNING id::text AS id
+      `,
+      [workspaceId, pipelineRunId, ideaId, projectId, scriptId],
+    );
+    pipelineRunVideoId = vidRows[0].id;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    await client.end().catch(() => {});
+    return failJob(jobId, workspaceId, `Handoff transaction failed during row inserts: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Compose the production-doc artefact metadata. The image-gen
   // stage reads `metadata.doc.rows[i].ai_image_prompt` — that's the
@@ -214,15 +240,26 @@ export async function runHandoff(opts: RunHandoffOptions): Promise<void> {
     },
   };
 
-  await sql.query(
-    `
-    INSERT INTO pipeline_stage_artefacts
-      (pipeline_run_video_id, stage, attempt_number, artefact_kind, cost_usd, metadata_jsonb)
-    VALUES ($1::uuid, 'generating_production_doc', 1, 'production_doc', 0, $2::jsonb)
-    ON CONFLICT (pipeline_run_video_id, stage, attempt_number, artefact_kind) DO NOTHING
-    `,
-    [pipelineRunVideoId, JSON.stringify(docMetadata)],
-  );
+  try {
+    await client.query(
+      `
+      INSERT INTO pipeline_stage_artefacts
+        (pipeline_run_video_id, stage, attempt_number, artefact_kind, cost_usd, metadata_jsonb)
+      VALUES ($1::uuid, 'generating_production_doc', 1, 'production_doc', 0, $2::jsonb)
+      ON CONFLICT (pipeline_run_video_id, stage, attempt_number, artefact_kind) DO NOTHING
+      `,
+      [pipelineRunVideoId, JSON.stringify(docMetadata)],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    await client.end().catch(() => {});
+    return failJob(jobId, workspaceId, `Handoff transaction failed at production_doc artefact persistence: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    // end() is idempotent on already-ended clients; guarding the
+    // ROLLBACK path above means this only fires on the success path.
+    await client.end().catch(() => {});
+  }
 
   const result: HandoffResult = {
     pipelineRunId,

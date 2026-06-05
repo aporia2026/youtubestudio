@@ -115,9 +115,15 @@ export async function runPublishPack(opts: RunPublishPackOptions): Promise<void>
       systemPrompt,
       prompt: userPrompt,
       // The output is heavy (5 titles + description + 30 tags +
-      // 3 comments + 5 thumbnails + 30 calendar days). Budget 12K
-      // by default; cap at the model output ceiling.
-      maxTokens: 12000,
+      // 3 comments + 5 thumbnails + 30 calendar days). QA pass
+      // 2026-06-05 raised this from 12000 → 16000 after the worst
+      // case (description 600+ words + verbose ctrReasoning across
+      // every thumbnail + verbose calendar entries) was estimated
+      // to truncate at 12K with `temperature: 0.7`. The exact-
+      // count parser at parsePublishPackResponse refuses to accept
+      // a partial calendar, so even one truncation kills the whole
+      // pack — easier to overshoot the budget than to retry.
+      maxTokens: 16000,
       temperature: 0.7,
       spend: {
         workspaceId,

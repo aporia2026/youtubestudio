@@ -181,38 +181,55 @@ export const YouTubeVideo: React.FC<YouTubeVideoProps> = ({ config }) => {
        *  walked across segments so each plays at its own slot.
        *  Otherwise fall back to the legacy single-audio behaviour.
        *
-       *  Volume function (makeVoiceoverVolume) is shared across
-       *  every segment so the doc-level fade-in/out + gain curve
-       *  continue to apply across cuts. Remotion evaluates the
-       *  function with the parent-composition frame so the fades
-       *  hit at the right moments even when audio is segmented.
+       *  Volume contract — Remotion calls `<Audio volume>` with
+       *  the LOCAL frame, i.e. the frame relative to the
+       *  surrounding `<Sequence>` (frame 0 at the sequence start).
+       *  Per https://www.remotion.dev/docs/audio/volume. If we
+       *  passed the same volume function to every segment the
+       *  doc-level fade-in would fire at the start of EVERY cut
+       *  and the fade-out would never fire (local frame would
+       *  never cross the global `totalFrames - fadeOutFrames`
+       *  anchor). Fix: wrap the global volume with each segment's
+       *  `fromFrame` baked in so it sees the GLOBAL frame again —
+       *  `(local) => baseVolume(local + fromFrame)`. When the
+       *  base volume is a scalar (no fades configured) we pass
+       *  it through verbatim so Remotion can skip per-frame eval.
+       *
+       *  Zero-duration segments are filtered out before render so
+       *  the Math.max(1, …) frame floor below never clicks a
+       *  1-frame silence-blip into the audio.
        *
        *  See _plans/2026-06-05-capcut-timeline-editor.md (M6
-       *  Remotion wiring). */}
-      {config.voiceoverSegments && config.voiceoverSegments.length > 0
+       *  Remotion wiring + QA fixes 2026-06-05). */}
+      {config.voiceoverSegments && config.voiceoverSegments.some((s) => s.durationMs > 0)
         ? (() => {
-            const volumeFn = makeVoiceoverVolume(config, fps);
+            const baseVolume = makeVoiceoverVolume(config, fps);
             let cursorFrames = 0;
-            return config.voiceoverSegments.map((seg) => {
-              const fromFrame = cursorFrames;
-              const durationInFrames = Math.max(1, msToFrame(seg.durationMs, fps));
-              cursorFrames += durationInFrames;
-              return (
-                <Sequence
-                  key={seg.id}
-                  from={fromFrame}
-                  durationInFrames={durationInFrames}
-                  layout="none"
-                >
-                  <Audio
-                    src={seg.sourceUrl}
-                    startFrom={msToFrame(seg.sourceOffsetMs, fps)}
-                    volume={volumeFn}
-                    pauseWhenBuffering
-                  />
-                </Sequence>
-              );
-            });
+            return config.voiceoverSegments
+              .filter((s) => s.durationMs > 0)
+              .map((seg) => {
+                const fromFrame = cursorFrames;
+                const durationInFrames = Math.max(1, msToFrame(seg.durationMs, fps));
+                cursorFrames += durationInFrames;
+                const segmentVolume = typeof baseVolume === 'number'
+                  ? baseVolume
+                  : (local: number) => baseVolume(local + fromFrame);
+                return (
+                  <Sequence
+                    key={seg.id}
+                    from={fromFrame}
+                    durationInFrames={durationInFrames}
+                    layout="none"
+                  >
+                    <Audio
+                      src={seg.sourceUrl}
+                      startFrom={msToFrame(seg.sourceOffsetMs, fps)}
+                      volume={segmentVolume}
+                      pauseWhenBuffering
+                    />
+                  </Sequence>
+                );
+              });
           })()
         : config.voiceoverUrl && (
             <Audio

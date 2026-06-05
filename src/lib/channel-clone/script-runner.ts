@@ -191,6 +191,21 @@ export async function runScript(opts: RunScriptOptions): Promise<void> {
         iteration,
       });
     } catch (err) {
+      // QA fix 2026-06-05: a transient audit error used to nuke the
+      // whole job and discard the (potentially expensive) script the
+      // user just spent Opus tokens generating. On iterations after
+      // the first we still have a usable approved draft from the
+      // previous audit; bail out of the loop and accept the current
+      // draft instead of failing. On iteration 1 there's nothing to
+      // accept yet, so the old fail-fast path stays.
+      if (iteration > 1) {
+        logger.warn('[channel-clone script] audit error after first iteration — accepting current draft', {
+          jobId,
+          iteration,
+          error: errorMessage(err),
+        });
+        break;
+      }
       return failJob(jobId, workspaceId, `Audit on iteration ${iteration} failed: ${errorMessage(err)}`);
     }
 

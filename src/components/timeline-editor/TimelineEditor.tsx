@@ -281,11 +281,43 @@ export function TimelineEditor({
         // S splits BOTH tracks at the playhead. If the playhead is
         // inside a video clip AND inside a voiceover segment, both
         // get split; if only one applies, only that one mutates.
-        let next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
-        next = splitVoiceoverSegmentAtPlayheadMs(next, secToMs(playheadSec), { fps });
-        if (next !== docRef.current) {
+        // (UX note: this diverges from CapCut, which splits only
+        // the selected track. Single-shortcut multi-track split
+        // is the v1 default to keep audio + video in sync after
+        // any cut; a future polish could read `selection?.track`
+        // and split only that one.)
+        const playheadMs = secToMs(playheadSec);
+        const prevDoc = docRef.current;
+        let next = splitRowAtPlayheadMs(prevDoc, playheadMs, { fps });
+        const videoSplit = next !== prevDoc;
+        const videoSplitIndex = videoSplit
+          ? prevDoc.rows.findIndex((_, i) => {
+              // The first row that has DIFFERENT identity in `next`
+              // is the one that was split.
+              return next.rows[i] !== prevDoc.rows[i];
+            })
+          : -1;
+        const beforeVoiceSplit = next;
+        next = splitVoiceoverSegmentAtPlayheadMs(next, playheadMs, { fps });
+        const voiceSplit = next !== beforeVoiceSplit;
+        const voiceSplitIndex = voiceSplit && beforeVoiceSplit.voiceover_segments
+          ? beforeVoiceSplit.voiceover_segments.findIndex((_, i) => {
+              return (next.voiceover_segments?.[i] ?? null) !== beforeVoiceSplit.voiceover_segments?.[i];
+            })
+          : -1;
+        if (next !== prevDoc) {
           e.preventDefault();
           onDocChange(next, { commit: true });
+          // Shift the selection index forward by one when the split
+          // happened AT OR BEFORE the selected row in the same track.
+          // Without this, a user who had row 5 selected and split
+          // row 2 would suddenly find row 4 (the new "old row 5")
+          // selected — silently wrong.
+          if (selection?.track === 'video' && videoSplit && videoSplitIndex >= 0 && selection.rowIndex >= videoSplitIndex + 1) {
+            setSelection({ track: 'video', rowIndex: selection.rowIndex + 1 });
+          } else if (selection?.track === 'voiceover' && voiceSplit && voiceSplitIndex >= 0 && selection.segmentIndex >= voiceSplitIndex + 1) {
+            setSelection({ track: 'voiceover', segmentIndex: selection.segmentIndex + 1 });
+          }
         }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selection === null) return;
@@ -538,7 +570,19 @@ export function TimelineEditor({
           style={{ height: 240, width: '100%' }}
           getActionRender={(action) => {
             const data = (action as { data?: TimelineActionData['data'] }).data;
-            if (!data) return null;
+            if (!data) {
+              // QA fix 2026-06-05: returning null leaves the library's
+              // outer rectangle painted with no content — silently
+              // invisible clips when the adapter forgot a row. A tiny
+              // placeholder + console.warn makes the failure
+              // observable.
+              console.warn('[timeline-editor] clip with no data:', action.id);
+              return (
+                <div className="flex h-full items-center justify-center bg-red-950/40 px-1 font-mono text-[9px] text-red-300">
+                  ? {action.id}
+                </div>
+              );
+            }
             const isSelected =
               (data.kind === 'video' && selection?.track === 'video' && selection.rowIndex === data.rowIndex)
               || (data.kind === 'voiceover' && selection?.track === 'voiceover' && selection.segmentIndex === data.segmentIndex);
