@@ -18,6 +18,7 @@
  */
 
 import type { ProductionDoc, ProductionRow } from '@/remotion/utils';
+import { computeProductionDocIntervals } from '@/remotion/utils';
 import { msToSec } from '@/lib/timeline-editor/frame-math';
 
 /** Default minimum scene duration when nothing else can be inferred. */
@@ -86,10 +87,22 @@ export function parseTimecodeDurationMs(timecode: string | undefined): number | 
   return durationMs > 0 ? durationMs : null;
 }
 
-/** Compute the duration of one row in ms. Precedence:
- *  1. `duration_override_ms` (the editor's pinned value)
- *  2. parsed from `timecode`
- *  3. `DEFAULT_ROW_DURATION_MS` (3000ms)
+/** Compute the duration of one row in ms, viewed in isolation.
+ *
+ *  This is a **single-row** view that does NOT see neighbors: it
+ *  resolves `duration_override_ms` → `parseTimecodeDurationMs` →
+ *  `DEFAULT_ROW_DURATION_MS`. Useful when a UI surface needs the row's
+ *  stated duration without context (e.g. an inspector label).
+ *
+ *  ⚠ For anything that drives layout, playback math, or matches the
+ *  Player's view, prefer {@link computeRowIntervals} — the renderer
+ *  applies a cascade rule (each row extends to the next row's start,
+ *  with `minSceneMs` as a floor) that this helper cannot see. Before
+ *  2026-06-06 the timeline editor used this function for clip widths
+ *  and the editor displayed durations that disagreed with what the
+ *  Player actually played. {@link computeRowIntervals} now goes through
+ *  the shared {@link computeProductionDocIntervals} so both surfaces
+ *  agree.
  *  Pure — no DOM, no state. */
 export function rowDurationMs(row: Pick<ProductionRow, 'duration_override_ms' | 'timecode'>): number {
   if (typeof row.duration_override_ms === 'number' && Number.isFinite(row.duration_override_ms) && row.duration_override_ms > 0) {
@@ -100,22 +113,20 @@ export function rowDurationMs(row: Pick<ProductionRow, 'duration_override_ms' | 
   return DEFAULT_ROW_DURATION_MS;
 }
 
-/** Walk the doc's rows once and produce a per-row interval table. */
-export function computeRowIntervals(doc: Pick<ProductionDoc, 'rows'>): ComputedRowInterval[] {
-  const out: ComputedRowInterval[] = [];
-  let cursorMs = 0;
-  for (let i = 0; i < doc.rows.length; i++) {
-    const row = doc.rows[i];
-    const durationMs = rowDurationMs(row);
-    out.push({
-      rowIndex: i,
-      rowId: rowKeyFor(row, i),
-      startMs: cursorMs,
-      durationMs,
-    });
-    cursorMs += durationMs;
-  }
-  return out;
+/** Walk the doc's rows once and produce a per-row interval table. The
+ *  per-row [startMs, durationMs] match what the renderer ultimately
+ *  plays — both surfaces go through {@link computeProductionDocIntervals}
+ *  so the timeline ruler can't disagree with the Player's clock. */
+export function computeRowIntervals(
+  doc: Pick<ProductionDoc, 'rows' | 'total_duration' | 'min_scene_ms'>,
+): ComputedRowInterval[] {
+  const { intervals } = computeProductionDocIntervals(doc);
+  return intervals.map((iv, i) => ({
+    rowIndex: i,
+    rowId: rowKeyFor(doc.rows[i], i),
+    startMs: iv.startMs,
+    durationMs: iv.durationMs,
+  }));
 }
 
 /** Stable per-row id used in TimelineAction keys. ProductionRow
@@ -128,20 +139,23 @@ export function rowKeyFor(row: Pick<ProductionRow, 'timecode' | 'script_text'>, 
   return `row-${index}-${hash.length.toString(36)}`;
 }
 
-/** Total ms across all rows. */
-export function totalDocDurationMs(doc: Pick<ProductionDoc, 'rows'>): number {
+/** Total ms across all rows — same value the Player's clock shows. */
+export function totalDocDurationMs(
+  doc: Pick<ProductionDoc, 'rows' | 'total_duration' | 'min_scene_ms'>,
+): number {
   return computeRowIntervals(doc).reduce((acc, r) => acc + r.durationMs, 0);
 }
 
 /** Map a playhead time (ms, absolute) to the row it falls inside.
  *  Returns -1 if the time is before the first row or after the last. */
-export function rowIndexAtMs(doc: Pick<ProductionDoc, 'rows'>, atMs: number): number {
+export function rowIndexAtMs(
+  doc: Pick<ProductionDoc, 'rows' | 'total_duration' | 'min_scene_ms'>,
+  atMs: number,
+): number {
   if (atMs < 0) return -1;
-  let cursorMs = 0;
-  for (let i = 0; i < doc.rows.length; i++) {
-    const d = rowDurationMs(doc.rows[i]);
-    if (atMs >= cursorMs && atMs < cursorMs + d) return i;
-    cursorMs += d;
+  const intervals = computeRowIntervals(doc);
+  for (const iv of intervals) {
+    if (atMs >= iv.startMs && atMs < iv.startMs + iv.durationMs) return iv.rowIndex;
   }
   return -1;
 }
@@ -153,23 +167,30 @@ export function rowIndexAtMs(doc: Pick<ProductionDoc, 'rows'>, atMs: number): nu
  *  Used by drag-reorder (M4). The cumulative data model can't hold a
  *  row at an arbitrary timeline position; we snap to the nearest
  *  insertion slot between existing rows. Slot N's anchor is the
- *  cumulative start of `rows-without-dragged[0..N-1]`.
+ *  cumulative end of `rows-without-dragged[0..N-1]` using the SAME
+ *  duration math {@link computeRowIntervals} produces — so the drop
+ *  lands where the user's cursor visually pointed, not on a
+ *  literal-timecode-range gap that no longer matches the rendered
+ *  clip widths.
  *
  *  Returns `fromIndex` unchanged when the closest slot is the row's
  *  current position (no-op), so the caller can compare to detect
  *  a moot drag and skip persistence. */
 export function targetIndexFromDropMs(
-  doc: Pick<ProductionDoc, 'rows'>,
+  doc: Pick<ProductionDoc, 'rows' | 'total_duration' | 'min_scene_ms'>,
   fromIndex: number,
   newStartMs: number,
 ): number {
   if (fromIndex < 0 || fromIndex >= doc.rows.length) return fromIndex;
-  const withoutDragged = doc.rows.filter((_, i) => i !== fromIndex);
-  // Gap k sits at the cumulative end of withoutDragged[0..k-1].
+  const intervals = computeRowIntervals(doc);
+  // Gap k sits at the cumulative end of `intervals-without-dragged[0..k-1]`.
+  // Walking the full intervals once and skipping the dragged row is
+  // cheaper than constructing a synthetic doc-without-dragged.
   const gapStarts: number[] = [0];
   let cursor = 0;
-  for (const r of withoutDragged) {
-    cursor += rowDurationMs(r);
+  for (let i = 0; i < intervals.length; i++) {
+    if (i === fromIndex) continue;
+    cursor += intervals[i].durationMs;
     gapStarts.push(cursor);
   }
   // Closest gap. Tie-break to the left (smaller index).

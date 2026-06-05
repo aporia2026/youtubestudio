@@ -13,7 +13,7 @@
 import type { ProductionDoc, ProductionRow, VoiceoverSegment } from '@/remotion/utils';
 import { DEFAULT_FPS, framesToMs, snapMsToFrame } from '@/lib/timeline-editor/frame-math';
 import {
-  rowDurationMs,
+  computeRowIntervals,
   rowIndexAtMs,
   voiceoverSegmentIndexAtMs,
 } from './timeline-data-adapter';
@@ -40,7 +40,14 @@ function resolveOpts(opts: MutationOptions = {}): Required<MutationOptions> {
  *  Snaps the supplied ms to a frame boundary; refuses to shrink
  *  below `minDurationMs` (default = 1 frame). Returns the input doc
  *  unchanged when the trim is a no-op (same effective duration) so
- *  React render bails on object identity. */
+ *  React render bails on object identity.
+ *
+ *  Sets `pin_duration: true` so a subsequent forced-alignment pass
+ *  (production render with voiceover) doesn't silently re-time the
+ *  row and erase the user's explicit choice. The legacy editor's
+ *  RESIZE_SHOT command (`src/lib/editor/store.ts`) already does
+ *  this — the timeline editor was the odd one out before
+ *  2026-06-06. */
 export function trimRowDuration(
   doc: ProductionDoc,
   rowIndex: number,
@@ -51,24 +58,42 @@ export function trimRowDuration(
   const { fps, minDurationMs } = resolveOpts(opts);
   const snapped = Math.max(minDurationMs, snapMsToFrame(newDurationMs, fps));
   const target = doc.rows[rowIndex];
-  if (target.duration_override_ms === snapped) return doc;
+  if (target.duration_override_ms === snapped && target.pin_duration === true) return doc;
+  // Observability: every trim emits a row-level log so a "preview
+  // didn't change" report can be diagnosed against the actual ms
+  // written and the prior value. Pair with `[render-timing]
+  // overridesHonored` in productionDocToVideoConfig to confirm the
+  // value made it all the way to the composition.
+  if (typeof console !== 'undefined' && console.info) {
+    console.info('[timeline-editor trim]', {
+      rowIndex,
+      requestedMs: newDurationMs,
+      snappedMs: snapped,
+      previousOverrideMs: target.duration_override_ms ?? null,
+      previousPinDuration: target.pin_duration ?? null,
+      fps,
+    });
+  }
   const nextRows: ProductionRow[] = doc.rows.map((row, i) =>
-    i === rowIndex ? { ...row, duration_override_ms: snapped } : row,
+    i === rowIndex ? { ...row, duration_override_ms: snapped, pin_duration: true } : row,
   );
   return { ...doc, rows: nextRows };
 }
 
 /** Clear any duration override on a row so it falls back to the
  *  timecode-derived duration. Used by the "Reset duration" right-
- *  click menu (M4+). */
+ *  click menu (M4+). Also clears `pin_duration` so alignment is
+ *  allowed to take the row back over — matches the legacy editor's
+ *  "Reset timing to alignment" semantics. */
 export function resetRowDuration(doc: ProductionDoc, rowIndex: number): ProductionDoc {
   if (rowIndex < 0 || rowIndex >= doc.rows.length) return doc;
   const target = doc.rows[rowIndex];
-  if (target.duration_override_ms === undefined) return doc;
+  if (target.duration_override_ms === undefined && target.pin_duration === undefined) return doc;
   const nextRows: ProductionRow[] = doc.rows.map((row, i) => {
     if (i !== rowIndex) return row;
     const next = { ...row };
     delete next.duration_override_ms;
+    delete next.pin_duration;
     return next;
   });
   return { ...doc, rows: nextRows };
@@ -95,13 +120,16 @@ export function splitRowAtPlayheadMs(
   opts: MutationOptions = {},
 ): ProductionDoc {
   const { fps, minDurationMs } = resolveOpts(opts);
+  // Pull row start + duration from the same cascade table the
+  // Player sees so a split-at-playhead lands at the visual cursor
+  // position, not a literal-timecode-range offset that would drift
+  // from where the user is pointing.
+  const intervals = computeRowIntervals(doc);
   const idx = rowIndexAtMs(doc, playheadMsAbsolute);
   if (idx < 0) return doc;
   const row = doc.rows[idx];
-  // Recompute rowStart since rowIndexAtMs doesn't return it.
-  let rowStartMs = 0;
-  for (let i = 0; i < idx; i++) rowStartMs += rowDurationMs(doc.rows[i]);
-  const originalDuration = rowDurationMs(row);
+  const rowStartMs = intervals[idx].startMs;
+  const originalDuration = intervals[idx].durationMs;
   const localCutMs = snapMsToFrame(playheadMsAbsolute - rowStartMs, fps);
   if (localCutMs < minDurationMs) return doc;
   if (localCutMs > originalDuration - minDurationMs) return doc;

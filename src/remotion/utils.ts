@@ -2119,6 +2119,98 @@ export function resolveEffectiveStyleSlug(
   return doc.style_preset;
 }
 
+/** Shape returned by {@link computeProductionDocIntervals}. Mirrors
+ *  {@link ShotInterval} per row plus per-doc telemetry that both the
+ *  renderer's log line and the timeline editor's diagnostic panel
+ *  read from. */
+export interface ComputedProductionDocIntervals {
+  intervals: ShotInterval[];
+  /** How many rows had a `duration_override_ms` field of any value. */
+  overrideCount: number;
+  /** Honored = override was positive and finite, so it was used. */
+  overridesHonored: number;
+  /** Subset of `overridesHonored` whose value was below `minSceneMs`.
+   *  Before 2026-06-06 these were silently dropped — kept around so the
+   *  log line can surface "you would have been bitten by the old guard." */
+  overridesBelowFloor: number;
+  /** Override was a number but ≤ 0 / NaN / Infinity → fell back to natural. */
+  overridesIgnoredInvalid: number;
+  /** Effective minSceneMs after option / doc / default cascade + clamp. */
+  minSceneMs: number;
+  /** Effective totalMs after `doc.total_duration` parse + 60s fallback. */
+  totalMs: number;
+}
+
+/** Single source of truth for the per-row [startMs, durationMs] table
+ *  the entire pipeline consumes. The renderer's
+ *  {@link productionDocToVideoConfig} calls this to build its shot
+ *  windows; the timeline editor's `timeline-data-adapter` calls it so
+ *  the clip widths and ruler match what the Player actually plays.
+ *
+ *  Before 2026-06-06 the renderer and the timeline editor used
+ *  different math (renderer: gap-absorbing cascade against
+ *  `doc.total_duration`; timeline: literal `parseTimecodeDurationMs`
+ *  of "0:00-0:03"), so the two surfaces disagreed by however much
+ *  trailing buffer existed between the last timecode end and the doc's
+ *  declared total. Unifying through this helper eliminates the
+ *  discrepancy at source.
+ *
+ *  Pure function — no I/O, no Date.now() — safe to call from server
+ *  code, client React, or unit tests. */
+export function computeProductionDocIntervals(
+  doc: Pick<ProductionDoc, 'rows' | 'total_duration' | 'min_scene_ms'>,
+  opts: { fps?: number; minSceneMs?: number } = {},
+): ComputedProductionDocIntervals {
+  const fps = opts.fps ?? 30;
+  const totalMs = parseDurationToMs(doc.total_duration) || 60_000;
+  const timecodes = doc.rows.map((r) => r.timecode);
+  const minSceneMs = clampSceneTiming(
+    opts.minSceneMs ?? doc.min_scene_ms ?? DEFAULT_MIN_SCENE_MS,
+    MIN_SCENE_MS_BOUNDS,
+  );
+  const baseIntervals = calcShotIntervals(timecodes, totalMs, minSceneMs);
+  const oneFrameMs = 1000 / fps;
+  const overrideCount = doc.rows.reduce(
+    (acc, r) => acc + (typeof r.duration_override_ms === 'number' ? 1 : 0),
+    0,
+  );
+  let intervals = baseIntervals;
+  let overridesHonored = 0;
+  let overridesBelowFloor = 0;
+  let overridesIgnoredInvalid = 0;
+  if (overrideCount > 0) {
+    intervals = [];
+    let cursorMs = baseIntervals[0]?.startMs ?? 0;
+    for (let i = 0; i < doc.rows.length; i++) {
+      const row = doc.rows[i];
+      const naturalDuration = baseIntervals[i]?.durationMs ?? minSceneMs;
+      const override = row.duration_override_ms;
+      const hasValidOverride =
+        typeof override === 'number' && Number.isFinite(override) && override > 0;
+      let durationMs: number;
+      if (hasValidOverride) {
+        durationMs = Math.max(oneFrameMs, override);
+        overridesHonored++;
+        if (override < minSceneMs) overridesBelowFloor++;
+      } else {
+        if (typeof override === 'number') overridesIgnoredInvalid++;
+        durationMs = naturalDuration;
+      }
+      intervals.push({ startMs: cursorMs, durationMs });
+      cursorMs += durationMs;
+    }
+  }
+  return {
+    intervals,
+    overrideCount,
+    overridesHonored,
+    overridesBelowFloor,
+    overridesIgnoredInvalid,
+    minSceneMs,
+    totalMs,
+  };
+}
+
 export function productionDocToVideoConfig(
   doc: ProductionDoc,
   rowImages: (RowImageState | null)[],
@@ -2140,49 +2232,26 @@ export function productionDocToVideoConfig(
         };
   const animateScenes = opts.animateScenes !== false;
   const fps = 30;
-  const totalMs = parseDurationToMs(doc.total_duration) || 60_000;
-  const timecodes = doc.rows.map(r => r.timecode);
 
   // Scene-timing resolution: options (workspace default) > doc (per-
   // project override) > built-in default. Clamp to bounds so a stale
   // legacy value can never bypass the protection. See plan §Defaults.
-  const minSceneMs = clampSceneTiming(
-    opts.minSceneMs ?? doc.min_scene_ms ?? DEFAULT_MIN_SCENE_MS,
-    MIN_SCENE_MS_BOUNDS,
-  );
   const tailBufferMs = clampSceneTiming(
     opts.tailBufferMs ?? doc.tail_buffer_ms ?? DEFAULT_TAIL_BUFFER_MS,
     TAIL_BUFFER_MS_BOUNDS,
   );
 
-  const baseIntervals = calcShotIntervals(timecodes, totalMs, minSceneMs);
-
-  // Apply per-row editor duration overrides (added 2026-05-18 with the
-  // shot-graph editor). When a row carries `duration_override_ms` we
-  // replace its natural durationMs and rebuild every subsequent row's
-  // startMs cumulatively — same cascade rule calcShotIntervals uses.
-  // The first edited row anchors the cascade at its OWN startMs (kept
-  // from `baseIntervals`) so a resize of row N doesn't reflow earlier
-  // rows.
-  const overrideCount = doc.rows.reduce(
-    (acc, r) => acc + (typeof r.duration_override_ms === 'number' ? 1 : 0),
-    0,
-  );
-  let intervals = baseIntervals;
-  if (overrideCount > 0) {
-    intervals = [];
-    let cursorMs = baseIntervals[0]?.startMs ?? 0;
-    for (let i = 0; i < doc.rows.length; i++) {
-      const row = doc.rows[i];
-      const naturalDuration = baseIntervals[i]?.durationMs ?? minSceneMs;
-      const durationMs =
-        typeof row.duration_override_ms === 'number' && row.duration_override_ms >= minSceneMs
-          ? row.duration_override_ms
-          : naturalDuration;
-      intervals.push({ startMs: cursorMs, durationMs });
-      cursorMs += durationMs;
-    }
-  }
+  // Per-row [startMs, durationMs] table — shared with the timeline
+  // editor through `computeProductionDocIntervals` so the editor's
+  // ruler and clip widths can't lie about what the renderer plays.
+  const {
+    intervals,
+    overrideCount,
+    overridesHonored,
+    overridesBelowFloor,
+    overridesIgnoredInvalid,
+    minSceneMs,
+  } = computeProductionDocIntervals(doc, { fps, minSceneMs: opts.minSceneMs });
 
   if (typeof console !== 'undefined' && console.info) {
     console.info('[render-timing] config built', {
@@ -2191,6 +2260,9 @@ export function productionDocToVideoConfig(
       minSceneMs,
       tailBufferMs,
       overrideCount,
+      overridesHonored,
+      overridesBelowFloor,
+      overridesIgnoredInvalid,
       // First 5 shots' cascaded intervals (post-override).
       // realignVideoConfig will replace these for aligned rows when
       // alignment data is available.
@@ -2715,7 +2787,7 @@ interface SceneTimingTrace {
  */
 function applySceneTimingRules(
   rows: AlignedRow[],
-  opts: { minSceneMs: number; tailBufferMs: number },
+  opts: { minSceneMs: number; tailBufferMs: number; fallbackTotalMs?: number },
 ): { rows: AlignedRow[]; traces: SceneTimingTrace[] } {
   const out: AlignedRow[] = [];
   const traces: SceneTimingTrace[] = [];
@@ -2733,9 +2805,24 @@ function applySceneTimingRules(
     // Rule 2: tail buffer, capped at the gap before the next row's
     // natural narration onset. Only applies to aligned rows — estimated
     // rows don't have a precise "narration end" to pad past.
+    //
+    // Last-row cap: alignRowsToWords already stretches the last aligned
+    // row's endMs to `fallbackTotalMs` so tail outro silence is covered.
+    // Adding a full `tailBufferMs` on top of that would push the shot
+    // past the audio's actual length (visible as the last shot ending
+    // 400ms after the voiceover stops). When `fallbackTotalMs` is
+    // supplied we cap the last row's buffer to the remaining slack
+    // inside it instead. Fix 2026-06-06.
     let appliedBuffer = false;
     if (row.source === 'aligned' && opts.tailBufferMs > 0) {
-      const cap = next ? Math.max(0, next.startMs - endMs) : opts.tailBufferMs;
+      let cap: number;
+      if (next) {
+        cap = Math.max(0, next.startMs - endMs);
+      } else if (typeof opts.fallbackTotalMs === 'number') {
+        cap = Math.max(0, opts.fallbackTotalMs - endMs);
+      } else {
+        cap = opts.tailBufferMs;
+      }
       const buffer = Math.min(opts.tailBufferMs, cap);
       if (buffer > 0) {
         endMs += buffer;
@@ -2849,6 +2936,7 @@ export function realignVideoConfig(
   const { rows: alignedRows, traces } = applySceneTimingRules(rawAligned, {
     minSceneMs,
     tailBufferMs,
+    fallbackTotalMs,
   });
 
   if (typeof console !== 'undefined' && console.info) {

@@ -33,11 +33,15 @@ function row(overrides: Partial<ProductionRow> = {}): ProductionRow {
   } as ProductionRow;
 }
 
-function makeDoc(rows: ProductionRow[]): ProductionDoc {
+function makeDoc(rows: ProductionRow[], totalDuration = '0:30'): ProductionDoc {
+  // Cascade math now flows through `computeProductionDocIntervals`, so
+  // the last row's effective duration extends to `total_duration`. Tests
+  // that exercise a single 3-second row need total_duration = '0:03' so
+  // the cascade gives 3000ms instead of stretching to 30000ms.
   return {
     title: 'Test',
     niche: 'test',
-    total_duration: '0:30',
+    total_duration: totalDuration,
     total_words: 50,
     speaking_pace_wpm: 100,
     rows,
@@ -75,7 +79,11 @@ describe('trimRowDuration', () => {
   });
 
   it('returns the SAME doc object when the trim is a no-op (object identity)', () => {
-    const doc = makeDoc([row({ duration_override_ms: 3000 })]);
+    // No-op now requires BOTH the matching duration AND pin_duration: true
+    // already set — `trimRowDuration` always promotes a row to pinned, so
+    // a previously-unpinned row trim isn't a no-op even with the same
+    // duration. Mirrors the legacy editor's RESIZE_SHOT semantics.
+    const doc = makeDoc([row({ duration_override_ms: 3000, pin_duration: true })]);
     const out = trimRowDuration(doc, 0, 3000, { fps: 30 });
     expect(out).toBe(doc);
   });
@@ -107,6 +115,31 @@ describe('trimRowDuration', () => {
     // 16.6ms at 60fps = 0.996 → 1 frame → 16.667ms.
     expect(trimRowDuration(doc, 0, 16.6, { fps: 60 }).rows[0].duration_override_ms).toBeCloseTo(16.667, 2);
   });
+
+  it('sets pin_duration: true so a subsequent alignment pass does not erase the trim', () => {
+    // Mirrors the legacy editor's RESIZE_SHOT behavior. Without
+    // pin_duration the production render's `realignVideoConfig`
+    // would re-time this row from the aligner's word windows and
+    // silently undo the user's drag.
+    const doc = makeDoc([row({ duration_override_ms: 3000 }), row()]);
+    expect(doc.rows[0].pin_duration).toBeUndefined();
+    const out = trimRowDuration(doc, 0, 2500, { fps: 30 });
+    expect(out.rows[0].duration_override_ms).toBe(2500);
+    expect(out.rows[0].pin_duration).toBe(true);
+    expect(out.rows[1].pin_duration).toBeUndefined();
+  });
+
+  it('promotes a previously unpinned row even when the duration value matches', () => {
+    // No-op detection used to short-circuit on `duration_override_ms ===
+    // snapped` alone — leaving an unpinned row unpinned even after a
+    // deliberate user trim. Promoting the pin is itself the meaningful
+    // change here.
+    const doc = makeDoc([row({ duration_override_ms: 3000 /* pin_duration: undefined */ })]);
+    const out = trimRowDuration(doc, 0, 3000, { fps: 30 });
+    expect(out).not.toBe(doc);
+    expect(out.rows[0].duration_override_ms).toBe(3000);
+    expect(out.rows[0].pin_duration).toBe(true);
+  });
 });
 
 describe('resetRowDuration', () => {
@@ -125,11 +158,31 @@ describe('resetRowDuration', () => {
     const doc = makeDoc([row({ duration_override_ms: 8000 })]);
     expect(resetRowDuration(doc, 99)).toBe(doc);
   });
+
+  it('clears pin_duration alongside duration_override_ms', () => {
+    // A pinned-and-overridden row gets BOTH fields stripped so a
+    // subsequent alignment pass is allowed to retime it. Without this,
+    // "Reset duration" left the row stuck on alignment-immune cascade
+    // values.
+    const doc = makeDoc([row({ duration_override_ms: 8000, pin_duration: true })]);
+    const out = resetRowDuration(doc, 0);
+    expect(out.rows[0].duration_override_ms).toBeUndefined();
+    expect(out.rows[0].pin_duration).toBeUndefined();
+  });
+
+  it('still clears pin_duration when only pin_duration is set (no override value)', () => {
+    const doc = makeDoc([row({ pin_duration: true })]);
+    const out = resetRowDuration(doc, 0);
+    expect(out).not.toBe(doc);
+    expect(out.rows[0].pin_duration).toBeUndefined();
+  });
 });
 
 describe('splitRowAtPlayheadMs', () => {
   it('splits a 3-second row exactly in half', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    // total_duration matches the row's stated end so the cascade
+    // duration equals the timecode-range duration.
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })], '0:03');
     const out = splitRowAtPlayheadMs(doc, 1500, { fps: 30 });
     expect(out.rows).toHaveLength(2);
     expect(out.rows[0].duration_override_ms).toBe(1500);
@@ -139,21 +192,21 @@ describe('splitRowAtPlayheadMs', () => {
   });
 
   it('preserves total duration after split', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:05' })]);
+    const doc = makeDoc([row({ timecode: '0:00-0:05' })], '0:05');
     const out = splitRowAtPlayheadMs(doc, 1666, { fps: 30 });
     const total = computeRowIntervals(out).reduce((acc, iv) => acc + iv.durationMs, 0);
     expect(total).toBe(5000);
   });
 
   it('snaps the cut point to the nearest frame at 30 fps', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })], '0:03');
     // 1234ms cut at 30fps: 1234ms × 30/1000 = 37.02 frames → 37 → 1233.33ms
     const out = splitRowAtPlayheadMs(doc, 1234, { fps: 30 });
     expect(out.rows[0].duration_override_ms).toBeCloseTo(1233.33, 1);
   });
 
   it('clones script_text + ai_image_prompt into both halves', () => {
-    const doc = makeDoc([row({ script_text: 'hello world', ai_image_prompt: 'pretty image' })]);
+    const doc = makeDoc([row({ script_text: 'hello world', ai_image_prompt: 'pretty image' })], '0:03');
     const out = splitRowAtPlayheadMs(doc, 1500, { fps: 30 });
     expect(out.rows[0].script_text).toBe('hello world');
     expect(out.rows[1].script_text).toBe('hello world');
@@ -162,10 +215,13 @@ describe('splitRowAtPlayheadMs', () => {
   });
 
   it('splits inside the second row, not the first', () => {
-    const doc = makeDoc([
-      row({ timecode: '0:00-0:03', script_text: 'first' }),
-      row({ timecode: '0:03-0:08', script_text: 'second' }),
-    ]);
+    const doc = makeDoc(
+      [
+        row({ timecode: '0:00-0:03', script_text: 'first' }),
+        row({ timecode: '0:03-0:08', script_text: 'second' }),
+      ],
+      '0:08',
+    );
     // Playhead at 5000ms = 2000ms into row 2.
     const out = splitRowAtPlayheadMs(doc, 5000, { fps: 30 });
     expect(out.rows).toHaveLength(3);
@@ -177,27 +233,27 @@ describe('splitRowAtPlayheadMs', () => {
   });
 
   it('refuses to split within one frame of the start edge', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })], '0:03');
     expect(splitRowAtPlayheadMs(doc, 5, { fps: 30 })).toBe(doc); // <1 frame
   });
 
   it('refuses to split within one frame of the end edge', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })], '0:03');
     expect(splitRowAtPlayheadMs(doc, 2995, { fps: 30 })).toBe(doc); // within 1 frame of end
   });
 
   it('returns the same doc when playhead is past the last row', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:03' })]);
+    const doc = makeDoc([row({ timecode: '0:00-0:03' })], '0:03');
     expect(splitRowAtPlayheadMs(doc, 10_000, { fps: 30 })).toBe(doc);
   });
 
   it('returns the same doc when playhead is before the first row', () => {
-    const doc = makeDoc([row()]);
+    const doc = makeDoc([row()], '0:03');
     expect(splitRowAtPlayheadMs(doc, -100, { fps: 30 })).toBe(doc);
   });
 
   it('respects a custom minDurationMs', () => {
-    const doc = makeDoc([row({ timecode: '0:00-0:05' })]);
+    const doc = makeDoc([row({ timecode: '0:00-0:05' })], '0:05');
     // Cut at 800ms with min=1000ms should refuse.
     expect(splitRowAtPlayheadMs(doc, 800, { fps: 30, minDurationMs: 1000 })).toBe(doc);
     // Cut at 1500ms with min=1000ms should succeed.
