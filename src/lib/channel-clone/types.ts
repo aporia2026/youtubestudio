@@ -202,6 +202,34 @@ export interface ChannelCloneJobState {
   /** The audit-fix loop's final accepted script. Only set once the
    *  loop converged or the user accepted a sub-threshold draft. */
   approvedScript?: { text: string; wordCount: number; finalScore: number };
+  /** Style preset id chosen for rowification (either user-picked or
+   *  auto-matched from the visual profile). Stored as a plain string
+   *  so the value tolerates the registry growing — the rowify runner
+   *  guards with isCandidateStylePresetId on read. */
+  chosenStylePresetId?: string;
+  /** Per-row breakdown produced by the rowify stage. This is a
+   *  channel-clone-local shape, not the full ProductionRow union —
+   *  the existing image-gen pipeline reads these fields directly and
+   *  fills in image_url, image_saliency, etc. after generation. */
+  productionRows?: {
+    /** "0:00-0:03" — covers ~3-5s of the script. */
+    timecode: string;
+    /** The narration excerpt for this row. */
+    script_text: string;
+    /** What category of visual this row uses. */
+    visual_type: 'ai_image' | 'stock' | 'overlay';
+    visual_description: string;
+    /** Empty string when visual_type !== 'stock'. */
+    stock_search_terms: string;
+    /** Full standalone image prompt — per V2.0 STATE 14's
+     *  STANDALONE RULE: never references previous prompts. */
+    ai_image_prompt: string;
+    /** On-screen text overlay (yellow bold word per the V2.0
+     *  visual style). Empty string when none. */
+    on_screen_text: string;
+    /** Free-form notes — usually the LLM explaining its rationale. */
+    notes: string;
+  }[];
   publishPack?: {
     titles: string[];
     description: string;

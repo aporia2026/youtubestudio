@@ -25,6 +25,7 @@ import type {
   ChannelCloneJobStatus,
   ChannelCloneVisualProfile,
 } from '@/lib/channel-clone/types';
+import { CHANNEL_CLONE_CANDIDATE_PRESETS } from '@/lib/channel-clone/match-style-preset';
 
 interface JobView {
   id: string;
@@ -59,10 +60,11 @@ export function ChannelClonePanel() {
   const [chosenHookIndex, setChosenHookIndex] = useState<number | null>(null);
   const [threshold, setThreshold] = useState<80 | 90 | 95 | 100>(90);
   const [maxIterations, setMaxIterations] = useState<1 | 3 | 5>(3);
+  const [stylePresetIdHint, setStylePresetIdHint] = useState<string>('auto');
   const [job, setJob] = useState<JobView | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | 'analyze' | 'topics' | 'hooks' | 'script'>(null);
+  const [busy, setBusy] = useState<null | 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify'>(null);
   const pollHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -126,7 +128,7 @@ export function ChannelClonePanel() {
 
   const runStage = useCallback(
     async (
-      stage: 'analyze' | 'topics' | 'hooks' | 'script',
+      stage: 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify',
       body: Record<string, unknown>,
     ) => {
       if (!job) return;
@@ -160,6 +162,7 @@ export function ChannelClonePanel() {
   const hasTopics = !!state?.topics && state.topics.length > 0;
   const hasHooks = !!state?.hooks && state.hooks.length > 0;
   const hasApprovedScript = !!state?.approvedScript;
+  const hasRows = !!state?.productionRows && state.productionRows.length > 0;
 
   return (
     <div className="space-y-6 rounded-lg border border-neutral-800 bg-neutral-950/40 p-5 text-sm">
@@ -296,6 +299,44 @@ export function ChannelClonePanel() {
           )}
           {state?.approvedScript && (
             <ApprovedScriptView approvedScript={state.approvedScript} />
+          )}
+
+          {/* ── Stage 5: Rowify ─────────────────────────────────── */}
+          {hasApprovedScript && !hasRows && (
+            <div className="space-y-2 border-t border-neutral-800 pt-3">
+              <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Production rows</h4>
+              <p className="text-xs text-neutral-500">
+                Convert the approved script into scene-by-scene image prompts matched to a style preset. The output drops into the existing image-gen pipeline as-is.
+              </p>
+              <label className="block">
+                <span className="text-xs text-neutral-400">Style preset</span>
+                <select
+                  value={stylePresetIdHint}
+                  onChange={(e) => setStylePresetIdHint(e.target.value)}
+                  className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-neutral-100"
+                  disabled={busy === 'rowify'}
+                >
+                  <option value="auto">Auto-match from visual profile</option>
+                  {CHANNEL_CLONE_CANDIDATE_PRESETS.map((id) => (
+                    <option key={id} value={id}>{id}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() => runStage('rowify', stylePresetIdHint === 'auto' ? {} : { stylePresetId: stylePresetIdHint })}
+                disabled={busy === 'rowify'}
+                className="w-full rounded bg-neutral-200 px-4 py-2 font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+              >
+                {busy === 'rowify' ? 'Generating production rows…' : 'Generate production rows'}
+              </button>
+            </div>
+          )}
+          {hasRows && state?.productionRows && (
+            <RowifyView
+              rows={state.productionRows}
+              presetId={state.chosenStylePresetId ?? 'unknown'}
+            />
           )}
         </section>
       )}
@@ -523,6 +564,52 @@ function ApprovedScriptView({ approvedScript }: { approvedScript: NonNullable<Ch
       <pre className="whitespace-pre-wrap rounded border border-neutral-800 bg-neutral-950 p-3 text-xs leading-relaxed text-neutral-200">
         {approvedScript.text}
       </pre>
+    </div>
+  );
+}
+
+function RowifyView({
+  rows, presetId,
+}: {
+  rows: NonNullable<ChannelCloneJobState['productionRows']>;
+  presetId: string;
+}) {
+  return (
+    <div className="space-y-2 border-t border-neutral-800 pt-3">
+      <div className="flex items-baseline justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+          Production rows ({rows.length})
+        </h4>
+        <span className="font-mono text-[10px] text-neutral-500">style: {presetId}</span>
+      </div>
+      <ul className="space-y-2">
+        {rows.map((r, i) => (
+          <li key={i} className="space-y-1 rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+            <div className="flex items-baseline justify-between">
+              <span className="font-mono text-[10px] text-neutral-500">{r.timecode}</span>
+              <span className={`inline-flex items-center rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide ${
+                r.visual_type === 'ai_image' ? 'border-violet-800 bg-violet-950/40 text-violet-300'
+                : r.visual_type === 'stock' ? 'border-amber-800 bg-amber-950/40 text-amber-300'
+                : 'border-emerald-800 bg-emerald-950/40 text-emerald-300'
+              }`}>
+                {r.visual_type}
+              </span>
+            </div>
+            <p className="text-neutral-200">{r.script_text}</p>
+            <p className="text-neutral-400">{r.visual_description}</p>
+            <details>
+              <summary className="cursor-pointer text-[10px] text-neutral-500 hover:text-neutral-300">image prompt</summary>
+              <p className="mt-1 whitespace-pre-wrap text-[10px] text-neutral-400">{r.ai_image_prompt}</p>
+            </details>
+            {r.on_screen_text && (
+              <p className="text-[10px] text-neutral-500">on-screen: <span className="text-amber-300">{r.on_screen_text}</span></p>
+            )}
+            {r.notes && (
+              <p className="text-[10px] italic text-neutral-500">{r.notes}</p>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
