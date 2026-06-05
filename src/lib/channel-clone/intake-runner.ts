@@ -27,8 +27,10 @@ import { logger } from '@/lib/logger';
 import { cleanCaptions } from './clean-captions';
 import { extractFrames } from './ffmpeg';
 import {
+  isChannelCloneJobCancelled,
   mergeChannelCloneJobState,
   setChannelCloneJobStatus,
+  setChannelCloneJobStatusUnlessCancelled,
 } from './job-store';
 import { makeJobLogger, type JobLogger } from './job-logger';
 import { createIntakeSandbox, destroyIntakeSandbox, type IntakeSandbox } from './sandbox-runtime';
@@ -80,6 +82,18 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     const sandboxJobDir = `${workDir}/intake-${jobId}`;
     await sandbox.mkDir(sandboxJobDir);
 
+    // Cancellation checkpoint helper — polls the DB once. Cheap (a
+    // single index lookup on a small JSONB field). The runner calls
+    // this between every major step so the user's cancel button
+    // takes effect within a few seconds rather than waiting out the
+    // current yt-dlp / ffmpeg invocation.
+    const isCancelled = async (): Promise<boolean> => {
+      const cancelled = await isChannelCloneJobCancelled(jobId, workspaceId).catch(() => false);
+      if (cancelled) log.warn('intake', 'cancellation requested — bailing out');
+      return cancelled;
+    };
+    if (await isCancelled()) return;
+
     // 1. Resolve to a channel URL when the user pasted a video URL.
     let channelUrl = canonicalUrl;
     if (kind === 'video') {
@@ -103,6 +117,8 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
       }
     }
 
+    if (await isCancelled()) return;
+
     // 2. List the latest sampleVideoCount long-form videos.
     let videoMetas;
     try {
@@ -121,6 +137,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     let sourceChannelHandle: string | null = null;
     let sourceChannelName: string | null = null;
     for (const [i, meta] of videoMetas.entries()) {
+      if (await isCancelled()) return;
       log.info('intake', `processing video ${i + 1}/${videoMetas.length}`, { videoId: meta.videoId, title: meta.title });
       try {
         const dl = await downloadVideo(sandbox, meta.videoUrl, sandboxJobDir, log);
@@ -202,6 +219,8 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
       return failJob(jobId, workspaceId, 'All sample videos failed during download/frame-extract.');
     }
 
+    if (await isCancelled()) return;
+
     // Bundle and persist.
     const intakeResult: ChannelCloneIntakeResult = {
       sourceChannelUrl: channelUrl,
@@ -216,7 +235,15 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     // snapshot of state_jsonb. The intake field is fully replaced;
     // everything else (progressLog, future stages) is preserved.
     await mergeChannelCloneJobState(jobId, workspaceId, { intake: intakeResult });
-    await setChannelCloneJobStatus(jobId, workspaceId, 'intake_complete');
+    // Conditional flip: if a cancellation landed in the closing
+    // milliseconds (after the last isCancelled() check but before
+    // this write), the SQL guards the status update so the user's
+    // intent wins and we stay on 'cancelled'.
+    const flipped = await setChannelCloneJobStatusUnlessCancelled(jobId, workspaceId, 'intake_complete');
+    if (!flipped) {
+      log.warn('intake', 'cancellation landed during final write — staying on cancelled');
+      return;
+    }
     log.info('intake', 'done', {
       sampleVideoCount: sampleVideos.length,
       totalFrames: sampleVideos.reduce((acc, v) => acc + v.frameCount, 0),

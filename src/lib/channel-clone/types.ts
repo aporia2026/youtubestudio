@@ -168,6 +168,9 @@ export type ChannelCloneJobStatus =
   | 'handoff_complete'
   // Terminal:
   | 'archived'
+  // User-cancelled mid-flight. The runner checks `cancelRequested`
+  // between every step and bails into this state when it sees one.
+  | 'cancelled'
   // Failure (each carries a `lastError` on the job row):
   | 'intake_failed'
   | 'analyze_failed'
@@ -204,6 +207,13 @@ export interface ChannelCloneJobState {
    *  Unbounded for now — a 5-video intake produces ~30 entries; even
    *  a chatty full pipeline tops out around 200. */
   progressLog?: ProgressLogEntry[];
+  /** Set to `true` by POST /api/channel-clone/jobs/[id]/cancel. The
+   *  active stage's runner polls this between steps and, when it
+   *  sees true, logs a cancel line, transitions the status to
+   *  `cancelled`, and bails — the finally block tears down any
+   *  sandbox in flight. Stays true after cancellation so a refresh
+   *  doesn't accidentally resume work. */
+  cancelRequested?: boolean;
   analysis?: ChannelCloneAnalysis;
   visualProfile?: ChannelCloneVisualProfile;
   /** All currently-known topics (from the topic-generation stage). */

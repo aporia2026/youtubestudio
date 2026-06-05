@@ -282,6 +282,12 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
           <div className="flex items-center gap-2">
             <StatusPill status={job.status} />
             <span className="text-xs text-neutral-400">updated {new Date(job.updatedAt).toLocaleTimeString()}</span>
+            {ACTIVE_STATUSES.includes(job.status) && (
+              <CancelButton
+                jobId={job.id}
+                onCancelled={() => { void pollOnce(job.id); }}
+              />
+            )}
           </div>
           {job.lastError && (
             <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{job.lastError}</p>
@@ -635,6 +641,48 @@ function ProgressLogRow({ entry }: { entry: ProgressLogEntry }) {
         {dataString && <span className="ml-2 text-neutral-500">{dataString}</span>}
       </span>
     </div>
+  );
+}
+
+/** Per-job cancel control. POSTs to /jobs/[id]/cancel and reflects
+ *  in-flight state so the user can't double-click. The endpoint
+ *  flips status to 'cancelled' atomically; the parent's poll loop
+ *  picks up the new status on its next tick. */
+function CancelButton({ jobId, onCancelled }: { jobId: string; onCancelled: () => void }) {
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleClick = useCallback(async () => {
+    if (cancelling) return;
+    if (!window.confirm('Stop this run? Work done so far will be preserved on the job.')) return;
+    setCancelling(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/channel-clone/jobs/${jobId}/cancel`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data?.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      onCancelled();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCancelling(false);
+    }
+  }, [cancelling, jobId, onCancelled]);
+  return (
+    <span className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => void handleClick()}
+        disabled={cancelling}
+        title="Stop this run. Work done so far is kept on the job."
+        className="rounded border border-red-900 bg-red-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-red-300 hover:border-red-700 hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {cancelling ? 'Stopping…' : 'Stop'}
+      </button>
+      {error && <span className="text-[10px] text-red-300">{error}</span>}
+    </span>
   );
 }
 

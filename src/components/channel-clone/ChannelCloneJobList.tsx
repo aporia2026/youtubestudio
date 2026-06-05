@@ -12,8 +12,20 @@
  */
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ChannelCloneJobStatus } from '@/lib/channel-clone/types';
+
+const ACTIVE_STATUSES: ChannelCloneJobStatus[] = [
+  'intake_pending',
+  'intake_running',
+  'analyze_running',
+  'topics_running',
+  'hooks_running',
+  'script_running',
+  'rowify_running',
+  'publish_pack_running',
+  'handoff_running',
+];
 
 interface JobListItem {
   id: string;
@@ -41,20 +53,21 @@ export function ChannelCloneJobList() {
   const [jobs, setJobs] = useState<JobListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchJobs = useCallback(() => {
     // eslint-disable-next-line no-restricted-syntax -- GET, read
-    fetch('/api/channel-clone/jobs')
+    return fetch('/api/channel-clone/jobs')
       .then((r) => r.json())
       .then((data) => {
-        if (cancelled) return;
         setJobs(Array.isArray(data?.jobs) ? data.jobs : []);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        setError(err instanceof Error ? err.message : String(err));
       });
-    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    void fetchJobs();
+  }, [fetchJobs]);
 
   if (error) {
     return <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{error}</p>;
@@ -67,12 +80,13 @@ export function ChannelCloneJobList() {
   }
   return (
     <ul className="space-y-2">
-      {jobs.map((j) => <JobCard key={j.id} job={j} />)}
+      {jobs.map((j) => <JobCard key={j.id} job={j} onCancelled={() => void fetchJobs()} />)}
     </ul>
   );
 }
 
-function JobCard({ job }: { job: JobListItem }) {
+function JobCard({ job, onCancelled }: { job: JobListItem; onCancelled: () => void }) {
+  const isActive = ACTIVE_STATUSES.includes(job.status);
   return (
     <li>
       <Link
@@ -84,7 +98,10 @@ function JobCard({ job }: { job: JobListItem }) {
             <span className="font-medium text-neutral-200">{job.summary.sourceChannelName ?? job.sourceChannelUrl}</span>
             <span className="ml-2 truncate text-[10px] text-neutral-500">{job.sourceCanonicalUrl}</span>
           </div>
-          <StatusPill status={job.status} />
+          <div className="flex shrink-0 items-center gap-2">
+            {isActive && <CancelButton jobId={job.id} onCancelled={onCancelled} />}
+            <StatusPill status={job.status} />
+          </div>
         </div>
         <ProgressDots summary={job.summary} />
         <div className="flex items-baseline justify-between text-[10px] text-neutral-500">
@@ -100,6 +117,51 @@ function JobCard({ job }: { job: JobListItem }) {
         )}
       </Link>
     </li>
+  );
+}
+
+/** Cancel control on a recent-runs card. Lives inside the card's
+ *  <Link> wrapper, so the click handler must stopPropagation +
+ *  preventDefault to keep the cancel from doubling as a navigation
+ *  to /channel-clone/[id]. */
+function CancelButton({ jobId, onCancelled }: { jobId: string; onCancelled: () => void }) {
+  const [cancelling, setCancelling] = useState(false);
+  const handleClick = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (cancelling) return;
+      if (!window.confirm('Stop this run? Work done so far will be preserved on the job.')) return;
+      setCancelling(true);
+      try {
+        const res = await fetch(`/api/channel-clone/jobs/${jobId}/cancel`, { method: 'POST' });
+        if (!res.ok) {
+          // Surface as alert rather than a per-card error state —
+          // these cards are dense and an inline string would crowd
+          // the layout; the alert text is dismissable.
+          const data = await res.json().catch(() => ({}));
+          alert(data?.error ?? `Could not cancel (${res.status})`);
+          return;
+        }
+        onCancelled();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCancelling(false);
+      }
+    },
+    [cancelling, jobId, onCancelled],
+  );
+  return (
+    <button
+      type="button"
+      onClick={(e) => void handleClick(e)}
+      disabled={cancelling}
+      title="Stop this run. Work done so far is kept on the job."
+      className="rounded border border-red-900 bg-red-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-red-300 hover:border-red-700 hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {cancelling ? 'Stopping…' : 'Stop'}
+    </button>
   );
 }
 

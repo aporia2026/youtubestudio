@@ -135,6 +135,83 @@ export async function mergeChannelCloneJobState(
   return (rowCount ?? 0) > 0;
 }
 
+/** Mark a job for cancellation. Atomic in SQL: sets
+ *  `state_jsonb.cancelRequested = true` AND, when the current status
+ *  is one of the `*_running` / `intake_pending` states, transitions
+ *  the row's `status` column to `'cancelled'` so the UI's status pill
+ *  flips immediately. The runner's between-step poll observes the
+ *  cancelRequested flag and bails into its finally block (which stops
+ *  the sandbox / refunds CPU). Returns true on a hit, false when the
+ *  job doesn't exist in this workspace OR was already terminal. */
+export async function requestChannelCloneJobCancel(
+  jobId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const { rowCount } = await sql.query(
+    `
+    UPDATE channel_clone_jobs
+       SET state_jsonb = jsonb_set(state_jsonb, '{cancelRequested}', 'true'::jsonb),
+           status = 'cancelled',
+           updated_at = now()
+     WHERE id = $1::uuid
+       AND workspace_id = $2::uuid
+       AND status IN (
+         'intake_pending', 'intake_running',
+         'analyze_running', 'topics_running', 'hooks_running',
+         'script_running', 'rowify_running',
+         'publish_pack_running', 'handoff_running'
+       )
+    `,
+    [jobId, workspaceId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Variant of `setChannelCloneJobStatus` that refuses to update when
+ *  `state_jsonb.cancelRequested === true`. The runner uses this for
+ *  its final "stage complete" write so a cancellation that landed
+ *  during the closing milliseconds of work doesn't get clobbered by
+ *  a successful-status write. Returns true iff the update went
+ *  through (i.e. the row existed AND was not cancelled). */
+export async function setChannelCloneJobStatusUnlessCancelled(
+  jobId: string,
+  workspaceId: string,
+  status: ChannelCloneJobStatus,
+  opts: { lastError?: string | null } = {},
+): Promise<boolean> {
+  const { rowCount } = await sql.query(
+    `
+    UPDATE channel_clone_jobs
+       SET status = $1,
+           last_error = $2,
+           updated_at = now()
+     WHERE id = $3::uuid AND workspace_id = $4::uuid
+       AND COALESCE((state_jsonb->>'cancelRequested')::boolean, false) = false
+    `,
+    [status, opts.lastError ?? null, jobId, workspaceId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Tight read of `state_jsonb.cancelRequested` for the runner to
+ *  poll between steps. Returns false on a missing row OR missing
+ *  field (the default — most jobs never get cancelled). */
+export async function isChannelCloneJobCancelled(
+  jobId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const { rows } = await sql.query<{ cancelled: boolean }>(
+    `
+    SELECT COALESCE((state_jsonb->>'cancelRequested')::boolean, false) AS cancelled
+      FROM channel_clone_jobs
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+     LIMIT 1
+    `,
+    [jobId, workspaceId],
+  );
+  return rows[0]?.cancelled === true;
+}
+
 /** Append one progress-log entry to `state_jsonb.progressLog`.
  *  Atomic at the SQL level: reads the current array, concats the
  *  new entry, writes back — so concurrent appenders won't lose
