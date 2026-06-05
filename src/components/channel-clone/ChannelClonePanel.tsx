@@ -52,7 +52,26 @@ const ACTIVE_STATUSES: ChannelCloneJobStatus[] = [
 
 const POLL_INTERVAL_MS = 4000;
 
-export function ChannelClonePanel() {
+export interface ChannelClonePanelProps {
+  /** Resume an existing job by id (e.g. when mounted on
+   *  /channel-clone/[id]). When omitted, the panel renders the
+   *  empty new-job form. */
+  initialJobId?: string;
+}
+
+interface CostSummary {
+  jobId: string;
+  perStage: { featureArea: string; totalUsd: number; calls: number; inputTokens: number; outputTokens: number }[];
+  totals: { totalUsd: number; calls: number; inputTokens: number; outputTokens: number };
+}
+
+interface PipelinePresetSummary {
+  id: string;
+  name: string;
+  niche: string | null;
+}
+
+export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {}) {
   const [url, setUrl] = useState('');
   const [sampleVideoCount, setSampleVideoCount] = useState<3 | 5 | 8>(5);
   const [frameIntervalSec, setFrameIntervalSec] = useState<5 | 10 | 15>(10);
@@ -62,6 +81,9 @@ export function ChannelClonePanel() {
   const [threshold, setThreshold] = useState<80 | 90 | 95 | 100>(90);
   const [maxIterations, setMaxIterations] = useState<1 | 3 | 5>(3);
   const [stylePresetIdHint, setStylePresetIdHint] = useState<string>('auto');
+  const [handoffPresetId, setHandoffPresetId] = useState<string>('auto');
+  const [pipelinePresets, setPipelinePresets] = useState<PipelinePresetSummary[]>([]);
+  const [cost, setCost] = useState<CostSummary | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -97,6 +119,54 @@ export function ChannelClonePanel() {
   }, [stopPolling]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  // Resume an existing job when initialJobId is supplied. Single
+  // poll kickstart — the recursive setTimeout inside pollOnce keeps
+  // going while the job is in an active status.
+  useEffect(() => {
+    if (initialJobId) {
+      void pollOnce(initialJobId);
+    }
+  }, [initialJobId, pollOnce]);
+
+  // Load cost summary whenever we have a job. Re-pulls on every
+  // status change so the UI reflects fresh spend immediately after
+  // a stage completes.
+  useEffect(() => {
+    if (!job) {
+      setCost(null);
+      return;
+    }
+    let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
+    fetch(`/api/channel-clone/jobs/${job.id}/cost`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (!cancelled && data) setCost(data as CostSummary); })
+      .catch(() => { /* non-fatal — cost is informational */ });
+    return () => { cancelled = true; };
+  }, [job?.id, job?.status]);
+
+  // Load this workspace's pipeline_presets once. Used by the
+  // pre-handoff preset picker so the user can pin a specific preset
+  // (defaults to "auto" which lets the handoff runner pick the
+  // workspace's first).
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line no-restricted-syntax -- GET, read
+    fetch(`/api/auto-pipeline/presets`)
+      .then((r) => (r.ok ? r.json() : { presets: [] }))
+      .then((data) => {
+        if (cancelled) return;
+        const arr = Array.isArray(data?.presets) ? data.presets : [];
+        setPipelinePresets(arr.map((p: { id: string; name: string; niche?: string | null }) => ({
+          id: p.id,
+          name: p.name,
+          niche: p.niche ?? null,
+        })));
+      })
+      .catch(() => { /* non-fatal */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -215,6 +285,7 @@ export function ChannelClonePanel() {
           {job.lastError && (
             <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{job.lastError}</p>
           )}
+          {cost && cost.totals.calls > 0 && <CostSummaryView cost={cost} />}
           {hasIntake && state?.intake && (
             <div className="space-y-1 text-xs text-neutral-300">
               <p>
@@ -346,12 +417,29 @@ export function ChannelClonePanel() {
             <div className="space-y-2 border-t border-neutral-800 pt-3">
               <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Send to production pipeline</h4>
               <p className="text-xs text-neutral-500">
-                Promote the rowified doc into the existing auto-pipeline. Creates a new project, script, and pipeline_run_videos row at <code className="text-neutral-300">generating_production_doc_images</code> so the cron picks it up and runs image generation. Requires at least one pipeline_preset in this workspace.
+                Promote the rowified doc into the existing auto-pipeline. Creates a new project, script, and pipeline_run_videos row at <code className="text-neutral-300">generating_production_doc_images</code> so the cron picks it up and runs image generation.
               </p>
+              <label className="block">
+                <span className="text-xs text-neutral-400">Pipeline preset</span>
+                <select
+                  value={handoffPresetId}
+                  onChange={(e) => setHandoffPresetId(e.target.value)}
+                  className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-neutral-100"
+                  disabled={busy === 'handoff' || pipelinePresets.length === 0}
+                >
+                  <option value="auto">Auto — workspace's first preset</option>
+                  {pipelinePresets.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}{p.niche ? ` · ${p.niche}` : ''}</option>
+                  ))}
+                </select>
+                {pipelinePresets.length === 0 && (
+                  <span className="mt-1 block text-[10px] text-amber-400">No presets found — create one in Auto-pipeline → Presets first.</span>
+                )}
+              </label>
               <button
                 type="button"
-                onClick={() => runStage('handoff', {})}
-                disabled={busy === 'handoff'}
+                onClick={() => runStage('handoff', handoffPresetId === 'auto' ? {} : { presetId: handoffPresetId })}
+                disabled={busy === 'handoff' || pipelinePresets.length === 0}
                 className="w-full rounded bg-neutral-200 px-4 py-2 font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
               >
                 {busy === 'handoff' ? 'Handing off…' : 'Send to production pipeline'}
@@ -605,6 +693,31 @@ function ApprovedScriptView({ approvedScript }: { approvedScript: NonNullable<Ch
         {approvedScript.text}
       </pre>
     </div>
+  );
+}
+
+function CostSummaryView({ cost }: { cost: CostSummary }) {
+  const fmtUsd = (n: number) => `$${n.toFixed(2)}`;
+  const fmtTok = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : `${n}`;
+  return (
+    <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+      <summary className="cursor-pointer">
+        <span className="font-medium text-neutral-200">LLM spend so far: {fmtUsd(cost.totals.totalUsd)}</span>
+        <span className="ml-2 font-mono text-[10px] text-neutral-500">
+          {cost.totals.calls} calls · {fmtTok(cost.totals.inputTokens)} in / {fmtTok(cost.totals.outputTokens)} out
+        </span>
+      </summary>
+      <ul className="mt-2 space-y-1 text-[11px]">
+        {cost.perStage.map((s) => (
+          <li key={s.featureArea} className="grid grid-cols-[1fr_max-content_max-content_max-content] items-baseline gap-x-3">
+            <span className="font-mono text-neutral-400">{s.featureArea.replace(/^channel_clone_?/, '')}</span>
+            <span className="font-mono text-neutral-500">{s.calls}×</span>
+            <span className="font-mono text-neutral-500">{fmtTok(s.inputTokens)}/{fmtTok(s.outputTokens)}</span>
+            <span className="font-mono text-neutral-200">{fmtUsd(s.totalUsd)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

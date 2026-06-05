@@ -1,18 +1,19 @@
 /**
- * Standalone Channel Clone page.
+ * Standalone Channel Clone landing page.
  *
- * First-class destination at `/channel-clone` — independent of the
- * auto-pipeline. Users land here, paste a competitor URL, and walk
- * through the eight-stage workflow without needing to spawn a
- * pipeline_run_videos row first.
+ * Two sections:
+ *   1. New job — the ChannelClonePanel with empty initial state.
+ *   2. Recent jobs — the workspace's last N channel-clone runs,
+ *      each linking to /channel-clone/[id] for resume.
  *
- * The panel can later also be embedded inside the production-doc
- * page (M5) so a user already inside a production-doc can clone
- * a channel in-context, but the canonical entry point is here.
+ * First-class destination, no auto-pipeline dependency required.
+ * The panel can also be embedded inside the production-doc page
+ * later (M5+) but the canonical entry is here.
  */
 
 import type { Metadata } from 'next';
 import { ChannelClonePanel } from '@/components/channel-clone/ChannelClonePanel';
+import { ChannelCloneJobList } from '@/components/channel-clone/ChannelCloneJobList';
 
 export const metadata: Metadata = {
   title: 'Channel Clone',
@@ -28,15 +29,25 @@ export default function ChannelClonePage() {
         <p className="text-sm text-neutral-400">
           Turn any explainer YouTube channel into a ready-to-render production-doc draft.
           The pipeline walks through intake, deep style/audience analysis, topic ideation,
-          hook engineering, script generation, and the 10-point audit fix-loop — sourced
-          from your ULTIMATE AI YOUTUBE CONTENT ENGINE V2.0 system prompt.
+          hook engineering, script generation, the 10-point audit fix-loop, rowification,
+          publish pack, and optional handoff to the auto-pipeline — sourced from your
+          ULTIMATE AI YOUTUBE CONTENT ENGINE V2.0 system prompt.
         </p>
         <p className="text-xs text-neutral-500">
           Intake runs locally (yt-dlp + ffmpeg) and only works in dev mode. The LLM stages
-          run anywhere. See _plans/2026-06-05-channel-clone-pipeline.md.
+          run anywhere.
         </p>
       </header>
-      <ChannelClonePanel />
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium text-neutral-200">Recent runs</h2>
+        <ChannelCloneJobList />
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-medium text-neutral-200">Start a new run</h2>
+        <ChannelClonePanel />
+      </section>
     </div>
   );
 }
