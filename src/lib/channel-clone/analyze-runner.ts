@@ -25,6 +25,8 @@
  * `last_error`.
  */
 
+import fs from 'fs/promises';
+import path from 'path';
 import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
@@ -36,7 +38,11 @@ import {
   replaceChannelCloneJobState,
   setChannelCloneJobStatus,
 } from './job-store';
-import type { ChannelCloneAnalysis } from './types';
+import type {
+  ChannelCloneAnalysis,
+  ChannelCloneIntakeResult,
+  ChannelCloneVisualProfile,
+} from './types';
 
 const ANALYSIS_OUTPUT_SCHEMA_INSTRUCTION = `Respond with a single JSON object matching this TypeScript shape exactly:
 {
@@ -61,8 +67,18 @@ const ANALYSIS_OUTPUT_SCHEMA_INSTRUCTION = `Respond with a single JSON object ma
     "painPoints": string[],
     "identityPromise": string,
     "channelsEnemy": string
+  },
+  "visualProfile": {
+    "artStyle": string,                            // 1 sentence describing the rendering style (e.g. "hand-drawn doodle line art")
+    "paletteHex": string[],                        // 3-6 dominant hex colors (e.g. "#FFFFFF")
+    "lightingStyle": string,                       // 1 sentence
+    "compositionPatterns": string,                 // 1-2 sentences
+    "detailLevel": string,                         // 1 sentence (e.g. "Deliberately low for humans, medium for objects")
+    "mood": string                                 // 1 sentence
   }
 }
+
+The visualProfile fields MUST come from the attached representative frame. If no frame is attached, set every visualProfile string to "unknown" and paletteHex to [].
 
 Output ONLY the JSON object. No prose before or after. No markdown code fences. No explanation. The first character of your response MUST be \`{\` and the last must be \`}\`.`;
 
@@ -98,6 +114,21 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
     getChannelCloneSystemPrompt('channel-clone-analyze') + '\n\n' + ANALYSIS_OUTPUT_SCHEMA_INSTRUCTION;
   const userPrompt = buildAnalyzeUserPrompt(transcripts);
 
+  // Pick + load a single representative frame so the model has
+  // something concrete for STATE 13's visual style profile. Best-
+  // effort — if frame loading fails the model still produces text
+  // analysis and writes "unknown" / [] into visualProfile per the
+  // schema instruction.
+  let image: { base64: string; mimeType: string } | undefined;
+  try {
+    image = await loadRepresentativeFrame(intake);
+  } catch (err) {
+    logger.warn('[channel-clone analyze] frame load failed; proceeding text-only', {
+      jobId,
+      error: errorMessage(err),
+    });
+  }
+
   let raw: string;
   try {
     raw = await generateText({
@@ -106,11 +137,12 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
       prompt: userPrompt,
       maxTokens: 6000,
       temperature: 0.4,
+      image,
       spend: {
         workspaceId,
         projectId: opts.projectId ?? null,
         featureArea: 'channel_clone_analyze',
-        metadata: { jobId, transcriptCount: transcripts.length },
+        metadata: { jobId, transcriptCount: transcripts.length, hasFrame: Boolean(image) },
       },
     });
   } catch (err) {
@@ -118,8 +150,11 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
   }
 
   let parsed: ChannelCloneAnalysis;
+  let visualProfile: ChannelCloneVisualProfile | undefined;
   try {
-    parsed = parseAnalyzeResponse(raw, modelId);
+    const result = parseAnalyzeResponseFull(raw, modelId);
+    parsed = result.analysis;
+    visualProfile = result.visualProfile;
   } catch (err) {
     logger.error('[channel-clone analyze] parse failed', {
       jobId,
@@ -135,7 +170,11 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
     logger.error('[channel-clone analyze] job vanished mid-run', { jobId });
     return;
   }
-  const nextState = { ...fresh.state_jsonb, analysis: parsed };
+  const nextState = {
+    ...fresh.state_jsonb,
+    analysis: parsed,
+    visualProfile,
+  };
   await replaceChannelCloneJobState(jobId, workspaceId, nextState);
   await setChannelCloneJobStatus(jobId, workspaceId, 'analyze_complete');
   logger.info('[channel-clone analyze] done', {
@@ -145,7 +184,25 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
     wps: parsed.wpsEstimate,
     avgWords: parsed.avgVideoWordCount,
     signaturePhraseCount: parsed.signaturePhrases.length,
+    visualMood: visualProfile?.mood ?? null,
+    hadFrame: Boolean(image),
   });
+}
+
+/** Pick the median frame of the median sample video as the
+ *  representative still. Returns base64 + mime type ready for
+ *  generateText's `image` option. Throws on read failure so the
+ *  caller can fall back to text-only. */
+async function loadRepresentativeFrame(intake: ChannelCloneIntakeResult): Promise<{ base64: string; mimeType: string }> {
+  const videos = intake.sampleVideos.filter((v) => v.frameLocalPaths.length > 0);
+  if (videos.length === 0) {
+    throw new Error('no sample videos have extracted frames');
+  }
+  const video = videos[Math.floor(videos.length / 2)];
+  const frame = video.frameLocalPaths[Math.floor(video.frameLocalPaths.length / 2)];
+  const buf = await fs.readFile(frame);
+  const mimeType = path.extname(frame).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
+  return { base64: buf.toString('base64'), mimeType };
 }
 
 function buildAnalyzeUserPrompt(transcripts: { i: number; title: string; text: string }[]): string {
@@ -169,14 +226,29 @@ function linesToText(lines: { text: string }[]): string {
 /** Parse the model's raw JSON response into a strongly-typed
  *  ChannelCloneAnalysis. Throws when the shape is missing required
  *  fields or carries invalid enum values. Exported for unit tests
- *  in `tests/channel-clone-analyze-parser.test.ts`. */
+ *  in `tests/channel-clone-analyze-parser.test.ts`.
+ *
+ *  Kept for backwards compatibility — new callers should use
+ *  `parseAnalyzeResponseFull` which also returns the visual
+ *  profile branch. */
 export function parseAnalyzeResponse(raw: string, modelId: string): ChannelCloneAnalysis {
+  return parseAnalyzeResponseFull(raw, modelId).analysis;
+}
+
+/** Parse the model's raw JSON into both the textual analysis and
+ *  the visual profile. The visual profile is optional — if the
+ *  model wrote the schema's `"unknown"` sentinel (because no frame
+ *  was attached) we return undefined for it. */
+export function parseAnalyzeResponseFull(
+  raw: string,
+  modelId: string,
+): { analysis: ChannelCloneAnalysis; visualProfile?: ChannelCloneVisualProfile } {
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
   const obj = JSON.parse(cleaned) as unknown;
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const o = obj as Record<string, unknown>;
 
-  return {
+  const analysis: ChannelCloneAnalysis = {
     niche: asString(o.niche, 'niche'),
     subNiche: asString(o.subNiche, 'subNiche'),
     targetAudience: {
@@ -205,6 +277,31 @@ export function parseAnalyzeResponse(raw: string, modelId: string): ChannelClone
     modelUsed: modelId,
     analyzedAt: new Date().toISOString(),
   };
+
+  const vp = o.visualProfile as Record<string, unknown> | undefined;
+  // The schema instruction tells the model to set every visualProfile
+  // string to "unknown" when no frame was attached. Detect that
+  // sentinel and return undefined rather than persisting noise.
+  const isUnknownSentinel =
+    vp &&
+    typeof vp.artStyle === 'string' &&
+    vp.artStyle.trim().toLowerCase() === 'unknown' &&
+    Array.isArray(vp.paletteHex) &&
+    (vp.paletteHex as unknown[]).length === 0;
+
+  let visualProfile: ChannelCloneVisualProfile | undefined;
+  if (vp && !isUnknownSentinel) {
+    visualProfile = {
+      artStyle: asString(vp.artStyle, 'visualProfile.artStyle'),
+      paletteHex: asStringArray(vp.paletteHex, 'visualProfile.paletteHex'),
+      lightingStyle: asString(vp.lightingStyle, 'visualProfile.lightingStyle'),
+      compositionPatterns: asString(vp.compositionPatterns, 'visualProfile.compositionPatterns'),
+      detailLevel: asString(vp.detailLevel, 'visualProfile.detailLevel'),
+      mood: asString(vp.mood, 'visualProfile.mood'),
+    };
+  }
+
+  return { analysis, visualProfile };
 }
 
 function asString(v: unknown, key: string): string {

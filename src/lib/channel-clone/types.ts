@@ -166,16 +166,38 @@ export interface ChannelCloneJobState {
   /** Currently selected topic index (1-based to match the user-facing
    *  list). Undefined until the user picks one. */
   selectedTopicIndex?: number;
-  /** The five hooks the hook-engineering stage produced for the
-   *  selected topic. */
-  hooks?: { archetype: string; text: string; wordCount: number; estimatedDurationSec: number }[];
+  /** The five hook archetypes the hook-engineering stage produced
+   *  for the selected topic. */
+  hooks?: {
+    archetype: 'Contrarian' | 'Story' | 'Stat' | 'Challenge' | 'Mystery';
+    text: string;
+    wordCount: number;
+    estimatedDurationSec: number;
+  }[];
   selectedHookIndex?: number;
   scriptDraft?: { text: string; wordCount: number; targetWordCount: number };
+  /** One entry per audit→revise iteration of the script fix-loop.
+   *  `overall` is the model's 0-10 self-score; the breakdown carries
+   *  the individual dimension scores so the UI can plot convergence
+   *  across iterations. `verdict` is the audit's 1-3 sentence
+   *  explanation. */
   auditHistory?: {
     iteration: number;
-    score: number;
-    breakdown: Record<string, number>;
-    revisionApplied: string | null;
+    scriptWordCount: number;
+    overall: number;
+    breakdown: {
+      styleDnaMatch: number;
+      hookStrength: number;
+      pacingAccuracy: number;
+      emotionalFlowMatch: number;
+      retentionTechniques: number;
+      wordCountAccuracyPct: number;
+      originality: number;
+      audiencePsychologyAlignment: number;
+      ctaMatch: number;
+      productionReadiness: number;
+    };
+    verdict: string;
   }[];
   /** The audit-fix loop's final accepted script. Only set once the
    *  loop converged or the user accepted a sub-threshold draft. */
