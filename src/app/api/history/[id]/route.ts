@@ -1,7 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
-import { deleteUserHistoryEntry, updateUserHistoryEntry } from '@/lib/user-history';
+import {
+  deleteUserHistoryEntry,
+  getUserHistoryEntry,
+  updateUserHistoryEntry,
+} from '@/lib/user-history';
 import { isUuid } from '@/lib/user-history-types';
+
+/**
+ * GET /api/history/[id]
+ *
+ * Return a single user_history entry, scoped to the caller's
+ * (workspace_id, collaborator_id). Used by /timeline-editor/[id]
+ * to load a saved ProductionDoc directly from a URL.
+ *
+ * Non-UUID ids return 404 (not 400) so existence never leaks via
+ * a status-code distinction.
+ */
+export const GET = apiRoute.authed(
+  async (session, _req: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
+    const { id } = await ctx.params;
+    if (!isUuid(id)) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+    const row = await getUserHistoryEntry(session.ws, session.uid, id);
+    if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    return NextResponse.json({
+      id: row.id,
+      kind: row.kind,
+      payload: row.payload,
+      created_at: row.created_at,
+    });
+  },
+);
 
 /**
  * PATCH /api/history/[id]

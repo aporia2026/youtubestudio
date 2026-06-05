@@ -13984,6 +13984,32 @@ function ProductionDocPage() {
                   )
                 )}
 
+                {/* Edit in the CapCut-style timeline editor (cut /
+                    trim / split / drag-resize). Only enabled when the
+                    doc has a historyEntryId — same constraint as
+                    "Open in editor" above. */}
+                {historyEntryId && !saveFailure ? (
+                  <button
+                    type="button"
+                    onClick={() => router.push(`/timeline-editor/${encodeURIComponent(historyEntryId)}`)}
+                    className="w-full text-xs px-3 py-2 rounded border hover:bg-white/5 transition-colors flex items-center justify-center gap-1.5"
+                    style={{ borderColor: 'var(--accent-sky, #38bdf8)', color: 'var(--accent-sky, #38bdf8)' }}
+                    title="Open the CapCut-style timeline editor for this production doc"
+                  >
+                    ✂ Edit in Timeline →
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full text-xs px-3 py-2 rounded border opacity-40 cursor-not-allowed"
+                    style={{ borderColor: 'var(--card-border)' }}
+                    title="Save the production doc first to open it in the timeline editor"
+                  >
+                    ✂ Edit in Timeline →
+                  </button>
+                )}
+
                 {/* Dev-only: send to local Video Studio for advanced editing */}
                 {process.env.NODE_ENV !== 'production' && (
                   <button

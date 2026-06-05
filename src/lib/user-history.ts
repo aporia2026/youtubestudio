@@ -167,6 +167,28 @@ export async function saveUserHistory(
  * the same anti-leak reason as `deleteUserHistoryEntry`. Returns true
  * iff a row was actually updated.
  */
+/**
+ * Fetch a single user_history entry by id, scoped to the caller's
+ * (workspace_id, collaborator_id). Returns null when the id doesn't
+ * exist OR belongs to another scope — same 404-not-403 pattern the
+ * other helpers use so cross-scope ids never leak existence.
+ */
+export async function getUserHistoryEntry(
+  workspaceId: string,
+  collaboratorId: string,
+  id: string,
+): Promise<UserHistoryRow | null> {
+  const { rows } = await sql<UserHistoryRow>`
+    SELECT id, kind, payload, client_id, created_at
+      FROM user_history
+     WHERE id = ${id}::uuid
+       AND workspace_id = ${workspaceId}
+       AND collaborator_id = ${collaboratorId}
+     LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
 export async function updateUserHistoryEntry(
   workspaceId: string,
   collaboratorId: string,
