@@ -227,6 +227,20 @@ export interface ChannelCloneJobState {
     presetId: string;
     handedOffAt: string;
   };
+  /** Previous handoff records, accumulated as the user re-hands the
+   *  same job off under different presets. The most-recent is on
+   *  `handoff`; older ones land here in chronological order. Each
+   *  pipeline_run_video stays alive on its own — re-handing-off
+   *  doesn't kill the old one, it just retargets the job's pointer. */
+  handoffHistory?: {
+    pipelineRunId: string;
+    pipelineRunVideoId: string;
+    projectId: string;
+    scriptId: string;
+    ideaId: string;
+    presetId: string;
+    handedOffAt: string;
+  }[];
   /** Per-row breakdown produced by the rowify stage. This is a
    *  channel-clone-local shape, not the full ProductionRow union —
    *  the existing image-gen pipeline reads these fields directly and

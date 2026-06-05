@@ -315,7 +315,16 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
             </button>
           )}
           {hasAnalysis && state?.analysis && (
-            <AnalysisView analysis={state.analysis} visualProfile={state.visualProfile} />
+            <AnalysisView
+              analysis={state.analysis}
+              visualProfile={state.visualProfile}
+              onRegenerate={busy !== 'analyze' ? () => {
+                if (confirm('Re-run channel analysis? Downstream stages (topics, hooks, script…) will reference the new analysis on the NEXT regenerate but will not be wiped automatically.')) {
+                  void runStage('analyze', {});
+                }
+              } : undefined}
+              regenerating={busy === 'analyze'}
+            />
           )}
 
           {/* ── Stage 2: Topics ────────────────────────────────── */}
@@ -344,6 +353,14 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
               }}
               busy={busy === 'hooks'}
               disabled={hasHooks}
+              onRegenerate={busy !== 'topics' ? () => {
+                if (confirm(`Regenerate ${topicCount} topics? This wipes the current topic list AND every downstream stage (hooks, script, rows, publish pack).`)) {
+                  void runStage('topics', { topicCount });
+                }
+              } : undefined}
+              regenerating={busy === 'topics'}
+              topicCount={topicCount}
+              setTopicCount={setTopicCount}
             />
           )}
 
@@ -363,6 +380,12 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
               }}
               busy={busy === 'script'}
               disabled={hasApprovedScript}
+              onRegenerate={busy !== 'hooks' && state.selectedTopicIndex ? () => {
+                if (confirm('Regenerate the 5 hooks for the selected topic? This wipes the current hook list AND any approved script + audit history.')) {
+                  void runStage('hooks', { selectedTopicIndex: state.selectedTopicIndex });
+                }
+              } : undefined}
+              regenerating={busy === 'hooks'}
             />
           )}
 
@@ -371,7 +394,15 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
             <AuditHistoryView auditHistory={state.auditHistory} threshold={threshold} />
           )}
           {state?.approvedScript && (
-            <ApprovedScriptView approvedScript={state.approvedScript} />
+            <ApprovedScriptView
+              approvedScript={state.approvedScript}
+              onRegenerate={busy !== 'script' && state.selectedHookIndex ? () => {
+                if (confirm(`Rewrite the script and re-run the audit-fix loop (threshold ${threshold}, up to ${maxIterations} iterations)? This wipes the current script + audit history.`)) {
+                  void runStage('script', { selectedHookIndex: state.selectedHookIndex, threshold, maxIterations });
+                }
+              } : undefined}
+              regenerating={busy === 'script'}
+            />
           )}
 
           {/* ── Stage 5: Rowify ─────────────────────────────────── */}
@@ -409,6 +440,12 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
             <RowifyView
               rows={state.productionRows}
               presetId={state.chosenStylePresetId ?? 'unknown'}
+              stylePresetIdHint={stylePresetIdHint}
+              setStylePresetIdHint={setStylePresetIdHint}
+              onRegenerate={busy !== 'rowify' ? () => {
+                void runStage('rowify', stylePresetIdHint === 'auto' ? {} : { stylePresetId: stylePresetIdHint });
+              } : undefined}
+              regenerating={busy === 'rowify'}
             />
           )}
 
@@ -446,7 +483,21 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
               </button>
             </div>
           )}
-          {state?.handoff && <HandoffView handoff={state.handoff} />}
+          {state?.handoff && (
+            <HandoffView
+              handoff={state.handoff}
+              handoffHistory={state.handoffHistory ?? []}
+              pipelinePresets={pipelinePresets}
+              handoffPresetId={handoffPresetId}
+              setHandoffPresetId={setHandoffPresetId}
+              onReHandoff={busy !== 'handoff' && pipelinePresets.length > 0 ? () => {
+                if (confirm('Hand off again with this preset? A NEW pipeline_run_video will be created; the previous one keeps running on its own.')) {
+                  void runStage('handoff', handoffPresetId === 'auto' ? {} : { presetId: handoffPresetId });
+                }
+              } : undefined}
+              reHandingOff={busy === 'handoff'}
+            />
+          )}
 
           {/* ── Stage 7: Publish pack ─────────────────────────────── */}
           {hasApprovedScript && !hasPublishPack && (
@@ -465,7 +516,15 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
               </button>
             </div>
           )}
-          {state?.publishPack && <PublishPackView pack={state.publishPack} />}
+          {state?.publishPack && (
+            <PublishPackView
+              pack={state.publishPack}
+              onRegenerate={busy !== 'publish-pack' ? () => {
+                void runStage('publish-pack', {});
+              } : undefined}
+              regenerating={busy === 'publish-pack'}
+            />
+          )}
         </section>
       )}
     </div>
@@ -490,6 +549,20 @@ function Picker({ label, value, onChange, options, disabled }: { label: string; 
   );
 }
 
+function RegenerateLink({ onClick, busy }: { onClick: () => void; busy?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-200 disabled:cursor-not-allowed disabled:text-neutral-600"
+    >
+      <span aria-hidden>↻</span>
+      <span>{busy ? 'Working…' : 'Regenerate'}</span>
+    </button>
+  );
+}
+
 function StatusPill({ status }: { status: ChannelCloneJobStatus }) {
   const colour = status.endsWith('_failed')
     ? 'bg-red-900/60 text-red-300 border-red-800'
@@ -505,9 +578,20 @@ function StatusPill({ status }: { status: ChannelCloneJobStatus }) {
   );
 }
 
-function AnalysisView({ analysis, visualProfile }: { analysis: ChannelCloneAnalysis; visualProfile?: ChannelCloneVisualProfile }) {
+function AnalysisView({
+  analysis, visualProfile, onRegenerate, regenerating,
+}: {
+  analysis: ChannelCloneAnalysis;
+  visualProfile?: ChannelCloneVisualProfile;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
+}) {
   return (
     <div className="space-y-2 rounded border border-neutral-800 bg-neutral-900 p-3 text-xs text-neutral-300">
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Channel analysis</h4>
+        {onRegenerate && <RegenerateLink onClick={onRegenerate} busy={regenerating} />}
+      </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1">
         <span><span className="text-neutral-500">Niche:</span> {analysis.niche}</span>
         <span><span className="text-neutral-500">Sub-niche:</span> {analysis.subNiche}</span>
@@ -545,6 +629,7 @@ function AnalysisView({ analysis, visualProfile }: { analysis: ChannelCloneAnaly
 
 function TopicPicker({
   topics, chosenIndex, setChosenIndex, onConfirm, busy, disabled,
+  onRegenerate, regenerating, topicCount, setTopicCount,
 }: {
   topics: NonNullable<ChannelCloneJobState['topics']>;
   chosenIndex: number | null;
@@ -552,10 +637,29 @@ function TopicPicker({
   onConfirm: () => void;
   busy: boolean;
   disabled: boolean;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
+  topicCount: 5 | 10 | 15;
+  setTopicCount: (n: 5 | 10 | 15) => void;
 }) {
   return (
     <div className="space-y-2 border-t border-neutral-800 pt-3">
-      <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Topics — pick one</h4>
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Topics — pick one</h4>
+        {onRegenerate && (
+          <div className="flex items-center gap-2">
+            <select
+              value={topicCount}
+              onChange={(e) => setTopicCount(Number(e.target.value) as 5 | 10 | 15)}
+              className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-200"
+              disabled={regenerating}
+            >
+              {[5, 10, 15].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <RegenerateLink onClick={onRegenerate} busy={regenerating} />
+          </div>
+        )}
+      </div>
       <ul className="space-y-1">
         {topics.map((t, i) => {
           const idx = i + 1;
@@ -598,6 +702,7 @@ function TopicPicker({
 
 function HookPicker({
   hooks, chosenIndex, setChosenIndex, threshold, setThreshold, maxIterations, setMaxIterations, onConfirm, busy, disabled,
+  onRegenerate, regenerating,
 }: {
   hooks: NonNullable<ChannelCloneJobState['hooks']>;
   chosenIndex: number | null;
@@ -609,10 +714,15 @@ function HookPicker({
   onConfirm: () => void;
   busy: boolean;
   disabled: boolean;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
 }) {
   return (
     <div className="space-y-2 border-t border-neutral-800 pt-3">
-      <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Hooks — pick one</h4>
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Hooks — pick one</h4>
+        {onRegenerate && <RegenerateLink onClick={onRegenerate} busy={regenerating} />}
+      </div>
       <ul className="space-y-1">
         {hooks.map((h, i) => {
           const idx = i + 1;
@@ -683,12 +793,21 @@ function AuditHistoryView({ auditHistory, threshold }: { auditHistory: NonNullab
   );
 }
 
-function ApprovedScriptView({ approvedScript }: { approvedScript: NonNullable<ChannelCloneJobState['approvedScript']> }) {
+function ApprovedScriptView({
+  approvedScript, onRegenerate, regenerating,
+}: {
+  approvedScript: NonNullable<ChannelCloneJobState['approvedScript']>;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
+}) {
   return (
     <div className="space-y-2 border-t border-neutral-800 pt-3">
-      <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">
-        Approved script — {approvedScript.wordCount} words · final score {approvedScript.finalScore.toFixed(1)}/10
-      </h4>
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">
+          Approved script — {approvedScript.wordCount} words · final score {approvedScript.finalScore.toFixed(1)}/10
+        </h4>
+        {onRegenerate && <RegenerateLink onClick={onRegenerate} busy={regenerating} />}
+      </div>
       <pre className="whitespace-pre-wrap rounded border border-neutral-800 bg-neutral-950 p-3 text-xs leading-relaxed text-neutral-200">
         {approvedScript.text}
       </pre>
@@ -721,10 +840,19 @@ function CostSummaryView({ cost }: { cost: CostSummary }) {
   );
 }
 
-function PublishPackView({ pack }: { pack: NonNullable<ChannelCloneJobState['publishPack']> }) {
+function PublishPackView({
+  pack, onRegenerate, regenerating,
+}: {
+  pack: NonNullable<ChannelCloneJobState['publishPack']>;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
+}) {
   return (
     <div className="space-y-3 border-t border-neutral-800 pt-3">
-      <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Publish pack</h4>
+      <div className="flex items-center justify-between">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Publish pack</h4>
+        {onRegenerate && <RegenerateLink onClick={onRegenerate} busy={regenerating} />}
+      </div>
 
       <details open className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
         <summary className="cursor-pointer font-medium text-neutral-200">Titles ({pack.titles.length})</summary>
@@ -806,40 +934,122 @@ function PublishPackView({ pack }: { pack: NonNullable<ChannelCloneJobState['pub
   );
 }
 
-function HandoffView({ handoff }: { handoff: NonNullable<ChannelCloneJobState['handoff']> }) {
+function HandoffView({
+  handoff, handoffHistory, pipelinePresets, handoffPresetId, setHandoffPresetId, onReHandoff, reHandingOff,
+}: {
+  handoff: NonNullable<ChannelCloneJobState['handoff']>;
+  handoffHistory: NonNullable<ChannelCloneJobState['handoffHistory']>;
+  pipelinePresets: PipelinePresetSummary[];
+  handoffPresetId: string;
+  setHandoffPresetId: (s: string) => void;
+  onReHandoff?: () => void;
+  reHandingOff?: boolean;
+}) {
   return (
-    <div className="space-y-2 rounded border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-neutral-200">
-      <h4 className="text-xs font-medium uppercase tracking-wide text-emerald-300">Handed off to production pipeline</h4>
-      <p>The auto-pipeline cron will pick up this video on its next tick and run image generation.</p>
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[10px] text-neutral-300">
-        <dt className="text-neutral-500">Run</dt><dd>{handoff.pipelineRunId}</dd>
-        <dt className="text-neutral-500">Video</dt><dd>{handoff.pipelineRunVideoId}</dd>
-        <dt className="text-neutral-500">Project</dt><dd>{handoff.projectId}</dd>
-        <dt className="text-neutral-500">Script</dt><dd>{handoff.scriptId}</dd>
-        <dt className="text-neutral-500">Idea</dt><dd>{handoff.ideaId}</dd>
-        <dt className="text-neutral-500">Preset</dt><dd>{handoff.presetId}</dd>
-        <dt className="text-neutral-500">When</dt><dd>{new Date(handoff.handedOffAt).toLocaleString()}</dd>
-      </dl>
-      <p className="pt-1">
-        <a href="/pipeline" className="text-blue-400 hover:underline">Open auto-pipeline dashboard →</a>
-      </p>
+    <div className="space-y-3">
+      <div className="space-y-2 rounded border border-emerald-900 bg-emerald-950/30 p-3 text-xs text-neutral-200">
+        <h4 className="text-xs font-medium uppercase tracking-wide text-emerald-300">Handed off to production pipeline</h4>
+        <p>The auto-pipeline cron will pick up this video on its next tick and run image generation.</p>
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[10px] text-neutral-300">
+          <dt className="text-neutral-500">Run</dt><dd>{handoff.pipelineRunId}</dd>
+          <dt className="text-neutral-500">Video</dt><dd>{handoff.pipelineRunVideoId}</dd>
+          <dt className="text-neutral-500">Project</dt><dd>{handoff.projectId}</dd>
+          <dt className="text-neutral-500">Script</dt><dd>{handoff.scriptId}</dd>
+          <dt className="text-neutral-500">Idea</dt><dd>{handoff.ideaId}</dd>
+          <dt className="text-neutral-500">Preset</dt><dd>{handoff.presetId}</dd>
+          <dt className="text-neutral-500">When</dt><dd>{new Date(handoff.handedOffAt).toLocaleString()}</dd>
+        </dl>
+        <p className="pt-1">
+          <a href="/pipeline" className="text-blue-400 hover:underline">Open auto-pipeline dashboard →</a>
+        </p>
+      </div>
+
+      {handoffHistory.length > 0 && (
+        <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+          <summary className="cursor-pointer text-neutral-300">Previous handoffs ({handoffHistory.length})</summary>
+          <ul className="mt-2 space-y-2">
+            {[...handoffHistory].reverse().map((h, i) => (
+              <li key={i} className="space-y-1 rounded border border-neutral-800 bg-neutral-900 p-2">
+                <dl className="grid grid-cols-[max-content_1fr] gap-x-2 gap-y-0.5 font-mono text-[10px] text-neutral-400">
+                  <dt className="text-neutral-500">Video</dt><dd>{h.pipelineRunVideoId}</dd>
+                  <dt className="text-neutral-500">Preset</dt><dd>{h.presetId}</dd>
+                  <dt className="text-neutral-500">When</dt><dd>{new Date(h.handedOffAt).toLocaleString()}</dd>
+                </dl>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {onReHandoff && (
+        <div className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Hand off again</h4>
+          <p className="text-[10px] text-neutral-500">
+            Creates a NEW pipeline_run_video. The old one keeps running on its own.
+          </p>
+          <label className="block">
+            <span className="text-xs text-neutral-400">Pipeline preset</span>
+            <select
+              value={handoffPresetId}
+              onChange={(e) => setHandoffPresetId(e.target.value)}
+              className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-neutral-100"
+              disabled={reHandingOff || pipelinePresets.length === 0}
+            >
+              <option value="auto">Auto — workspace's first preset</option>
+              {pipelinePresets.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}{p.niche ? ` · ${p.niche}` : ''}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={onReHandoff}
+            disabled={reHandingOff || pipelinePresets.length === 0}
+            className="w-full rounded border border-neutral-700 bg-neutral-900 px-4 py-2 font-medium text-neutral-100 hover:border-neutral-500 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
+          >
+            {reHandingOff ? 'Handing off again…' : 'Hand off again'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 function RowifyView({
-  rows, presetId,
+  rows, presetId, stylePresetIdHint, setStylePresetIdHint, onRegenerate, regenerating,
 }: {
   rows: NonNullable<ChannelCloneJobState['productionRows']>;
   presetId: string;
+  stylePresetIdHint: string;
+  setStylePresetIdHint: (s: string) => void;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
 }) {
   return (
     <div className="space-y-2 border-t border-neutral-800 pt-3">
-      <div className="flex items-baseline justify-between">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">
           Production rows ({rows.length})
         </h4>
-        <span className="font-mono text-[10px] text-neutral-500">style: {presetId}</span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] text-neutral-500">style: {presetId}</span>
+          {onRegenerate && (
+            <>
+              <select
+                value={stylePresetIdHint}
+                onChange={(e) => setStylePresetIdHint(e.target.value)}
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-200"
+                disabled={regenerating}
+              >
+                <option value="auto">auto-match</option>
+                {CHANNEL_CLONE_CANDIDATE_PRESETS.map((id) => (
+                  <option key={id} value={id}>{id}</option>
+                ))}
+              </select>
+              <RegenerateLink onClick={onRegenerate} busy={regenerating} />
+            </>
+          )}
+        </div>
       </div>
       <ul className="space-y-2">
         {rows.map((r, i) => (

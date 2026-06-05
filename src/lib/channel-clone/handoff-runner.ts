@@ -25,9 +25,13 @@
  * artefact, and runs `generate-production-doc-images.ts` against
  * our rows. From there it's just the existing pipeline.
  *
- * Re-handoff is blocked: if `state_jsonb.handoff` is already set,
- * the runner short-circuits with a friendly error so we don't end
- * up with two parallel pipeline_run_videos for one channel-clone job.
+ * Re-handoff is supported: each call creates a new pipeline_run +
+ * pipeline_run_videos pair. The previous `state.handoff` (if any)
+ * gets pushed onto `state.handoffHistory` and `state.handoff` is
+ * overwritten with the new record. The old pipeline_run_video keeps
+ * running on its own — the cron doesn't care that the channel-clone
+ * job re-pointed elsewhere. The user might want the old run dead;
+ * that's a manual auto-pipeline action.
  */
 
 import { sql } from '@/lib/db';
@@ -69,10 +73,7 @@ export async function runHandoff(opts: RunHandoffOptions): Promise<void> {
     logger.error('[channel-clone handoff] job missing', { jobId });
     return;
   }
-  const { analysis, topics, hooks, selectedTopicIndex, selectedHookIndex, approvedScript, productionRows, chosenStylePresetId, intake, handoff } = job.state_jsonb;
-  if (handoff) {
-    return failJob(jobId, workspaceId, `Already handed off (pipeline_run_video ${handoff.pipelineRunVideoId}). Delete or re-rowify before handing off again.`);
-  }
+  const { analysis, topics, hooks, selectedTopicIndex, selectedHookIndex, approvedScript, productionRows, chosenStylePresetId, intake } = job.state_jsonb;
   if (!analysis || !approvedScript || !productionRows || productionRows.length === 0 || !chosenStylePresetId) {
     return failJob(jobId, workspaceId, 'Cannot hand off: analysis + approvedScript + productionRows + chosenStylePresetId are all required.');
   }
@@ -235,9 +236,17 @@ export async function runHandoff(opts: RunHandoffOptions): Promise<void> {
 
   const fresh = await getChannelCloneJob(jobId, workspaceId);
   if (!fresh) return;
+  // Push the prior handoff (if any) onto history before overwriting
+  // state.handoff. Older runs stay queryable in the UI's
+  // handoff-history view; the auto-pipeline still owns them.
+  const nextHistory = [
+    ...(fresh.state_jsonb.handoffHistory ?? []),
+    ...(fresh.state_jsonb.handoff ? [fresh.state_jsonb.handoff] : []),
+  ];
   const nextState: ChannelCloneJobState = {
     ...fresh.state_jsonb,
     handoff: result,
+    handoffHistory: nextHistory.length > 0 ? nextHistory : undefined,
   };
   await replaceChannelCloneJobState(jobId, workspaceId, nextState);
   await setChannelCloneJobStatus(jobId, workspaceId, 'handoff_complete');

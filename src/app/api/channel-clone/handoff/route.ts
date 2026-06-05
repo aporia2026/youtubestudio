@@ -39,12 +39,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   if (!before) {
     return NextResponse.json({ error: 'job not found' }, { status: 404 });
   }
-  if (before.state_jsonb.handoff) {
-    return NextResponse.json(
-      { error: `Already handed off — pipeline_run_video ${before.state_jsonb.handoff.pipelineRunVideoId}.` },
-      { status: 409 },
-    );
-  }
+  // Re-handoff IS supported (see handoff-runner docstring). Each call
+  // creates a fresh pipeline_run/pipeline_run_video pair and pushes
+  // the prior `state.handoff` (if any) onto `state.handoffHistory`.
   if (!before.state_jsonb.productionRows || before.state_jsonb.productionRows.length === 0) {
     return NextResponse.json(
       { error: 'No production rows yet — run /rowify first.' },
