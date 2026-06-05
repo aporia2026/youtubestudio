@@ -2,8 +2,9 @@
 
 /**
  * Thin client wrapper around <TimelineEditor /> for the
- * /timeline-editor demo page. Owns the doc state so the SSR'd
- * server component doesn't have to.
+ * /timeline-editor demo page. Owns the doc state via the
+ * useDocHistory hook so undo/redo work without the SSR'd server
+ * component having to know about React state.
  *
  * We dynamic-import TimelineEditor here (rather than at the page
  * level) because Next.js 16 forbids `dynamic(..., { ssr: false })`
@@ -12,8 +13,8 @@
  */
 
 import dynamic from 'next/dynamic';
-import { useState } from 'react';
 import type { ProductionDoc } from '@/remotion/utils';
+import { useDocHistory } from '@/lib/timeline-editor/use-doc-history';
 
 const TimelineEditor = dynamic(
   () => import('./TimelineEditor').then((m) => m.TimelineEditor),
@@ -24,6 +25,15 @@ const TimelineEditor = dynamic(
 );
 
 export function TimelineEditorDemo({ initialDoc }: { initialDoc: ProductionDoc }) {
-  const [doc, setDoc] = useState<ProductionDoc>(initialDoc);
-  return <TimelineEditor doc={doc} onDocChange={setDoc} />;
+  const history = useDocHistory<ProductionDoc>(initialDoc);
+  return (
+    <TimelineEditor
+      doc={history.current}
+      onDocChange={history.setDoc}
+      onUndo={history.undo}
+      onRedo={history.redo}
+      canUndo={history.canUndo}
+      canRedo={history.canRedo}
+    />
+  );
 }

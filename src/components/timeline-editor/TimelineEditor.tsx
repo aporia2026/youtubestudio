@@ -47,9 +47,19 @@ const TIMELINE_EFFECTS: Record<string, LibTimelineEffect> = {
 
 export interface TimelineEditorProps {
   doc: ProductionDoc;
-  /** Called after the user commits any edit (M2+). M1 keeps this
-   *  optional because the editor is mounted read-only first. */
-  onDocChange?: (doc: ProductionDoc) => void;
+  /** Called after any edit. `commit:false` means "live-preview
+   *  this value but don't push to the undo stack" — fired on
+   *  every onActionResizing tick during a drag. `commit:true`
+   *  (default) means "push to undo stack" — fired on every
+   *  discrete op (split, cut, fade, reorder, drag-resize end).
+   *  M1 keeps this optional so the editor can be mounted read-only. */
+  onDocChange?: (doc: ProductionDoc, opts?: { commit?: boolean }) => void;
+  /** Hooks to wire the undo/redo stack the parent owns. Surfaced
+   *  on the toolbar + bound to Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z. */
+  onUndo?: () => void;
+  onRedo?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
   /** ms per pixel at the default zoom. Default = 10 (so 1 second
    *  occupies 100 px on screen, matching CapCut's default zoom).
    *  A 30-second doc fits in ~3000 px which scrolls horizontally
@@ -63,6 +73,10 @@ export interface TimelineEditorProps {
 export function TimelineEditor({
   doc,
   onDocChange,
+  onUndo,
+  onRedo,
+  canUndo = false,
+  canRedo = false,
   msPerPx = 10,
   fps = DEFAULT_FPS,
 }: TimelineEditorProps) {
@@ -100,7 +114,9 @@ export function TimelineEditor({
       const newDurationMs = secToMs(args.end - args.start);
       const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
       if (next !== docRef.current) {
-        onDocChange(next);
+        // Live preview during the drag — does NOT push to the undo
+        // stack. The single commit lands on onActionResizeEnd.
+        onDocChange(next, { commit: false });
       }
       // Return value is consumed by the library to allow/block the
       // visual move. Returning `undefined` (default) keeps it allowed.
@@ -120,9 +136,10 @@ export function TimelineEditor({
       if (rowIndex < 0) return;
       const newDurationMs = secToMs(args.end - args.start);
       const next = trimRowDuration(docRef.current, rowIndex, newDurationMs, { fps });
-      if (next !== docRef.current) {
-        onDocChange(next);
-      }
+      // Commit the final value to undo. Even on a no-op we want to
+      // promote the live-head into a committed entry so a Cmd+Z
+      // takes you back to where you started the drag.
+      onDocChange(next, { commit: true });
     },
     [onDocChange, fps],
   );
@@ -157,18 +174,37 @@ export function TimelineEditor({
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName.toLowerCase();
       if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+      // Undo/redo come first so Cmd+S below doesn't double-fire
+      // for the same keystroke when a user holds Shift+Cmd+Z.
+      const isMeta = e.metaKey || e.ctrlKey;
+      if (isMeta && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          onRedo?.();
+        } else {
+          onUndo?.();
+        }
+        return;
+      }
+      // Cmd/Ctrl+Y is the alternate redo binding many editors honour.
+      if (isMeta && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        onRedo?.();
+        return;
+      }
       if (e.key === 's' || e.key === 'S') {
+        if (isMeta) return; // let Cmd+S fall through to the browser
         const next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
         if (next !== docRef.current) {
           e.preventDefault();
-          onDocChange(next);
+          onDocChange(next, { commit: true });
         }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedRowIndex === null) return;
         const next = cutRow(docRef.current, selectedRowIndex);
         if (next !== docRef.current) {
           e.preventDefault();
-          onDocChange(next);
+          onDocChange(next, { commit: true });
           setSelectedRowIndex(null);
         }
       } else if (e.key === 'f' || e.key === 'F') {
@@ -180,13 +216,13 @@ export function TimelineEditor({
         const next = setRowTransitionIn(docRef.current, selectedRowIndex, nextTransition);
         if (next !== docRef.current) {
           e.preventDefault();
-          onDocChange(next);
+          onDocChange(next, { commit: true });
         }
       }
     };
     el.addEventListener('keydown', onKey);
     return () => el.removeEventListener('keydown', onKey);
-  }, [editable, onDocChange, fps, playheadSec, selectedRowIndex]);
+  }, [editable, onDocChange, onUndo, onRedo, fps, playheadSec, selectedRowIndex]);
 
   // Click on a clip selects it (the Del key uses this).
   const handleClickAction = useCallback(
@@ -211,7 +247,7 @@ export function TimelineEditor({
       if (toIndex === fromIndex) return;
       const next = moveRow(docRef.current, fromIndex, toIndex);
       if (next !== docRef.current) {
-        onDocChange(next);
+        onDocChange(next, { commit: true });
         setSelectedRowIndex(toIndex);
       }
     },
@@ -223,7 +259,7 @@ export function TimelineEditor({
     const current = docRef.current.rows[selectedRowIndex]?.transition_in ?? null;
     const nextTransition: 'cross-fade' | null = current === 'cross-fade' ? null : 'cross-fade';
     const next = setRowTransitionIn(docRef.current, selectedRowIndex, nextTransition);
-    if (next !== docRef.current) onDocChange(next);
+    if (next !== docRef.current) onDocChange(next, { commit: true });
   }, [onDocChange, selectedRowIndex]);
 
   // Header buttons for users without keyboards (or who want explicit
@@ -231,14 +267,14 @@ export function TimelineEditor({
   const handleSplitClick = useCallback(() => {
     if (!onDocChange) return;
     const next = splitRowAtPlayheadMs(docRef.current, secToMs(playheadSec), { fps });
-    if (next !== docRef.current) onDocChange(next);
+    if (next !== docRef.current) onDocChange(next, { commit: true });
   }, [onDocChange, fps, playheadSec]);
 
   const handleCutClick = useCallback(() => {
     if (!onDocChange || selectedRowIndex === null) return;
     const next = cutRow(docRef.current, selectedRowIndex);
     if (next !== docRef.current) {
-      onDocChange(next);
+      onDocChange(next, { commit: true });
       setSelectedRowIndex(null);
     }
   }, [onDocChange, selectedRowIndex]);
@@ -265,7 +301,30 @@ export function TimelineEditor({
           </p>
         </div>
         {editable && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {onUndo && (
+              <button
+                type="button"
+                onClick={onUndo}
+                disabled={!canUndo}
+                title="Undo (Ctrl/Cmd+Z)"
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                ↶ Undo
+              </button>
+            )}
+            {onRedo && (
+              <button
+                type="button"
+                onClick={onRedo}
+                disabled={!canRedo}
+                title="Redo (Ctrl/Cmd+Shift+Z)"
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-neutral-200 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                ↷ Redo
+              </button>
+            )}
+            <span className="text-neutral-700">·</span>
             <button
               type="button"
               onClick={handleSplitClick}
