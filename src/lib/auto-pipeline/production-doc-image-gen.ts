@@ -25,7 +25,7 @@
  * Plan: `_plans/2026-05-27-doodle-explainer-2-foundation.md` (Stage 4).
  */
 import { resolveStyle } from '../production-doc-styles';
-import { loadStyleReferences, mirrorPublicUrlRefToR2 } from '../production-doc-styles-refs';
+import { loadStyleReferences, mirrorPublicUrlRefToR2, type StyleReferenceImage } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
 import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
 import { generateAtlasT2I, generateAtlasI2I } from './../atlas-cloud-images';
@@ -45,6 +45,7 @@ import { upscaleViaRecraft } from '../upscale';
 import {
   getDownloadUrlForBucket,
   getImagesBucket,
+  getReviewBucket,
   uploadToBucket,
 } from '../r2';
 import { augmentCellPrompt, COLLAGE_CELL_PROMPT_CAP, SINGLE_SHOT_PROMPT_CAP } from '../prompt-augmentation';
@@ -159,6 +160,18 @@ export interface PipelineImageRow {
 export interface PipelineImageDoc {
   rows: PipelineImageRow[];
   style_preset?: string;
+  /** Channel-clone per-doc style override. When present, the image-
+   *  gen pipeline uses the channel's own extracted frames as Atlas
+   *  i2i references INSTEAD of the style preset's bundled refs. The
+   *  suffix has already been baked into every row's ai_image_prompt
+   *  by the rowify stage; image-gen only needs to swap the refs.
+   *  Set by `handoff-runner` when the channel-clone job's
+   *  `state_jsonb.channelStyle` is populated. */
+  channel_style_override?: {
+    ai_image_suffix: string;
+    ref_r2_keys: string[];
+    reason: string;
+  } | null;
   on_screen_text_mode_default?: 'bake' | 'overlay' | 'none';
   section_title_layout_default?: 'overlay' | 'letterbox';
   // ─── paint_explainer_v1 (2026-05-28) ──────────────────────────────
@@ -226,6 +239,48 @@ export interface PipelineImageDoc {
   };
 }
 
+/** Synthesize StyleReferenceImage records from a channel-clone
+ *  override's R2 keys. The dispatcher (generateImageWithRefs) only
+ *  reads a handful of these fields — r2_bucket, r2_key, mime_type,
+ *  rejected_by_provider, content_validated, position, weight, role —
+ *  so we fill those with safe defaults and stub the rest. Bucket is
+ *  the review bucket where intake-runner.ts uploaded the frames.
+ *  All synthetic refs are marked content_validated=true because we
+ *  wrote the bytes ourselves and know they're valid JPEG/PNG. */
+function synthesizeChannelOverrideRefs(
+  r2Keys: string[],
+  workspaceId: string,
+  styleId: string,
+): StyleReferenceImage[] {
+  const bucket = getReviewBucket();
+  const now = new Date().toISOString();
+  return r2Keys.map((r2Key, idx): StyleReferenceImage => {
+    const isPng = r2Key.toLowerCase().endsWith('.png');
+    return {
+      id: `channel-clone-override-${idx}`,
+      style_id: styleId,
+      workspace_id: workspaceId,
+      position: idx,
+      role: 'style',
+      weight: 1,
+      r2_bucket: bucket,
+      r2_key: r2Key,
+      size_bytes: null,
+      mime_type: isPng ? 'image/png' : 'image/jpeg',
+      width: null,
+      height: null,
+      rejected_by_provider: false,
+      rejection_reason: null,
+      rejection_provider: null,
+      rejected_at: null,
+      created_at: now,
+      content_validated: true,
+      content_validation_error: null,
+      content_validated_at: now,
+    };
+  });
+}
+
 /**
  * Generate the image for a single base row (variant_index === 0 or
  * standalone). Resolves the style + refs, augments the prompt, and
@@ -251,13 +306,21 @@ export async function generateBaseImage(args: {
 
   const styleId = doc.style_preset?.trim();
   const style = styleId ? await resolveStyle(styleId, workspaceId, ownerId ?? null) : null;
-  const refs = style
-    ? await loadStyleReferences(style.id, {
-        excludeRejected: true,
-        excludeUnvalidated: true,
-        workspaceId,
-      })
-    : [];
+  // Channel-clone path: when the doc carries a per-job style override
+  // we use the channel's actual extracted frames as i2i references
+  // INSTEAD of the preset's bundled refs. That's the whole point of
+  // channel-clone — render each shot in the source channel's look,
+  // not in our default illustration style.
+  const channelOverride = doc.channel_style_override;
+  const refs = channelOverride && channelOverride.ref_r2_keys.length > 0
+    ? synthesizeChannelOverrideRefs(channelOverride.ref_r2_keys, workspaceId, style?.id ?? 'channel-clone')
+    : style
+      ? await loadStyleReferences(style.id, {
+          excludeRejected: true,
+          excludeUnvalidated: true,
+          workspaceId,
+        })
+      : [];
 
   // Section-title canvas + augmented prompt mirror the manual route.
   // OST baking is OFF on the pipeline path — the doc default is
@@ -1623,6 +1686,31 @@ export async function generateMotionCollage(args: {
       logger.warn('[motion-collage pipeline] style lookup failed — generating without suffix', {
         error: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  // Channel-clone override: when the doc carries a per-job style
+  // override, swap the preset's bundled refs with the channel's own
+  // extracted frames. The suffix has already been baked into every
+  // row's ai_image_prompt by the rowify stage so we don't need to
+  // touch styleSuffix here. Same fall-back-on-error posture as the
+  // preset path above.
+  if (doc.channel_style_override && doc.channel_style_override.ref_r2_keys.length > 0) {
+    try {
+      const overrideBucket = getReviewBucket();
+      refImageUrls = await Promise.all(
+        doc.channel_style_override.ref_r2_keys.map((r2Key) =>
+          getDownloadUrlForBucket(overrideBucket, r2Key, undefined),
+        ),
+      );
+      logger.info('[motion-collage pipeline] using channel-clone override refs', {
+        refCount: refImageUrls.length,
+      });
+    } catch (overrideErr) {
+      logger.warn('[motion-collage pipeline] channel-override ref resolution failed — falling back to preset refs', {
+        error: overrideErr instanceof Error ? overrideErr.message : String(overrideErr),
+      });
+      // Keep whatever refImageUrls the preset path produced.
     }
   }
 

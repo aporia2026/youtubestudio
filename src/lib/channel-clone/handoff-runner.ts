@@ -74,7 +74,7 @@ export async function runHandoff(opts: RunHandoffOptions): Promise<void> {
     logger.error('[channel-clone handoff] job missing', { jobId });
     return;
   }
-  const { analysis, topics, hooks, selectedTopicIndex, selectedHookIndex, approvedScript, productionRows, chosenStylePresetId, intake } = job.state_jsonb;
+  const { analysis, topics, hooks, selectedTopicIndex, selectedHookIndex, approvedScript, productionRows, chosenStylePresetId, intake, channelStyle } = job.state_jsonb;
   if (!analysis || !approvedScript || !productionRows || productionRows.length === 0 || !chosenStylePresetId) {
     return failJob(jobId, workspaceId, 'Cannot hand off: analysis + approvedScript + productionRows + chosenStylePresetId are all required.');
   }
@@ -215,6 +215,21 @@ export async function runHandoff(opts: RunHandoffOptions): Promise<void> {
       style_id: chosenStylePresetId,
       total_words: approvedScript.wordCount,
       speaking_pace_wpm: Math.round(analysis.wpsEstimate * 60),
+      // Per-job channel-style override. When set, the image-gen
+      // stage prefers the channel's actual visual DNA over the
+      // built-in preset's bundled refs — that's what makes
+      // channel-clone produce images that look like the source
+      // channel rather than like our default illustrations. The
+      // image-gen pipeline reads `channel_style_override` and uses
+      // its frames as Atlas i2i refs + its suffix as the style
+      // lock on every prompt.
+      channel_style_override: channelStyle
+        ? {
+            ai_image_suffix: channelStyle.aiImageSuffix,
+            ref_r2_keys: channelStyle.refR2Keys,
+            reason: channelStyle.reason,
+          }
+        : null,
       // Map channel-clone rows into the minimal shape the existing
       // image-gen stage expects. image_url empty so the stage knows
       // to generate.

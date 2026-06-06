@@ -83,6 +83,12 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
   const [threshold, setThreshold] = useState<80 | 90 | 95 | 100>(90);
   const [maxIterations, setMaxIterations] = useState<1 | 3 | 5>(3);
   const [stylePresetIdHint, setStylePresetIdHint] = useState<string>('auto');
+  // Default ON: rowify derives the channel's visual DNA from the
+  // analyze stage's profile + extracted frames and uses it as the
+  // image-gen style instead of one of the built-in presets. This is
+  // the WHOLE POINT of channel-clone — see derive-channel-style.ts.
+  // Operator can flip OFF to force a built-in preset render.
+  const [useChannelStyle, setUseChannelStyle] = useState<boolean>(true);
   const [handoffPresetId, setHandoffPresetId] = useState<string>('auto');
   const [pipelinePresets, setPipelinePresets] = useState<PipelinePresetSummary[]>([]);
   const [cost, setCost] = useState<CostSummary | null>(null);
@@ -434,32 +440,52 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
 
           {/* ── Stage 5: Rowify ─────────────────────────────────── */}
           {hasApprovedScript && !hasRows && (
-            <div className="space-y-2 border-t border-neutral-800 pt-3">
+            <div className="space-y-3 border-t border-neutral-800 pt-3">
               <h4 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Production rows</h4>
               <p className="text-xs text-neutral-500">
-                Convert the approved script into scene-by-scene image prompts matched to a style preset. The output drops into the existing image-gen pipeline as-is.
+                Convert the approved script into scene-by-scene image prompts. The image-gen pipeline picks up the output as-is.
               </p>
-              <label className="block">
-                <span className="text-xs text-neutral-400">Style preset</span>
-                <select
-                  value={stylePresetIdHint}
-                  onChange={(e) => setStylePresetIdHint(e.target.value)}
-                  className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-neutral-100"
+              <label className="flex cursor-pointer items-start gap-2 rounded border border-neutral-800 bg-neutral-950 p-3">
+                <input
+                  type="checkbox"
+                  checked={useChannelStyle}
+                  onChange={(e) => setUseChannelStyle(e.target.checked)}
                   disabled={busy === 'rowify'}
-                >
-                  <option value="auto">Auto-match from visual profile</option>
-                  {CHANNEL_CLONE_CANDIDATE_PRESETS.map((id) => (
-                    <option key={id} value={id}>{id}</option>
-                  ))}
-                </select>
+                  className="mt-0.5 h-3 w-3 cursor-pointer accent-emerald-400"
+                />
+                <span className="flex-1 text-xs">
+                  <span className="block font-medium text-neutral-200">Use channel&rsquo;s visual DNA <span className="text-emerald-400">(recommended)</span></span>
+                  <span className="block text-[10px] text-neutral-500">
+                    Derive the image-gen style from the analyze stage&rsquo;s visual profile + the actual frames extracted from your reference videos. This is what makes channel-clone produce images that look like the source channel instead of one of the built-in presets.
+                  </span>
+                </span>
               </label>
+              {!useChannelStyle && (
+                <label className="block">
+                  <span className="text-xs text-neutral-400">Style preset fallback</span>
+                  <select
+                    value={stylePresetIdHint}
+                    onChange={(e) => setStylePresetIdHint(e.target.value)}
+                    className="mt-1 w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-neutral-100"
+                    disabled={busy === 'rowify'}
+                  >
+                    <option value="auto">Auto-match from visual profile</option>
+                    {CHANNEL_CLONE_CANDIDATE_PRESETS.map((id) => (
+                      <option key={id} value={id}>{id}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <button
                 type="button"
-                onClick={() => runStage('rowify', stylePresetIdHint === 'auto' ? {} : { stylePresetId: stylePresetIdHint })}
+                onClick={() => runStage('rowify', {
+                  useChannelStyle,
+                  ...(stylePresetIdHint === 'auto' ? {} : { stylePresetId: stylePresetIdHint }),
+                })}
                 disabled={busy === 'rowify'}
                 className="w-full rounded bg-neutral-200 px-4 py-2 font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
               >
-                {busy === 'rowify' ? 'Generating production rows…' : 'Generate production rows'}
+                {busy === 'rowify' ? 'Generating production rows…' : useChannelStyle ? 'Generate rows in channel style' : 'Generate rows in preset style'}
               </button>
             </div>
           )}

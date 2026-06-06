@@ -31,6 +31,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const jobId = typeof b.jobId === 'string' ? b.jobId.trim() : '';
   const stylePresetIdRaw = typeof b.stylePresetId === 'string' ? b.stylePresetId.trim() : '';
   const stylePresetId = stylePresetIdRaw === '' ? undefined : stylePresetIdRaw;
+  // Default to true — the WHOLE POINT of channel-clone is to clone
+  // the channel's visual DNA, not to bucket it into a built-in style.
+  // The operator can opt out by sending useChannelStyle: false (e.g.
+  // they want a clean preset-only render with no channel overrides).
+  const useChannelStyle = b.useChannelStyle === false ? false : true;
 
   if (!jobId) {
     return NextResponse.json({ error: 'jobId is required' }, { status: 400 });
@@ -63,8 +68,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     jobId,
     workspaceId: session.ws,
     stylePresetIdHint: stylePresetId ?? null,
+    useChannelStyle,
   });
-  await runRowify({ jobId, workspaceId: session.ws, stylePresetId });
+  await runRowify({ jobId, workspaceId: session.ws, stylePresetId, useChannelStyle });
 
   const after = await getChannelCloneJob(jobId, session.ws);
   if (!after) return NextResponse.json({ error: 'job vanished mid-run' }, { status: 500 });
