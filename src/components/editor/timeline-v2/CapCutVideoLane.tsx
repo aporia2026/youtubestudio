@@ -46,6 +46,33 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
 import { ShotKindBadge } from '@/components/editor/ShotKindBadge';
 
+/** Inject a one-time stylesheet that hides the library's internal
+ *  ruler. TimelineV2 already paints its own shared ruler at the top
+ *  of the lane stack; the library's duplicate steals 32px of vertical
+ *  space inside the video lane and clipped the thumbnail's bottom
+ *  third when LaneStrip's `overflow: hidden` kicked in.
+ *
+ *  Idempotent: registers a `<style>` tag with a fixed id on first
+ *  use, no-ops afterwards. Safe across hot-reloads + multiple
+ *  CapCutVideoLane mounts. */
+const HIDE_LIB_RULER_STYLE_ID = 'capcut-video-lane-hide-lib-ruler';
+function ensureLibRulerHidden(): void {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(HIDE_LIB_RULER_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = HIDE_LIB_RULER_STYLE_ID;
+  style.textContent = `
+    .capcut-video-lane .timeline-editor-time-area {
+      display: none !important;
+    }
+    /* The library's edit area normally sits below the time-area with
+       no negative margin; removing the time-area leaves a stray block
+       gap that's already collapsed by display:none, so nothing else
+       to do. */
+  `;
+  document.head.appendChild(style);
+}
+
 /** Library's per-action shape we feed in. Re-stated locally so this
  *  file doesn't depend on `@xzdarcy/timeline-engine`'s internal types. */
 interface LibTimelineEffect {
@@ -252,6 +279,11 @@ export function CapCutVideoLane({
   // have to omit them yet. See the "+" seam affordance todo.
   void onInsertScene;
   void insertSceneDefaultDurationMs;
+
+  // Hide the library's internal ruler the first time any lane mounts.
+  useEffect(() => {
+    ensureLibRulerHidden();
+  }, []);
 
   const timelineRef = useRef<TimelineState>(null);
 
@@ -823,30 +855,43 @@ export function CapCutVideoLane({
   );
 
   return (
-    <LibTimeline
-      ref={timelineRef}
-      editorData={editorData}
-      effects={TIMELINE_EFFECTS}
-      scale={TICK_SECONDS}
-      scaleWidth={pixelsPerSecond * TICK_SECONDS}
-      scaleSplitCount={SCALE_SPLIT_COUNT}
-      rowHeight={ROW_HEIGHT_PX}
-      startLeft={START_LEFT_PX}
-      minScaleCount={minScaleCount}
-      autoScroll
-      dragLine
-      gridSnap
-      // TimelineV2 renders the shared playhead spanning every lane.
-      // Hiding the library cursor keeps the two from fighting.
-      hideCursor
-      style={{ height: ROW_HEIGHT_PX + 32, width: '100%' }}
-      getActionRender={getActionRender}
-      onActionResizing={handleResizing}
-      onActionResizeEnd={handleResizeEnd}
-      onActionMoveEnd={handleMoveEnd}
-      onClickAction={handleClickAction}
-      onContextMenuAction={handleContextMenuAction}
-      onChange={() => { /* library bookkeeping; commands flow via callbacks above */ }}
-    />
+    <div
+      // `capcut-video-lane` is the hook the global stylesheet uses to
+      // hide the library's internal ruler. Without this class, the
+      // library renders its own 32px time-area on top of the row and
+      // LaneStrip's `overflow: hidden` clips ~32px off the bottom of
+      // the thumbnails.
+      className="capcut-video-lane"
+      style={{ height: ROW_HEIGHT_PX, width: '100%' }}
+    >
+      <LibTimeline
+        ref={timelineRef}
+        editorData={editorData}
+        effects={TIMELINE_EFFECTS}
+        scale={TICK_SECONDS}
+        scaleWidth={pixelsPerSecond * TICK_SECONDS}
+        scaleSplitCount={SCALE_SPLIT_COUNT}
+        rowHeight={ROW_HEIGHT_PX}
+        startLeft={START_LEFT_PX}
+        minScaleCount={minScaleCount}
+        autoScroll
+        dragLine
+        gridSnap
+        // TimelineV2 renders the shared playhead spanning every lane.
+        // Hiding the library cursor keeps the two from fighting.
+        hideCursor
+        // Just the row — the ruler is hidden by our global stylesheet
+        // so we don't need to reserve extra space for it. The row
+        // gets the full lane height.
+        style={{ height: ROW_HEIGHT_PX, width: '100%' }}
+        getActionRender={getActionRender}
+        onActionResizing={handleResizing}
+        onActionResizeEnd={handleResizeEnd}
+        onActionMoveEnd={handleMoveEnd}
+        onClickAction={handleClickAction}
+        onContextMenuAction={handleContextMenuAction}
+        onChange={() => { /* library bookkeeping; commands flow via callbacks above */ }}
+      />
+    </div>
   );
 }
