@@ -27,6 +27,8 @@
 import { useCallback, useRef, useState } from 'react';
 import { upload } from '@vercel/blob/client';
 
+type UploadStatus = 'idle' | 'queued' | 'uploading' | 'uploaded' | 'failed';
+
 interface VideoUpload {
   /** Local-only React key + identity. */
   uid: string;
@@ -41,6 +43,41 @@ interface VideoUpload {
   error: string | null;
   /** Blob URL once upload finishes — used by the kickoff POST. */
   blobUrl: string | null;
+  /** Lifecycle stage so the operator can see exactly what's happening:
+   *    idle      — picked but not yet submitted
+   *    queued    — waiting for a free upload slot (we cap concurrency)
+   *    uploading — bytes in flight; pair with `uploadProgress`
+   *    uploaded  — Vercel Blob confirmed; awaiting kickoff
+   *    failed    — see `error` */
+  status: UploadStatus;
+}
+
+/** Maximum concurrent Blob uploads. The browser's per-origin
+ *  connection cap + Vercel Blob's per-file finalization overhead
+ *  combine to make 5+ parallel uploads stall and retry from zero.
+ *  Two at a time keeps both happy and visibly progresses through
+ *  the list. */
+const MAX_PARALLEL_UPLOADS = 2;
+
+/** Run `fn` over `items` with at most `limit` in flight at once.
+ *  Errors propagate via the returned promise so the form's catch
+ *  block surfaces them. */
+async function limitedParallel<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
 }
 
 export interface ChannelCloneUploadFormProps {
@@ -64,7 +101,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
   const addFiles = useCallback((files: FileList | File[]) => {
     setVideos((prev) => [
       ...prev,
-      ...Array.from(files).map((file) => ({
+      ...Array.from(files).map<VideoUpload>((file) => ({
         uid: nextUid(),
         file,
         title: file.name.replace(/\.[^.]+$/, ''),
@@ -72,6 +109,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         uploadProgress: null,
         error: null,
         blobUrl: null,
+        status: 'idle',
       })),
     ]);
   }, []);
@@ -95,29 +133,37 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
     setSubmitError(null);
     setSubmitting(true);
     try {
-      // 1. Upload each file in parallel. The Blob client uses the
-      // /api/channel-clone/upload-token endpoint to mint a per-file
-      // signed token before sending bytes.
-      const uploadedUrls = await Promise.all(
-        videos.map(async (v) => {
-          try {
-            update(v.uid, { uploadProgress: 0, error: null });
-            const result = await upload(v.file.name, v.file, {
-              access: 'public',
-              handleUploadUrl: '/api/channel-clone/upload-token',
-              onUploadProgress: (evt) => {
-                update(v.uid, { uploadProgress: Math.round(evt.percentage) });
-              },
-            });
-            update(v.uid, { uploadProgress: 100, blobUrl: result.url });
-            return { uid: v.uid, blobUrl: result.url };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            update(v.uid, { error: msg, uploadProgress: null });
-            throw err;
-          }
-        }),
+      // Mark every video queued up front so the operator sees the
+      // pipeline state immediately — without this the rows past the
+      // first MAX_PARALLEL_UPLOADS look idle until their slot opens.
+      setVideos((prev) =>
+        prev.map((v) => ({ ...v, status: 'queued', uploadProgress: null, error: null })),
       );
+
+      // 1. Upload each file with bounded concurrency. Promise.all
+      // with 5+ parallel uploads of 13-62MB files stalls the Blob
+      // server's finalization and the SDK retries the whole upload
+      // from 0% — which manifested as "progress bar starts over".
+      // Two at a time keeps both the browser's per-origin connection
+      // pool and Blob's per-file processing budget happy.
+      const uploadedUrls = await limitedParallel(videos, MAX_PARALLEL_UPLOADS, async (v) => {
+        try {
+          update(v.uid, { status: 'uploading', uploadProgress: 0, error: null });
+          const result = await upload(v.file.name, v.file, {
+            access: 'public',
+            handleUploadUrl: '/api/channel-clone/upload-token',
+            onUploadProgress: (evt) => {
+              update(v.uid, { uploadProgress: Math.round(evt.percentage) });
+            },
+          });
+          update(v.uid, { status: 'uploaded', uploadProgress: 100, blobUrl: result.url });
+          return { uid: v.uid, blobUrl: result.url };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          update(v.uid, { status: 'failed', error: msg, uploadProgress: null });
+          throw err;
+        }
+      });
 
       // 2. Kick off the intake. The route's `after()` wrapper keeps
       // the function alive for the full sandbox run.
@@ -252,15 +298,8 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
                   className="w-full resize-y rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 font-mono text-[10px] leading-relaxed text-neutral-100 outline-none focus:border-neutral-500 disabled:opacity-50"
                 />
               </label>
-              {v.uploadProgress !== null && (
-                <div className="h-1 w-full overflow-hidden rounded bg-neutral-800">
-                  <div
-                    className="h-full bg-emerald-500 transition-all"
-                    style={{ width: `${v.uploadProgress}%` }}
-                  />
-                </div>
-              )}
-              {v.error && <p className="text-[10px] text-red-300">{v.error}</p>}
+              <UploadStatusRow status={v.status} progress={v.uploadProgress} />
+              {v.error && <p className="break-all text-[10px] text-red-300">{v.error}</p>}
             </li>
           ))}
         </ul>
@@ -279,6 +318,43 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
             : `Start intake from ${videos.length} upload${videos.length === 1 ? '' : 's'}`}
       </button>
       {submitError && <p className="text-xs text-red-400">{submitError}</p>}
+    </div>
+  );
+}
+
+/** Inline progress + status badge for one row. Renders nothing
+ *  before submission (status === 'idle'); switches to a labelled
+ *  badge once the operator hits Start, plus a progress bar when
+ *  bytes are actively moving. The label uses lay-readable verbs
+ *  ("waiting", "uploading", "done") rather than the internal enum
+ *  so a confused user can self-diagnose without a glossary. */
+function UploadStatusRow({ status, progress }: { status: UploadStatus; progress: number | null }) {
+  if (status === 'idle') return null;
+  const label =
+    status === 'queued' ? 'waiting in queue'
+    : status === 'uploading' ? (progress !== null ? `uploading ${progress}%` : 'uploading')
+    : status === 'uploaded' ? 'uploaded — waiting for the others'
+    : 'failed';
+  const colour =
+    status === 'failed' ? 'text-red-300'
+    : status === 'uploaded' ? 'text-emerald-300'
+    : status === 'uploading' ? 'text-amber-300'
+    : 'text-neutral-400';
+  return (
+    <div className="space-y-1">
+      <div className={`font-mono text-[9px] uppercase tracking-wide ${colour}`}>{label}</div>
+      {progress !== null && (
+        <div className="h-1 w-full overflow-hidden rounded bg-neutral-800">
+          <div
+            className={`h-full transition-all ${
+              status === 'failed' ? 'bg-red-500'
+              : status === 'uploaded' ? 'bg-emerald-500'
+              : 'bg-amber-500'
+            }`}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }
