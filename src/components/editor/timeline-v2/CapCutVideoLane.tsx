@@ -44,6 +44,7 @@ import { Timeline as LibTimeline, type TimelineState } from '@xzdarcy/react-time
 import '@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { VideoConfig, VideoShot } from '@/remotion/types';
+import { ShotKindBadge } from '@/components/editor/ShotKindBadge';
 
 /** Library's per-action shape we feed in. Re-stated locally so this
  *  file doesn't depend on `@xzdarcy/timeline-engine`'s internal types. */
@@ -89,9 +90,13 @@ const TICK_SECONDS = 1;
 /** Number of subdivisions within each major tick. 10 is what the
  *  standalone timeline editor uses; matches CapCut's feel. */
 const SCALE_SPLIT_COUNT = 10;
-/** Library default row height (32px) is too short for thumbnails.
- *  64 matches `VIDEO_LANE_HEIGHT_DEFAULT` in TimelineV2. */
-const ROW_HEIGHT_PX = 64;
+/** Library default row height (32px) is way too short for thumbnails
+ *  that need to communicate shot identity at a glance — image, kind
+ *  badge, transition glyph, trim handles, duration label. 88 gives
+ *  enough vertical room for all of those without the lane dominating
+ *  the multi-track shell. Update `VIDEO_LANE_HEIGHT_DEFAULT` in
+ *  TimelineV2 in lockstep. */
+const ROW_HEIGHT_PX = 88;
 /** Pixel offset where the first tick starts. TimelineV2's shared
  *  playhead (rendered at the parent level) computes its X as
  *  `(playheadMs / 1000) * pixelsPerSecond` assuming `t=0` sits at
@@ -487,9 +492,16 @@ export function CapCutVideoLane({
         );
       }
       const isSelected = selection === data.shotIndex;
+      // Selection is the most important visual state on the timeline —
+      // a thin ring isn't enough at this lane height. Stack three
+      // signals so the active card is unmistakable: a thick inner
+      // sky-blue ring, a soft outer glow, and a brighter card border.
       const ringClass = isSelected
-        ? 'ring-2 ring-sky-400/80'
-        : 'ring-1 ring-neutral-700';
+        ? 'ring-[3px] ring-sky-400 ring-offset-1 ring-offset-neutral-950'
+        : 'ring-1 ring-neutral-700/80';
+      const selectionGlow = isSelected
+        ? '0 0 0 1px rgba(125, 211, 252, 0.45), 0 0 14px 2px rgba(56, 189, 248, 0.45)'
+        : '0 1px 2px rgba(0,0,0,0.35)';
       const labelMs = (data.shot.durationMs / 1000).toFixed(1) + 's';
       // Scissors button — only on the selected card AND only when the
       // playhead sits inside this shot AND a split here would produce
@@ -511,9 +523,31 @@ export function CapCutVideoLane({
       const TRIM_HANDLE_INSET_PX = 4;
       return (
         <div
-          className={`relative flex h-full w-full overflow-hidden rounded ${ringClass}`}
+          className={`relative flex h-full w-full overflow-hidden rounded-md ${ringClass}`}
           style={{
             background: data.imageUrl ? '#0a0a0f' : '#1f1f29',
+            boxShadow: selectionGlow,
+          }}
+          // Belt-and-suspenders for right-click. The library also fires
+          // `onContextMenuAction` (wired below), but its callback runs
+          // AFTER the React event has already bubbled, which sometimes
+          // lets the browser's native menu flash before the host menu
+          // takes over. Catching contextmenu here, on the card wrapper,
+          // suppresses the native menu first and dispatches the host's
+          // menu in one synchronous step.
+          onContextMenu={(e) => {
+            if (!onShotContextMenu) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (typeof console !== 'undefined' && console.info) {
+              console.info('[capcut-video-lane context menu]', {
+                shotIndex: data.shotIndex,
+                x: e.clientX,
+                y: e.clientY,
+                via: 'card-wrapper',
+              });
+            }
+            onShotContextMenu(data.shotIndex, e.clientX, e.clientY);
           }}
         >
           {data.imageUrl ? (
@@ -526,19 +560,48 @@ export function CapCutVideoLane({
                 width: '100%',
                 height: '100%',
                 objectFit: 'cover',
-                opacity: 0.78,
+                // Brighter when selected so the user's pick reads as
+                // "live" instead of "dimmed like the rest". Lifted
+                // slightly across the board so the timeline doesn't
+                // look washed out at the new ROW_HEIGHT.
+                opacity: isSelected ? 1 : 0.86,
                 pointerEvents: 'none',
               }}
             />
           ) : null}
-          {/* Top strip: index + cross-fade toggle. */}
+          {/* ShotKindBadge — TITLE / COLLAGE / MOTION / STAT / B-ROLL /
+              BLANK / ANIM. Sits top-left so it's always visible even
+              when the card is narrow at low zoom. Reuses the same
+              resolver `rowKind` that the SHOTS-rail filter and legacy
+              shot-graph editor both consume, so the badge can't drift
+              from the inspector's "Shot type" dropdown. */}
           <div
-            className="absolute inset-x-0 top-0 flex items-center justify-between gap-1 px-1 py-0.5 text-[9px] font-medium text-neutral-100"
             style={{
-              background: 'linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0))',
+              position: 'absolute',
+              top: 3,
+              left: 3,
+              zIndex: 2,
+              pointerEvents: 'none',
             }}
           >
-            <span className="pointer-events-none truncate">#{data.shotIndex + 1}</span>
+            <ShotKindBadge
+              shotKind={data.shot.shotKind}
+              visualType={data.shot.visualType}
+              pinTopLeft={false}
+              scale="sm"
+            />
+          </div>
+          {/* Top strip: index + cross-fade toggle. Index moves to the
+              top-right so the ShotKindBadge owns the top-left. */}
+          <div
+            className="absolute inset-x-0 top-0 flex items-center justify-end gap-1 px-1 py-0.5 text-[10px] font-semibold text-neutral-100"
+            style={{
+              background: 'linear-gradient(180deg, rgba(0,0,0,0.5), rgba(0,0,0,0))',
+            }}
+          >
+            <span className="pointer-events-none truncate" style={{ paddingRight: 2 }}>
+              #{data.shotIndex + 1}
+            </span>
             {onToggleTransition ? (
               <button
                 type="button"
@@ -571,9 +634,10 @@ export function CapCutVideoLane({
           </div>
           {/* Bottom strip: duration. */}
           <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 px-1 py-0.5 text-[9px] font-medium text-neutral-200"
+            className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-end px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-neutral-100"
             style={{
-              background: 'linear-gradient(0deg, rgba(0,0,0,0.6), rgba(0,0,0,0))',
+              background: 'linear-gradient(0deg, rgba(0,0,0,0.65), rgba(0,0,0,0))',
+              textShadow: '0 1px 1px rgba(0,0,0,0.7)',
             }}
           >
             {labelMs}
@@ -591,8 +655,8 @@ export function CapCutVideoLane({
               title="Trim source from the head (drag right to shave)"
               style={{
                 position: 'absolute',
-                top: 16,
-                bottom: 16,
+                top: 22,
+                bottom: 22,
                 left: TRIM_HANDLE_INSET_PX,
                 width: TRIM_HANDLE_WIDTH_PX,
                 background: 'rgba(250, 204, 21, 0.7)',
@@ -611,8 +675,8 @@ export function CapCutVideoLane({
               title="Trim source from the tail (drag left to shave)"
               style={{
                 position: 'absolute',
-                top: 16,
-                bottom: 16,
+                top: 22,
+                bottom: 22,
                 right: TRIM_HANDLE_INSET_PX,
                 width: TRIM_HANDLE_WIDTH_PX,
                 background: 'rgba(250, 204, 21, 0.7)',
