@@ -59,17 +59,13 @@ interface VideoUpload {
  *  time keeps both happy and visibly progresses through the list. */
 const MAX_PARALLEL_UPLOADS = 2;
 
-/** PUT a file to a presigned R2 URL with progress reporting.
- *  Resolves with the R2 key on success (so the caller can hand it
- *  back to the kickoff endpoint), rejects on any HTTP error.
- *
- *  Uses XMLHttpRequest because the Fetch API still has no upload-
- *  progress events as of 2026; without progress the operator can't
- *  tell whether a slow upload is hung or just big. */
-async function putToR2(
+/** Single-attempt PUT. Resolves on 2xx, rejects on any error.
+ *  Separated from `putToR2` so the retry wrapper can call it twice. */
+async function putToR2Once(
   url: string,
   file: File,
   onProgress: (pct: number) => void,
+  abortSignal?: AbortSignal,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -90,10 +86,50 @@ async function putToR2(
     });
     xhr.addEventListener('error', () => reject(new Error('R2 PUT network error')));
     xhr.addEventListener('abort', () => reject(new Error('R2 PUT aborted')));
+    if (abortSignal) {
+      const onAbort = () => xhr.abort();
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+    }
     xhr.open('PUT', url);
     xhr.setRequestHeader('Content-Type', file.type);
     xhr.send(file);
   });
+}
+
+/** PUT a file to a presigned R2 URL with progress reporting +
+ *  one automatic retry on transient network errors. Resolves on
+ *  success, rejects after the second attempt fails.
+ *
+ *  Why the retry: a single TCP blip on a 50 MB upload otherwise
+ *  takes the whole row to FAILED. One automatic retry catches the
+ *  vast majority of "ISP hiccup" cases without the operator
+ *  having to manually re-trigger.
+ *
+ *  XMLHttpRequest is used because the Fetch API still has no
+ *  upload-progress events as of 2026; without progress the
+ *  operator can't tell whether a slow upload is hung or just big. */
+async function putToR2(
+  url: string,
+  file: File,
+  onProgress: (pct: number) => void,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  try {
+    await putToR2Once(url, file, onProgress, abortSignal);
+    return;
+  } catch (err) {
+    // Don't retry on operator-initiated abort.
+    if (abortSignal?.aborted) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    // Retry on network errors and 5xx; don't retry on 4xx (auth /
+    // size / content-type problems won't fix themselves).
+    const isRetryable = /network error|R2 PUT failed \(5\d\d\)/.test(msg);
+    if (!isRetryable) throw err;
+    // Brief backoff so we don't immediately hit the same blip.
+    await new Promise((r) => setTimeout(r, 1500));
+    onProgress(0); // reset the bar so the operator sees retry attempt
+    await putToR2Once(url, file, onProgress, abortSignal);
+  }
 }
 
 /** Run `fn` over `items` with at most `limit` in flight at once.
@@ -139,6 +175,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
   const [frameIntervalSec, setFrameIntervalSec] = useState<5 | 10 | 15>(10);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addFiles = useCallback((files: FileList | File[]) => {
@@ -165,6 +202,53 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
     setVideos((prev) => prev.map((v) => (v.uid === uid ? { ...v, ...patch } : v)));
   }, []);
 
+  /** Upload one video's bytes to R2. Mints a fresh signed URL each
+   *  call (no URL reuse — fewer ways to expire). Reports progress
+   *  + final status via `update`. Returns the R2 key on success;
+   *  throws on failure with the per-row error already set on state. */
+  const uploadOneVideo = useCallback(
+    async (uid: string, file: File): Promise<string> => {
+      update(uid, { status: 'uploading', uploadProgress: 0, error: null });
+      // eslint-disable-next-line no-restricted-syntax -- POST, mint
+      const tokenRes = await fetch('/api/channel-clone/r2-upload-url', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          filename: file.name,
+          contentType: file.type || 'video/mp4',
+        }),
+      });
+      const tokenData = (await tokenRes.json()) as { key?: string; uploadUrl?: string; error?: string };
+      if (!tokenRes.ok || !tokenData.key || !tokenData.uploadUrl) {
+        throw new Error(tokenData.error ?? `Could not mint R2 upload URL (${tokenRes.status})`);
+      }
+      await putToR2(tokenData.uploadUrl, file, (pct) => {
+        update(uid, { uploadProgress: pct });
+      });
+      update(uid, { status: 'uploaded', uploadProgress: 100, r2Key: tokenData.key });
+      return tokenData.key;
+    },
+    [update],
+  );
+
+  /** Per-row Retry button handler. Re-runs uploadOneVideo for one
+   *  uid. Does NOT trigger the kickoff — the operator can keep
+   *  retrying individual rows, then click the main Start button
+   *  again once they're all green. */
+  const retryRow = useCallback(
+    async (uid: string) => {
+      const target = videos.find((v) => v.uid === uid);
+      if (!target) return;
+      try {
+        await uploadOneVideo(uid, target.file);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        update(uid, { status: 'failed', error: msg, uploadProgress: null });
+      }
+    },
+    [videos, uploadOneVideo, update],
+  );
+
   const handleSubmit = useCallback(async () => {
     if (videos.length === 0) return;
     for (const v of videos) {
@@ -176,45 +260,43 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
     setSubmitError(null);
     setSubmitting(true);
     try {
-      // Mark every video queued up front so the operator sees the
-      // pipeline state immediately — without this the rows past the
-      // first MAX_PARALLEL_UPLOADS look idle until their slot opens.
+      // Mark videos that still need uploading as queued. Rows that
+      // already succeeded (e.g. operator retried them then hit Start
+      // again) keep their 'uploaded' state — no point re-uploading
+      // the same bytes.
       setVideos((prev) =>
-        prev.map((v) => ({ ...v, status: 'queued', uploadProgress: null, error: null })),
+        prev.map((v) =>
+          v.status === 'uploaded' && v.r2Key
+            ? v
+            : { ...v, status: 'queued', uploadProgress: null, error: null },
+        ),
       );
 
-      // 1. Upload each file with bounded concurrency.
-      // Per-file flow:
-      //   a. POST /api/channel-clone/r2-upload-url → presigned PUT.
-      //   b. XHR PUT the bytes directly to R2 with progress events.
-      //   c. Capture the R2 key for the kickoff POST.
-      const uploadedKeys = await limitedParallel(videos, MAX_PARALLEL_UPLOADS, async (v) => {
+      // 1. Upload each file with bounded concurrency. Per-row errors
+      // are CAUGHT inside the worker so one bad row doesn't kill the
+      // batch — the row goes to 'failed' state and the operator can
+      // hit its Retry button after the others finish.
+      type Result = { uid: string; r2Key: string } | { uid: string; failed: true };
+      const results = await limitedParallel<VideoUpload, Result>(videos, MAX_PARALLEL_UPLOADS, async (v) => {
+        if (v.status === 'uploaded' && v.r2Key) {
+          return { uid: v.uid, r2Key: v.r2Key };
+        }
         try {
-          update(v.uid, { status: 'uploading', uploadProgress: 0, error: null });
-          // eslint-disable-next-line no-restricted-syntax -- POST, mint
-          const tokenRes = await fetch('/api/channel-clone/r2-upload-url', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              filename: v.file.name,
-              contentType: v.file.type || 'video/mp4',
-            }),
-          });
-          const tokenData = (await tokenRes.json()) as { key?: string; uploadUrl?: string; error?: string };
-          if (!tokenRes.ok || !tokenData.key || !tokenData.uploadUrl) {
-            throw new Error(tokenData.error ?? `Could not mint R2 upload URL (${tokenRes.status})`);
-          }
-          await putToR2(tokenData.uploadUrl, v.file, (pct) => {
-            update(v.uid, { uploadProgress: pct });
-          });
-          update(v.uid, { status: 'uploaded', uploadProgress: 100, r2Key: tokenData.key });
-          return { uid: v.uid, r2Key: tokenData.key };
+          const r2Key = await uploadOneVideo(v.uid, v.file);
+          return { uid: v.uid, r2Key };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           update(v.uid, { status: 'failed', error: msg, uploadProgress: null });
-          throw err;
+          return { uid: v.uid, failed: true };
         }
       });
+
+      const failed = results.filter((r): r is { uid: string; failed: true } => 'failed' in r);
+      if (failed.length > 0) {
+        setSubmitError(`${failed.length} upload${failed.length === 1 ? '' : 's'} failed — click Retry next to each red row, then hit Start again.`);
+        return;
+      }
+      const uploadedKeys = results.filter((r): r is { uid: string; r2Key: string } => 'r2Key' in r);
 
       // 2. Kick off the intake. The route's `after()` wrapper keeps
       // the function alive for the full sandbox run.
@@ -248,7 +330,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
     } finally {
       setSubmitting(false);
     }
-  }, [videos, sourceLabel, frameIntervalSec, update, onSubmitted]);
+  }, [videos, sourceLabel, sourceChannelUrl, frameIntervalSec, update, uploadOneVideo, onSubmitted]);
 
   return (
     <div className="space-y-4">
@@ -296,7 +378,28 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         </label>
       </div>
 
-      <div className="rounded border-2 border-dashed border-neutral-700 bg-neutral-950/60 p-4 text-center">
+      <div
+        className={`rounded border-2 border-dashed p-4 text-center transition-colors ${
+          dragOver ? 'border-neutral-300 bg-neutral-900' : 'border-neutral-700 bg-neutral-950/60'
+        }`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!dragOver) setDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragOver(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setDragOver(false);
+          const dropped = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('video/'));
+          if (dropped.length > 0) addFiles(dropped);
+        }}
+      >
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
@@ -318,7 +421,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
           }}
         />
         <p className="mt-2 text-[10px] text-neutral-500">
-          MP4 / WebM / MOV / MKV · up to 500 MB per file · max 8 videos per job
+          MP4 / WebM / MOV / MKV · up to 500 MB per file · max 8 videos per job · drag &amp; drop also works
         </p>
       </div>
 
@@ -364,7 +467,19 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
                 />
               </label>
               <UploadStatusRow status={v.status} progress={v.uploadProgress} />
-              {v.error && <p className="break-all text-[10px] text-red-300">{v.error}</p>}
+              {v.error && (
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <p className="flex-1 break-all text-[10px] text-red-300">{v.error}</p>
+                  <button
+                    type="button"
+                    onClick={() => void retryRow(v.uid)}
+                    disabled={v.status === 'uploading'}
+                    className="shrink-0 rounded border border-amber-700 bg-amber-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-amber-300 hover:border-amber-500 hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
