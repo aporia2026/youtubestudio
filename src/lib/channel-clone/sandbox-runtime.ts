@@ -233,6 +233,79 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
   return { sandbox, workDir, ffmpegPath, cookiesPath };
 }
 
+export interface UploadSandbox {
+  sandbox: Sandbox;
+  workDir: string;
+  /** Same as IntakeSandbox.ffmpegPath — resolved from imageio-ffmpeg. */
+  ffmpegPath: string;
+}
+
+/** Create a lightweight sandbox preloaded with ONLY ffmpeg.
+ *
+ *  Used by the manual-upload intake path (the user uploads their
+ *  own video files, so we never touch YouTube and don't need
+ *  yt-dlp / Node / cookies). Faster to provision than
+ *  `createIntakeSandbox` because pip only installs imageio-ffmpeg,
+ *  not the full yt-dlp[default] tree. */
+export async function createUploadSandbox(jobId: string, log?: JobLogger): Promise<UploadSandbox> {
+  const creds = resolveSandboxCredentials();
+  if (!creds && !process.env.VERCEL_OIDC_TOKEN) {
+    throw new Error(
+      'Vercel Sandbox auth not configured. See createIntakeSandbox for setup options.',
+    );
+  }
+
+  log?.info('sandbox', 'create start', { mode: 'upload', auth: creds ? 'explicit-pat' : 'oidc' });
+  logger.info('[channel-clone sandbox] create start (upload)', { jobId, auth: creds ? 'explicit-pat' : 'oidc' });
+  const sandbox = await Sandbox.create({
+    runtime: 'python3.13',
+    timeout: SANDBOX_LIFETIME_MS,
+    ...(creds ?? {}),
+  });
+  const workDir = '/home/vercel-sandbox';
+  log?.info('sandbox', 'created', { sandboxName: sandbox.name });
+
+  log?.info('sandbox', 'pip install imageio-ffmpeg');
+  await runOrThrow(sandbox, 'pip install imageio-ffmpeg', {
+    cmd: 'pip',
+    args: ['install', '--quiet', '--no-input', 'imageio-ffmpeg'],
+    timeoutMs: PIP_INSTALL_TIMEOUT_MS,
+  });
+  log?.info('sandbox', 'pip install done');
+
+  const probe = await runInSandbox(sandbox, {
+    cmd: 'python',
+    args: ['-c', 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'],
+    timeoutMs: FFMPEG_RESOLVE_TIMEOUT_MS,
+  });
+  if (probe.exitCode !== 0) {
+    throw new Error(`could not resolve ffmpeg path: ${probe.stderr.slice(-2000).trim()}`);
+  }
+  const ffmpegPath = probe.stdout.trim();
+  if (!ffmpegPath || !ffmpegPath.startsWith('/')) {
+    throw new Error(`imageio_ffmpeg returned an unexpected ffmpeg path: ${ffmpegPath || '(empty)'}`);
+  }
+  log?.info('sandbox', 'ffmpeg resolved', { ffmpegPath });
+  log?.info('sandbox', 'ready');
+  logger.info('[channel-clone sandbox] ready (upload)', { jobId, sandboxName: sandbox.name, ffmpegPath });
+  return { sandbox, workDir, ffmpegPath };
+}
+
+/** Symmetric stop helper for the upload-mode sandbox. */
+export async function destroyUploadSandbox(jobId: string, ctx: UploadSandbox, log?: JobLogger): Promise<void> {
+  try {
+    await ctx.sandbox.stop();
+    log?.info('sandbox', 'stopped', {
+      sandboxName: ctx.sandbox.name,
+      activeCpuUsageMs: ctx.sandbox.activeCpuUsageMs ?? null,
+    });
+  } catch (err) {
+    log?.warn('sandbox', 'stop failed; relying on lifetime auto-reap', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /** Stop the sandbox + log billable usage. Swallows errors so the
  *  caller's failure path isn't masked by a stop-time exception —
  *  Vercel reaps orphans on the sandbox's own lifetime timeout anyway. */

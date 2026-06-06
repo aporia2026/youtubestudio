@@ -27,6 +27,7 @@ import type {
   ProgressLogEntry,
 } from '@/lib/channel-clone/types';
 import { CHANNEL_CLONE_CANDIDATE_PRESETS } from '@/lib/channel-clone/match-style-preset';
+import { ChannelCloneUploadForm } from './ChannelCloneUploadForm';
 
 interface JobView {
   id: string;
@@ -87,6 +88,11 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
   const [cost, setCost] = useState<CostSummary | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Two intake modes: paste a YouTube URL (cloud + sandbox + cookies)
+  // or upload reference video files directly (bypasses YouTube).
+  // The upload path was added because YouTube's anti-bot stack got
+  // aggressive enough that the cloud-IP path can't be relied on.
+  const [intakeMode, setIntakeMode] = useState<'url' | 'upload'>('url');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState<null | 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify' | 'handoff' | 'publish-pack'>(null);
   const pollHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -246,6 +252,16 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
         </p>
       </header>
 
+      <IntakeModeTabs mode={intakeMode} onChange={setIntakeMode} />
+
+      {intakeMode === 'upload' ? (
+        <ChannelCloneUploadForm
+          onSubmitted={(jobId) => {
+            console.info('[channel-clone ui upload-accepted]', { jobId });
+            void pollOnce(jobId);
+          }}
+        />
+      ) : (
       <form onSubmit={handleSubmit} className="space-y-3">
         <label className="block">
           <span className="text-xs text-neutral-400">YouTube channel or video URL</span>
@@ -272,6 +288,7 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
         </button>
         {submitError && <p className="text-xs text-red-400">{submitError}</p>}
       </form>
+      )}
 
       {job && (
         <section className="space-y-3 border-t border-neutral-800 pt-4">
@@ -640,6 +657,43 @@ function ProgressLogRow({ entry }: { entry: ProgressLogEntry }) {
         {entry.msg}
         {dataString && <span className="ml-2 text-neutral-500">{dataString}</span>}
       </span>
+    </div>
+  );
+}
+
+/** Two-tab switcher between "paste a URL" and "upload videos". The
+ *  underlying intake flows are different (URL → yt-dlp inside a
+ *  sandbox; upload → Blob + ffmpeg-only sandbox) but the downstream
+ *  stages (analyze, topics, etc.) are identical. Sticking with a
+ *  pill-style tab here because radio buttons feel heavier for a
+ *  two-option toggle and the user is going to repeatedly switch
+ *  while iterating. */
+function IntakeModeTabs({
+  mode,
+  onChange,
+}: {
+  mode: 'url' | 'upload';
+  onChange: (m: 'url' | 'upload') => void;
+}) {
+  const baseClass = 'flex-1 rounded px-3 py-1.5 text-center text-xs font-medium transition-colors';
+  const active = 'bg-neutral-200 text-neutral-900';
+  const inactive = 'bg-neutral-900 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200';
+  return (
+    <div className="flex gap-1 rounded border border-neutral-800 bg-neutral-950 p-1">
+      <button
+        type="button"
+        onClick={() => onChange('url')}
+        className={`${baseClass} ${mode === 'url' ? active : inactive}`}
+      >
+        Paste a URL
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('upload')}
+        className={`${baseClass} ${mode === 'upload' ? active : inactive}`}
+      >
+        Upload videos
+      </button>
     </div>
   );
 }
