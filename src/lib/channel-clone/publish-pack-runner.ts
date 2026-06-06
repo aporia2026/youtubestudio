@@ -39,6 +39,13 @@ const PUBLISH_PACK_OUTPUT_SCHEMA = `Respond with a single JSON object of this sh
   "pinnedCommentOptions": [string, string, string], // EXACTLY 3 candidate pinned comments, each engagement-bait that matches the channel's voice
   "categoryRecommendation": string,               // One of YouTube's categories (e.g. "Education", "Science & Technology", "People & Blogs")
   "optimalUploadTime": string,                    // Free-form, e.g. "Tuesday 4pm ET" or "weekday late afternoon"
+  "similarChannelNames": [
+    {
+      "name": string,                             // Real or invented channel name that sits in the same niche neighbourhood
+      "reasoning": string                         // 1 sentence — why this name fits the cloned channel's audience + voice
+    }
+    // EXACTLY 8 items. Prefer well-known REAL channels when the niche has them; invent plausible ones to fill in.
+  ],
   "thumbnailConcepts": [
     {
       "visualConcept": string,                    // 1 sentence describing what the viewer sees
@@ -68,6 +75,7 @@ Constraints:
 - Tags lowercase, no leading "#", no commas inside a tag.
 - Thumbnail concepts MUST reference the channel's signature palette + the style preset's visual identity.
 - Calendar variety: do not repeat angles; rotate through the channel's known pain points.
+- similarChannelNames: list 8 channels (real or invented) that target the SAME audience + niche as the cloned source. Aim for a mix — at least 3 should be real channels the audience would recognise; the rest can be plausible inventions for niches without obvious peers. Each `reasoning` is ONE sentence describing the overlap (audience, format, voice, visual style).
 
 Output ONLY the JSON object. First char \`{\`, last char \`}\`. No prose, no fences.`;
 
@@ -166,6 +174,7 @@ export async function runPublishPack(opts: RunPublishPackOptions): Promise<void>
     tags: parsed.tags.length,
     thumbnails: parsed.thumbnailConcepts.length,
     calendarDays: parsed.contentCalendar.length,
+    similarChannels: parsed.similarChannelNames.length,
   });
 }
 
@@ -235,6 +244,12 @@ export function parsePublishPackResponse(
   const categoryRecommendation = asString(o.categoryRecommendation, 'categoryRecommendation');
   const optimalUploadTime = asString(o.optimalUploadTime, 'optimalUploadTime');
 
+  // Similar channel names — 8 entries, each { name, reasoning }
+  const similarChannelNames = asArrayOfObjects(o.similarChannelNames, 'similarChannelNames', 8).map((s, i) => ({
+    name: asString(s.name, `similarChannelNames[${i}].name`),
+    reasoning: asString(s.reasoning, `similarChannelNames[${i}].reasoning`),
+  }));
+
   // Thumbnails
   const thumbnailConcepts = asArrayOfObjects(o.thumbnailConcepts, 'thumbnailConcepts', 5).map((t, i) => ({
     visualConcept: asString(t.visualConcept, `thumbnailConcepts[${i}].visualConcept`),
@@ -278,6 +293,7 @@ export function parsePublishPackResponse(
     pinnedCommentOptions: [pinnedCommentOptions[0], pinnedCommentOptions[1], pinnedCommentOptions[2]],
     categoryRecommendation,
     optimalUploadTime,
+    similarChannelNames,
     thumbnailConcepts,
     contentCalendar: calendar,
     modelUsed: modelId,

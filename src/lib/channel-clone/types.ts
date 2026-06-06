@@ -368,6 +368,17 @@ export interface ChannelCloneJobState {
     /** When the audience is most active — a free-form time-of-week
      *  string from the model rather than a structured schedule. */
     optimalUploadTime: string;
+    /** 8 channel-name candidates that the LLM thinks land in the
+     *  same niche / target audience / stylistic neighbourhood as the
+     *  cloned source. Surfaced so the operator can find peers to
+     *  study or to seed handle ideas for a brand-new channel that
+     *  competes in this space. Each entry includes a short
+     *  `reasoning` so the operator can see WHY the model thinks the
+     *  name fits — channel discovery + transparency in one shot. */
+    similarChannelNames: {
+      name: string;
+      reasoning: string;
+    }[];
     /** 5 thumbnail design concepts. The fullImagePrompt is meant to
      *  be passed verbatim to an image generator; styleMatched=true
      *  means the prompt already incorporates the chosen style preset's

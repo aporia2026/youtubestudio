@@ -33,6 +33,11 @@ const CALENDAR = Array.from({ length: 30 }, (_, i) => ({
   contentPillar: i % 2 === 0 ? 'evergreen explainer' : 'audience pain point',
 }));
 
+const SIMILAR_CHANNELS = Array.from({ length: 8 }, (_, i) => ({
+  name: `Similar Channel ${i + 1}`,
+  reasoning: `Channel ${i + 1} targets the same audience by leaning on the same hook archetype.`,
+}));
+
 const VALID_PUBLISH_PACK = {
   titles: TITLES,
   description:
@@ -41,6 +46,7 @@ const VALID_PUBLISH_PACK = {
   pinnedCommentOptions: PINNED,
   categoryRecommendation: 'Education',
   optimalUploadTime: 'Tuesday 4pm ET',
+  similarChannelNames: SIMILAR_CHANNELS,
   thumbnailConcepts: THUMBNAILS,
   contentCalendar: CALENDAR,
 };
@@ -53,6 +59,8 @@ describe('parsePublishPackResponse — accepts a valid payload', () => {
     expect(out.pinnedCommentOptions).toHaveLength(3);
     expect(out.thumbnailConcepts).toHaveLength(5);
     expect(out.contentCalendar).toHaveLength(30);
+    expect(out.similarChannelNames).toHaveLength(8);
+    expect(out.similarChannelNames[0].name).toBe('Similar Channel 1');
     expect(out.modelUsed).toBe('claude-opus-4-8');
   });
 
@@ -84,6 +92,11 @@ describe('parsePublishPackResponse — section-level rejections', () => {
     expect(() => parsePublishPackResponse(JSON.stringify(tooFew), 'm')).toThrow(/tags must contain 20-40/);
     const tooMany = { ...VALID_PUBLISH_PACK, tags: Array.from({ length: 50 }, (_, i) => `t${i}`) };
     expect(() => parsePublishPackResponse(JSON.stringify(tooMany), 'm')).toThrow(/tags must contain 20-40/);
+  });
+
+  it('rejects similarChannelNames count not equal to 8', () => {
+    const bad = { ...VALID_PUBLISH_PACK, similarChannelNames: SIMILAR_CHANNELS.slice(0, 7) };
+    expect(() => parsePublishPackResponse(JSON.stringify(bad), 'm')).toThrow(/similarChannelNames/);
   });
 
   it('rejects pinnedCommentOptions count not equal to 3', () => {

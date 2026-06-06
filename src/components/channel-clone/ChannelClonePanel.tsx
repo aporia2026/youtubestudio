@@ -1259,6 +1259,21 @@ function PublishPackView({
         </ol>
       </details>
 
+      <details open className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+        <summary className="cursor-pointer font-medium text-neutral-200">Similar channels ({(pack.similarChannelNames ?? []).length})</summary>
+        <p className="mt-1 text-[10px] text-neutral-500">
+          Channels the model thinks land in the same niche / target audience as the cloned source. Use as peer-research seeds or as inspiration for naming a brand-new channel in this space.
+        </p>
+        <ul className="mt-2 space-y-1">
+          {(pack.similarChannelNames ?? []).map((c, i) => (
+            <li key={i} className="grid grid-cols-[max-content_1fr] gap-x-3 text-[11px]">
+              <span className="font-mono text-neutral-300">{c.name}</span>
+              <span className="text-neutral-500">{c.reasoning}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+
       <details className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
         <summary className="cursor-pointer font-medium text-neutral-200">Thumbnail concepts ({pack.thumbnailConcepts.length})</summary>
         <ul className="mt-2 space-y-2">
