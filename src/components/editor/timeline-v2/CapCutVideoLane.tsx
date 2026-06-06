@@ -492,16 +492,23 @@ export function CapCutVideoLane({
         );
       }
       const isSelected = selection === data.shotIndex;
-      // Selection is the most important visual state on the timeline —
-      // a thin ring isn't enough at this lane height. Stack three
-      // signals so the active card is unmistakable: a thick inner
-      // sky-blue ring, a soft outer glow, and a brighter card border.
-      const ringClass = isSelected
-        ? 'ring-[3px] ring-sky-400 ring-offset-1 ring-offset-neutral-950'
-        : 'ring-1 ring-neutral-700/80';
-      const selectionGlow = isSelected
-        ? '0 0 0 1px rgba(125, 211, 252, 0.45), 0 0 14px 2px rgba(56, 189, 248, 0.45)'
-        : '0 1px 2px rgba(0,0,0,0.35)';
+      // Selection state — built from raw box-shadow so the library's
+      // own action CSS can't override Tailwind ring utilities. Three
+      // layered shadows: inset border (the colored ring), outer
+      // halo (the glow), drop-shadow (depth). Inactive cards get a
+      // single subtle inset border for separation against the lane
+      // background.
+      const selectionShadow = isSelected
+        ? [
+            'inset 0 0 0 3px rgba(56, 189, 248, 1)', // sky-400, solid 3px ring
+            '0 0 0 1px rgba(125, 211, 252, 0.55)',   // light outer outline
+            '0 0 18px 2px rgba(56, 189, 248, 0.55)', // outer glow
+            '0 2px 4px rgba(0, 0, 0, 0.45)',         // depth shadow
+          ].join(', ')
+        : [
+            'inset 0 0 0 1px rgba(115, 115, 115, 0.55)',
+            '0 1px 2px rgba(0, 0, 0, 0.35)',
+          ].join(', ');
       const labelMs = (data.shot.durationMs / 1000).toFixed(1) + 's';
       // Scissors button — only on the selected card AND only when the
       // playhead sits inside this shot AND a split here would produce
@@ -523,10 +530,17 @@ export function CapCutVideoLane({
       const TRIM_HANDLE_INSET_PX = 4;
       return (
         <div
-          className={`relative flex h-full w-full overflow-hidden rounded-md ${ringClass}`}
+          className="relative flex h-full w-full overflow-hidden rounded-md"
           style={{
-            background: data.imageUrl ? '#0a0a0f' : '#1f1f29',
-            boxShadow: selectionGlow,
+            // Slightly tinted-blue when selected so even with the
+            // image filling the card the surrounding rim reads blue.
+            background: isSelected ? '#0c1a2a' : data.imageUrl ? '#0a0a0f' : '#1f1f29',
+            boxShadow: selectionShadow,
+            // Pointer affordance — the library doesn't set one and
+            // the default arrow cursor makes the card feel un-
+            // interactive. Inside the card the trim handles
+            // override this with ew-resize.
+            cursor: 'pointer',
           }}
           // Belt-and-suspenders for right-click. The library also fires
           // `onContextMenuAction` (wired below), but its callback runs
@@ -559,12 +573,19 @@ export function CapCutVideoLane({
               style={{
                 width: '100%',
                 height: '100%',
-                objectFit: 'cover',
+                // `contain` shows the WHOLE frame inside the card
+                // even when the clip is narrow at low zoom. Before
+                // this we used `cover`, which cropped the image to
+                // a vertical sliver on short clips — the user
+                // couldn't tell what the shot was supposed to be.
+                // Letterbox bars on the sides take the card's
+                // background colour for a clean look.
+                objectFit: 'contain',
                 // Brighter when selected so the user's pick reads as
                 // "live" instead of "dimmed like the rest". Lifted
                 // slightly across the board so the timeline doesn't
                 // look washed out at the new ROW_HEIGHT.
-                opacity: isSelected ? 1 : 0.86,
+                opacity: isSelected ? 1 : 0.92,
                 pointerEvents: 'none',
               }}
             />
