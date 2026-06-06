@@ -41,6 +41,13 @@ export interface IntakeSandbox {
    *  setup and reused for every ffmpeg + yt-dlp call (yt-dlp needs
    *  this via `--ffmpeg-location` to merge video+audio streams). */
   ffmpegPath: string;
+  /** Absolute path to a Netscape-format cookies file INSIDE the
+   *  sandbox. Sourced from the `CHANNEL_CLONE_YT_COOKIES` env var
+   *  (raw cookies.txt content; required) and written at sandbox
+   *  setup. yt-dlp uses these via `--cookies <path>` to authenticate
+   *  against YouTube — without them YouTube returns "Sign in to
+   *  confirm you're not a bot" from any cloud IP. */
+  cookiesPath: string;
 }
 
 /** Hard timeout for the sandbox itself. Generous so a slow apt + pip
@@ -106,6 +113,28 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
     );
   }
 
+  // YouTube has blocked unauthenticated yt-dlp from cloud IPs. The
+  // ONLY reliable workaround is real browser cookies — sourced from
+  // the operator's logged-in YouTube session, exported via a "Get
+  // cookies.txt LOCALLY" browser extension, and stored as an env
+  // var. Cookies expire every few weeks so the operator has to
+  // refresh them periodically; that's the trade-off for keeping
+  // video downloads + frame extraction working.
+  const cookiesRaw = process.env.CHANNEL_CLONE_YT_COOKIES;
+  if (!cookiesRaw || cookiesRaw.trim().length === 0) {
+    throw new Error(
+      'CHANNEL_CLONE_YT_COOKIES is not set. YouTube blocks unauthenticated requests from cloud IPs — yt-dlp needs your browser cookies to bypass this.\n' +
+      'Setup:\n' +
+      '  1. Install a "Get cookies.txt LOCALLY" browser extension (Chrome/Firefox).\n' +
+      '  2. Open youtube.com while logged in.\n' +
+      '  3. Click the extension → Export → save the cookies.txt file.\n' +
+      '  4. Open the file, copy ALL contents (it starts with "# Netscape HTTP Cookie File").\n' +
+      '  5. Vercel → Project → Settings → Environment Variables → add CHANNEL_CLONE_YT_COOKIES with the pasted contents (mark Sensitive).\n' +
+      '  6. Redeploy.\n' +
+      'Cookies expire after ~30 days of inactivity — re-export and re-paste when intake starts failing again.',
+    );
+  }
+
   log?.info('sandbox', 'create start', { auth: creds ? 'explicit-pat' : 'oidc' });
   logger.info('[channel-clone sandbox] create start', { jobId, auth: creds ? 'explicit-pat' : 'oidc' });
   const sandbox = await Sandbox.create({
@@ -147,9 +176,18 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
   }
   log?.info('sandbox', 'ffmpeg resolved', { ffmpegPath });
 
+  // 4. Write the cookies file into the sandbox. The content is
+  // logged ONLY by length (never echoed) so a leaked progressLog
+  // never exposes session cookies. mode 0o600 = owner-readable.
+  const cookiesPath = `${workDir}/yt-cookies.txt`;
+  await sandbox.writeFiles([
+    { path: cookiesPath, content: cookiesRaw, mode: 0o600 },
+  ]);
+  log?.info('sandbox', 'cookies written', { cookiesPath, bytes: cookiesRaw.length });
+
   log?.info('sandbox', 'ready');
-  logger.info('[channel-clone sandbox] ready', { jobId, sandboxName: sandbox.name, ffmpegPath });
-  return { sandbox, workDir, ffmpegPath };
+  logger.info('[channel-clone sandbox] ready', { jobId, sandboxName: sandbox.name, ffmpegPath, cookiesPath });
+  return { sandbox, workDir, ffmpegPath, cookiesPath };
 }
 
 /** Stop the sandbox + log billable usage. Swallows errors so the

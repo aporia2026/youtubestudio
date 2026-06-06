@@ -75,7 +75,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
   }
 
   try {
-    const { sandbox, workDir, ffmpegPath } = intakeSandbox;
+    const { sandbox, workDir, ffmpegPath, cookiesPath } = intakeSandbox;
     // Per-job working directory inside the sandbox. Sandbox is
     // ephemeral so we don't need a unique suffix — the whole VM is
     // torn down at the end.
@@ -99,7 +99,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     if (kind === 'video') {
       try {
         log.info('intake', 'resolving video → owner channel');
-        const [probed] = await listChannelVideos(sandbox, canonicalUrl, { maxVideos: 1 }, log);
+        const [probed] = await listChannelVideos(sandbox, cookiesPath, canonicalUrl, { maxVideos: 1 }, log);
         if (probed?.channelUrl) {
           channelUrl = probed.channelUrl;
           log.info('intake', 'resolved owner channel', { channelUrl });
@@ -122,7 +122,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     // 2. List the latest sampleVideoCount long-form videos.
     let videoMetas;
     try {
-      videoMetas = await listChannelVideos(sandbox, channelUrl, { maxVideos: sampleVideoCount }, log);
+      videoMetas = await listChannelVideos(sandbox, cookiesPath, channelUrl, { maxVideos: sampleVideoCount }, log);
     } catch (err) {
       log.error('yt-dlp', 'list channel videos failed', { error: errorMessage(err) });
       return failJob(jobId, workspaceId, `Could not list channel videos: ${errorMessage(err)}`);
@@ -140,7 +140,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
       if (await isCancelled()) return;
       log.info('intake', `processing video ${i + 1}/${videoMetas.length}`, { videoId: meta.videoId, title: meta.title });
       try {
-        const dl = await downloadVideo(sandbox, ffmpegPath, meta.videoUrl, sandboxJobDir, log);
+        const dl = await downloadVideo(sandbox, ffmpegPath, cookiesPath, meta.videoUrl, sandboxJobDir, log);
         const frameDir = `${sandboxJobDir}/frames-${meta.videoId}`;
         const framesResult = await extractFrames(sandbox, ffmpegPath, dl.videoSandboxPath, frameDir, { intervalSec: frameIntervalSec }, log);
 

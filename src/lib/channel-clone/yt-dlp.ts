@@ -29,18 +29,6 @@ import type { JobLogger } from './job-logger';
  *  something's wrong (rate-limit, geo-block, etc.). */
 const YT_DLP_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Player-client hint that bypasses YouTube's data-center-IP bot
- *  detection. The default `web` client triggers
- *    `[youtube] No title found in player responses`
- *  the moment yt-dlp runs from a Vercel function (cloud IP).
- *
- *  `tv_embedded` and `android` are the two clients the yt-dlp
- *  community most commonly recommends — they consistently respond
- *  with full metadata where `web` returns degraded payloads.
- *  yt-dlp tries them in the order listed; if YouTube hardens the
- *  detection later we'll see the same symptom and need to extend
- *  this list. */
-const YT_DLP_EXTRACTOR_ARGS = 'youtube:player_client=tv_embedded,android,web';
 
 export interface YtDlpVideoMetadata {
   videoId: string;
@@ -64,9 +52,16 @@ export interface YtDlpDownloadResult {
 
 /** Fetch the latest N long-form videos from a channel's URL inside
  *  the sandbox. Doesn't download the videos themselves — that's a
- *  second pass. */
+ *  second pass.
+ *
+ *  `cookiesPath` is the absolute path to a Netscape-format cookies
+ *  file inside the sandbox (see sandbox-runtime.ts). yt-dlp uses it
+ *  via `--cookies` to authenticate against YouTube — required to
+ *  bypass the "Sign in to confirm you're not a bot" gate that hits
+ *  any unauthenticated request from a cloud IP. */
 export async function listChannelVideos(
   sandbox: Sandbox,
+  cookiesPath: string,
   canonicalChannelUrl: string,
   options: { maxVideos: number } = { maxVideos: 5 },
   log?: JobLogger,
@@ -81,7 +76,7 @@ export async function listChannelVideos(
   // Shorts by skipping `youtube.com/shorts/` entries client-side.
   const args = [
     '--no-config',
-    '--extractor-args', YT_DLP_EXTRACTOR_ARGS,
+    '--cookies', cookiesPath,
     '--flat-playlist',
     '--playlist-end', String(options.maxVideos * 2), // overshoot to filter shorts
     '--print', '%(id)s|||%(url)s|||%(title)s|||%(uploader)s|||%(channel_url)s|||%(duration)s',
@@ -136,6 +131,7 @@ export async function listChannelVideos(
 export async function downloadVideo(
   sandbox: Sandbox,
   ffmpegPath: string,
+  cookiesPath: string,
   canonicalVideoUrl: string,
   outDir: string,
   log?: JobLogger,
@@ -146,7 +142,7 @@ export async function downloadVideo(
   // 11-min explainer). Convert auto-subs to SRT for the cleaner.
   const args = [
     '--no-config',
-    '--extractor-args', YT_DLP_EXTRACTOR_ARGS,
+    '--cookies', cookiesPath,
     '--ffmpeg-location', ffmpegPath,
     '--write-auto-subs',
     '--sub-langs', 'en.*,en',
