@@ -33,6 +33,14 @@ export interface IntakeSandbox {
    *  Vercel Sandbox runtime convention. yt-dlp + ffmpeg both write
    *  their outputs into a subdirectory under this. */
   workDir: string;
+  /** Absolute path to the ffmpeg binary INSIDE the sandbox. We
+   *  install ffmpeg via the `imageio-ffmpeg` pip package (which
+   *  bundles a static Linux binary) rather than the runtime's
+   *  native package manager — the python3.13 runtime isn't Debian-
+   *  based so `apt-get` doesn't exist. Resolved once at sandbox
+   *  setup and reused for every ffmpeg + yt-dlp call (yt-dlp needs
+   *  this via `--ffmpeg-location` to merge video+audio streams). */
+  ffmpegPath: string;
 }
 
 /** Hard timeout for the sandbox itself. Generous so a slow apt + pip
@@ -40,8 +48,8 @@ export interface IntakeSandbox {
  *  runner has tighter per-command timeouts. */
 const SANDBOX_LIFETIME_MS = 30 * 60_000;
 
-const APT_INSTALL_TIMEOUT_MS = 90_000;
-const PIP_INSTALL_TIMEOUT_MS = 90_000;
+const PIP_INSTALL_TIMEOUT_MS = 120_000;
+const FFMPEG_RESOLVE_TIMEOUT_MS = 60_000;
 
 /** Resolve the credentials we'll hand to Sandbox.create. Two paths
  *  are supported, in order of preference:
@@ -109,30 +117,39 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
   log?.info('sandbox', 'created', { sandboxName: sandbox.name });
   logger.info('[channel-clone sandbox] created', { jobId, sandboxName: sandbox.name });
 
-  // 1. ffmpeg via apt. The python3.13 runtime is Debian-based, so
-  // apt-get works. --no-install-recommends keeps the install small.
-  log?.info('sandbox', 'apt install ffmpeg (this takes ~20s)');
-  await runOrThrow(sandbox, 'apt install ffmpeg', {
-    cmd: 'apt-get',
-    args: ['install', '-y', '--no-install-recommends', 'ffmpeg'],
-    sudo: true,
-    timeoutMs: APT_INSTALL_TIMEOUT_MS,
-  });
-  log?.info('sandbox', 'ffmpeg installed');
-
-  // 2. yt-dlp via pip. The python3.13 runtime already has pip on the
-  // PATH; --quiet keeps the install log tight.
-  log?.info('sandbox', 'pip install yt-dlp');
-  await runOrThrow(sandbox, 'pip install yt-dlp', {
+  // 1+2. Install yt-dlp AND imageio-ffmpeg (the latter bundles a
+  // static ffmpeg binary). One pip call for both — the python3.13
+  // runtime isn't Debian so `apt-get install ffmpeg` doesn't work;
+  // imageio-ffmpeg is the portable path.
+  log?.info('sandbox', 'pip install yt-dlp + imageio-ffmpeg (this takes ~20s, includes ~50MB static ffmpeg download)');
+  await runOrThrow(sandbox, 'pip install yt-dlp + imageio-ffmpeg', {
     cmd: 'pip',
-    args: ['install', '--quiet', '--no-input', 'yt-dlp'],
+    args: ['install', '--quiet', '--no-input', 'yt-dlp', 'imageio-ffmpeg'],
     timeoutMs: PIP_INSTALL_TIMEOUT_MS,
   });
-  log?.info('sandbox', 'yt-dlp installed');
+  log?.info('sandbox', 'pip install done');
+
+  // 3. Resolve the bundled ffmpeg path so ffmpeg.ts and yt-dlp can
+  // exec it directly. imageio_ffmpeg.get_ffmpeg_exe() lazily
+  // downloads the binary on first call (~50MB, one-shot) and
+  // returns its absolute path.
+  const probe = await runInSandbox(sandbox, {
+    cmd: 'python',
+    args: ['-c', 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'],
+    timeoutMs: FFMPEG_RESOLVE_TIMEOUT_MS,
+  });
+  if (probe.exitCode !== 0) {
+    throw new Error(`could not resolve ffmpeg path: ${probe.stderr.slice(-500).trim()}`);
+  }
+  const ffmpegPath = probe.stdout.trim();
+  if (!ffmpegPath || !ffmpegPath.startsWith('/')) {
+    throw new Error(`imageio_ffmpeg returned an unexpected ffmpeg path: ${ffmpegPath || '(empty)'}`);
+  }
+  log?.info('sandbox', 'ffmpeg resolved', { ffmpegPath });
 
   log?.info('sandbox', 'ready');
-  logger.info('[channel-clone sandbox] ready', { jobId, sandboxName: sandbox.name });
-  return { sandbox, workDir };
+  logger.info('[channel-clone sandbox] ready', { jobId, sandboxName: sandbox.name, ffmpegPath });
+  return { sandbox, workDir, ffmpegPath };
 }
 
 /** Stop the sandbox + log billable usage. Swallows errors so the

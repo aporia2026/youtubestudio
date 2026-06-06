@@ -112,9 +112,16 @@ export async function listChannelVideos(
 
 /** Download a single video at 480p plus auto-captions to the supplied
  *  sandbox directory. Returns sandbox-relative paths the caller will
- *  read back via sandbox.readFileToBuffer. */
+ *  read back via sandbox.readFileToBuffer.
+ *
+ *  `ffmpegPath` is the absolute path to the ffmpeg binary inside the
+ *  sandbox. yt-dlp needs it via `--ffmpeg-location` to merge the
+ *  separate audio + video streams the `bv*+ba` format selector
+ *  pulls down. Without it yt-dlp errors with "ffmpeg not found"
+ *  the moment it tries to mux. */
 export async function downloadVideo(
   sandbox: Sandbox,
+  ffmpegPath: string,
   canonicalVideoUrl: string,
   outDir: string,
   log?: JobLogger,
@@ -125,6 +132,7 @@ export async function downloadVideo(
   // 11-min explainer). Convert auto-subs to SRT for the cleaner.
   const args = [
     '--no-config',
+    '--ffmpeg-location', ffmpegPath,
     '--write-auto-subs',
     '--sub-langs', 'en.*,en',
     '--sub-format', 'vtt',

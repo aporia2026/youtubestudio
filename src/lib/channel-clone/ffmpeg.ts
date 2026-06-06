@@ -46,6 +46,7 @@ export interface FrameExtractionResult {
  *  sandbox-resident video. */
 export async function extractFrames(
   sandbox: Sandbox,
+  ffmpegPath: string,
   videoSandboxPath: string,
   outDir: string,
   options: FrameExtractionOptions = {},
@@ -91,7 +92,7 @@ export async function extractFrames(
 
   const startedAt = Date.now();
   const { stderr, exitCode } = await runInSandbox(sandbox, {
-    cmd: 'ffmpeg',
+    cmd: ffmpegPath,
     args,
     timeoutMs: FFMPEG_TIMEOUT_MS,
   });

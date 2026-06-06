@@ -75,7 +75,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
   }
 
   try {
-    const { sandbox, workDir } = intakeSandbox;
+    const { sandbox, workDir, ffmpegPath } = intakeSandbox;
     // Per-job working directory inside the sandbox. Sandbox is
     // ephemeral so we don't need a unique suffix — the whole VM is
     // torn down at the end.
@@ -140,9 +140,9 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
       if (await isCancelled()) return;
       log.info('intake', `processing video ${i + 1}/${videoMetas.length}`, { videoId: meta.videoId, title: meta.title });
       try {
-        const dl = await downloadVideo(sandbox, meta.videoUrl, sandboxJobDir, log);
+        const dl = await downloadVideo(sandbox, ffmpegPath, meta.videoUrl, sandboxJobDir, log);
         const frameDir = `${sandboxJobDir}/frames-${meta.videoId}`;
-        const framesResult = await extractFrames(sandbox, dl.videoSandboxPath, frameDir, { intervalSec: frameIntervalSec }, log);
+        const framesResult = await extractFrames(sandbox, ffmpegPath, dl.videoSandboxPath, frameDir, { intervalSec: frameIntervalSec }, log);
 
         // Read the cleaned transcript (small) into memory.
         let transcript = null;
