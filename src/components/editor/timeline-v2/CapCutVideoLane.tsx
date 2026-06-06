@@ -92,11 +92,12 @@ const TICK_SECONDS = 1;
 const SCALE_SPLIT_COUNT = 10;
 /** Library default row height (32px) is way too short for thumbnails
  *  that need to communicate shot identity at a glance — image, kind
- *  badge, transition glyph, trim handles, duration label. 88 gives
- *  enough vertical room for all of those without the lane dominating
- *  the multi-track shell. Update `VIDEO_LANE_HEIGHT_DEFAULT` in
- *  TimelineV2 in lockstep. */
-const ROW_HEIGHT_PX = 88;
+ *  badge, transition glyph, trim handles, duration label. 104 leaves
+ *  generous vertical room for the thumbnail to dominate (the user's
+ *  primary signal) while corner badges sit on top without eating the
+ *  visible image. Update `VIDEO_LANE_HEIGHT_DEFAULT` in TimelineV2 in
+ *  lockstep. */
+const ROW_HEIGHT_PX = 104;
 /** Pixel offset where the first tick starts. TimelineV2's shared
  *  playhead (rendered at the parent level) computes its X as
  *  `(playheadMs / 1000) * pixelsPerSecond` assuming `t=0` sits at
@@ -612,25 +613,52 @@ export function CapCutVideoLane({
               scale="sm"
             />
           </div>
-          {/* Top strip: index + cross-fade toggle. Index moves to the
-              top-right so the ShotKindBadge owns the top-left. */}
+          {/* Top-right cluster: shot index + cross-fade toggle. Small
+              pill backgrounds so they sit ON the image without darkening
+              the rest of the card — old full-width gradient strips ate
+              ~16px of visible thumbnail at the top and bottom. */}
           <div
-            className="absolute inset-x-0 top-0 flex items-center justify-end gap-1 px-1 py-0.5 text-[10px] font-semibold text-neutral-100"
             style={{
-              background: 'linear-gradient(180deg, rgba(0,0,0,0.5), rgba(0,0,0,0))',
+              position: 'absolute',
+              top: 3,
+              right: 3,
+              zIndex: 2,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 3,
             }}
           >
-            <span className="pointer-events-none truncate" style={{ paddingRight: 2 }}>
+            <span
+              className="pointer-events-none"
+              style={{
+                padding: '1px 5px',
+                fontSize: 10,
+                fontWeight: 700,
+                lineHeight: 1.1,
+                color: '#fff',
+                background: 'rgba(0, 0, 0, 0.6)',
+                borderRadius: 3,
+                boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
+              }}
+            >
               #{data.shotIndex + 1}
             </span>
             {onToggleTransition ? (
               <button
                 type="button"
-                className={`pointer-events-auto rounded px-1 text-[10px] leading-none transition-colors ${
-                  data.transition === 'cross-fade'
-                    ? 'text-sky-300 hover:text-sky-200'
-                    : 'text-neutral-400 hover:text-neutral-200'
-                }`}
+                style={{
+                  pointerEvents: 'auto',
+                  padding: '1px 5px',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  background: 'rgba(0, 0, 0, 0.6)',
+                  color: data.transition === 'cross-fade' ? '#7dd3fc' : '#a3a3a3',
+                  border: 'none',
+                  borderRadius: 3,
+                  boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
+                  cursor: 'pointer',
+                }}
                 title={data.transition === 'cross-fade' ? 'Cross-fade in (click to clear)' : 'Add cross-fade in'}
                 aria-label={data.transition === 'cross-fade' ? 'Clear cross-fade' : 'Add cross-fade'}
                 onClick={(e) => {
@@ -647,22 +675,48 @@ export function CapCutVideoLane({
               >
                 ⤬
               </button>
-            ) : (
-              data.transition === 'cross-fade' ? (
-                <span className="pointer-events-none text-sky-300" title="Cross-fade in">⤬</span>
-              ) : null
-            )}
+            ) : data.transition === 'cross-fade' ? (
+              <span
+                className="pointer-events-none"
+                style={{
+                  padding: '1px 5px',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                  color: '#7dd3fc',
+                  background: 'rgba(0, 0, 0, 0.6)',
+                  borderRadius: 3,
+                  boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
+                }}
+                title="Cross-fade in"
+              >
+                ⤬
+              </span>
+            ) : null}
           </div>
-          {/* Bottom strip: duration. */}
-          <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-end px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-neutral-100"
+          {/* Bottom-right: duration pill. Replaces the old full-width
+              gradient bottom strip so the thumbnail stretches all the
+              way to the card edge. */}
+          <span
+            className="pointer-events-none"
             style={{
-              background: 'linear-gradient(0deg, rgba(0,0,0,0.65), rgba(0,0,0,0))',
-              textShadow: '0 1px 1px rgba(0,0,0,0.7)',
+              position: 'absolute',
+              bottom: 3,
+              right: 3,
+              zIndex: 2,
+              padding: '1px 5px',
+              fontSize: 10,
+              fontWeight: 700,
+              lineHeight: 1.1,
+              fontVariantNumeric: 'tabular-nums',
+              color: '#fff',
+              background: 'rgba(0, 0, 0, 0.6)',
+              borderRadius: 3,
+              boxShadow: '0 0 0 1px rgba(0,0,0,0.4)',
             }}
           >
             {labelMs}
-          </div>
+          </span>
           {/* B-roll head trim handle. Mouse-down sets trim_start_ms via
               the document-level drag handlers wired in the useEffect
               above. Inset from the card's left edge so the library's

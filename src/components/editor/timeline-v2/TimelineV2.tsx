@@ -41,11 +41,12 @@ import { ZoomIn, ZoomOut } from 'lucide-react';
  *  not images. Defaults below; per-device overrides flow in via
  *  `videoLaneHeight` / `audioLaneHeight` props (see
  *  `editor.timeline.laneHeights.*` in src/lib/editor/settings.ts). */
-// Bumped 64 → 88 on 2026-06-06 so the CapCut video lane has room for
-// the thumbnail, the ShotKindBadge, trim handles, and the duration
-// label without crowding. Keep `ROW_HEIGHT_PX` in CapCutVideoLane in
-// sync with this value.
-const VIDEO_LANE_HEIGHT_DEFAULT = 88;
+// 64 → 88 → 104 (2026-06-06). The CapCut video lane prioritizes the
+// thumbnail as the user's primary recognition signal; corner badges
+// for kind / index / duration sit on top without gradient strips, so
+// the visible image area now spans nearly the full lane height. Keep
+// `ROW_HEIGHT_PX` in CapCutVideoLane in sync with this value.
+const VIDEO_LANE_HEIGHT_DEFAULT = 104;
 const AUDIO_LANE_HEIGHT_DEFAULT = 56;
 const CAPTIONS_LANE_HEIGHT = 32;
 const OVERLAYS_LANE_HEIGHT = 28;
