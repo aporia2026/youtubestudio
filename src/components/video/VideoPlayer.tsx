@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { Player, PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import { VideoConfig } from '@/remotion/types';
@@ -103,6 +103,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const frames = totalFrames(config);
   const clampedProgress = Math.max(0, Math.min(1, renderProgress));
 
+  // Memoize the wrapper that goes to <Player inputProps={…}> so the
+  // Player doesn't see a fresh object identity on every parent render.
+  // Without this, the timeline editor's per-frame `setFrame` updates
+  // (the Player→Timeline playhead sync mirrors the Player's frameupdate
+  // event into a React state setter ~30 times per second) cascade into
+  // a new `{ config }` reference each tick. Combined with the per-shot
+  // <Audio pauseWhenBuffering> + scene re-mount hazard noted in
+  // YouTubeVideo.tsx, that churn manifested as the voiceover replaying
+  // the last ~250 ms of audio after every edit. The Player's component
+  // / durationInFrames / fps props are already primitive-stable; this
+  // memo extends the same stability to inputProps.
+  const playerInputProps = useMemo(() => ({ config }), [config]);
+
   const handlePlayPause = useCallback(() => {
     if (!playerRef.current) return;
     if (isPlaying) {
@@ -153,7 +166,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           fps={config.fps}
           compositionWidth={config.width}
           compositionHeight={config.height}
-          inputProps={{ config }}
+          inputProps={playerInputProps}
           style={{ width: '100%' }}
           controls
           showVolumeControls

@@ -27,7 +27,7 @@
  * minimize toggle that collapses it to a thumbnail.
  */
 
-import { useEffect, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useMemo, useState, type ReactNode, type Ref } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import type { PlayerRef } from '@remotion/player';
@@ -291,6 +291,14 @@ function LeftRail({
         aspectRatio: '9 / 16',
       };
 
+  // Stabilize the Player's `inputProps` wrapper so a fresh `{ config: … }`
+  // identity isn't created on every parent render. See VideoPlayer.tsx
+  // for the underlying audio-repeat hazard this avoids.
+  const playerInputProps = useMemo(
+    () => (previewConfig ? { config: previewConfig } : null),
+    [previewConfig],
+  );
+
   return (
     <aside style={containerStyle}>
       <div
@@ -310,11 +318,11 @@ function LeftRail({
             position: 'relative',
           }}
         >
-          {previewConfig ? (
+          {previewConfig && playerInputProps ? (
             <Player
               ref={playerRef}
               component={ShortVideo}
-              inputProps={{ config: previewConfig }}
+              inputProps={playerInputProps}
               compositionWidth={SHORT_WIDTH}
               compositionHeight={SHORT_HEIGHT}
               fps={SHORT_FPS}
