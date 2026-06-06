@@ -165,6 +165,25 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
   // behind. If pip can't find a pre-release for any reason it
   // falls back to the latest stable automatically — `--pre` is
   // permissive, not exclusive.
+  // Install Node.js too — yt-dlp's n-sig solver (the JS challenge
+  // YouTube uses to obfuscate stream URLs on `web` / `android`
+  // clients) needs a JavaScript runtime. Without one yt-dlp logs
+  // "No supported JavaScript runtime could be found" and every
+  // download falls back to broken paths. The `android_vr` client
+  // we force below SHOULD avoid n-sig entirely, but Node is cheap
+  // insurance for the cases where yt-dlp decides to use another
+  // client anyway. We install via the NodeSource setup script —
+  // the python3.13 runtime is Amazon Linux 2023 which doesn't
+  // ship a usable Node by default.
+  log?.info('sandbox', 'install nodejs (for yt-dlp n-sig solver)');
+  await runOrThrow(sandbox, 'install nodejs', {
+    cmd: 'sh',
+    args: ['-c', 'curl -fsSL https://rpm.nodesource.com/setup_22.x | bash - && dnf install -y nodejs'],
+    sudo: true,
+    timeoutMs: 120_000,
+  });
+  log?.info('sandbox', 'nodejs installed');
+
   log?.info('sandbox', 'pip install yt-dlp nightly + imageio-ffmpeg (this takes ~20s, includes ~50MB static ffmpeg download)');
   await runOrThrow(sandbox, 'pip install yt-dlp + imageio-ffmpeg', {
     cmd: 'pip',

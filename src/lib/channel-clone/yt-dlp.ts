@@ -29,6 +29,27 @@ import type { JobLogger } from './job-logger';
  *  something's wrong (rate-limit, geo-block, etc.). */
 const YT_DLP_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Force yt-dlp to use the `android_vr` player client.
+ *
+ *  Per the yt-dlp wiki + recent (2026) maintainer guidance:
+ *  - `web` / `web_safari` require a PO Token (BotGuard attestation)
+ *    for streams. Without one YouTube returns degraded responses
+ *    ("No title found in player responses").
+ *  - `android` requires PO Token AND triggers the "Sign in to
+ *    confirm you're not a bot" gate from cloud IPs.
+ *  - `tv_embedded` was deprecated in yt-dlp ("Skipping unsupported
+ *    client" warning).
+ *  - `android_vr` does NOT require a PO Token and does NOT use the
+ *    n-sig JS challenge — making it the only client that works
+ *    cleanly without (a) a Proof-of-Origin sidecar, (b) residential
+ *    proxies, or (c) a JavaScript runtime in the sandbox.
+ *
+ *  When YouTube eventually hardens android_vr too, the next move is
+ *  storyboards (no video bytes downloaded) + a managed transcript
+ *  API. See `_plans/2026-06-06-channel-clone-vercel-sandbox.md`
+ *  appendix for the full landscape. */
+const YT_DLP_EXTRACTOR_ARGS = 'youtube:player_client=android_vr';
+
 
 export interface YtDlpVideoMetadata {
   videoId: string;
@@ -77,6 +98,7 @@ export async function listChannelVideos(
   const args = [
     '--no-config',
     '--cookies', cookiesPath,
+    '--extractor-args', YT_DLP_EXTRACTOR_ARGS,
     '--flat-playlist',
     '--playlist-end', String(options.maxVideos * 2), // overshoot to filter shorts
     '--print', '%(id)s|||%(url)s|||%(title)s|||%(uploader)s|||%(channel_url)s|||%(duration)s',
@@ -143,6 +165,7 @@ export async function downloadVideo(
   const args = [
     '--no-config',
     '--cookies', cookiesPath,
+    '--extractor-args', YT_DLP_EXTRACTOR_ARGS,
     '--ffmpeg-location', ffmpegPath,
     '--write-auto-subs',
     '--sub-langs', 'en.*,en',
