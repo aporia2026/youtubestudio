@@ -75,7 +75,7 @@ Constraints:
 - Tags lowercase, no leading "#", no commas inside a tag.
 - Thumbnail concepts MUST reference the channel's signature palette + the style preset's visual identity.
 - Calendar variety: do not repeat angles; rotate through the channel's known pain points.
-- similarChannelNames: list 8 channels (real or invented) that target the SAME audience + niche as the cloned source. Aim for a mix — at least 3 should be real channels the audience would recognise; the rest can be plausible inventions for niches without obvious peers. Each `reasoning` is ONE sentence describing the overlap (audience, format, voice, visual style).
+- similarChannelNames: list 8 channels (real or invented) that target the SAME audience + niche as the cloned source. Aim for a mix — at least 3 should be real channels the audience would recognise; the rest can be plausible inventions for niches without obvious peers. Each "reasoning" is ONE sentence describing the overlap (audience, format, voice, visual style).
 
 Output ONLY the JSON object. First char \`{\`, last char \`}\`. No prose, no fences.`;
 
