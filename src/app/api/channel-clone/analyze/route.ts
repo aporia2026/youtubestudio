@@ -36,6 +36,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   if (!jobId) {
     return NextResponse.json({ error: 'jobId is required' }, { status: 400 });
   }
+  const modelOverride = typeof b.modelId === 'string' && b.modelId.trim() ? b.modelId.trim() : undefined;
 
   const before = await getChannelCloneJob(jobId, session.ws);
   if (!before) {
@@ -59,7 +60,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     workspaceId: session.ws,
   });
 
-  await runAnalyze({ jobId, workspaceId: session.ws });
+  await runAnalyze({ jobId, workspaceId: session.ws, modelOverride });
 
   const after = await getChannelCloneJob(jobId, session.ws);
   if (!after) {

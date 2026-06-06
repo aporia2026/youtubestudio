@@ -75,6 +75,8 @@ export interface RunPublishPackOptions {
   jobId: string;
   workspaceId: string;
   projectId?: string | null;
+  /** Per-invocation model override. See `RunAnalyzeOptions.modelOverride`. */
+  modelOverride?: string;
 }
 
 export async function runPublishPack(opts: RunPublishPackOptions): Promise<void> {
@@ -94,7 +96,7 @@ export async function runPublishPack(opts: RunPublishPackOptions): Promise<void>
   const topic = topics[selectedTopicIndex - 1];
   const hook = hooks[selectedHookIndex - 1];
 
-  const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-publish-pack');
+  const modelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-publish-pack');
   const preset = chosenStylePresetId ? getBuiltInStyle(chosenStylePresetId) : null;
   const systemPrompt = [
     getChannelCloneSystemPrompt('channel-clone-publish-pack'),

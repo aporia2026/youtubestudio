@@ -46,8 +46,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  logger.info('[channel-clone publish-pack] kickoff', { jobId, workspaceId: session.ws });
-  await runPublishPack({ jobId, workspaceId: session.ws });
+  const modelOverride = typeof b.modelId === 'string' && b.modelId.trim() ? b.modelId.trim() : undefined;
+  logger.info('[channel-clone publish-pack] kickoff', { jobId, workspaceId: session.ws, modelOverride: modelOverride ?? null });
+  await runPublishPack({ jobId, workspaceId: session.ws, modelOverride });
 
   const after = await getChannelCloneJob(jobId, session.ws);
   if (!after) return NextResponse.json({ error: 'job vanished mid-run' }, { status: 500 });

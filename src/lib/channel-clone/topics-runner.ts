@@ -54,6 +54,8 @@ export interface RunTopicsOptions {
   projectId?: string | null;
   /** How many topics to ask for. Defaults to 10 per V2.0 STATE 5. */
   topicCount?: number;
+  /** Per-invocation model override. See `RunAnalyzeOptions.modelOverride`. */
+  modelOverride?: string;
 }
 
 export async function runTopics(opts: RunTopicsOptions): Promise<void> {
@@ -72,7 +74,7 @@ export async function runTopics(opts: RunTopicsOptions): Promise<void> {
     return failJob(jobId, workspaceId, 'Cannot generate topics: analysis is not complete.');
   }
 
-  const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-topic-generation');
+  const modelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-topic-generation');
   const systemPrompt =
     getChannelCloneSystemPrompt('channel-clone-topic-generation') + '\n\n' + TOPICS_OUTPUT_SCHEMA;
   const userPrompt = buildTopicsUserPrompt(analysis, topicCount);

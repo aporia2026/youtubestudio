@@ -91,6 +91,8 @@ export interface RunRowifyOptions {
    *  Set to false to opt out (e.g., the operator wants a clean
    *  built-in style with no channel-specific overrides). */
   useChannelStyle?: boolean;
+  /** Per-invocation model override. See `RunAnalyzeOptions.modelOverride`. */
+  modelOverride?: string;
 }
 
 export async function runRowify(opts: RunRowifyOptions): Promise<void> {
@@ -158,7 +160,7 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
   const styleSuffix = channelStyle?.aiImageSuffix ?? preset.ai_image_suffix;
   const suffixSource = channelStyle ? 'channel-derived (cloning the channel\'s visual DNA)' : `built-in preset "${preset.id}"`;
 
-  const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-rowify');
+  const modelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-rowify');
   const systemPrompt = [
     getChannelCloneSystemPrompt('channel-clone-rowify'),
     '',

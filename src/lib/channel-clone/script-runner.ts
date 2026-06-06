@@ -112,6 +112,12 @@ export interface RunScriptOptions {
   threshold?: 80 | 90 | 95 | 100;
   /** How many audit→fix iterations to attempt. Default 3. */
   maxIterations?: 1 | 3 | 5;
+  /** Per-invocation model override — applies to BOTH the script-
+   *  generation and the script-audit models in this stage. The two
+   *  share an override because the mid-run retry UI only surfaces a
+   *  single picker per stage. If finer control is needed later we
+   *  can split them. See `RunAnalyzeOptions.modelOverride`. */
+  modelOverride?: string;
 }
 
 // ─── Runner ──────────────────────────────────────────────────────────
@@ -139,8 +145,8 @@ export async function runScript(opts: RunScriptOptions): Promise<void> {
   const hook = hooks[selectedHookIndex - 1];
   const targetWordCount = analysis.avgVideoWordCount;
 
-  const scriptModelId = await getEffectiveModelId(workspaceId, 'channel-clone-script-generation');
-  const auditModelId = await getEffectiveModelId(workspaceId, 'channel-clone-script-audit');
+  const scriptModelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-script-generation');
+  const auditModelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-script-audit');
 
   // ── Iteration 1: initial script ──────────────────────────────────
   let scriptText: string;

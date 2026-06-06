@@ -49,8 +49,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
-  logger.info('[channel-clone hooks] kickoff', { jobId, workspaceId: session.ws, selectedTopicIndex });
-  await runHooks({ jobId, workspaceId: session.ws, selectedTopicIndex });
+  const modelOverride = typeof b.modelId === 'string' && b.modelId.trim() ? b.modelId.trim() : undefined;
+  logger.info('[channel-clone hooks] kickoff', { jobId, workspaceId: session.ws, selectedTopicIndex, modelOverride: modelOverride ?? null });
+  await runHooks({ jobId, workspaceId: session.ws, selectedTopicIndex, modelOverride });
 
   const after = await getChannelCloneJob(jobId, session.ws);
   if (!after) return NextResponse.json({ error: 'job vanished mid-run' }, { status: 500 });

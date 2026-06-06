@@ -315,6 +315,22 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
           {job.lastError && (
             <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{job.lastError}</p>
           )}
+          {isFailedStatus(job.status) && (
+            <RetryWithModel
+              jobId={job.id}
+              failedStatus={job.status}
+              jobState={state}
+              busy={busy !== null}
+              uiHints={{
+                topicCount,
+                threshold,
+                maxIterations,
+                useChannelStyle,
+                stylePresetId: stylePresetIdHint === 'auto' ? undefined : stylePresetIdHint,
+              }}
+              onRetried={() => { void pollOnce(job.id); }}
+            />
+          )}
           {state?.progressLog && state.progressLog.length > 0 && (
             <ProgressLogView entries={state.progressLog} active={ACTIVE_STATUSES.includes(job.status)} />
           )}
@@ -683,6 +699,147 @@ function ProgressLogRow({ entry }: { entry: ProgressLogEntry }) {
         {entry.msg}
         {dataString && <span className="ml-2 text-neutral-500">{dataString}</span>}
       </span>
+    </div>
+  );
+}
+
+/** Status values that mean "stage X failed". The retry-with-model
+ *  affordance only renders for these — terminal states like
+ *  archived / cancelled don't get a retry button. */
+function isFailedStatus(status: ChannelCloneJobStatus): boolean {
+  return status.endsWith('_failed');
+}
+
+/** Map a failed status back to the stage route segment so we can
+ *  POST to /api/channel-clone/<stage> with the new model id. */
+function failedStatusToStage(status: ChannelCloneJobStatus): null | 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify' | 'publish-pack' | 'handoff' | 'intake' {
+  if (status === 'analyze_failed') return 'analyze';
+  if (status === 'topics_failed') return 'topics';
+  if (status === 'hooks_failed') return 'hooks';
+  if (status === 'script_failed') return 'script';
+  if (status === 'rowify_failed') return 'rowify';
+  if (status === 'publish_pack_failed') return 'publish-pack';
+  if (status === 'handoff_failed') return 'handoff';
+  if (status === 'intake_failed') return 'intake';
+  return null;
+}
+
+/** Candidate models for the mid-run picker. Curated set of the
+ *  big-three Anthropic models — covers the vast majority of mid-run
+ *  failures (rate-limit, content-filter, timeout) by giving the
+ *  operator a clean lateral move. Adding more options is a one-line
+ *  change here; the routes accept any model id the AI registry
+ *  recognises. */
+const MID_RUN_MODEL_CANDIDATES: { id: string; label: string }[] = [
+  { id: 'claude-opus-4-8', label: 'Opus 4.8 (default)' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (cheaper, fast)' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (cheapest, fastest)' },
+];
+
+/** Per-job model-switch + retry control. Visible only when the job
+ *  status ends in `_failed`. Forwards to the same stage route the
+ *  initial kickoff used, with the operator's chosen model id as a
+ *  body field. The runner reads `modelId` → `modelOverride` →
+ *  bypasses `getEffectiveModelId` for this one run. */
+function RetryWithModel({
+  jobId,
+  failedStatus,
+  jobState,
+  busy,
+  uiHints,
+  onRetried,
+}: {
+  jobId: string;
+  failedStatus: ChannelCloneJobStatus;
+  jobState: ChannelCloneJobState | undefined;
+  busy: boolean;
+  uiHints: {
+    topicCount: number;
+    threshold: number;
+    maxIterations: number;
+    useChannelStyle: boolean;
+    stylePresetId: string | undefined;
+  };
+  onRetried: () => void;
+}) {
+  const stage = failedStatusToStage(failedStatus);
+  const [modelId, setModelId] = useState<string>(MID_RUN_MODEL_CANDIDATES[1].id);
+  const [retrying, setRetrying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleRetry = useCallback(async () => {
+    if (!stage || retrying || busy) return;
+    if (stage === 'intake' || stage === 'handoff') {
+      // intake + handoff don't make LLM calls — the model picker is
+      // meaningless for them. Fall through anyway with no override,
+      // so the operator can at least kick a retry from the same UI.
+    }
+    setRetrying(true);
+    setError(null);
+    try {
+      // Reconstruct the per-stage body shape. For stages that need
+      // a previously-selected index (hooks/script), pull from the
+      // job state — the operator already picked these before the
+      // failure, and we don't want to make them re-pick.
+      const body: Record<string, unknown> = { modelId };
+      if (stage === 'topics') {
+        body.topicCount = uiHints.topicCount;
+      } else if (stage === 'hooks') {
+        body.selectedTopicIndex = jobState?.selectedTopicIndex;
+      } else if (stage === 'script') {
+        body.selectedHookIndex = jobState?.selectedHookIndex;
+        body.threshold = uiHints.threshold;
+        body.maxIterations = uiHints.maxIterations;
+      } else if (stage === 'rowify') {
+        body.useChannelStyle = uiHints.useChannelStyle;
+        if (uiHints.stylePresetId) body.stylePresetId = uiHints.stylePresetId;
+      }
+      const res = await fetch(`/api/channel-clone/${stage}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jobId, ...body }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError((data as { error?: string })?.error ?? `Retry failed (${res.status})`);
+        return;
+      }
+      onRetried();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetrying(false);
+    }
+  }, [stage, retrying, busy, modelId, uiHints, jobState, jobId, onRetried]);
+
+  if (!stage) return null;
+  return (
+    <div className="space-y-2 rounded border border-amber-900 bg-amber-950/30 p-3 text-xs">
+      <p className="font-medium text-amber-300">Stage failed — retry with a different model?</p>
+      <p className="text-[10px] text-amber-200/80">
+        Sometimes a stage fails because the configured model hit a rate limit, timeout, or content filter. Switching to a different model usually clears it. The retry uses the same parameters you originally picked.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={modelId}
+          onChange={(e) => setModelId(e.target.value)}
+          disabled={retrying || busy}
+          className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100 outline-none focus:border-neutral-500"
+        >
+          {MID_RUN_MODEL_CANDIDATES.map((m) => (
+            <option key={m.id} value={m.id}>{m.label}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => void handleRetry()}
+          disabled={retrying || busy}
+          className="rounded bg-amber-200 px-3 py-1 font-medium text-neutral-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+        >
+          {retrying ? 'Retrying…' : 'Retry with model'}
+        </button>
+        {error && <span className="text-[10px] text-red-300">{error}</span>}
+      </div>
     </div>
   );
 }

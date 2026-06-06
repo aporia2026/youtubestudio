@@ -64,13 +64,15 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     );
   }
 
+  const modelOverride = typeof b.modelId === 'string' && b.modelId.trim() ? b.modelId.trim() : undefined;
   logger.info('[channel-clone rowify] kickoff', {
     jobId,
     workspaceId: session.ws,
     stylePresetIdHint: stylePresetId ?? null,
     useChannelStyle,
+    modelOverride: modelOverride ?? null,
   });
-  await runRowify({ jobId, workspaceId: session.ws, stylePresetId, useChannelStyle });
+  await runRowify({ jobId, workspaceId: session.ws, stylePresetId, useChannelStyle, modelOverride });
 
   const after = await getChannelCloneJob(jobId, session.ws);
   if (!after) return NextResponse.json({ error: 'job vanished mid-run' }, { status: 500 });

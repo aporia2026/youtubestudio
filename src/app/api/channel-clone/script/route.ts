@@ -79,12 +79,14 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     threshold,
     maxIterations,
   });
+  const modelOverride = typeof b.modelId === 'string' && b.modelId.trim() ? b.modelId.trim() : undefined;
   await runScript({
     jobId,
     workspaceId: session.ws,
     selectedHookIndex,
     threshold: threshold as 80 | 90 | 95 | 100,
     maxIterations: maxIterations as 1 | 3 | 5,
+    modelOverride,
   });
 
   const after = await getChannelCloneJob(jobId, session.ws);

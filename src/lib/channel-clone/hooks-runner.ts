@@ -55,6 +55,8 @@ export interface RunHooksOptions {
   projectId?: string | null;
   /** 1-based topic index the user picked from the topics list. */
   selectedTopicIndex: number;
+  /** Per-invocation model override. See `RunAnalyzeOptions.modelOverride`. */
+  modelOverride?: string;
 }
 
 export async function runHooks(opts: RunHooksOptions): Promise<void> {
@@ -76,7 +78,7 @@ export async function runHooks(opts: RunHooksOptions): Promise<void> {
   }
 
   const topic = topics[selectedTopicIndex - 1];
-  const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-hook-engineering');
+  const modelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-hook-engineering');
   const systemPrompt =
     getChannelCloneSystemPrompt('channel-clone-hook-engineering') + '\n\n' + HOOKS_OUTPUT_SCHEMA;
   const userPrompt = buildHooksUserPrompt(analysis, topic);

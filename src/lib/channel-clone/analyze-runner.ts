@@ -84,6 +84,12 @@ export interface RunAnalyzeOptions {
   jobId: string;
   workspaceId: string;
   projectId?: string | null;
+  /** Per-invocation model override. When set, the stage uses this
+   *  model id instead of the workspace's configured default for
+   *  `channel-clone-analyze`. Surfaced as the mid-run "retry with
+   *  different model" affordance so operators can route around a
+   *  rate-limited / failing provider without editing Settings. */
+  modelOverride?: string;
 }
 
 export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
@@ -107,7 +113,7 @@ export async function runAnalyze(opts: RunAnalyzeOptions): Promise<void> {
     return failJob(jobId, workspaceId, 'No usable transcripts on the intake — nothing to analyze.');
   }
 
-  const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-analyze');
+  const modelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-analyze');
   const systemPrompt =
     getChannelCloneSystemPrompt('channel-clone-analyze') + '\n\n' + ANALYSIS_OUTPUT_SCHEMA_INSTRUCTION;
   const userPrompt = buildAnalyzeUserPrompt(transcripts);
