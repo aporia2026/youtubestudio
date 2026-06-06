@@ -139,7 +139,7 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
     timeoutMs: FFMPEG_RESOLVE_TIMEOUT_MS,
   });
   if (probe.exitCode !== 0) {
-    throw new Error(`could not resolve ffmpeg path: ${probe.stderr.slice(-500).trim()}`);
+    throw new Error(`could not resolve ffmpeg path: ${probe.stderr.slice(-2000).trim()}`);
   }
   const ffmpegPath = probe.stdout.trim();
   if (!ffmpegPath || !ffmpegPath.startsWith('/')) {
@@ -225,6 +225,6 @@ async function runOrThrow(
 ): Promise<void> {
   const { exitCode, stderr } = await runInSandbox(sandbox, params);
   if (exitCode !== 0) {
-    throw new Error(`${label} exited with code ${exitCode}: ${stderr.slice(-500).trim()}`);
+    throw new Error(`${label} exited with code ${exitCode}: ${stderr.slice(-2000).trim()}`);
   }
 }

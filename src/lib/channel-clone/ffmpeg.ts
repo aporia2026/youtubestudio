@@ -98,7 +98,7 @@ export async function extractFrames(
   });
   const durationMs = Date.now() - startedAt;
   if (exitCode !== 0) {
-    throw new Error(`ffmpeg exited with code ${exitCode}: ${stderr.slice(-500).trim()}`);
+    throw new Error(`ffmpeg exited with code ${exitCode}: ${stderr.slice(-2000).trim()}`);
   }
 
   // Probe the output directory to discover what ffmpeg actually
@@ -111,7 +111,7 @@ export async function extractFrames(
     timeoutMs: 5_000,
   });
   if (lsResult.exitCode !== 0) {
-    throw new Error(`could not list frame outputs: ${lsResult.stderr.slice(-500).trim()}`);
+    throw new Error(`could not list frame outputs: ${lsResult.stderr.slice(-2000).trim()}`);
   }
   const frameSandboxPaths = lsResult.stdout
     .split('\n')

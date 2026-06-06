@@ -29,6 +29,19 @@ import type { JobLogger } from './job-logger';
  *  something's wrong (rate-limit, geo-block, etc.). */
 const YT_DLP_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Player-client hint that bypasses YouTube's data-center-IP bot
+ *  detection. The default `web` client triggers
+ *    `[youtube] No title found in player responses`
+ *  the moment yt-dlp runs from a Vercel function (cloud IP).
+ *
+ *  `tv_embedded` and `android` are the two clients the yt-dlp
+ *  community most commonly recommends — they consistently respond
+ *  with full metadata where `web` returns degraded payloads.
+ *  yt-dlp tries them in the order listed; if YouTube hardens the
+ *  detection later we'll see the same symptom and need to extend
+ *  this list. */
+const YT_DLP_EXTRACTOR_ARGS = 'youtube:player_client=tv_embedded,android,web';
+
 export interface YtDlpVideoMetadata {
   videoId: string;
   videoUrl: string;
@@ -68,6 +81,7 @@ export async function listChannelVideos(
   // Shorts by skipping `youtube.com/shorts/` entries client-side.
   const args = [
     '--no-config',
+    '--extractor-args', YT_DLP_EXTRACTOR_ARGS,
     '--flat-playlist',
     '--playlist-end', String(options.maxVideos * 2), // overshoot to filter shorts
     '--print', '%(id)s|||%(url)s|||%(title)s|||%(uploader)s|||%(channel_url)s|||%(duration)s',
@@ -79,7 +93,7 @@ export async function listChannelVideos(
     timeoutMs: YT_DLP_TIMEOUT_MS,
   });
   if (exitCode !== 0) {
-    throw new Error(`yt-dlp exited with code ${exitCode}: ${stderr.slice(-500).trim()}`);
+    throw new Error(`yt-dlp exited with code ${exitCode}: ${stderr.slice(-2000).trim()}`);
   }
   const lines = stdout.split('\n').map((s) => s.trim()).filter(Boolean);
   const metas: YtDlpVideoMetadata[] = [];
@@ -132,6 +146,7 @@ export async function downloadVideo(
   // 11-min explainer). Convert auto-subs to SRT for the cleaner.
   const args = [
     '--no-config',
+    '--extractor-args', YT_DLP_EXTRACTOR_ARGS,
     '--ffmpeg-location', ffmpegPath,
     '--write-auto-subs',
     '--sub-langs', 'en.*,en',
@@ -148,7 +163,7 @@ export async function downloadVideo(
     timeoutMs: YT_DLP_TIMEOUT_MS,
   });
   if (exitCode !== 0) {
-    throw new Error(`yt-dlp exited with code ${exitCode}: ${stderr.slice(-500).trim()}`);
+    throw new Error(`yt-dlp exited with code ${exitCode}: ${stderr.slice(-2000).trim()}`);
   }
   const out = stdout.split('\n').map((s) => s.trim()).filter(Boolean);
   // The --print line we asked for surfaces on stdout after the
