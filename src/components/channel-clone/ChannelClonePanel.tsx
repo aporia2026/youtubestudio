@@ -80,7 +80,11 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
   const [topicCount, setTopicCount] = useState<5 | 10 | 15>(10);
   const [chosenTopicIndex, setChosenTopicIndex] = useState<number | null>(null);
   const [chosenHookIndex, setChosenHookIndex] = useState<number | null>(null);
-  const [threshold, setThreshold] = useState<80 | 90 | 95 | 100>(90);
+  // 95 is the new default per the tightened QA loop. Per-dimension
+  // floor enforcement at threshold=95 means each rubric dim must
+  // hit 7.5/10 in addition to the overall 9.5/10 — catches weak
+  // outliers (hookStrength etc) that previously snuck through.
+  const [threshold, setThreshold] = useState<80 | 90 | 95 | 100>(95);
   const [maxIterations, setMaxIterations] = useState<1 | 3 | 5>(3);
   const [stylePresetIdHint, setStylePresetIdHint] = useState<string>('auto');
   // Default ON: rowify derives the channel's visual DNA from the

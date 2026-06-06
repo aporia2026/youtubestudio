@@ -124,7 +124,13 @@ export interface RunScriptOptions {
 
 export async function runScript(opts: RunScriptOptions): Promise<void> {
   const { jobId, workspaceId, selectedHookIndex } = opts;
-  const threshold = opts.threshold ?? 90;
+  // Default threshold lifted 90 → 95. "Pass a QA" was historically
+  // a 9.0/10 overall bar; the operator asked for a stricter default
+  // because borderline 9.0 scripts were sneaking through with one
+  // weak dimension (e.g. hookStrength=6) compensated by strong
+  // dimensions elsewhere. The per-dimension floor below catches
+  // those weak outliers regardless of the overall score.
+  const threshold = opts.threshold ?? 95;
   const maxIterations = opts.maxIterations ?? 3;
   logger.info('[channel-clone script] start', { jobId, selectedHookIndex, threshold, maxIterations });
   await setChannelCloneJobStatus(jobId, workspaceId, 'script_running');
@@ -225,6 +231,24 @@ export async function runScript(opts: RunScriptOptions): Promise<void> {
     });
     await mergeAuditHistory(jobId, workspaceId, auditHistory);
 
+    // Per-dimension floor — catches weak outliers (e.g. hookStrength
+    // = 5/10) that get masked by a strong overall average. Floor is
+    // `(threshold - 20) / 10` on the 0-10 scale; at threshold=95 a
+    // 7.5/10 minimum per dim, at 90 → 7.0, at 80 → 6.0. The
+    // wordCountAccuracyPct dimension is a 0-100% value, so we hold
+    // it to a fixed 70% floor instead of the relative formula.
+    const perDimFloor = (threshold - 20) / 10;
+    const wordCountPctFloor = 70;
+    const weakDims: string[] = [];
+    for (const [dim, raw] of Object.entries(audit.breakdown)) {
+      if (typeof raw !== 'number') continue;
+      if (dim === 'wordCountAccuracyPct') {
+        if (raw < wordCountPctFloor) weakDims.push(`${dim}=${raw}% (floor ${wordCountPctFloor}%)`);
+      } else if (raw < perDimFloor) {
+        weakDims.push(`${dim}=${raw} (floor ${perDimFloor})`);
+      }
+    }
+
     logger.info('[channel-clone script] audit', {
       jobId,
       iteration,
@@ -233,9 +257,12 @@ export async function runScript(opts: RunScriptOptions): Promise<void> {
       threshold,
       wordCount: scriptWordCount,
       target: targetWordCount,
+      weakDims: weakDims.length > 0 ? weakDims : null,
     });
 
-    if (overallPct >= threshold) {
+    // A draft only passes when BOTH gates clear: overall percentile
+    // ≥ threshold AND no individual dimension below its floor.
+    if (overallPct >= threshold && weakDims.length === 0) {
       approved = true;
       break;
     }
