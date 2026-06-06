@@ -43,27 +43,67 @@ const SANDBOX_LIFETIME_MS = 30 * 60_000;
 const APT_INSTALL_TIMEOUT_MS = 90_000;
 const PIP_INSTALL_TIMEOUT_MS = 90_000;
 
+/** Resolve the credentials we'll hand to Sandbox.create. Two paths
+ *  are supported, in order of preference:
+ *
+ *  1. **OIDC**: the SDK reads `VERCEL_OIDC_TOKEN` from env. On
+ *     production deployments this is auto-injected on every function
+ *     invocation, BUT ONLY if the project has OIDC enabled in
+ *     Settings → Security → OIDC Token. Locally, `vercel env pull`
+ *     copies a short-lived token into `.env.development.local`.
+ *
+ *  2. **Personal access token (fallback)**: when all three of
+ *     `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID` are set,
+ *     we hand them to the SDK explicitly. This is the escape hatch
+ *     for projects where OIDC can't (yet) be enabled. PATs are
+ *     long-lived so prefer OIDC for production.
+ *
+ *  Returns `undefined` to mean "let the SDK auto-resolve from env"
+ *  (the OIDC path). Returns an explicit credentials object when the
+ *  PAT fallback is configured. */
+function resolveSandboxCredentials():
+  | undefined
+  | { token: string; teamId: string; projectId: string }
+{
+  if (process.env.VERCEL_OIDC_TOKEN) {
+    // SDK will pick it up automatically — no need to pass.
+    return undefined;
+  }
+  const token = process.env.VERCEL_TOKEN;
+  const teamId = process.env.VERCEL_TEAM_ID;
+  const projectId = process.env.VERCEL_PROJECT_ID;
+  if (token && teamId && projectId) {
+    return { token, teamId, projectId };
+  }
+  return undefined;
+}
+
 /** Create a python3.13 sandbox preloaded with yt-dlp + ffmpeg.
- *  Throws when VERCEL_OIDC_TOKEN is missing (the SDK auth path
- *  requires it; locally `vercel env pull` provisions it).
+ *
+ *  Throws a setup-friendly error when neither auth path is configured.
+ *  Otherwise delegates auth to the SDK (OIDC) or passes explicit
+ *  creds (PAT fallback).
  *
  *  The optional `log` is a JobLogger from the runner. Every meaningful
  *  step is published both to the server log AND to the job's
- *  progressLog so the panel renders live progress. When omitted (e.g.
- *  in a future caller that doesn't own a job row), the helper falls
- *  back to the bare `logger` and the user sees nothing live. */
+ *  progressLog so the panel renders live progress. */
 export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promise<IntakeSandbox> {
-  if (!process.env.VERCEL_OIDC_TOKEN) {
+  const creds = resolveSandboxCredentials();
+  if (!creds && !process.env.VERCEL_OIDC_TOKEN) {
     throw new Error(
-      'VERCEL_OIDC_TOKEN missing. Locally: run `vercel env pull` to populate `.env.development.local`. In production: Vercel auto-injects this on every function invocation.',
+      'Vercel Sandbox auth not configured. Pick one path:\n' +
+      '  1. RECOMMENDED — enable OIDC: Vercel dashboard → Project → Settings → Security → OIDC Token → Enable. Then redeploy; VERCEL_OIDC_TOKEN auto-injects.\n' +
+      '  2. ALTERNATIVE — set Personal Access Token: VERCEL_TOKEN, VERCEL_TEAM_ID, VERCEL_PROJECT_ID env vars (less secure; PATs are long-lived).\n' +
+      '  3. LOCAL DEV — run `vercel env pull` to copy a short-lived OIDC token into .env.development.local.',
     );
   }
 
-  log?.info('sandbox', 'create start');
-  logger.info('[channel-clone sandbox] create start', { jobId });
+  log?.info('sandbox', 'create start', { auth: creds ? 'explicit-pat' : 'oidc' });
+  logger.info('[channel-clone sandbox] create start', { jobId, auth: creds ? 'explicit-pat' : 'oidc' });
   const sandbox = await Sandbox.create({
     runtime: 'python3.13',
     timeout: SANDBOX_LIFETIME_MS,
+    ...(creds ?? {}),
   });
   const workDir = '/home/vercel-sandbox';
   log?.info('sandbox', 'created', { sandboxName: sandbox.name });
