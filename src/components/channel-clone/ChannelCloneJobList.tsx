@@ -12,7 +12,7 @@
  */
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChannelCloneJobStatus } from '@/lib/channel-clone/types';
 
 const ACTIVE_STATUSES: ChannelCloneJobStatus[] = [
@@ -83,13 +83,76 @@ export function ChannelCloneJobList() {
   );
 }
 
-/** Top-level collapsible wrapper. Default-open so a user landing on
- *  the page sees their history immediately; one click hides the list
- *  if it gets noisy. We default to "open" rather than "collapsed"
- *  because principle 10 (build for a lazy user) — the history is
- *  why they're here. */
+/** Top-level collapsible wrapper. Default-CLOSED because the list
+ *  grows quickly during iteration on the channel-clone feature
+ *  itself and the user asked for it to be tucked away. One click
+ *  expands. When expanded, the toolbar adds bulk actions: select-
+ *  all, delete-selected, delete-failed, delete-all. */
 function CollapsibleJobList({ jobs, onChanged }: { jobs: JobListItem[]; onChanged: () => void }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState<null | 'selected' | 'failed' | 'all'>(null);
+
+  const failedCount = useMemo(
+    () => jobs.filter((j) => j.status.endsWith('_failed') || j.status === 'cancelled').length,
+    [jobs],
+  );
+
+  const toggleOne = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const allSelected = jobs.length > 0 && selected.size === jobs.length;
+  const toggleAll = useCallback(() => {
+    setSelected((prev) => (prev.size === jobs.length ? new Set() : new Set(jobs.map((j) => j.id))));
+  }, [jobs]);
+
+  const bulkDelete = useCallback(
+    async (mode: 'selected' | 'failed' | 'all') => {
+      let body: object;
+      let confirmMsg: string;
+      if (mode === 'selected') {
+        if (selected.size === 0) return;
+        body = { ids: [...selected] };
+        confirmMsg = `Delete ${selected.size} selected run${selected.size === 1 ? '' : 's'} permanently? This cannot be undone. Active runs whose rows are deleted will stop silently.`;
+      } else if (mode === 'failed') {
+        if (failedCount === 0) return;
+        body = { scope: 'failed' };
+        confirmMsg = `Delete all ${failedCount} failed/cancelled run${failedCount === 1 ? '' : 's'} permanently? This cannot be undone.`;
+      } else {
+        if (jobs.length === 0) return;
+        body = { scope: 'all' };
+        confirmMsg = `Delete ALL ${jobs.length} runs permanently? This cannot be undone. Active runs will stop silently.`;
+      }
+      if (!window.confirm(confirmMsg)) return;
+      setBulkBusy(mode);
+      try {
+        const res = await fetch('/api/channel-clone/jobs/bulk-delete', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(data?.error ?? `Bulk delete failed (${res.status})`);
+          return;
+        }
+        setSelected(new Set());
+        onChanged();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBulkBusy(null);
+      }
+    },
+    [selected, failedCount, jobs.length, onChanged],
+  );
+
   return (
     <div className="space-y-2">
       <button
@@ -100,32 +163,106 @@ function CollapsibleJobList({ jobs, onChanged }: { jobs: JobListItem[]; onChange
         <span>
           <span className="text-neutral-400">{open ? '▼' : '▶'}</span>
           <span className="ml-2">{jobs.length} run{jobs.length === 1 ? '' : 's'}</span>
+          {failedCount > 0 && (
+            <span className="ml-2 text-[10px] text-red-400">({failedCount} failed)</span>
+          )}
         </span>
         <span className="text-[10px] text-neutral-500">click to {open ? 'collapse' : 'expand'}</span>
       </button>
       {open && (
-        <ul className="space-y-2">
-          {jobs.map((j) => (
-            <JobCard key={j.id} job={j} onChanged={onChanged} />
-          ))}
-        </ul>
+        <>
+          <div className="flex flex-wrap items-center gap-2 rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[10px]">
+            <label className="flex items-center gap-1.5 text-neutral-300 hover:text-neutral-100">
+              <input
+                type="checkbox"
+                checked={allSelected}
+                onChange={toggleAll}
+                className="h-3 w-3 cursor-pointer accent-neutral-300"
+              />
+              <span>select all</span>
+            </label>
+            <span className="text-neutral-500">·</span>
+            <span className="text-neutral-400">
+              {selected.size === 0 ? 'none selected' : `${selected.size} selected`}
+            </span>
+            <span className="ml-auto flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void bulkDelete('selected')}
+                disabled={selected.size === 0 || bulkBusy !== null}
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono uppercase tracking-wide text-neutral-300 hover:border-red-700 hover:bg-red-950/40 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {bulkBusy === 'selected' ? 'Deleting…' : `✕ Delete selected (${selected.size})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => void bulkDelete('failed')}
+                disabled={failedCount === 0 || bulkBusy !== null}
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono uppercase tracking-wide text-neutral-300 hover:border-red-700 hover:bg-red-950/40 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {bulkBusy === 'failed' ? 'Deleting…' : `✕ Delete failed (${failedCount})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => void bulkDelete('all')}
+                disabled={jobs.length === 0 || bulkBusy !== null}
+                className="rounded border border-red-900 bg-red-950/40 px-2 py-1 font-mono uppercase tracking-wide text-red-300 hover:border-red-700 hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {bulkBusy === 'all' ? 'Deleting…' : `✕ Delete all (${jobs.length})`}
+              </button>
+            </span>
+          </div>
+          <ul className="space-y-2">
+            {jobs.map((j) => (
+              <JobCard
+                key={j.id}
+                job={j}
+                onChanged={onChanged}
+                selected={selected.has(j.id)}
+                onToggleSelect={() => toggleOne(j.id)}
+              />
+            ))}
+          </ul>
+        </>
       )}
     </div>
   );
 }
 
-function JobCard({ job, onChanged }: { job: JobListItem; onChanged: () => void }) {
+function JobCard({
+  job,
+  onChanged,
+  selected,
+  onToggleSelect,
+}: {
+  job: JobListItem;
+  onChanged: () => void;
+  selected: boolean;
+  onToggleSelect: () => void;
+}) {
   const isActive = ACTIVE_STATUSES.includes(job.status);
   return (
     <li>
       <Link
         href={`/channel-clone/${job.id}`}
-        className="block space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-xs hover:border-neutral-600 hover:bg-neutral-900"
+        className={`block space-y-2 rounded border p-3 text-xs hover:border-neutral-600 hover:bg-neutral-900 ${
+          selected ? 'border-neutral-400 bg-neutral-900' : 'border-neutral-800 bg-neutral-950'
+        }`}
       >
         <div className="flex items-baseline justify-between gap-3">
-          <div className="min-w-0 truncate">
-            <span className="font-medium text-neutral-200">{job.summary.sourceChannelName ?? job.sourceChannelUrl}</span>
-            <span className="ml-2 truncate text-[10px] text-neutral-500">{job.sourceCanonicalUrl}</span>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelect}
+              onClick={(e) => e.stopPropagation()}
+              aria-label="Select for bulk action"
+              className="h-3 w-3 shrink-0 cursor-pointer self-center accent-neutral-300"
+            />
+            <span className="min-w-0 truncate">
+              <span className="font-medium text-neutral-200">{job.summary.sourceChannelName ?? job.sourceChannelUrl}</span>
+              <span className="ml-2 truncate text-[10px] text-neutral-500">{job.sourceCanonicalUrl}</span>
+            </span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {isActive && <CancelButton jobId={job.id} onCancelled={onChanged} />}

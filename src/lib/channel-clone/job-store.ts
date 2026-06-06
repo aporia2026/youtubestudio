@@ -156,6 +156,54 @@ export async function deleteChannelCloneJob(
   return (rowCount ?? 0) > 0;
 }
 
+/** Bulk-delete jobs in the workspace. Three modes:
+ *    - `ids`: delete specific ids (UUIDs are validated upstream).
+ *    - `scope: 'failed'`: delete every job in a *_failed status OR
+ *      'cancelled'. The terminal-but-bad set.
+ *    - `scope: 'all'`: delete every job in the workspace.
+ *  Workspace scoping is enforced in the WHERE clause for both
+ *  modes; an `ids` array from another workspace simply matches 0
+ *  rows. Returns the count of rows actually deleted so the UI can
+ *  report it. */
+export async function bulkDeleteChannelCloneJobs(
+  workspaceId: string,
+  opts: { ids?: string[]; scope?: 'all' | 'failed' },
+): Promise<number> {
+  if (opts.ids && opts.ids.length > 0) {
+    const { rowCount } = await sql.query(
+      `
+      DELETE FROM channel_clone_jobs
+       WHERE workspace_id = $1::uuid
+         AND id = ANY($2::uuid[])
+      `,
+      [workspaceId, opts.ids],
+    );
+    return rowCount ?? 0;
+  }
+  if (opts.scope === 'failed') {
+    const { rowCount } = await sql.query(
+      `
+      DELETE FROM channel_clone_jobs
+       WHERE workspace_id = $1::uuid
+         AND (status LIKE '%_failed' OR status = 'cancelled')
+      `,
+      [workspaceId],
+    );
+    return rowCount ?? 0;
+  }
+  if (opts.scope === 'all') {
+    const { rowCount } = await sql.query(
+      `
+      DELETE FROM channel_clone_jobs
+       WHERE workspace_id = $1::uuid
+      `,
+      [workspaceId],
+    );
+    return rowCount ?? 0;
+  }
+  return 0;
+}
+
 /** Mark a job for cancellation. Atomic in SQL: sets
  *  `state_jsonb.cancelRequested = true` AND, when the current status
  *  is one of the `*_running` / `intake_pending` states, transitions
