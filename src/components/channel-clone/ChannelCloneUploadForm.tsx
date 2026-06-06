@@ -25,7 +25,6 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import { upload } from '@vercel/blob/client';
 
 type UploadStatus = 'idle' | 'queued' | 'uploading' | 'uploaded' | 'failed';
 
@@ -41,8 +40,10 @@ interface VideoUpload {
   /** Per-row error so a single broken upload doesn't blow away the
    *  other rows' progress. */
   error: string | null;
-  /** Blob URL once upload finishes — used by the kickoff POST. */
-  blobUrl: string | null;
+  /** R2 object key once upload finishes — used by the kickoff POST.
+   *  The server validates the key prefix matches the caller's
+   *  workspace before signing a download URL for the sandbox. */
+  r2Key: string | null;
   /** Lifecycle stage so the operator can see exactly what's happening:
    *    idle      — picked but not yet submitted
    *    queued    — waiting for a free upload slot (we cap concurrency)
@@ -52,12 +53,48 @@ interface VideoUpload {
   status: UploadStatus;
 }
 
-/** Maximum concurrent Blob uploads. The browser's per-origin
- *  connection cap + Vercel Blob's per-file finalization overhead
- *  combine to make 5+ parallel uploads stall and retry from zero.
- *  Two at a time keeps both happy and visibly progresses through
- *  the list. */
+/** Maximum concurrent R2 uploads. The browser's per-origin
+ *  connection cap + R2's own per-file ingest overhead combine to
+ *  make 5+ parallel uploads stall and retry from zero. Two at a
+ *  time keeps both happy and visibly progresses through the list. */
 const MAX_PARALLEL_UPLOADS = 2;
+
+/** PUT a file to a presigned R2 URL with progress reporting.
+ *  Resolves with the R2 key on success (so the caller can hand it
+ *  back to the kickoff endpoint), rejects on any HTTP error.
+ *
+ *  Uses XMLHttpRequest because the Fetch API still has no upload-
+ *  progress events as of 2026; without progress the operator can't
+ *  tell whether a slow upload is hung or just big. */
+async function putToR2(
+  url: string,
+  file: File,
+  onProgress: (pct: number) => void,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', (evt) => {
+      if (!evt.lengthComputable) return;
+      onProgress(Math.round((evt.loaded / evt.total) * 100));
+    });
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else {
+        // R2 returns plain XML on error; surface the status code
+        // (and the first bit of the body) so the operator can
+        // distinguish "403 signed URL expired" from "413 too big"
+        // from network blip.
+        reject(new Error(`R2 PUT failed (${xhr.status}): ${xhr.responseText.slice(0, 200)}`));
+      }
+    });
+    xhr.addEventListener('error', () => reject(new Error('R2 PUT network error')));
+    xhr.addEventListener('abort', () => reject(new Error('R2 PUT aborted')));
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', file.type);
+    xhr.send(file);
+  });
+}
 
 /** Run `fn` over `items` with at most `limit` in flight at once.
  *  Errors propagate via the returned promise so the form's catch
@@ -108,7 +145,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         transcript: '',
         uploadProgress: null,
         error: null,
-        blobUrl: null,
+        r2Key: null,
         status: 'idle',
       })),
     ]);
@@ -140,24 +177,32 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         prev.map((v) => ({ ...v, status: 'queued', uploadProgress: null, error: null })),
       );
 
-      // 1. Upload each file with bounded concurrency. Promise.all
-      // with 5+ parallel uploads of 13-62MB files stalls the Blob
-      // server's finalization and the SDK retries the whole upload
-      // from 0% — which manifested as "progress bar starts over".
-      // Two at a time keeps both the browser's per-origin connection
-      // pool and Blob's per-file processing budget happy.
-      const uploadedUrls = await limitedParallel(videos, MAX_PARALLEL_UPLOADS, async (v) => {
+      // 1. Upload each file with bounded concurrency.
+      // Per-file flow:
+      //   a. POST /api/channel-clone/r2-upload-url → presigned PUT.
+      //   b. XHR PUT the bytes directly to R2 with progress events.
+      //   c. Capture the R2 key for the kickoff POST.
+      const uploadedKeys = await limitedParallel(videos, MAX_PARALLEL_UPLOADS, async (v) => {
         try {
           update(v.uid, { status: 'uploading', uploadProgress: 0, error: null });
-          const result = await upload(v.file.name, v.file, {
-            access: 'public',
-            handleUploadUrl: '/api/channel-clone/upload-token',
-            onUploadProgress: (evt) => {
-              update(v.uid, { uploadProgress: Math.round(evt.percentage) });
-            },
+          // eslint-disable-next-line no-restricted-syntax -- POST, mint
+          const tokenRes = await fetch('/api/channel-clone/r2-upload-url', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              filename: v.file.name,
+              contentType: v.file.type || 'video/mp4',
+            }),
           });
-          update(v.uid, { status: 'uploaded', uploadProgress: 100, blobUrl: result.url });
-          return { uid: v.uid, blobUrl: result.url };
+          const tokenData = (await tokenRes.json()) as { key?: string; uploadUrl?: string; error?: string };
+          if (!tokenRes.ok || !tokenData.key || !tokenData.uploadUrl) {
+            throw new Error(tokenData.error ?? `Could not mint R2 upload URL (${tokenRes.status})`);
+          }
+          await putToR2(tokenData.uploadUrl, v.file, (pct) => {
+            update(v.uid, { uploadProgress: pct });
+          });
+          update(v.uid, { status: 'uploaded', uploadProgress: 100, r2Key: tokenData.key });
+          return { uid: v.uid, r2Key: tokenData.key };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           update(v.uid, { status: 'failed', error: msg, uploadProgress: null });
@@ -174,9 +219,9 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
           sourceLabel: sourceLabel.trim(),
           frameIntervalSec,
           videos: videos.map((v) => {
-            const uploaded = uploadedUrls.find((u) => u.uid === v.uid);
+            const uploaded = uploadedKeys.find((u) => u.uid === v.uid);
             return {
-              blobUrl: uploaded?.blobUrl ?? v.blobUrl ?? '',
+              r2Key: uploaded?.r2Key ?? v.r2Key ?? '',
               title: v.title.trim(),
               transcript: v.transcript,
             };

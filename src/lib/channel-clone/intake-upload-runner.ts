@@ -2,8 +2,8 @@
  * Channel-clone manual-upload intake runner.
  *
  * Companion to `intake-runner.ts` for the YouTube-API-free path:
- * the operator uploads their own reference videos (via @vercel/blob
- * client uploads), this runner downloads them into a sandbox, runs
+ * the operator uploads their own reference videos (browser → R2
+ * via presigned PUT), this runner pulls them into a sandbox, runs
  * ffmpeg to extract sample frames, and uses operator-provided
  * transcripts directly. No yt-dlp, no cookies, no YouTube API —
  * the entire YouTube anti-bot surface is bypassed.
@@ -12,15 +12,19 @@
  * stage (analyze, topics, hooks, script, rowify, publish-pack,
  * handoff) works unchanged.
  *
- * Blob cleanup: after the runner reads the video bytes back into
- * the sandbox, the source Blob is `del`-ed via @vercel/blob so a
- * 50 MB upload doesn't sit on the storage bill forever. If the run
- * fails the Blob is still cleaned up by the finally block — the
+ * R2 cleanup: after the runner reads the video bytes back into the
+ * sandbox, the source object is `deleteFromBucket`-ed so a 50 MB
+ * upload doesn't sit on the storage bill forever. If the run fails
+ * the object is still cleaned up by the finally block — the
  * operator can re-upload on retry.
  */
 
-import { del } from '@vercel/blob';
 import { logger } from '@/lib/logger';
+import {
+  deleteFromBucket,
+  getDownloadUrlForBucket,
+  getReviewBucket,
+} from '@/lib/r2';
 import { cleanCaptions } from './clean-captions';
 import { extractFrames } from './ffmpeg';
 import {
@@ -43,9 +47,10 @@ import type {
 } from './types';
 
 export interface UploadedVideoInput {
-  /** Vercel Blob URL — the client uploaded directly to this URL via
-   *  the @vercel/blob/client `upload()` helper. */
-  blobUrl: string;
+  /** R2 object key inside the review bucket. Shape:
+   *    channel-clone-uploads/<workspaceId>/<uuid>.<ext>
+   *  Validated upstream by /api/channel-clone/intake-upload. */
+  r2Key: string;
   /** Display title for the video — defaults to the uploaded
    *  filename minus extension. Surfaced in the analyze stage as
    *  the per-video header. */
@@ -92,7 +97,8 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     return failJob(jobId, workspaceId, `Could not start intake sandbox: ${errorMessage(err)}`);
   }
 
-  const blobUrlsToCleanup: string[] = [];
+  const r2KeysToCleanup: string[] = [];
+  const r2Bucket = getReviewBucket();
   try {
     const { sandbox, workDir, ffmpegPath } = uploadSandbox;
     const sandboxJobDir = `${workDir}/intake-${jobId}`;
@@ -111,22 +117,23 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     for (const [i, video] of videos.entries()) {
       if (await isCancelled()) return;
       log.info('intake', `processing video ${i + 1}/${videos.length}`, { title: video.title });
-      blobUrlsToCleanup.push(video.blobUrl);
+      r2KeysToCleanup.push(video.r2Key);
       try {
         // Filename inside the sandbox. Extension is preserved from
-        // the Blob URL so ffmpeg auto-detects container/codec.
-        const ext = inferExtensionFromUrl(video.blobUrl) ?? 'mp4';
+        // the R2 key so ffmpeg auto-detects container/codec.
+        const ext = inferExtensionFromKey(video.r2Key) ?? 'mp4';
         const videoSandboxPath = `${sandboxJobDir}/video-${i}.${ext}`;
 
-        // Pull the Blob bytes into the sandbox via curl. We don't
-        // proxy through our function memory because the Blob URL is
-        // public-access and the sandbox has outbound networking.
-        // -L follows redirects, -f fails fast on HTTP errors, -s
-        // keeps the noise out of stderr.
-        log.info('intake', 'downloading Blob into sandbox', { videoIndex: i });
+        // Mint a short-lived presigned GET URL for the R2 object,
+        // then curl it into the sandbox. The presigned URL signs the
+        // specific GET op so even though it's transmitted in the
+        // sandbox process list, it only unlocks read access to this
+        // one object for the next 7 days.
+        log.info('intake', 'downloading from R2 into sandbox', { videoIndex: i, r2Key: video.r2Key });
+        const downloadUrl = await getDownloadUrlForBucket(r2Bucket, video.r2Key);
         const dl = await runInSandbox(sandbox, {
           cmd: 'curl',
-          args: ['-fsSL', '-o', videoSandboxPath, video.blobUrl],
+          args: ['-fsSL', '-o', videoSandboxPath, downloadUrl],
           timeoutMs: TIMEOUT_FETCH_VIDEO_MS,
         });
         if (dl.exitCode !== 0) {
@@ -174,7 +181,10 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
         const durSec = await probeDurationSec(sandbox, ffmpegPath, videoSandboxPath).catch(() => 0);
 
         sampleVideos.push({
-          videoUrl: video.blobUrl,
+          // We store the R2 key (not a presigned URL) so the row
+          // stays valid past the URL's 7-day TTL. If a later stage
+          // needs to fetch the bytes again it can re-mint a URL.
+          videoUrl: `r2://${r2Bucket}/${video.r2Key}`,
           // Synthetic id derived from index — keeps the existing
           // `string` videoId contract without faking an 11-char
           // YouTube id (which would lie about provenance).
@@ -228,15 +238,15 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     });
   } finally {
     await destroyUploadSandbox(jobId, uploadSandbox, log);
-    // Blob cleanup runs regardless of outcome. We swallow per-URL
-    // errors so a slow Blob delete doesn't bubble back to the user
-    // — orphan blobs are reaped by Vercel's lifecycle policy when
-    // not actively referenced anyway.
-    for (const url of blobUrlsToCleanup) {
-      del(url).catch((err) => {
-        logger.warn('[channel-clone intake-upload] blob delete failed', {
+    // R2 cleanup runs regardless of outcome. Per-key errors are
+    // swallowed so a slow delete doesn't bubble back to the user;
+    // orphan objects can be reaped by an R2 lifecycle rule on the
+    // channel-clone-uploads/ prefix.
+    for (const key of r2KeysToCleanup) {
+      deleteFromBucket(r2Bucket, key).catch((err) => {
+        logger.warn('[channel-clone intake-upload] r2 delete failed', {
           jobId,
-          urlSnippet: url.slice(0, 60),
+          r2Key: key,
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -253,14 +263,9 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function inferExtensionFromUrl(blobUrl: string): string | null {
-  try {
-    const u = new URL(blobUrl);
-    const m = /\.([a-z0-9]{2,4})(?:\?|$)/i.exec(u.pathname);
-    return m ? m[1].toLowerCase() : null;
-  } catch {
-    return null;
-  }
+function inferExtensionFromKey(r2Key: string): string | null {
+  const m = /\.([a-z0-9]{2,5})$/i.exec(r2Key);
+  return m ? m[1].toLowerCase() : null;
 }
 
 /** Parse the operator-pasted transcript. Auto-detects SRT format

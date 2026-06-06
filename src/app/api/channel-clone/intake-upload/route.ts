@@ -30,7 +30,12 @@ const VALID_FRAME_INTERVALS = new Set([5, 10, 15]);
 const MAX_VIDEOS_PER_JOB = 8;
 const MAX_TITLE_LEN = 200;
 const MAX_TRANSCRIPT_LEN = 200_000; // ~30k words — comfortable for a 60-min explainer
-const BLOB_URL_RE = /^https:\/\/[a-z0-9-]+\.(?:public\.)?blob\.vercel-storage\.com\//i;
+/** R2 key shape we mint in /api/channel-clone/r2-upload-url:
+ *    channel-clone-uploads/<workspaceId>/<uuid>.<ext>
+ *  Validating the shape here (in addition to scoping by workspace
+ *  prefix) prevents a malicious caller from supplying a key that
+ *  points at another workspace's object even with their own session. */
+const R2_KEY_RE = /^channel-clone-uploads\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.[a-z0-9]{2,5}$/i;
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   let body: unknown;
@@ -69,11 +74,22 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: `videos[${i}] is not an object` }, { status: 400 });
     }
     const v = raw as Record<string, unknown>;
-    const blobUrl = typeof v.blobUrl === 'string' ? v.blobUrl : '';
-    if (!BLOB_URL_RE.test(blobUrl)) {
+    const r2Key = typeof v.r2Key === 'string' ? v.r2Key : '';
+    if (!R2_KEY_RE.test(r2Key)) {
       return NextResponse.json(
-        { error: `videos[${i}].blobUrl must be a Vercel Blob URL (upload via @vercel/blob client first)` },
+        { error: `videos[${i}].r2Key must be a channel-clone-uploads R2 key (upload via /api/channel-clone/r2-upload-url first)` },
         { status: 400 },
+      );
+    }
+    // Cross-workspace guard: even with a valid key shape, refuse a
+    // key minted in another workspace. The presigned URL would also
+    // sign correctly server-side, but we don't want one tenant's
+    // session to surface another's objects via the runner.
+    const expectedPrefix = `channel-clone-uploads/${session.ws}/`;
+    if (!r2Key.startsWith(expectedPrefix)) {
+      return NextResponse.json(
+        { error: `videos[${i}].r2Key belongs to another workspace` },
+        { status: 403 },
       );
     }
     const title = typeof v.title === 'string' ? v.title.trim().slice(0, MAX_TITLE_LEN) : '';
@@ -81,7 +97,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: `videos[${i}].title is required` }, { status: 400 });
     }
     const transcript = typeof v.transcript === 'string' ? v.transcript.slice(0, MAX_TRANSCRIPT_LEN) : '';
-    videos.push({ blobUrl, title, transcript });
+    videos.push({ r2Key, title, transcript });
   }
 
   // The "canonical URL" for an upload job is just the synthetic
