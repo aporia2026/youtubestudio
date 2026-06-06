@@ -150,10 +150,17 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
   // static ffmpeg binary). One pip call for both — the python3.13
   // runtime isn't Debian so `apt-get install ffmpeg` doesn't work;
   // imageio-ffmpeg is the portable path.
-  log?.info('sandbox', 'pip install yt-dlp + imageio-ffmpeg (this takes ~20s, includes ~50MB static ffmpeg download)');
-  await runOrThrow(sandbox, 'pip install yt-dlp + imageio-ffmpeg', {
+  //
+  // yt-dlp-nightly-builds is preferred over the stable `yt-dlp`
+  // package because YouTube ships anti-bot changes (n-sig
+  // challenges, player_client deprecations, etc.) and the nightly
+  // ships fixes within hours where the stable pypi release can be
+  // days behind. The package is officially maintained by the
+  // yt-dlp team. `--pre` lets pip select the pre-release.
+  log?.info('sandbox', 'pip install yt-dlp-nightly + imageio-ffmpeg (this takes ~20s, includes ~50MB static ffmpeg download)');
+  await runOrThrow(sandbox, 'pip install yt-dlp-nightly + imageio-ffmpeg', {
     cmd: 'pip',
-    args: ['install', '--quiet', '--no-input', 'yt-dlp', 'imageio-ffmpeg'],
+    args: ['install', '--quiet', '--no-input', '--pre', 'yt-dlp-nightly-builds', 'imageio-ffmpeg'],
     timeoutMs: PIP_INSTALL_TIMEOUT_MS,
   });
   log?.info('sandbox', 'pip install done');

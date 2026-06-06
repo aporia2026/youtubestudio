@@ -79,13 +79,42 @@ export function ChannelCloneJobList() {
     return <p className="text-xs text-neutral-500">No runs yet. Start one below.</p>;
   }
   return (
-    <ul className="space-y-2">
-      {jobs.map((j) => <JobCard key={j.id} job={j} onCancelled={() => void fetchJobs()} />)}
-    </ul>
+    <CollapsibleJobList jobs={jobs} onChanged={() => void fetchJobs()} />
   );
 }
 
-function JobCard({ job, onCancelled }: { job: JobListItem; onCancelled: () => void }) {
+/** Top-level collapsible wrapper. Default-open so a user landing on
+ *  the page sees their history immediately; one click hides the list
+ *  if it gets noisy. We default to "open" rather than "collapsed"
+ *  because principle 10 (build for a lazy user) — the history is
+ *  why they're here. */
+function CollapsibleJobList({ jobs, onChanged }: { jobs: JobListItem[]; onChanged: () => void }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-300 hover:border-neutral-600 hover:bg-neutral-900"
+      >
+        <span>
+          <span className="text-neutral-400">{open ? '▼' : '▶'}</span>
+          <span className="ml-2">{jobs.length} run{jobs.length === 1 ? '' : 's'}</span>
+        </span>
+        <span className="text-[10px] text-neutral-500">click to {open ? 'collapse' : 'expand'}</span>
+      </button>
+      {open && (
+        <ul className="space-y-2">
+          {jobs.map((j) => (
+            <JobCard key={j.id} job={j} onChanged={onChanged} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function JobCard({ job, onChanged }: { job: JobListItem; onChanged: () => void }) {
   const isActive = ACTIVE_STATUSES.includes(job.status);
   return (
     <li>
@@ -99,7 +128,8 @@ function JobCard({ job, onCancelled }: { job: JobListItem; onCancelled: () => vo
             <span className="ml-2 truncate text-[10px] text-neutral-500">{job.sourceCanonicalUrl}</span>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {isActive && <CancelButton jobId={job.id} onCancelled={onCancelled} />}
+            {isActive && <CancelButton jobId={job.id} onCancelled={onChanged} />}
+            <DeleteButton jobId={job.id} onDeleted={onChanged} />
             <StatusPill status={job.status} />
           </div>
         </div>
@@ -161,6 +191,49 @@ function CancelButton({ jobId, onCancelled }: { jobId: string; onCancelled: () =
       className="rounded border border-red-900 bg-red-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-red-300 hover:border-red-700 hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {cancelling ? 'Stopping…' : 'Stop'}
+    </button>
+  );
+}
+
+/** Per-run delete control. Wrapped inside the card's <Link>, so the
+ *  click handler stops navigation. Confirm dialog so a slip doesn't
+ *  destroy a run the user wanted to inspect. After success the
+ *  parent re-fetches to drop the card. */
+function DeleteButton({ jobId, onDeleted }: { jobId: string; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const handleClick = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (deleting) return;
+      if (!window.confirm('Delete this run permanently? This cannot be undone.')) return;
+      setDeleting(true);
+      try {
+        const res = await fetch(`/api/channel-clone/jobs/${jobId}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data?.error ?? `Could not delete (${res.status})`);
+          return;
+        }
+        onDeleted();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      } finally {
+        setDeleting(false);
+      }
+    },
+    [deleting, jobId, onDeleted],
+  );
+  return (
+    <button
+      type="button"
+      onClick={(e) => void handleClick(e)}
+      disabled={deleting}
+      title="Delete this run permanently."
+      aria-label="Delete run"
+      className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-neutral-400 hover:border-red-700 hover:bg-red-950/40 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {deleting ? '…' : '✕'}
     </button>
   );
 }

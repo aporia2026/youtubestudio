@@ -135,6 +135,27 @@ export async function mergeChannelCloneJobState(
   return (rowCount ?? 0) > 0;
 }
 
+/** Permanently delete a job row. Workspace-scoped so a cross-tenant
+ *  id can't be used to remove someone else's row — returns false
+ *  with no side effect when the id doesn't exist in this workspace.
+ *
+ *  The runner doesn't read deleted rows so a delete mid-run leaves
+ *  the (stopped) sandbox to auto-reap on its own lifetime timeout.
+ *  Callers should cancel first if they want immediate sandbox stop. */
+export async function deleteChannelCloneJob(
+  jobId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const { rowCount } = await sql.query(
+    `
+    DELETE FROM channel_clone_jobs
+     WHERE id = $1::uuid AND workspace_id = $2::uuid
+    `,
+    [jobId, workspaceId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
 /** Mark a job for cancellation. Atomic in SQL: sets
  *  `state_jsonb.cancelRequested = true` AND, when the current status
  *  is one of the `*_running` / `intake_pending` states, transitions
