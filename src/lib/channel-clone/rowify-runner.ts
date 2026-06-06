@@ -27,6 +27,7 @@ import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
 import { getBuiltInStyle } from '@/lib/production-doc-styles';
+import { deriveChannelStyle } from './derive-channel-style';
 import {
   getChannelCloneJob,
   replaceChannelCloneJobState,
@@ -79,6 +80,17 @@ export interface RunRowifyOptions {
   /** Optional user-picked style preset id. When omitted, the
    *  runner falls back to `matchStylePreset(visualProfile)`. */
   stylePresetId?: string;
+  /** When true (the default), the runner DERIVES a per-job custom
+   *  style from the visual profile + intake frames AND uses it in
+   *  the LLM prompt instead of the built-in preset's suffix. The
+   *  preset stays around for its mixing_rules + as the structural
+   *  base. The handoff stage then carries the custom style into the
+   *  production-doc so the image-gen pipeline references the
+   *  channel's actual frames.
+   *
+   *  Set to false to opt out (e.g., the operator wants a clean
+   *  built-in style with no channel-specific overrides). */
+  useChannelStyle?: boolean;
 }
 
 export async function runRowify(opts: RunRowifyOptions): Promise<void> {
@@ -91,13 +103,16 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
     logger.error('[channel-clone rowify] job missing', { jobId });
     return;
   }
-  const { analysis, visualProfile, approvedScript } = job.state_jsonb;
+  const { analysis, visualProfile, approvedScript, intake } = job.state_jsonb;
   if (!analysis || !approvedScript) {
     return failJob(jobId, workspaceId, 'Cannot rowify: analysis + approvedScript must both be present.');
   }
 
   // Resolve the style preset. User pick wins; otherwise match to
-  // visual profile; otherwise default to paint_explainer_v1.
+  // visual profile; otherwise default to paint_explainer_v1. The
+  // preset's mixing_rules + label are still used even when
+  // channelStyle is on — they provide row-composition guidance and
+  // a structural base for the production-doc.
   let presetId: string;
   let presetReason: string;
   if (opts.stylePresetId && isCandidateStylePresetId(opts.stylePresetId)) {
@@ -119,13 +134,38 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
     presetLabel: preset.label,
   });
 
+  // Derive the per-job custom style from the visual profile + intake
+  // frames. Defaults to ON because the WHOLE POINT of channel-clone
+  // is to reproduce the channel's visual DNA — using a built-in
+  // preset's suffix would just classify the channel into one of our
+  // existing buckets instead.
+  const useChannelStyle = opts.useChannelStyle !== false;
+  const channelStyle = useChannelStyle
+    ? deriveChannelStyle(visualProfile, intake)
+    : null;
+  if (channelStyle) {
+    logger.info('[channel-clone rowify] channel style derived', {
+      jobId,
+      suffixPreview: channelStyle.aiImageSuffix.slice(0, 200),
+      refCount: channelStyle.refR2Keys.length,
+      reason: channelStyle.reason,
+    });
+  }
+
+  // Pick the style cue that lands in every ai_image_prompt: the
+  // channel-derived suffix when channelStyle is on, the preset's
+  // suffix otherwise.
+  const styleSuffix = channelStyle?.aiImageSuffix ?? preset.ai_image_suffix;
+  const suffixSource = channelStyle ? 'channel-derived (cloning the channel\'s visual DNA)' : `built-in preset "${preset.id}"`;
+
   const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-rowify');
   const systemPrompt = [
     getChannelCloneSystemPrompt('channel-clone-rowify'),
     '',
-    `Style preset: ${preset.label} (id: ${preset.id})`,
+    `Style source: ${suffixSource}`,
+    `Style mixing-rules base: ${preset.label} (id: ${preset.id})`,
     'Style ai_image_suffix to append onto every ai_image_prompt:',
-    preset.ai_image_suffix,
+    styleSuffix,
     '',
     preset.mixing_rules ? `Style mixing rules:\n${preset.mixing_rules}` : '',
     '',
@@ -190,6 +230,14 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
   const nextState: ChannelCloneJobState = {
     ...fresh.state_jsonb,
     chosenStylePresetId: presetId,
+    channelStyle: channelStyle
+      ? {
+          aiImageSuffix: channelStyle.aiImageSuffix,
+          refR2Keys: channelStyle.refR2Keys,
+          reason: channelStyle.reason,
+          derivedAt: new Date().toISOString(),
+        }
+      : fresh.state_jsonb.channelStyle, // preserve prior derivation if any
     productionRows: rows,
   };
   await replaceChannelCloneJobState(jobId, workspaceId, nextState);

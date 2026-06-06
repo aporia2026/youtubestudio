@@ -24,6 +24,7 @@ import {
   deleteFromBucket,
   getDownloadUrlForBucket,
   getReviewBucket,
+  uploadToBucket,
 } from '@/lib/r2';
 import { cleanCaptions } from './clean-captions';
 import { extractFrames } from './ffmpeg';
@@ -75,14 +76,48 @@ export interface RunUploadIntakeOptions {
    *  row. The user can type "Doodle Explainers I admire" or
    *  similar; defaults to the first video's title when empty. */
   sourceLabel: string;
+  /** Optional source YouTube channel URL. Lets the analyze +
+   *  publish-pack stages reason about the actual channel (handle,
+   *  niche, similar channels) and not just the operator-uploaded
+   *  videos. Validated upstream by /api/channel-clone/intake-upload
+   *  via the same `validateYoutubeUrl` used by the URL intake. */
+  sourceChannelUrl?: string;
+  sourceChannelHandle?: string | null;
 }
 
 /** Per-step cancel + DB call timeout. Generous because the
  *  serverless function's maxDuration is the real backstop. */
 const TIMEOUT_FETCH_VIDEO_MS = 4 * 60 * 1000;
 
+/** Concurrent frame-uploads per video. R2 PutObject is cheap so we
+ *  could go higher, but 4 keeps the sandbox→Vercel→R2 hop chain
+ *  from saturating on a slow network without dragging the wall-
+ *  clock. ~30 frames × 50 KB / 4 = ~7 batches, each ~1 s. */
+const FRAME_UPLOAD_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight at once,
+ *  preserving order in the result. Mirrors the client-side helper in
+ *  ChannelCloneUploadForm.tsx but server-side for the frame uploads. */
+async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
+
 export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<void> {
-  const { jobId, workspaceId, frameIntervalSec, videos, sourceLabel } = opts;
+  const { jobId, workspaceId, frameIntervalSec, videos, sourceLabel, sourceChannelUrl, sourceChannelHandle } = opts;
   logger.info('[channel-clone intake-upload] start', { jobId, videoCount: videos.length, frameIntervalSec });
   await setChannelCloneJobStatus(jobId, workspaceId, 'intake_running');
 
@@ -153,25 +188,52 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
         // Parse operator-pasted transcript (if provided).
         const transcript = parseTranscript(video.transcript);
 
-        // Read the representative middle frame for the analyze
-        // stage. Same mid-video heuristic as intake-runner.ts.
+        // Read every frame back from the sandbox and persist to R2
+        // under a job-scoped prefix. The rowify stage later picks a
+        // handful of these as bundled refs for the image-gen pipeline
+        // — that's what makes the cloned channel's visual DNA actually
+        // travel into every generated image.
+        //
+        // The middle frame ALSO gets base64'd as the per-video
+        // representative for the analyze stage (which feeds one still
+        // to a multimodal LLM for keyword extraction). The base64 is
+        // kept in JSONB; the rest live on R2 with their keys recorded.
+        const frames = framesResult.frameSandboxPaths;
+        const frameR2Keys: string[] = [];
         let representativeFrameBase64: string | null = null;
         let representativeFrameMimeType: 'image/jpeg' | 'image/png' | null = null;
-        const frames = framesResult.frameSandboxPaths;
         if (frames.length > 0) {
-          const midPath = frames[Math.floor(frames.length / 2)];
-          try {
-            const buf = await sandbox.readFileToBuffer({ path: midPath });
-            if (buf) {
-              representativeFrameBase64 = buf.toString('base64');
-              representativeFrameMimeType = midPath.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+          const midIndex = Math.floor(frames.length / 2);
+          const uploadResults = await mapWithLimit(frames, FRAME_UPLOAD_CONCURRENCY, async (framePath, fIdx) => {
+            try {
+              const buf = await sandbox.readFileToBuffer({ path: framePath });
+              if (!buf) return null;
+              const isPng = framePath.toLowerCase().endsWith('.png');
+              const ext = isPng ? 'png' : 'jpg';
+              const contentType = isPng ? 'image/png' : 'image/jpeg';
+              const r2Key = `channel-clone-frames/${workspaceId}/${jobId}/${i}/${String(fIdx).padStart(3, '0')}.${ext}`;
+              await uploadToBucket(r2Bucket, r2Key, buf, contentType);
+              if (fIdx === midIndex) {
+                representativeFrameBase64 = buf.toString('base64');
+                representativeFrameMimeType = isPng ? 'image/png' : 'image/jpeg';
+              }
+              return r2Key;
+            } catch (err) {
+              log.warn('intake', `frame ${fIdx} upload to R2 failed; skipping`, {
+                videoIndex: i,
+                error: errorMessage(err),
+              });
+              return null;
             }
-          } catch (err) {
-            log.warn('intake', 'representative frame read failed', {
-              videoIndex: i,
-              error: errorMessage(err),
-            });
+          });
+          for (const k of uploadResults) {
+            if (k !== null) frameR2Keys.push(k);
           }
+          log.info('intake', 'frames persisted to R2', {
+            videoIndex: i,
+            extracted: frames.length,
+            uploaded: frameR2Keys.length,
+          });
         }
 
         // Probe the video's duration so the downstream pacing math
@@ -192,6 +254,7 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
           title: video.title,
           durationSec: Math.round(durSec),
           frameCount: frames.length,
+          frameR2Keys,
           representativeFrameBase64,
           representativeFrameMimeType,
           transcript,
@@ -218,8 +281,12 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     if (await isCancelled()) return;
 
     const intakeResult: ChannelCloneIntakeResult = {
-      sourceChannelUrl: 'upload://manual',
-      sourceChannelHandle: null,
+      // Prefer the real YouTube channel URL the operator pasted
+      // (analyze + publish-pack use this for niche reasoning + sim.
+      // -channel suggestions). Falls back to the synthetic
+      // `upload://` marker when missing.
+      sourceChannelUrl: sourceChannelUrl?.trim() || 'upload://manual',
+      sourceChannelHandle: sourceChannelHandle ?? null,
       sourceChannelName,
       sampleVideos,
       fetchedAt: new Date().toISOString(),

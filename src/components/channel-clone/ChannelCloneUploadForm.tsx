@@ -130,6 +130,12 @@ function nextUid(): string {
 export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormProps) {
   const [videos, setVideos] = useState<VideoUpload[]>([]);
   const [sourceLabel, setSourceLabel] = useState('');
+  /** Optional canonical YouTube channel URL of the source we're
+   *  cloning. When supplied, downstream stages (analyze, publish-
+   *  pack) use it to reason about the actual channel — handle,
+   *  niche, similar channels — instead of inferring everything
+   *  from the uploaded videos alone. */
+  const [sourceChannelUrl, setSourceChannelUrl] = useState('');
   const [frameIntervalSec, setFrameIntervalSec] = useState<5 | 10 | 15>(10);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -217,6 +223,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           sourceLabel: sourceLabel.trim(),
+          sourceChannelUrl: sourceChannelUrl.trim() || undefined,
           frameIntervalSec,
           videos: videos.map((v) => {
             const uploaded = uploadedKeys.find((u) => u.uid === v.uid);
@@ -250,6 +257,19 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         own yt-dlp / browser. Frames are extracted server-side; paste the YouTube transcript text below each video
         (use YouTube's &ldquo;Show transcript&rdquo; on the video page, copy &amp; paste).
       </p>
+
+      <label className="block text-xs text-neutral-300">
+        <span className="block pb-1 font-medium">
+          Source channel URL <span className="text-neutral-500">(recommended — lets the analyze + publish-pack stages see the real channel, not just your uploads)</span>
+        </span>
+        <input
+          type="url"
+          value={sourceChannelUrl}
+          onChange={(e) => setSourceChannelUrl(e.target.value)}
+          placeholder="https://www.youtube.com/@Zenn0009"
+          className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-neutral-100 outline-none focus:border-neutral-500"
+        />
+      </label>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block text-xs text-neutral-300">

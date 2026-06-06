@@ -87,8 +87,19 @@ export interface ChannelCloneSampleVideo {
   durationSec: number;
   /** Number of frames the ffmpeg step produced. Surfaced to the UI. */
   frameCount: number;
+  /** R2 keys (relative paths inside the review bucket) for every
+   *  frame extracted by ffmpeg, in playback order. Used by the
+   *  rowify stage to feed the channel's actual visual DNA back to
+   *  the image-gen pipeline as reference images — the missing
+   *  feature that turns "categorise the style" into "clone the
+   *  style". Empty array when frame extraction failed or the
+   *  video was transcript-only. */
+  frameR2Keys: string[];
   /** Middle frame of the video, base64-encoded. Null when frame
-   *  extraction failed but the transcript still came through. */
+   *  extraction failed but the transcript still came through.
+   *  Kept alongside frameR2Keys for the analyze stage which feeds
+   *  one representative still to the multimodal LLM for keyword
+   *  extraction. */
   representativeFrameBase64: string | null;
   /** Mime type of `representativeFrameBase64`. Always `image/jpeg`
    *  for ffmpeg's default output; surfaced so the analyze stage
@@ -262,6 +273,30 @@ export interface ChannelCloneJobState {
    *  so the value tolerates the registry growing — the rowify runner
    *  guards with isCandidateStylePresetId on read. */
   chosenStylePresetId?: string;
+  /** Per-job custom style derived from the visual profile + intake
+   *  frames. Set by the rowify runner when the operator picks "use
+   *  channel visual DNA" (default). The handoff stage threads this
+   *  into the production-doc so the image-gen pipeline uses the
+   *  channel's actual frames as Atlas i2i references instead of a
+   *  built-in preset's bundled refs.
+   *
+   *  When both `chosenStylePresetId` and `channelStyle` are set,
+   *  `channelStyle` wins — the preset id stays around for telemetry
+   *  + fallback when the doc needs a base style to extend. */
+  channelStyle?: {
+    /** Style suffix appended to every ai_image_prompt — derived
+     *  from the visual profile's artStyle / palette / lighting /
+     *  composition / mood / detail fields. */
+    aiImageSuffix: string;
+    /** R2 keys of the representative frames chosen as Atlas i2i
+     *  reference images. The image-gen pipeline mints presigned
+     *  GET URLs from these on demand. */
+    refR2Keys: string[];
+    /** Human-readable derivation summary for logs + the UI. */
+    reason: string;
+    /** ISO timestamp the channelStyle was derived at. */
+    derivedAt: string;
+  };
   /** Result of the optional handoff to the auto-pipeline. Set when
    *  the user pushed the rowified doc into the production pipeline
    *  via POST /api/channel-clone/handoff. Once set, the existing

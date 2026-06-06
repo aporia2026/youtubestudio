@@ -23,6 +23,7 @@ import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
 import { createChannelCloneJob } from '@/lib/channel-clone/job-store';
 import { runUploadIntake, type UploadedVideoInput } from '@/lib/channel-clone/intake-upload-runner';
+import { validateYoutubeUrl } from '@/lib/channel-clone/validate-youtube-url';
 
 export const maxDuration = 300;
 
@@ -49,6 +50,31 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const sourceLabel = typeof b.sourceLabel === 'string' ? b.sourceLabel.trim() : '';
   // sourceLabel can be empty — the runner falls back to the first
   // video's title.
+
+  // Optional source channel URL. When provided, validate via the
+  // shared YouTube-URL parser so the analyze + publish-pack stages
+  // see a canonical form (https://www.youtube.com/@handle or
+  // /channel/<id>). Invalid URLs reject early — better than
+  // silently dropping the user's input and surprising them later.
+  let sourceChannelUrl: string | undefined;
+  let sourceChannelHandle: string | null = null;
+  if (typeof b.sourceChannelUrl === 'string' && b.sourceChannelUrl.trim().length > 0) {
+    const validation = validateYoutubeUrl(b.sourceChannelUrl.trim());
+    if (!validation.ok) {
+      return NextResponse.json(
+        { error: `sourceChannelUrl invalid: ${validation.error}` },
+        { status: 400 },
+      );
+    }
+    if (validation.parsed.kind !== 'channel') {
+      return NextResponse.json(
+        { error: 'sourceChannelUrl must be a channel URL (e.g. youtube.com/@handle), not a video URL' },
+        { status: 400 },
+      );
+    }
+    sourceChannelUrl = validation.parsed.canonical;
+    sourceChannelHandle = validation.parsed.identifierType === 'handle' ? validation.parsed.identifier : null;
+  }
 
   const frameIntervalSec = Number(b.frameIntervalSec ?? 10);
   if (!VALID_FRAME_INTERVALS.has(frameIntervalSec)) {
@@ -100,17 +126,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     videos.push({ r2Key, title, transcript });
   }
 
-  // The "canonical URL" for an upload job is just the synthetic
-  // upload:// scheme — there's no real channel URL to canonicalize.
-  // The job-store's source_channel_url + source_canonical_url
-  // columns store the operator-provided sourceLabel so the recent-
-  // runs list has something readable.
-  const sourceUrl = sourceLabel || `upload://${new Date().toISOString().slice(0, 10)}`;
+  // The "canonical URL" for an upload job uses the real channel
+  // URL when the operator supplied one (so recent-runs / analyze /
+  // publish-pack see something they can reason about); otherwise
+  // falls back to the operator-provided sourceLabel; otherwise to
+  // a dated synthetic marker.
+  const sourceUrlForRow = sourceChannelUrl
+    ?? (sourceLabel || `upload://${new Date().toISOString().slice(0, 10)}`);
   const jobId = await createChannelCloneJob({
     workspaceId: session.ws,
     userId: session.uid,
-    sourceChannelUrl: sourceUrl,
-    sourceCanonicalUrl: sourceUrl,
+    sourceChannelUrl: sourceUrlForRow,
+    sourceCanonicalUrl: sourceUrlForRow,
   });
 
   logger.info('[channel-clone intake-upload] kickoff', {
@@ -128,6 +155,8 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         videos,
         frameIntervalSec: frameIntervalSec as 5 | 10 | 15,
         sourceLabel,
+        sourceChannelUrl,
+        sourceChannelHandle,
       });
     } catch (err) {
       logger.error('[channel-clone intake-upload] runner crashed', {

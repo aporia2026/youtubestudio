@@ -24,6 +24,7 @@
 
 import path from 'path';
 import { logger } from '@/lib/logger';
+import { getReviewBucket, uploadToBucket } from '@/lib/r2';
 import { cleanCaptions } from './clean-captions';
 import { extractFrames } from './ffmpeg';
 import {
@@ -161,28 +162,51 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
           }
         }
 
-        // Read the representative middle frame back as base64. We
-        // discard every other frame — only the analyze stage needs a
-        // frame, and only one. Keeping all would bloat the JSONB row.
+        // Read every frame back from the sandbox and persist to R2
+        // under a job-scoped prefix. The rowify stage later picks a
+        // handful of these as bundled refs for the image-gen pipeline
+        // — that's what makes the cloned channel's visual DNA actually
+        // travel into every generated image. The middle frame is also
+        // base64'd as the per-video representative for the analyze
+        // stage (which feeds one still to a multimodal LLM for keyword
+        // extraction).
+        const frames = framesResult.frameSandboxPaths;
+        const frameR2Keys: string[] = [];
         let representativeFrameBase64: string | null = null;
         let representativeFrameMimeType: 'image/jpeg' | 'image/png' | null = null;
-        const frames = framesResult.frameSandboxPaths;
         if (frames.length > 0) {
-          const midPath = frames[Math.floor(frames.length / 2)];
-          try {
-            const buf = await sandbox.readFileToBuffer({ path: midPath });
-            if (buf) {
-              representativeFrameBase64 = buf.toString('base64');
-              representativeFrameMimeType = path.extname(midPath).toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
+          const midIndex = Math.floor(frames.length / 2);
+          const r2Bucket = getReviewBucket();
+          const uploadResults = await mapWithLimit(frames, FRAME_UPLOAD_CONCURRENCY, async (framePath, fIdx) => {
+            try {
+              const buf = await sandbox.readFileToBuffer({ path: framePath });
+              if (!buf) return null;
+              const isPng = path.extname(framePath).toLowerCase() === '.png';
+              const ext = isPng ? 'png' : 'jpg';
+              const contentType = isPng ? 'image/png' : 'image/jpeg';
+              const r2Key = `channel-clone-frames/${workspaceId}/${jobId}/${meta.videoId}/${String(fIdx).padStart(3, '0')}.${ext}`;
+              await uploadToBucket(r2Bucket, r2Key, buf, contentType);
+              if (fIdx === midIndex) {
+                representativeFrameBase64 = buf.toString('base64');
+                representativeFrameMimeType = isPng ? 'image/png' : 'image/jpeg';
+              }
+              return r2Key;
+            } catch (err) {
+              log.warn('intake', `frame ${fIdx} upload to R2 failed; skipping`, {
+                videoId: meta.videoId,
+                error: errorMessage(err),
+              });
+              return null;
             }
-          } catch (err) {
-            logger.warn('[channel-clone intake] representative frame read failed', {
-              jobId,
-              videoId: meta.videoId,
-              framePath: midPath,
-              error: errorMessage(err),
-            });
+          });
+          for (const k of uploadResults) {
+            if (k !== null) frameR2Keys.push(k);
           }
+          log.info('intake', 'frames persisted to R2', {
+            videoId: meta.videoId,
+            extracted: frames.length,
+            uploaded: frameR2Keys.length,
+          });
         }
 
         sampleVideos.push({
@@ -191,6 +215,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
           title: meta.title,
           durationSec: meta.durationSec,
           frameCount: frames.length,
+          frameR2Keys,
           representativeFrameBase64,
           representativeFrameMimeType,
           transcript,
@@ -276,6 +301,35 @@ async function failJob(
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Concurrent frame-uploads per video. R2 PutObject is cheap so we
+ *  could go higher, but 4 keeps the sandbox→Vercel→R2 hop chain
+ *  from saturating on a slow network without dragging the wall-
+ *  clock. ~30 frames × 50 KB / 4 = ~7 batches, each ~1 s. */
+const FRAME_UPLOAD_CONCURRENCY = 4;
+
+/** Run `fn` over `items` with at most `limit` in flight at once,
+ *  preserving order in the result. Same worker-pool shape used in
+ *  intake-upload-runner.ts; duplicated rather than centralised
+ *  because the intake runners are intentionally independent so a
+ *  change in one path can't accidentally break the other. */
+async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
 }
 
 /** Strip a YouTube channel URL down to just its @handle when the
