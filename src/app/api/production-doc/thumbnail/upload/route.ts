@@ -31,7 +31,7 @@ import {
  *   fileName    : string  — original file name, used to sanitise the
  *                           R2 key
  *   contentType : string  — image/jpeg | image/png | image/webp
- *   fileSize    : number  — bytes; rejected if > 5 MB
+ *   fileSize    : number  — bytes; rejected if > 15 MB
  *   width       : number  — intrinsic pixel width  (client-extracted)
  *   height      : number  — intrinsic pixel height (client-extracted)
  *
@@ -45,7 +45,7 @@ import {
  */
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
-const MAX_FILE_SIZE = 5 * 1024 * 1024;             // 5 MB
+const MAX_FILE_SIZE = 15 * 1024 * 1024;            // 15 MB
 const MAX_INTRINSIC_DIMENSION = 8192;              // 8K per axis
 
 export const maxDuration = 30;

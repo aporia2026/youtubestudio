@@ -26,7 +26,7 @@ import { TransitionDialog } from './TransitionDialog';
 import { RegionJsonImportDialog } from './RegionJsonImportDialog';
 
 const ACCEPTED_TYPES = 'image/jpeg,image/png,image/webp';
-const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_FILE_SIZE = 15 * 1024 * 1024;
 
 interface SectionThumbnailCardProps {
   value?: VideoThumbnail;
@@ -97,7 +97,7 @@ export function SectionThumbnailCard({ value, onChange, embedded = false }: Sect
       return;
     }
     if (file.size > MAX_FILE_SIZE) {
-      toast.error(`Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 5 MB.`);
+      toast.error(`Image too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 15 MB.`);
       return;
     }
 
@@ -393,7 +393,7 @@ export function SectionThumbnailCard({ value, onChange, embedded = false }: Sect
                 Drop a thumbnail here, or click to upload
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                JPEG, PNG, or WebP — up to 5 MB
+                JPEG, PNG, or WebP — up to 15 MB
               </div>
             </>
           )}
