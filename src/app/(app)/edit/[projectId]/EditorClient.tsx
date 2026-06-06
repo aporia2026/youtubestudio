@@ -53,7 +53,6 @@ import { toast } from 'sonner';
 import { useEditorStore } from '@/lib/editor/use-editor-store';
 import { mutate } from '@/lib/mutate';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
-import { Timeline } from '@/components/editor/Timeline';
 import { ShotInspector } from '@/components/editor/ShotInspector';
 import { StatusBar } from '@/components/editor/StatusBar';
 import { EditorChrome } from '@/components/editor/EditorChrome';

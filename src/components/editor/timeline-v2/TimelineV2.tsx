@@ -27,7 +27,7 @@ import { useMemo, useRef, useEffect } from 'react';
 import type { VideoConfig } from '@/remotion/types';
 import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import type { CaptionsBundle } from '@/lib/editor/captions';
-import { Timeline } from '@/components/editor/Timeline';
+import { CapCutVideoLane } from './CapCutVideoLane';
 import { TimelineRuler } from './TimelineRuler';
 import { AudioLane } from './AudioLane';
 import { CaptionsLane } from './CaptionsLane';
@@ -339,14 +339,15 @@ export function TimelineV2({
                 pixelsPerSecond={pixelsPerSecond}
                 onSeek={onSeek}
               />
-              {/* Video lane — reuses the existing Timeline, which
-                  brings its drag-resize / drag-reorder / trim
-                  behaviour for free. The wrapper here sizes the row
+              {/* Video lane — CapCut-style via
+                  `@xzdarcy/react-timeline-editor`, wired to the
+                  legacy editor's command pipeline through
+                  `CapCutVideoLane`. The wrapper here sizes the row
                   AND owns the rounded "track strip" look (overflow
-                  hidden so the inner Timeline can't bleed past).
-                  Timeline owns the internal layout. */}
+                  hidden so the inner timeline can't bleed past).
+                  See `_plans/2026-06-06-capcut-video-lane-in-timelinev2.md`. */}
               <LaneStrip height={videoLaneHeight} gapBelow>
-                <Timeline
+                <CapCutVideoLane
                   config={config}
                   rowImages={rowImages}
                   selection={selection}
