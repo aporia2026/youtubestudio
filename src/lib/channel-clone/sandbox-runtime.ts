@@ -151,19 +151,36 @@ export async function createIntakeSandbox(jobId: string, log?: JobLogger): Promi
   // runtime isn't Debian so `apt-get install ffmpeg` doesn't work;
   // imageio-ffmpeg is the portable path.
   //
-  // yt-dlp-nightly-builds is preferred over the stable `yt-dlp`
-  // package because YouTube ships anti-bot changes (n-sig
-  // challenges, player_client deprecations, etc.) and the nightly
-  // ships fixes within hours where the stable pypi release can be
-  // days behind. The package is officially maintained by the
-  // yt-dlp team. `--pre` lets pip select the pre-release.
-  log?.info('sandbox', 'pip install yt-dlp-nightly + imageio-ffmpeg (this takes ~20s, includes ~50MB static ffmpeg download)');
-  await runOrThrow(sandbox, 'pip install yt-dlp-nightly + imageio-ffmpeg', {
+  // Per the official yt-dlp wiki:
+  //   `pip install -U --pre "yt-dlp[default]"`
+  // installs the nightly. `--pre` tells pip to consider pre-release
+  // versions, and yt-dlp publishes its nightly as a pre-release of
+  // the *same* `yt-dlp` package (versions like `2025.6.1.dev20250601`).
+  // The `[default]` extra pulls brotli + pycryptodomex + websockets
+  // + requests, which the encrypted-stream paths need.
+  //
+  // Why nightly: YouTube ships anti-bot changes (n-sig challenge
+  // updates, player_client deprecations) and the nightly receives
+  // fixes within hours where the stable pypi release can be days
+  // behind. If pip can't find a pre-release for any reason it
+  // falls back to the latest stable automatically — `--pre` is
+  // permissive, not exclusive.
+  log?.info('sandbox', 'pip install yt-dlp nightly + imageio-ffmpeg (this takes ~20s, includes ~50MB static ffmpeg download)');
+  await runOrThrow(sandbox, 'pip install yt-dlp + imageio-ffmpeg', {
     cmd: 'pip',
-    args: ['install', '--quiet', '--no-input', '--pre', 'yt-dlp-nightly-builds', 'imageio-ffmpeg'],
+    args: ['install', '--quiet', '--no-input', '--upgrade', '--pre', 'yt-dlp[default]', 'imageio-ffmpeg'],
     timeoutMs: PIP_INSTALL_TIMEOUT_MS,
   });
-  log?.info('sandbox', 'pip install done');
+  // Observability — record the installed yt-dlp version so future
+  // "what build was running when X broke?" questions have an answer
+  // in the progressLog without us having to reproduce.
+  const ytDlpVersionProbe = await runInSandbox(sandbox, {
+    cmd: 'yt-dlp',
+    args: ['--version'],
+    timeoutMs: 10_000,
+  });
+  const ytDlpVersion = ytDlpVersionProbe.exitCode === 0 ? ytDlpVersionProbe.stdout.trim() : 'unknown';
+  log?.info('sandbox', 'pip install done', { ytDlpVersion });
 
   // 3. Resolve the bundled ffmpeg path so ffmpeg.ts and yt-dlp can
   // exec it directly. imageio_ffmpeg.get_ffmpeg_exe() lazily
