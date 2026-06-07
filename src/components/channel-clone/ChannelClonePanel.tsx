@@ -18,7 +18,7 @@
  * → script + audit-fix loop end-to-end against real channels.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChannelCloneAnalysis,
   ChannelCloneJobState,
@@ -27,7 +27,14 @@ import type {
   ProgressLogEntry,
 } from '@/lib/channel-clone/types';
 import { CHANNEL_CLONE_CANDIDATE_PRESETS } from '@/lib/channel-clone/match-style-preset';
+import {
+  pickRetryAlternative,
+  stageToAppFeature,
+  type ChannelCloneRetryStage,
+} from '@/lib/channel-clone/retry-alternative';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ChannelCloneUploadForm } from './ChannelCloneUploadForm';
+import { ModelRetryPicker } from './ModelRetryPicker';
 
 interface JobView {
   id: string;
@@ -728,23 +735,18 @@ function failedStatusToStage(status: ChannelCloneJobStatus): null | 'analyze' | 
   return null;
 }
 
-/** Candidate models for the mid-run picker. Curated set of the
- *  big-three Anthropic models — covers the vast majority of mid-run
- *  failures (rate-limit, content-filter, timeout) by giving the
- *  operator a clean lateral move. Adding more options is a one-line
- *  change here; the routes accept any model id the AI registry
- *  recognises. */
-const MID_RUN_MODEL_CANDIDATES: { id: string; label: string }[] = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8 (default)' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 (cheaper, fast)' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (cheapest, fastest)' },
-];
-
 /** Per-job model-switch + retry control. Visible only when the job
  *  status ends in `_failed`. Forwards to the same stage route the
  *  initial kickoff used, with the operator's chosen model id as a
  *  body field. The runner reads `modelId` → `modelOverride` →
- *  bypasses `getEffectiveModelId` for this one run. */
+ *  bypasses `getEffectiveModelId` for this one run.
+ *
+ *  The model dropdown is rendered by `<ModelRetryPicker />` over the
+ *  FULL `AI_MODELS` registry, grouped by provider and gated by
+ *  `isModelCompatibleWithStage` so multimodal stages don't surface
+ *  text-only models. Plan 3: cross-provider picker
+ *  (_plans/2026-06-07-channel-clone-mid-run-model-picker-cross-provider.md).
+ *  Default-model behaviour (Settings → Model Defaults) is untouched.*/
 function RetryWithModel({
   jobId,
   failedStatus,
@@ -767,9 +769,41 @@ function RetryWithModel({
   onRetried: () => void;
 }) {
   const stage = failedStatusToStage(failedStatus);
-  const [modelId, setModelId] = useState<string>(MID_RUN_MODEL_CANDIDATES[1].id);
+  // The "originally used" model. Approximation today: the
+  // Settings → Model Defaults configured value for the stage's
+  // AppFeature. This is what the runner asked for on the failed
+  // attempt UNLESS the operator had already done a manual override
+  // (in which case the value is slightly stale — acceptable trade-off
+  // until the runner persists per-attempt model history).
+  const originalModelId = useMemo<string | null>(() => {
+    if (!stage) return null;
+    const feature = stageToAppFeature(stage);
+    if (!feature) return null;
+    return getFeatureDefaultModelId(feature);
+  }, [stage]);
+  // Smart pre-select: when the picker first mounts, default to a
+  // sensible cross-provider alternative rather than whatever model
+  // just failed. Operator can still pick anything from the dropdown.
+  const initialModelId = useMemo<string>(() => {
+    if (!stage) return 'claude-sonnet-4-6';
+    return pickRetryAlternative(originalModelId ?? '', stage as ChannelCloneRetryStage);
+  }, [stage, originalModelId]);
+  const [modelId, setModelId] = useState<string>(initialModelId);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Log the chosen pre-select alongside the failed stage so failures
+  // mid-retry can be diagnosed from the console (rule 14 — observability).
+  useEffect(() => {
+    if (!stage) return;
+    // eslint-disable-next-line no-console
+    console.info('[channel-clone retry-picker]', {
+      stage,
+      originalModelId,
+      pickedModelId: initialModelId,
+      reason: 'pre-selected-alternative',
+    });
+  }, [stage, originalModelId, initialModelId]);
 
   const handleRetry = useCallback(async () => {
     if (!stage || retrying || busy) return;
@@ -823,17 +857,24 @@ function RetryWithModel({
       <p className="text-[10px] text-amber-200/80">
         Sometimes a stage fails because the configured model hit a rate limit, timeout, or content filter. Switching to a different model usually clears it. The retry uses the same parameters you originally picked.
       </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          value={modelId}
-          onChange={(e) => setModelId(e.target.value)}
-          disabled={retrying || busy}
-          className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100 outline-none focus:border-neutral-500"
-        >
-          {MID_RUN_MODEL_CANDIDATES.map((m) => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </select>
+      <div className="flex flex-wrap items-start gap-2">
+        {stage === 'intake' || stage === 'handoff' ? (
+          // Intake + handoff don't make LLM calls — the model picker
+          // is meaningless for them. Render just the retry button so
+          // the operator can still kick the run forward from this UI.
+          <p className="text-[10px] text-amber-200/60">
+            This stage doesn't make an LLM call. Retry uses the same
+            pipeline parameters as the original attempt.
+          </p>
+        ) : (
+          <ModelRetryPicker
+            value={modelId}
+            onChange={setModelId}
+            stage={stage as ChannelCloneRetryStage}
+            originalModelId={originalModelId}
+            disabled={retrying || busy}
+          />
+        )}
         <button
           type="button"
           onClick={() => void handleRetry()}
