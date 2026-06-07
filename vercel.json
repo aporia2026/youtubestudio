@@ -47,6 +47,7 @@
     "src/app/api/analyze/image-style/route.ts":                      { "maxDuration": 60 },
     "src/app/api/analyze/youtube-style/route.ts":                    { "maxDuration": 60 },
     "src/app/api/cron/purge-expired-favorites/route.ts":             { "maxDuration": 60 },
+    "src/app/api/cron/channel-clone-templates-reap/route.ts":        { "maxDuration": 60 },
     "src/app/api/niche-finder/favorites/export-sheet/route.ts":      { "maxDuration": 60 },
     "src/app/api/niche-finder/favorites/[slug]/export-sheet/route.ts": { "maxDuration": 60 },
     "src/app/api/niche-finder/favorites/export-compare-sheet/route.ts": { "maxDuration": 60 }
@@ -99,6 +100,10 @@
     {
       "path": "/api/cron/purge-expired-favorites",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/channel-clone-templates-reap",
+      "schedule": "30 1 * * *"
     },
     {
       "path": "/api/cron/run-pipeline",

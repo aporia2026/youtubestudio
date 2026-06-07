@@ -370,16 +370,29 @@ function CloneControls({
   }, [cloned]);
 
   // Already-cloned state: show the voice_id + delete button. No new
-  // clones until the operator deletes the existing one.
+  // clones until the operator deletes the existing one. Plan 2
+  // template-load path persists an "inherited" subscriptionTier when
+  // a saved template carries a voice_id from the original run — we
+  // render a softer line for that case so the operator knows it
+  // wasn't freshly cloned on this run.
   if (cloned) {
+    const isInheritedFromTemplate = cloned.subscriptionTier === 'inherited';
     return (
       <div className="space-y-2 rounded border border-emerald-900/60 bg-emerald-950/30 p-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="space-y-0.5">
             <p className="text-[11px] font-medium text-emerald-300">
-              Cloned on ElevenLabs · {cloned.subscriptionTier} plan
+              {isInheritedFromTemplate
+                ? 'ElevenLabs voice carried over from template'
+                : `Cloned on ElevenLabs · ${cloned.subscriptionTier} plan`}
             </p>
             <p className="text-[10px] text-emerald-200/70">{cloned.name}</p>
+            {isInheritedFromTemplate && (
+              <p className="text-[10px] text-amber-200/70">
+                If this voice was deleted from your ElevenLabs account, the id is stale — press Delete
+                here and Clone again to refresh.
+              </p>
+            )}
           </div>
           <button
             type="button"

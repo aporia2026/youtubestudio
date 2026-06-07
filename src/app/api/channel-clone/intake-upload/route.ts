@@ -25,6 +25,7 @@ import { createChannelCloneJob } from '@/lib/channel-clone/job-store';
 import { runUploadIntake, type UploadedVideoInput } from '@/lib/channel-clone/intake-upload-runner';
 import { validateYoutubeUrl } from '@/lib/channel-clone/validate-youtube-url';
 import { getChannelCloneTemplate } from '@/lib/channel-clone/templates-store';
+import { mergeChannelCloneJobState } from '@/lib/channel-clone/job-store';
 
 export const maxDuration = 300;
 
@@ -211,8 +212,38 @@ async function runFromTemplate(
     sourceChannelUrl: sourceUrlForRow,
     sourceCanonicalUrl: sourceUrlForRow,
   });
+  // If the template carries a previously-cloned ElevenLabs voice id,
+  // inherit it onto the new job so the operator doesn't have to re-
+  // clone the same voice. Voice still has to live in the operator's
+  // ElevenLabs account — if they deleted it there, the inherited
+  // voice id surfaces as dangling when they try to use it (which is
+  // the same fail mode as any stale voice id). Plan 1 ↔ 2 integration.
+  if (cfg.clonedVoiceId) {
+    try {
+      await mergeChannelCloneJobState(jobId, session.ws, {
+        clonedVoice: {
+          voiceId: cfg.clonedVoiceId,
+          name: cfg.sourceChannelName ? `(from template) ${cfg.sourceChannelName}` : '(from template)',
+          subscriptionTier: 'inherited',
+          clonedAt: new Date().toISOString(),
+          clonedBy: session.uid,
+        },
+      });
+      logger.info('[channel-clone intake-upload] inherited cloned voice from template', {
+        jobId, templateId, voiceId: cfg.clonedVoiceId,
+      });
+    } catch (err) {
+      // Best-effort — the run still works even if persisting the
+      // inherited voice id fails; the operator can press Clone in
+      // the panel for a fresh voice.
+      logger.warn('[channel-clone intake-upload] could not inherit cloned voice from template', {
+        jobId, templateId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   logger.info('[channel-clone intake-upload] kickoff from template', {
     jobId, templateId, videoCount: videos.length, sourceChannelName: cfg.sourceChannelName,
+    inheritedVoiceId: cfg.clonedVoiceId ?? null,
   });
   after(async () => {
     try {
