@@ -28,6 +28,7 @@ import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
 import {
   getChannelCloneJob,
+  mergeChannelCloneJobState,
   replaceChannelCloneJobState,
   setChannelCloneJobStatus,
 } from './job-store';
@@ -148,6 +149,15 @@ export async function runScript(opts: RunScriptOptions): Promise<void> {
   if (selectedHookIndex < 1 || selectedHookIndex > hooks.length) {
     return failJob(jobId, workspaceId, `selectedHookIndex ${selectedHookIndex} is out of range (1-${hooks.length}).`);
   }
+  // Persist selectedHookIndex IMMEDIATELY after validation, before
+  // any LLM call. The retry-with-model affordance reads this back
+  // from job state to reconstruct the script-stage body; without an
+  // early persist a mid-run failure (e.g. Kie 500 mid-audit-loop)
+  // strands retry with an undefined hook index and the route 400s
+  // with "selectedHookIndex must be a positive integer". Earlier
+  // versions only wrote this field on success, which is why retries
+  // on failed scripts were broken end-to-end. 2026-06-08 bugfix.
+  await mergeChannelCloneJobState(jobId, workspaceId, { selectedHookIndex });
   const topic = topics[selectedTopicIndex - 1];
   const hook = hooks[selectedHookIndex - 1];
   const targetWordCount = analysis.avgVideoWordCount;

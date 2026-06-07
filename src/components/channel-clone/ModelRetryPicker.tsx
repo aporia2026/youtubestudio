@@ -54,13 +54,15 @@ interface OptGroupSpec {
   predicate: (m: AIModel) => boolean;
 }
 
-/** Provider grouping order. Anthropic + OpenAI first because the
- *  most likely cross-provider lateral moves live there; Kie sub-
- *  grouped so the operator can scan by family; direct Google +
- *  Perplexity at the bottom because they're niche picks. */
+/** Provider grouping order. Anthropic first because it's the
+ *  largest pool of safe lateral moves. Kie groups come BEFORE OpenAI
+ *  so operators who chose a Kie model (or want to migrate to one)
+ *  can find them without scrolling past ~21 OpenAI entries — that
+ *  long-scroll was the 2026-06-08 "I don't see any kie.ai models in
+ *  the picker" complaint. Google direct + Perplexity at the bottom
+ *  because they're niche picks. */
 const OPT_GROUPS: OptGroupSpec[] = [
   { label: 'Anthropic', predicate: (m) => m.provider === 'anthropic' },
-  { label: 'OpenAI', predicate: (m) => m.provider === 'openai' },
   {
     label: 'Kie.ai — Gemini',
     predicate: (m) => m.provider === 'kie' && m.id.startsWith('kie-gemini'),
@@ -73,6 +75,7 @@ const OPT_GROUPS: OptGroupSpec[] = [
     label: 'Kie.ai — GPT / Codex',
     predicate: (m) => m.provider === 'kie' && m.id.startsWith('kie-gpt'),
   },
+  { label: 'OpenAI', predicate: (m) => m.provider === 'openai' },
   { label: 'Google (direct)', predicate: (m) => m.provider === 'google' },
   { label: 'Perplexity Sonar', predicate: (m) => m.provider === 'perplexity' },
 ];
@@ -104,7 +107,12 @@ export function ModelRetryPicker({
     const incompat = !isModelCompatibleWithStage(originalModelId, stage)
       ? ' — incompatible with this stage'
       : '';
-    return `${m.name}${incompat}`;
+    // Show the provider so "Gemini 3.5 Flash" reads as
+    // "Gemini 3.5 Flash (via Kie.ai)" — otherwise the operator can't
+    // tell which gateway just failed when both Kie and Google route
+    // share the same display name. Bug-report 2026-06-08.
+    const providerHint = providerDisplay(m.provider);
+    return `${m.name}${providerHint ? ` (via ${providerHint})` : ''}${incompat}`;
   }, [originalModelId, stage]);
 
   // The "selected" model may not be compatible (e.g. operator just
@@ -174,4 +182,17 @@ export function ModelRetryPicker({
  *  the cost decision visible per Plan 3's chosen UX path (A). */
 function formatOptionLabel(m: AIModel): string {
   return `${m.name} — ${formatModelPricing(m)}`;
+}
+
+/** Short, human-friendly provider name for the "Originally used"
+ *  label. Returns null when there's nothing useful to add (e.g. the
+ *  provider is already implied by the model name). */
+function providerDisplay(provider: AIModel['provider']): string | null {
+  switch (provider) {
+    case 'anthropic': return 'Anthropic';
+    case 'openai': return 'OpenAI';
+    case 'kie': return 'Kie.ai';
+    case 'google': return 'Google';
+    case 'perplexity': return 'Perplexity';
+  }
 }
