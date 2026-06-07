@@ -388,12 +388,14 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
             />
           )}
 
-          {/* ── Voice profile (Plan 1A) ────────────────────────── */}
+          {/* ── Voice profile (Plan 1A + 1B) ───────────────────── */}
           {job && (
             <VoiceProfileCard
               jobId={job.id}
               status={job.status}
               state={state}
+              sourceChannel={{ name: state?.intake?.sourceChannelName ?? null }}
+              onCloneStateChanged={() => void pollOnce(job.id)}
             />
           )}
 
