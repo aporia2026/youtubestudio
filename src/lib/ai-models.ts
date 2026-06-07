@@ -114,6 +114,12 @@ const HAIKU = 'claude-haiku-4-5-20251001';
 const SONNET = 'claude-sonnet-4-6';
 const OPUS_48 = 'claude-opus-4-8';
 const KIE_GEMINI_FLASH = 'kie-gemini-2.5-flash';
+// Plan 1B verification spike (2026-06-07) confirmed audio input
+// works on kie-gemini-3-5-flash through Kie's Google-native
+// :generateContent endpoint, AND through the OpenAI-compatible alias
+// when audio is smuggled via image_url data URI. The voice-profile
+// runner uses the native shape so this constant exposes that model id.
+const KIE_GEMINI_3_5_FLASH = 'kie-gemini-3-5-flash';
 
 export const APP_FEATURES: AppFeatureSpec[] = [
   // ─── Create ──────────────────────────────────────────────────────────
@@ -156,7 +162,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'channel-clone-script-audit', label: 'Channel Clone — Script Audit', description: '10-point quality audit that drives the fix-and-rescore loop until threshold', section: 'create', defaultModelId: OPUS_48 },
   { id: 'channel-clone-rowify', label: 'Channel Clone — Script → Production Rows', description: 'Converts the approved script into production-doc rows matched to the chosen style preset', section: 'create', defaultModelId: OPUS_48 },
   { id: 'channel-clone-publish-pack', label: 'Channel Clone — Publish Pack', description: 'Titles, description, SEO tags, pinned comment, and 30-day content calendar', section: 'create', defaultModelId: OPUS_48 },
-  { id: 'channel-clone-voice-profile', label: 'Channel Clone — Narrator Voice Profile', description: 'Listens to a 30s audio sample from a reference video and produces a structured voice description + paste-ready ElevenLabs Voice Design prompt', section: 'create', defaultModelId: KIE_GEMINI_FLASH },
+  { id: 'channel-clone-voice-profile', label: 'Channel Clone — Narrator Voice Profile', description: 'Listens to a 30s audio sample from a reference video and produces a structured voice description + paste-ready ElevenLabs Voice Design prompt', section: 'create', defaultModelId: KIE_GEMINI_3_5_FLASH },
 
   // ─── Grow ────────────────────────────────────────────────────────────
   { id: 'channel-analyze', label: 'Channel Analyze', description: 'Analyzes a YouTube channel for positioning + opportunities', section: 'grow', defaultModelId: SONNET },

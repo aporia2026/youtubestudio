@@ -206,25 +206,33 @@ Why 2.5 Flash and not 3.5 Flash, despite 3.5 being newer:
 
 ### Verification spike (during implementation)
 
-A small spike, time-boxed to 30 minutes, before locking in 2.5 Flash
-as the long-term default:
+**RESULT 2026-06-07** — `kie-gemini-3-5-flash` accepts audio in TWO
+of the three probed shapes:
 
-- Script `scripts/diag-kie-3-5-flash-audio.ts` that POSTs a 10-second
-  test MP3 to `kie-gemini-3-5-flash-openai` via the three plausible
-  content-part shapes:
-  1. OpenAI-style `input_audio` with base64 + format hint.
-  2. `image_url` smuggling a `data:audio/mpeg;base64,...` URI (some
-     OpenAI-compatible aliases historically accept this).
-  3. Google-native `file_data` with mime hint (requires a router
-     branch to send via `streamGenerateContent`, not chat/completions).
-- If any of the three returns a sensible transcription / description:
-  flip the voice-profile default to `kie-gemini-3-5-flash` and
-  document the working shape inline in `voice-profile-runner.ts`.
-- If none work: stay on `kie-gemini-2.5-flash` and add a TODO line
-  pointing at Kie's feature-request tracker. No further action.
+- **A (Google-native `:generateContent` + `inline_data` with
+  `mime_type: audio/mpeg`)** — 200 OK, `"The voice is female,
+  speaking"`. This is what `voice-profile-runner.ts` uses.
+- **B (Kie OpenAI-compat alias + `image_url` data URI carrying the
+  audio mime)** — 200 OK, `"The voice is female, speaking at a
+  moderate pace with a calm and professional energy"` — actually
+  richer than A. The OpenAI alias supports audio undocumented.
+- **C (Kie OpenAI alias + OpenAI `input_audio` content part)** —
+  200 OK BUT the model replied "no audio file was attached." The
+  wire shape was accepted but the bytes were silently dropped. NOT
+  a working shape.
 
-This spike runs ONCE during plan execution. Output goes in a one-line
-update to this plan ("verified" / "rejected — staying on 2.5 Flash").
+Decision: flip `channel-clone-voice-profile` default from
+`kie-gemini-2.5-flash` to `kie-gemini-3-5-flash`. Cost climbs 6×
+($0.075/$0.30 → $0.45/$2.70 per MTok) but the per-profile spend is
+still under $0.01. The descriptions are visibly better.
+
+Possible future cleanup: route the voice-profile call through
+`ai.ts` using Variant B (image_url smuggle) so we don't have a
+bespoke HTTP path in `voice-profile-runner.ts`. Out of scope for
+this plan; tracked as a follow-up.
+
+Spike script preserved at `scripts/diag-kie-3-5-flash-audio.ts` for
+future regressions if Kie changes the wire shape.
 
 ### Files added
 
@@ -384,14 +392,11 @@ AI-generated outputs that look like a black box).
 
 ## Open questions for the user
 
-1. **Voice profile model default** — RESOLVED 2026-06-07: default to
-   `kie-gemini-2.5-flash` (verified audio-capable, $0.075/$0.30 per
-   MTok), with a 30-min verification spike during implementation to
-   confirm whether `kie-gemini-3-5-flash` (the newer, 6× more
-   expensive model) actually accepts audio through Kie's
-   OpenAI-compatible alias. If the spike confirms audio support,
-   the default flips to 3.5 Flash; if not, we stay on 2.5 Flash and
-   the user can override per-feature via Settings → Model Defaults.
+1. **Voice profile model default** — RESOLVED 2026-06-07: default
+   is `kie-gemini-3-5-flash` after the verification spike confirmed
+   audio works (richer descriptions than 2.5 Flash; cost still
+   negligible per run). User can override per-feature via Settings
+   → Model Defaults.
 2. **Voice naming pattern default** — `Clone: {channelName}` or
    something terser?
 3. **R2 retention TTL for voice samples** — proposed 24 hours so the

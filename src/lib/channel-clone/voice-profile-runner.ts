@@ -19,14 +19,19 @@
  *   runner therefore hand-rolls a direct HTTP call to Kie.ai's
  *   Google-native `:generateContent` endpoint, which IS documented
  *   to accept audio via `inline_data` with a `mime_type` like
- *   `audio/mpeg`. We deliberately bypass the `'gemini'` endpoint
- *   type that routes the rest of the app through Kie's
- *   OpenAI-compatible alias (whose audio support is undocumented).
+ *   `audio/mpeg`.
  *
- *   When Plan 1B's verification spike confirms whether
- *   `kie-gemini-3-5-flash-openai` accepts audio via `image_url`-shaped
- *   data URIs, we'll either flip this runner to use the central path
- *   (cleaner) or leave it on the native path (works).
+ *   Plan 1B verification spike (2026-06-07) confirmed that
+ *   `kie-gemini-3-5-flash` works in two shapes (see the spike script
+ *   at `scripts/diag-kie-3-5-flash-audio.ts`):
+ *     A) Google-native `:generateContent` with `inline_data` — what
+ *        this runner uses.
+ *     B) Kie's OpenAI-compatible alias accepting `image_url` data URI
+ *        carrying the audio mime — undocumented but works, and would
+ *        let us route through `ai.ts` once it learns the
+ *        image_url-as-audio smuggle.
+ *   The third shape (OpenAI `input_audio` content part) returns 200
+ *   but the bytes are silently dropped, so we avoid it.
  */
 
 import { logger } from '@/lib/logger';
