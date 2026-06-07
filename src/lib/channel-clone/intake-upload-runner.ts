@@ -338,19 +338,18 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     });
   } finally {
     await destroyUploadSandbox(jobId, uploadSandbox, log);
-    // R2 cleanup runs regardless of outcome. Per-key errors are
-    // swallowed so a slow delete doesn't bubble back to the user;
-    // orphan objects can be reaped by an R2 lifecycle rule on the
-    // channel-clone-uploads/ prefix.
-    for (const key of r2KeysToCleanup) {
-      deleteFromBucket(r2Bucket, key).catch((err) => {
-        logger.warn('[channel-clone intake-upload] r2 delete failed', {
-          jobId,
-          r2Key: key,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    }
+    // Source-upload cleanup. Plan 2 (template snapshots) needs the
+    // operator's uploaded videos to survive the original-job-deleted
+    // case, so we COPY each source object into the per-job staging
+    // prefix BEFORE deleting the original. The staging prefix has a
+    // 7-day R2 lifecycle rule (see ops docs); if no template is saved
+    // within that window, the lifecycle rule reaps it.
+    //
+    // The staging key is deterministic
+    // (`channel-clone-uploads-staging/<wsId>/<jobId>/<i>.<ext>`) so the
+    // save-as-template route can reconstruct the list from the job's
+    // sampleVideos without us persisting a new state field.
+    await stageAndDeleteSourceUploads(jobId, workspaceId, r2KeysToCleanup, r2Bucket);
   }
 
   // Voice-profile LLM call (Plan 1A — best-effort, never throws).
@@ -379,6 +378,67 @@ function errorMessage(err: unknown): string {
 function inferExtensionFromKey(r2Key: string): string | null {
   const m = /\.([a-z0-9]{2,5})$/i.exec(r2Key);
   return m ? m[1].toLowerCase() : null;
+}
+
+/** Compute the deterministic staging key for the i-th uploaded
+ *  video. Mirrored by `getJobStagingR2Key` in the save-as-template
+ *  route — keep the two in sync. */
+function stagingKeyForVideo(workspaceId: string, jobId: string, index: number, ext: string): string {
+  return `channel-clone-uploads-staging/${workspaceId}/${jobId}/${String(index).padStart(3, '0')}.${ext}`;
+}
+
+/** For each source key the runner accumulated, COPY it server-side
+ *  to the per-job staging prefix and then DELETE the original. Both
+ *  ops are best-effort and per-key; failures are logged so a single
+ *  bad object doesn't strand the rest. */
+async function stageAndDeleteSourceUploads(
+  jobId: string,
+  workspaceId: string,
+  sourceKeys: string[],
+  bucket: string,
+): Promise<void> {
+  // Lazy-import the R2 copy helper so the existing intake-upload-runner
+  // module graph stays compact for callers that never hit this path.
+  const { copyR2KeysToPrefix } = await import('./templates-r2');
+  if (sourceKeys.length > 0) {
+    try {
+      // Staging prefix matches the `stagingKeyForVideo` helper format.
+      // Save-as-template later re-COPYs from here into the real
+      // per-template prefix. A 7-day R2 lifecycle rule on
+      // channel-clone-uploads-staging/ reaps unsaved snapshots.
+      const result = await copyR2KeysToPrefix({
+        sourceKeys,
+        destPrefix: `channel-clone-uploads-staging/${workspaceId}/${jobId}`,
+        bucket,
+      });
+      logger.info('[channel-clone intake-upload] staging-copy done', {
+        jobId, copied: result.copiedKeys.length, failed: result.failedIndices.length,
+      });
+    } catch (err) {
+      logger.warn('[channel-clone intake-upload] staging-copy threw', {
+        jobId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // R2 source delete runs regardless of staging outcome — even if the
+  // staging copy failed, the operator can re-upload to retry the
+  // template save flow. Per-key errors are swallowed.
+  for (const key of sourceKeys) {
+    void stagingKeyForVideo; // referenced for the export-only helper above
+    deleteFromBucket(bucket, key).catch((err) => {
+      logger.warn('[channel-clone intake-upload] r2 delete failed', {
+        jobId, r2Key: key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+}
+
+/** Exported for the save-template route which reconstructs the
+ *  staging key list from a job's intake.sampleVideos. Keep in sync
+ *  with `stagingKeyForVideo` above. */
+export function buildStagingKeyForJob(workspaceId: string, jobId: string, index: number, ext: string): string {
+  return stagingKeyForVideo(workspaceId, jobId, index, ext);
 }
 
 /** Parse the operator-pasted transcript. Auto-detects SRT format

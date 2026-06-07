@@ -24,6 +24,7 @@ import { logger } from '@/lib/logger';
 import { createChannelCloneJob } from '@/lib/channel-clone/job-store';
 import { runUploadIntake, type UploadedVideoInput } from '@/lib/channel-clone/intake-upload-runner';
 import { validateYoutubeUrl } from '@/lib/channel-clone/validate-youtube-url';
+import { getChannelCloneTemplate } from '@/lib/channel-clone/templates-store';
 
 export const maxDuration = 300;
 
@@ -46,6 +47,18 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
   const b = (body ?? {}) as Record<string, unknown>;
+
+  // Plan 2 — load-from-template path. When `fromTemplateId` is set,
+  // the route bypasses operator-upload validation and replays the
+  // template's stored configuration verbatim against a fresh job.
+  // The template-owned R2 keys are workspace-scoped via the SQL row
+  // lookup (`getChannelCloneTemplate` filters on workspace_id), so
+  // we don't need the R2_KEY_RE shape check that protects the
+  // operator-upload path.
+  const fromTemplateId = typeof b.fromTemplateId === 'string' ? b.fromTemplateId.trim() : '';
+  if (fromTemplateId) {
+    return runFromTemplate(session, fromTemplateId);
+  }
 
   const sourceLabel = typeof b.sourceLabel === 'string' ? b.sourceLabel.trim() : '';
   // sourceLabel can be empty — the runner falls back to the first
@@ -168,3 +181,56 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
   return NextResponse.json({ jobId }, { status: 202 });
 });
+
+/** Load-from-template execution path. Resolves the template, builds
+ *  the same `UploadedVideoInput[]` shape the operator-upload path
+ *  produces, and kicks off the runner. The runner happily curls any
+ *  R2 key it's handed via presigned URL — no re-upload needed. */
+async function runFromTemplate(
+  session: { ws: string; uid: string },
+  templateId: string,
+): Promise<NextResponse> {
+  const template = await getChannelCloneTemplate(templateId, session.ws);
+  if (!template) {
+    return NextResponse.json({ error: 'template not found' }, { status: 404 });
+  }
+  const cfg = template.config_jsonb;
+  if (cfg.videos.length === 0) {
+    return NextResponse.json({ error: 'template has no videos' }, { status: 409 });
+  }
+  const videos: UploadedVideoInput[] = cfg.videos.map((v) => ({
+    r2Key: v.r2Key,
+    title: v.title,
+    transcript: v.transcript,
+  }));
+  const sourceUrlForRow = cfg.sourceChannelUrl
+    ?? (cfg.sourceChannelName ? `template://${template.id}` : `upload://${new Date().toISOString().slice(0, 10)}`);
+  const jobId = await createChannelCloneJob({
+    workspaceId: session.ws,
+    userId: session.uid,
+    sourceChannelUrl: sourceUrlForRow,
+    sourceCanonicalUrl: sourceUrlForRow,
+  });
+  logger.info('[channel-clone intake-upload] kickoff from template', {
+    jobId, templateId, videoCount: videos.length, sourceChannelName: cfg.sourceChannelName,
+  });
+  after(async () => {
+    try {
+      await runUploadIntake({
+        jobId,
+        workspaceId: session.ws,
+        videos,
+        frameIntervalSec: cfg.frameIntervalSec,
+        sourceLabel: cfg.sourceChannelName ?? '',
+        sourceChannelUrl: cfg.sourceChannelUrl ?? undefined,
+        sourceChannelHandle: cfg.sourceChannelHandle ?? null,
+      });
+    } catch (err) {
+      logger.error('[channel-clone intake-upload] runner crashed (from template)', {
+        jobId, templateId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+  return NextResponse.json({ jobId, fromTemplateId: templateId }, { status: 202 });
+}

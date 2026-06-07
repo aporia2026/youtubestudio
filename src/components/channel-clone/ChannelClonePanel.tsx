@@ -36,6 +36,8 @@ import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ChannelCloneUploadForm } from './ChannelCloneUploadForm';
 import { ModelRetryPicker } from './ModelRetryPicker';
 import { VoiceProfileCard } from './VoiceProfileCard';
+import { UseTemplateDropdown } from './UseTemplateDropdown';
+import { SaveTemplateModal } from './SaveTemplateModal';
 
 interface JobView {
   id: string;
@@ -272,6 +274,15 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
 
       <IntakeModeTabs mode={intakeMode} onChange={setIntakeMode} />
 
+      {intakeMode === 'upload' && !job && (
+        <UseTemplateDropdown
+          onJobStarted={(newJobId) => {
+            console.info('[channel-clone ui template-started]', { jobId: newJobId });
+            void pollOnce(newJobId);
+          }}
+        />
+      )}
+
       {intakeMode === 'upload' ? (
         <ChannelCloneUploadForm
           onSubmitted={(jobId) => {
@@ -314,7 +325,7 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
             <h3 className="text-xs font-medium uppercase tracking-wide text-neutral-400">Job</h3>
             <span className="font-mono text-[10px] text-neutral-500">{job.id}</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <StatusPill status={job.status} />
             <span className="text-xs text-neutral-400">updated {new Date(job.updatedAt).toLocaleTimeString()}</span>
             {ACTIVE_STATUSES.includes(job.status) && (
@@ -323,6 +334,12 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
                 onCancelled={() => { void pollOnce(job.id); }}
               />
             )}
+            <SaveTemplateButton
+              jobId={job.id}
+              jobState={state}
+              jobStatus={job.status}
+              onSaved={() => { void pollOnce(job.id); }}
+            />
           </div>
           {job.lastError && (
             <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{job.lastError}</p>
@@ -1512,5 +1529,64 @@ function RowifyView({
         ))}
       </ul>
     </div>
+  );
+}
+
+/** Save-as-template control. Plan 2 — only meaningful for
+ *  upload-intake jobs whose intake completed, since templates copy
+ *  videos from the staging prefix (URL-intake doesn't populate it). */
+function SaveTemplateButton({
+  jobId,
+  jobState,
+  jobStatus,
+  onSaved,
+}: {
+  jobId: string;
+  jobState: ChannelCloneJobState | undefined;
+  jobStatus: ChannelCloneJobStatus;
+  onSaved: () => void;
+}) {
+  const [modalOpen, setModalOpen] = useState<boolean>(false);
+  const intake = jobState?.intake;
+  // Only show when intake has completed AND the job carries an
+  // upload-style sourceChannelUrl. URL-intake doesn't stage videos
+  // so the route would reject the save anyway.
+  if (!intake) return null;
+  const isUploadJob = intake.sourceChannelUrl.startsWith('upload://')
+    || intake.sourceChannelUrl.startsWith('template://')
+    || intake.sampleVideos.every((v) => v.videoUrl.startsWith('r2://'));
+  if (!isUploadJob) return null;
+  // Hide during active stages — saving mid-run produces a snapshot
+  // of an in-flight state which is rarely what the operator wants.
+  if (jobStatus.endsWith('_running')) return null;
+
+  const summary = {
+    videoCount: intake.sampleVideos.length,
+    sourceChannelName: intake.sourceChannelName,
+  };
+  const defaultName = intake.sourceChannelName
+    ? `Clone of ${intake.sourceChannelName}`
+    : `Clone ${new Date().toISOString().slice(0, 10)}`;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setModalOpen(true)}
+        className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-200 hover:bg-neutral-800"
+      >
+        Save as template
+      </button>
+      <SaveTemplateModal
+        jobId={jobId}
+        defaultName={defaultName}
+        summary={summary}
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onSaved={() => {
+          setModalOpen(false);
+          onSaved();
+        }}
+      />
+    </>
   );
 }
