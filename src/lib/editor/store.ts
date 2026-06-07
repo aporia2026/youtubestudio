@@ -475,6 +475,29 @@ export type EditorCommand =
       row: ProductionDoc['rows'][number];
       rowImageUrl: string | null;
       mode: 'insert' | 'replace';
+      /** Per-row field restorations applied AFTER the deleted row is
+       *  re-inserted. Used by the ripple-delete inverse to undo the
+       *  CapCut-shift bookkeeping the forward path stamps on neighbors
+       *  (left-neighbor + last-row duration locks and the leftward
+       *  timecode shift on rows after the splice point).
+       *
+       *  Indices are POST-RESTORE — i.e., they reference the array
+       *  AFTER the deleted row has been re-inserted at `atIndex`.
+       *  `prevDurationOverrideMs: undefined` ⇒ clear the field
+       *  (the row had no override pre-delete). `prevDurationOverrideMs:
+       *  number` ⇒ restore that exact value. Omitting the field ⇒
+       *  don't touch `duration_override_ms`. Same shape for
+       *  `prevTimecode`. */
+      restoreRowFields?: ReadonlyArray<{
+        rowIndex: number;
+        prevTimecode?: string;
+        prevDurationOverrideMs?: number;
+        /** When `prevDurationOverrideMs` is omitted but this flag is
+         *  true, the inverse CLEARS the override field on that row
+         *  (forward stamped a new one on a row that previously had
+         *  none). */
+        clearDurationOverride?: boolean;
+      }>;
     }
   /** General-purpose partial-merge of any row fields. Used by the
    *  overlay-port commit B for placement / size / stretched-height /
@@ -588,6 +611,15 @@ export type EditorCommand =
       atIndex: number;
       row: ProductionDoc['rows'][number];
       rowImageUrl: string | null;
+      /** Same shape as RESTORE_ROW.restoreRowFields — post-restore
+       *  indices, replays timecode + duration_override_ms restorations
+       *  that the forward DELETE_VARIANT_ROW stamped on neighbors. */
+      restoreRowFields?: ReadonlyArray<{
+        rowIndex: number;
+        prevTimecode?: string;
+        prevDurationOverrideMs?: number;
+        clearDurationOverride?: boolean;
+      }>;
     }
   /** Swap a variant row with its adjacent sibling in the same group.
    *  Refuses to cross a group boundary or move past the base. Updates
@@ -2103,9 +2135,109 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       const rowImageUrl = state.rowImages[shotIndex] ?? null;
 
       if (mode === 'ripple') {
+        // CapCut ripple semantics. The naive splice (which is what
+        // this branch used to do) breaks because row durations are
+        // derived from inter-row timecode deltas — after a splice,
+        // the left neighbor's `next` jumps forward and its natural
+        // duration balloons. To preserve every surviving row's
+        // visual width, we do three things before splicing:
+        //
+        //   1. Lock the LEFT neighbor's duration (stamp
+        //      duration_override_ms = its current renderer-effective
+        //      duration) if it doesn't already have an override.
+        //   2. Lock the LAST row's duration the same way. Its
+        //      natural-duration formula is `totalDur - lastRow.tc`,
+        //      which grows when later timecodes shift left (step 3).
+        //   3. Shift every row at index > shotIndex left by the
+        //      deleted row's effective duration — that's the visible
+        //      "ripple" the user expects.
+        //
+        // The inverse RESTORE_ROW captures each modification so undo
+        // restores the prior shape exactly. See
+        // `_plans/2026-06-07-ripple-delete-capcut-semantics.md`.
+        const deletedEffMs =
+          parseTimecodeMs(row.timecode) === null
+            ? 0 // row has no timeline footprint; nothing to ripple
+            : rendererEffectiveDurationMs(state.doc, shotIndex);
+        const lastIndexBefore = state.doc.rows.length - 1;
+        const leftNeighborIdx = shotIndex - 1;
+        const stampOverrideIndices = new Set<number>();
+        // Only stamp when the deletion actually ripples AND the
+        // candidate has a parseable timecode AND no existing override.
+        // Empty-timecode rows (decorative variants, hand-added blanks)
+        // don't participate in the cascade in a way that triggers the
+        // neighbor-balloon bug — stamping them would invent a 2s slot
+        // they previously didn't render with.
+        const isStampable = (i: number): boolean => {
+          const r = state.doc.rows[i];
+          if (typeof r.duration_override_ms === 'number') return false;
+          return parseTimecodeMs(r.timecode) !== null;
+        };
+        if (deletedEffMs > 0) {
+          if (leftNeighborIdx >= 0 && isStampable(leftNeighborIdx)) {
+            stampOverrideIndices.add(leftNeighborIdx);
+          }
+          if (
+            lastIndexBefore !== shotIndex
+            && lastIndexBefore !== leftNeighborIdx
+            && isStampable(lastIndexBefore)
+          ) {
+            stampOverrideIndices.add(lastIndexBefore);
+          }
+        }
+        // Build a working rows array with stamps + shifts applied,
+        // then splice out the deleted row. Record each modification so
+        // the inverse can undo it. Pre-splice index == post-restore
+        // index for every entry: rows at i < shotIndex are unchanged
+        // by both splice and re-insert; rows at i > shotIndex are
+        // shifted -1 by splice and +1 by re-insert, netting to i.
+        const restoreEntries: Array<{
+          rowIndex: number;
+          prevTimecode?: string;
+          prevDurationOverrideMs?: number;
+          clearDurationOverride?: boolean;
+        }> = [];
+        const workingRows = state.doc.rows.map((r, i) => {
+          if (i === shotIndex) return r;
+          let nextRow = r;
+          const stampHere = stampOverrideIndices.has(i);
+          if (stampHere) {
+            nextRow = {
+              ...nextRow,
+              duration_override_ms: rendererEffectiveDurationMs(state.doc, i),
+            };
+          }
+          const shiftHere = i > shotIndex && deletedEffMs > 0;
+          if (shiftHere) {
+            const shiftedTc = shiftTimecodeMs(nextRow.timecode, deletedEffMs);
+            if (shiftedTc !== nextRow.timecode) {
+              nextRow = { ...nextRow, timecode: shiftedTc };
+            }
+          }
+          if (stampHere || (shiftHere && nextRow.timecode !== r.timecode)) {
+            const entry: {
+              rowIndex: number;
+              prevTimecode?: string;
+              prevDurationOverrideMs?: number;
+              clearDurationOverride?: boolean;
+            } = { rowIndex: i };
+            if (shiftHere && nextRow.timecode !== r.timecode) {
+              entry.prevTimecode = r.timecode;
+            }
+            if (stampHere) {
+              if (typeof r.duration_override_ms === 'number') {
+                entry.prevDurationOverrideMs = r.duration_override_ms;
+              } else {
+                entry.clearDurationOverride = true;
+              }
+            }
+            restoreEntries.push(entry);
+          }
+          return nextRow;
+        });
         const nextRows = [
-          ...state.doc.rows.slice(0, shotIndex),
-          ...state.doc.rows.slice(shotIndex + 1),
+          ...workingRows.slice(0, shotIndex),
+          ...workingRows.slice(shotIndex + 1),
         ];
         const nextImages = reindexRowImages(state.rowImages, shotIndex, -1);
         const inverse: EditorCommand = {
@@ -2114,6 +2246,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           row,
           rowImageUrl,
           mode: 'insert',
+          ...(restoreEntries.length > 0 ? { restoreRowFields: restoreEntries } : {}),
         };
         // Selection: if the deleted row was selected, move to the
         // row that now occupies its slot (or the previous one when
@@ -2127,6 +2260,16 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
             nextSelection -= 1;
           }
         }
+        console.info('[editor delete-shot ripple]', {
+          shotIndex,
+          deletedDurationMs: deletedEffMs,
+          stampedLeftNeighbor: stampOverrideIndices.has(leftNeighborIdx),
+          stampedLastRow:
+            lastIndexBefore !== shotIndex
+            && lastIndexBefore !== leftNeighborIdx
+            && stampOverrideIndices.has(lastIndexBefore),
+          shiftedTimecodeCount: Math.max(0, state.doc.rows.length - 1 - shotIndex),
+        });
         return {
           next: {
             ...state,
@@ -2194,11 +2337,34 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         // Reversing a ripple delete: insert the row back at atIndex
         // and bump every subsequent rowImages key up by one.
         // Its inverse is the original DELETE_SHOT (ripple).
-        const nextRows = [
+        const inserted = [
           ...state.doc.rows.slice(0, atIndex),
           row,
           ...state.doc.rows.slice(atIndex),
         ];
+        // Apply per-row field restorations recorded by the original
+        // ripple delete (timecodes shifted left + duration overrides
+        // stamped on the left neighbor + last row). Indices in
+        // restoreRowFields are post-restore — i.e., they index into
+        // `inserted` directly.
+        const nextRows = cmd.restoreRowFields && cmd.restoreRowFields.length > 0
+          ? inserted.map((r, i) => {
+              const entry = cmd.restoreRowFields!.find((e) => e.rowIndex === i);
+              if (!entry) return r;
+              let next = r;
+              if (entry.prevTimecode !== undefined) {
+                next = { ...next, timecode: entry.prevTimecode };
+              }
+              if (entry.clearDurationOverride) {
+                const { duration_override_ms: _drop, ...rest } = next;
+                void _drop;
+                next = rest as typeof next;
+              } else if (typeof entry.prevDurationOverrideMs === 'number') {
+                next = { ...next, duration_override_ms: entry.prevDurationOverrideMs };
+              }
+              return next;
+            })
+          : inserted;
         let nextImages = reindexRowImages(state.rowImages, atIndex, 1);
         if (rowImageUrl !== null) {
           nextImages = { ...nextImages, [atIndex]: rowImageUrl };
@@ -2821,10 +2987,92 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       }
 
       const rowImageUrl = state.rowImages[rowIndex] ?? null;
+      // CapCut ripple semantics — same pattern DELETE_SHOT applies.
+      // Variants typically carry empty timecodes (per ADD_VARIANT_ROW
+      // at line ~2807) and are decorative on the timeline. When the
+      // deleted row has no parseable timecode it doesn't contribute a
+      // ripple, so we skip the stamp/shift bookkeeping entirely — that
+      // keeps decorative variants from sprouting unwanted duration
+      // overrides on their neighbors. Kept symmetric with DELETE_SHOT
+      // so a variant with an explicit timecode (rare but possible —
+      // user-edited or imported) doesn't trigger the neighbor-balloon
+      // bug.
+      const deletedEffMs =
+        parseTimecodeMs(target.timecode) === null
+          ? 0
+          : rendererEffectiveDurationMs(state.doc, rowIndex);
+      const lastIndexBefore = state.doc.rows.length - 1;
+      const leftNeighborIdx = rowIndex - 1;
+      const stampOverrideIndices = new Set<number>();
+      // Only stamp when the deletion actually ripples (deletedEffMs > 0)
+      // AND the candidate has a parseable timecode AND no existing
+      // override.
+      const isStampable = (i: number): boolean => {
+        const r = state.doc.rows[i];
+        if (typeof r.duration_override_ms === 'number') return false;
+        return parseTimecodeMs(r.timecode) !== null;
+      };
+      if (deletedEffMs > 0) {
+        if (leftNeighborIdx >= 0 && isStampable(leftNeighborIdx)) {
+          stampOverrideIndices.add(leftNeighborIdx);
+        }
+        if (
+          lastIndexBefore !== rowIndex
+          && lastIndexBefore !== leftNeighborIdx
+          && isStampable(lastIndexBefore)
+        ) {
+          stampOverrideIndices.add(lastIndexBefore);
+        }
+      }
+      const restoreEntries: Array<{
+        rowIndex: number;
+        prevTimecode?: string;
+        prevDurationOverrideMs?: number;
+        clearDurationOverride?: boolean;
+      }> = [];
+      const workingRows = state.doc.rows.map((r, i) => {
+        if (i === rowIndex) return r;
+        let nextRow = r;
+        const stampHere = stampOverrideIndices.has(i);
+        if (stampHere) {
+          nextRow = {
+            ...nextRow,
+            duration_override_ms: rendererEffectiveDurationMs(state.doc, i),
+          };
+        }
+        const shiftHere = i > rowIndex && deletedEffMs > 0;
+        if (shiftHere) {
+          const shiftedTc = shiftTimecodeMs(nextRow.timecode, deletedEffMs);
+          if (shiftedTc !== nextRow.timecode) {
+            nextRow = { ...nextRow, timecode: shiftedTc };
+          }
+        }
+        if (stampHere || (shiftHere && nextRow.timecode !== r.timecode)) {
+          const entry: {
+            rowIndex: number;
+            prevTimecode?: string;
+            prevDurationOverrideMs?: number;
+            clearDurationOverride?: boolean;
+          } = { rowIndex: i };
+          if (shiftHere && nextRow.timecode !== r.timecode) {
+            entry.prevTimecode = r.timecode;
+          }
+          if (stampHere) {
+            if (typeof r.duration_override_ms === 'number') {
+              entry.prevDurationOverrideMs = r.duration_override_ms;
+            } else {
+              entry.clearDurationOverride = true;
+            }
+          }
+          restoreEntries.push(entry);
+        }
+        return nextRow;
+      });
+
       // Remove + re-number remaining variants so indices are 1..N-1 with
       // no gaps. Base (variant_index === 0) stays at 0. Mirrors the
       // production-doc grid's deleteVariantRow.
-      const without = state.doc.rows.filter((_, i) => i !== rowIndex);
+      const without = workingRows.filter((_, i) => i !== rowIndex);
       let seen = 0;
       const reindexed = without.map((r) => {
         if (r.group_id !== groupId) return r;
@@ -2854,6 +3102,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         // numbering so the remaining variants slot back into 1..N.
         row: target,
         rowImageUrl,
+        ...(restoreEntries.length > 0 ? { restoreRowFields: restoreEntries } : {}),
       };
 
       return {
@@ -2901,6 +3150,28 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         if (idx >= variantIdx) return { ...r, variant_index: idx + 1 };
         return r;
       });
+      // Replay the neighbor timecode + override restorations stamped
+      // by the forward DELETE_VARIANT_ROW. Mirrors RESTORE_ROW's
+      // restoreRowFields handling so undo round-trips cleanly even
+      // when the deleted variant carried an explicit timecode.
+      const finalRows = cmd.restoreRowFields && cmd.restoreRowFields.length > 0
+        ? reindexed.map((r, i) => {
+            const entry = cmd.restoreRowFields!.find((e) => e.rowIndex === i);
+            if (!entry) return r;
+            let next = r;
+            if (entry.prevTimecode !== undefined) {
+              next = { ...next, timecode: entry.prevTimecode };
+            }
+            if (entry.clearDurationOverride) {
+              const { duration_override_ms: _drop, ...rest } = next;
+              void _drop;
+              next = rest as typeof next;
+            } else if (typeof entry.prevDurationOverrideMs === 'number') {
+              next = { ...next, duration_override_ms: entry.prevDurationOverrideMs };
+            }
+            return next;
+          })
+        : reindexed;
 
       let nextImages = reindexRowImages(state.rowImages, atIndex, 1);
       if (rowImageUrl !== null) {
@@ -2917,7 +3188,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
       return {
         next: {
           ...state,
-          doc: { ...state.doc, rows: reindexed },
+          doc: { ...state.doc, rows: finalRows },
           rowImages: nextImages,
           rowOverlays: nextOverlays,
           rowVideoClips: nextVideoClips,
@@ -3552,6 +3823,83 @@ function parseTimecodeMs(tc: string | undefined): number | null {
   const seconds = parseInt(m[2], 10);
   if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
   return (minutes * 60 + seconds) * 1000;
+}
+
+/**
+ * Effective duration of `rows[index]` matching the renderer's view
+ * (`computeProductionDocIntervals` in remotion/utils.ts):
+ *   - duration_override_ms wins when valid.
+ *   - Otherwise: next row's timecode (or doc.total_duration for the
+ *     last row) minus this row's timecode, floored at EDITOR_MIN_SHOT_MS.
+ *
+ * This DIFFERS from `naturalRowDurationMs` for the final row only —
+ * that helper returns EDITOR_MIN_SHOT_MS (2s floor) for the last row
+ * because it doesn't parse total_duration. The renderer extends the
+ * last row to `doc.total_duration`, so any caller that needs the
+ * value the user actually SEES on the timeline (e.g. ripple-delete
+ * stamping `duration_override_ms`) must use THIS helper.
+ *
+ * Exported for tests; internal callers below.
+ */
+export function rendererEffectiveDurationMs(
+  doc: ProductionDoc,
+  index: number,
+): number {
+  const row = doc.rows[index];
+  if (!row) return 0;
+  if (typeof row.duration_override_ms === 'number'
+      && Number.isFinite(row.duration_override_ms)
+      && row.duration_override_ms > 0) {
+    return row.duration_override_ms;
+  }
+  const startMs = parseTimecodeMs(row.timecode);
+  if (startMs === null) return EDITOR_MIN_SHOT_MS;
+  const nextRow = doc.rows[index + 1];
+  if (nextRow) {
+    const nextMs = parseTimecodeMs(nextRow.timecode);
+    if (nextMs !== null && nextMs > startMs) return nextMs - startMs;
+    return EDITOR_MIN_SHOT_MS;
+  }
+  // Last row — uses doc.total_duration, mirroring the renderer.
+  const totalRaw = doc.total_duration ?? '';
+  const totalMs = parseTimecodeMs(totalRaw);
+  if (totalMs !== null && totalMs > startMs) return totalMs - startMs;
+  return EDITOR_MIN_SHOT_MS;
+}
+
+/** Format milliseconds as "M:SS" (whole seconds, no leading zero on
+ *  the minute). Matches the shape `parseTimecodeMs` accepts so a
+ *  round-trip is stable to one-second precision. */
+function formatMmSs(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Shift a timecode string LEFT by `shiftMs`. Preserves the range
+ *  format ("0:30-0:33") when present by shifting both halves; falls
+ *  back to a single "M:SS" when the input is a bare timecode. Returns
+ *  the input unchanged when it can't be parsed (empty string,
+ *  non-numeric content) so caller doesn't have to special-case it. */
+function shiftTimecodeMs(timecode: string, shiftMs: number): string {
+  if (!timecode) return timecode;
+  // Range pattern: leading M:SS + separator (hyphen / en-dash / em-dash)
+  // + trailing M:SS. We split on the first separator so timecodes like
+  // "0:30 - 0:33" with surrounding whitespace still work.
+  const rangeMatch = timecode.match(/^\s*(\d{1,2}:\d{1,2})\s*([–\-—])\s*(\d{1,2}:\d{1,2})\s*$/);
+  if (rangeMatch) {
+    const [, startStr, sep, endStr] = rangeMatch;
+    const startMs = parseTimecodeMs(startStr);
+    const endMs = parseTimecodeMs(endStr);
+    if (startMs === null || endMs === null) return timecode;
+    const newStart = Math.max(0, startMs - shiftMs);
+    const newEnd = Math.max(newStart, endMs - shiftMs);
+    return `${formatMmSs(newStart)}${sep}${formatMmSs(newEnd)}`;
+  }
+  const baseMs = parseTimecodeMs(timecode);
+  if (baseMs === null) return timecode;
+  return formatMmSs(Math.max(0, baseMs - shiftMs));
 }
 
 /**
