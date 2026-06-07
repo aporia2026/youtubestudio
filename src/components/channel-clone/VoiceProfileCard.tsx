@@ -137,7 +137,7 @@ export function VoiceProfileCard({
               onCloneStateChanged={onCloneStateChanged}
             />
           ) : sample ? (
-            <PendingView sample={sample} />
+            <PendingView sample={sample} jobId={jobId} onChanged={onCloneStateChanged} />
           ) : (
             <EmptyView status={status} />
           )}
@@ -468,13 +468,95 @@ function CloneControls({
   );
 }
 
-function PendingView({ sample }: { sample: NonNullable<ChannelCloneJobState['voiceSample']> }) {
+function PendingView({
+  sample,
+  jobId,
+  onChanged,
+}: {
+  sample: NonNullable<ChannelCloneJobState['voiceSample']>;
+  jobId: string;
+  onChanged: (() => void) | undefined;
+}) {
+  // Detect "stuck analyzing" — the runner is fire-and-forget after
+  // intake completes and can silently bail (Kie 500, model defaults
+  // not pointing at a Kie-Gemini model, R2 read failure, parse
+  // failure). Anything more than 60s without the profile landing
+  // means it's not coming; surface a clear retry CTA + explanation.
+  const extractedAtMs = new Date(sample.extractedAt).getTime();
+  const ageSec = Number.isFinite(extractedAtMs)
+    ? Math.max(0, Math.floor((Date.now() - extractedAtMs) / 1000))
+    : 0;
+  const [isStuck, setIsStuck] = useState<boolean>(ageSec > 60);
+  const [retrying, setRetrying] = useState<boolean>(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isStuck) return;
+    if (ageSec > 60) {
+      setIsStuck(true);
+      return;
+    }
+    const remaining = (60 - ageSec) * 1000;
+    const t = setTimeout(() => setIsStuck(true), remaining);
+    return () => clearTimeout(t);
+  }, [ageSec, isStuck]);
+
+  const handleRetry = useCallback(async () => {
+    if (retrying) return;
+    setRetrying(true);
+    setRetryError(null);
+    // eslint-disable-next-line no-console
+    console.info('[channel-clone voice-card]', { state: 'profile-retry-start', jobId });
+    try {
+      const res = await fetch('/api/channel-clone/voice/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        setRetryError(data.error ?? `Retry failed (${res.status})`);
+        return;
+      }
+      onChanged?.();
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRetrying(false);
+    }
+  }, [jobId, retrying, onChanged]);
+
   return (
-    <div className="space-y-1 text-neutral-400">
+    <div className="space-y-2 text-neutral-400">
       <p>
         Audio sample captured ({sample.durationSec}s, {Math.round(sample.bytes / 1024)} KB).
       </p>
-      <p>Listening to the narrator and producing a voice description…</p>
+      {isStuck ? (
+        <div className="space-y-2 rounded border border-amber-900/60 bg-amber-950/30 p-2 text-[11px]">
+          <p className="text-amber-200">
+            Voice analysis hasn't completed after {Math.floor(ageSec / 60)}m. The runner is
+            fire-and-forget and can silently bail when Kie is rate-limited, the configured model
+            isn't a Kie Gemini one, the R2 read fails, or the model returns malformed JSON.
+          </p>
+          <p className="text-[10px] text-amber-200/70">
+            Check Settings → Model Defaults for "Channel Clone — Narrator Voice Profile". It should
+            point at a Kie Gemini model (default: Gemini 3.5 Flash via Kie.ai).
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleRetry()}
+              disabled={retrying}
+              className="rounded bg-amber-200 px-3 py-1 text-[11px] font-medium text-neutral-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+            >
+              {retrying ? 'Re-running…' : 'Re-run voice analysis'}
+            </button>
+            {retryError && <span className="text-[10px] text-red-300">{retryError}</span>}
+          </div>
+        </div>
+      ) : (
+        <p>Listening to the narrator and producing a voice description…</p>
+      )}
     </div>
   );
 }
