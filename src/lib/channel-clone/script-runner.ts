@@ -38,15 +38,16 @@ import type { ChannelCloneJobState } from './types';
 
 const SCRIPT_OUTPUT_SCHEMA = `Respond with a single JSON object of this shape:
 {
-  "script": string,                  // full script from hook to outro, plain text (no markdown, no headings, no stage directions)
-  "wordCount": number                // your honest word count of the script
+  "script": string,                  // full script from hook to outro, plain prose
+  "wordCount": number                // your honest word count of the script (count narration only, NOT heading text)
 }
 
 Constraints:
 - Script MUST start with the supplied hook verbatim.
 - Length MUST be within ±5% of the target word count supplied below.
 - 100% original — match style/rhythm/energy, never copy the channel's wording.
-- No "Hook:" / "Body:" / "Outro:" headings. Continuous prose only.
+- No "Hook:" / "Body:" / "Outro:" labels. Continuous prose only.
+- You MAY use \`## Section Heading\` on its own line to mark major topic shifts in the narrative (act break, new chapter, clear pivot like "And then everything changed"). The narrator NEVER speaks the heading text — these render as full-screen title cards in the final video. Use them only at genuine shifts, not at every paragraph; a typical script has 0–4 of them, longer scripts can warrant more.
 
 Output ONLY the JSON object. First char \`{\`, last char \`}\`.`;
 
@@ -72,8 +73,8 @@ Output ONLY the JSON object. First char \`{\`, last char \`}\`.`;
 
 const REVISION_OUTPUT_SCHEMA = `Respond with a single JSON object of this shape:
 {
-  "script": string,                  // the revised script, same plain-text rules as before
-  "wordCount": number
+  "script": string,                  // the revised script, plain prose. Preserve existing \`## Section Heading\` lines if any, and feel free to add/remove them at major topic shifts. Headings are NEVER spoken — they render as title cards.
+  "wordCount": number                // narration word count only, NOT including heading text
 }
 
 Output ONLY the JSON object.`;

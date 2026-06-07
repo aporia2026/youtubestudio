@@ -87,6 +87,7 @@ import {
   getLastEditOptionId,
   setLastEditOptionId,
 } from '@/lib/editor/settings';
+import { buildFillBlanksUnits, type WorkUnit } from '@/lib/editor/fill-blanks-units';
 import type { ImageSaliencyMap } from '@/remotion/utils';
 import {
   type ChannelVisualBrandKit,
@@ -747,43 +748,17 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
 
     // Build work units. In collage mode, group runs of 4 consecutive
     // blanks WHOSE ROWS DON'T HAVE A PER-SHOT MODEL OVERRIDE into
-    // collage units; everything else is a single unit. A row with its
-    // own image_model breaks the chunk so its override survives.
-    type WorkUnit =
-      | { kind: 'collage'; indices: number[] }
-      | { kind: 'single'; index: number };
+    // collage units; everything else is a single unit. Variant rows
+    // (variant_index > 0) are always singles regardless of collage mode
+    // — they need the i2i edit endpoint, not the t2i collage endpoint.
+    // See `src/lib/editor/fill-blanks-units.ts` for the chunker rules.
     const docRows = stateRef.current.doc.rows;
-    const units: WorkUnit[] = [];
-    if (collageOn) {
-      let i = 0;
-      while (i < initialBlanks.length) {
-        // Try to fill a chunk of 4. Each candidate must have no
-        // row-level model override (or share doc.image_model_default
-        // explicitly). Anything else breaks the chunk and lands in
-        // singles.
-        const chunkCandidate: number[] = [];
-        let j = i;
-        while (j < initialBlanks.length && chunkCandidate.length < 4) {
-          const rowIndex = initialBlanks[j];
-          const rowOverride = docRows[rowIndex]?.image_model;
-          if (rowOverride && rowOverride !== docModelDefault) break;
-          chunkCandidate.push(rowIndex);
-          j++;
-        }
-        if (chunkCandidate.length === 4) {
-          units.push({ kind: 'collage', indices: chunkCandidate });
-          i += 4;
-        } else {
-          // Partial chunk — emit the first as a single and try again
-          // from i+1. Avoids stranding a shot with an override at the
-          // start of what could have been a chunk.
-          units.push({ kind: 'single', index: initialBlanks[i] });
-          i += 1;
-        }
-      }
-    } else {
-      for (const idx of initialBlanks) units.push({ kind: 'single', index: idx });
-    }
+    const units = buildFillBlanksUnits({
+      blankIndices: initialBlanks,
+      rows: docRows,
+      collageOn,
+      docModelDefault,
+    });
 
     const collageUnitCount = units.filter((u) => u.kind === 'collage').length;
     const singleUnitCount = units.length - collageUnitCount;
@@ -964,6 +939,113 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       }
       const row = liveState.doc.rows[shotIndex];
       if (!row) return;
+
+      // Variant rows (variant_index > 0) need the i2i edit endpoint
+      // with the base image + variant_edit_prompt + style-preservation
+      // hint — same as the per-row "Generate variant" button. The base
+      // t2i path below would drop all three and produce a fresh image
+      // in the wrong style. Bug 1 fix from
+      // _plans/2026-06-07-bulk-variations-and-title-cards.md.
+      if ((row.variant_index ?? 0) > 0) {
+        const groupId = row.group_id;
+        if (!groupId) {
+          console.warn('[editor fill-blanks variant-dispatch skip] variant without group_id', { shotIndex });
+          failed += 1;
+          setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+          return;
+        }
+        const baseRowIndex = liveState.doc.rows.findIndex(
+          (r) => r.group_id === groupId && (r.variant_index ?? 0) === 0,
+        );
+        if (baseRowIndex < 0) {
+          console.warn('[editor fill-blanks variant-dispatch skip] base row not found', { shotIndex, groupId });
+          failed += 1;
+          setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+          return;
+        }
+        const currentVariantIdx = row.variant_index ?? 0;
+        let sourceRowIndex = baseRowIndex;
+        if (row.variant_derives_from_previous && currentVariantIdx > 1) {
+          const prevIdx = liveState.doc.rows.findIndex(
+            (r) =>
+              r.group_id === groupId
+              && (r.variant_index ?? 0) === currentVariantIdx - 1,
+          );
+          if (prevIdx >= 0) sourceRowIndex = prevIdx;
+        }
+        const sourceImageUrl = liveState.rowImages[sourceRowIndex];
+        if (!sourceImageUrl) {
+          console.warn('[editor fill-blanks variant-dispatch skip] source image missing — generate the base first', {
+            shotIndex,
+            sourceRowIndex,
+          });
+          failed += 1;
+          setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+          return;
+        }
+        const { getGptImage2EditPrimary } = await import('@/lib/editor/settings');
+        const editPrimary = getGptImage2EditPrimary();
+        const prepared = composeVariantEditRequest(
+          liveState.doc,
+          row,
+          sourceImageUrl,
+          editPrimary,
+        );
+        if (prepared.kind === 'error') {
+          console.warn('[editor fill-blanks variant-dispatch skip] compose error', {
+            shotIndex,
+            code: prepared.code,
+            message: prepared.message,
+          });
+          failed += 1;
+          setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+          return;
+        }
+        console.info('[editor fill-blanks variant-dispatch]', {
+          shotIndex,
+          baseRowIndex,
+          sourceRowIndex,
+          chained: row.variant_derives_from_previous === true,
+        });
+        try {
+          const res = await queueImageGen('edit', 'editor-bulk-variant-edit', () =>
+            // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
+            fetch('/api/generate/production-doc/image/edit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(prepared.request),
+              signal: controller.signal,
+            }),
+          );
+          if (res.status === 429) reportUpstream429('edit', 'editor-bulk-variant-edit');
+          const data = (await res.json().catch(() => ({}))) as {
+            imageUrl?: string;
+            error?: string;
+          };
+          if (!res.ok || typeof data.imageUrl !== 'string') {
+            throw new Error(data.error || `HTTP ${res.status}`);
+          }
+          apply({ type: 'SET_ROW_IMAGE', shotIndex, url: data.imageUrl });
+          writeRowAsset(shotIndex, 'image', data.imageUrl);
+          succeeded += 1;
+          setFillProgress((p) => ({ ...p, done: p.done + 1 }));
+          console.info('[editor fill-blanks variant ok]', {
+            shotIndex,
+            durationMs: Date.now() - t0,
+          });
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') return;
+          const message = err instanceof Error ? err.message : String(err);
+          failed += 1;
+          setFillProgress((p) => ({ ...p, failed: p.failed + 1 }));
+          console.warn('[editor fill-blanks variant fail]', {
+            shotIndex,
+            error: message,
+          });
+        }
+        return;
+      }
+
       const prompt = row.ai_image_prompt?.trim() || row.visual_description?.trim();
       if (!prompt) {
         console.warn('[editor fill-blanks shot skip] no prompt', { shotIndex });

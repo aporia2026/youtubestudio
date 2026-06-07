@@ -27,6 +27,9 @@ import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
 import { getBuiltInStyle } from '@/lib/production-doc-styles';
+import type { ProductionDocRowLike } from '@/lib/production-doc-postprocess';
+import { extractScriptTitles, type ExtractedTitle } from '@/lib/script-titles';
+import { normalizeTitleCards } from '@/lib/title-card-repair';
 import { deriveChannelStyle } from './derive-channel-style';
 import {
   getChannelCloneJob,
@@ -42,12 +45,12 @@ const ROWIFY_OUTPUT_SCHEMA = `Respond with a single JSON object of this shape:
   "rows": [
     {
       "timecode": string,                       // "0:00-0:03" format, no spaces, end > start
-      "script_text": string,                    // EXACT excerpt from the approved script; do not paraphrase
-      "visual_type": "ai_image" | "stock" | "overlay",
-      "visual_description": string,             // 1-2 sentences describing what the viewer sees
+      "script_text": string,                    // EXACT excerpt from the approved script, OR the heading text from the matching <<TITLE_N>> sentinel for a Title Card row; do not paraphrase
+      "visual_type": "ai_image" | "stock" | "overlay" | "Title Card",
+      "visual_description": string,             // 1-2 sentences describing what the viewer sees. For Title Card rows: \`Title card displaying "<heading text>"\`.
       "stock_search_terms": string,             // Empty string when visual_type !== "stock"
-      "ai_image_prompt": string,                // FULL standalone prompt — subject, environment, lighting, mood, camera, style. NEVER references earlier rows.
-      "on_screen_text": string,                 // Yellow bold callout word or short phrase. Empty string when none.
+      "ai_image_prompt": string,                // FULL standalone prompt — subject, environment, lighting, mood, camera, style. NEVER references earlier rows. EMPTY STRING for Title Card rows (they render as typography, no image).
+      "on_screen_text": string,                 // Yellow bold callout word or short phrase. Empty string when none. For Title Card rows: the heading text exactly.
       "notes": string                           // Free-form rationale (1 sentence max). Helps you, the editor, not the renderer.
     }
   ]
@@ -55,17 +58,30 @@ const ROWIFY_OUTPUT_SCHEMA = `Respond with a single JSON object of this shape:
 
 Constraints:
 - One row per ~3-5 seconds of narration (channel WPS supplied below × 3-5 = words per row).
-- script_text segments MUST be a contiguous, non-overlapping partition of the approved script. Concatenated, they reproduce the full script in order.
+- script_text segments MUST be a contiguous, non-overlapping partition of the approved script. Concatenated, they reproduce the full script in order. Title Card rows do not count toward this partition — their script_text is the heading text, not narration.
 - Cover EVERY word of the script. No gaps. No skipping.
 - The first row's hook MUST be a verbatim slice of the script's opening.
 - ai_image_prompt is FULLY STANDALONE — never reference "the previous shot" or "as before". An image generator with no context must be able to render this row alone.
+
+Title card sentinels:
+- The input script may contain \`<<TITLE_N>>\` sentinels on their own line (where N is 0, 1, 2, ...). Each sentinel marks a place where the original \`## Heading\` line was — those headings render as full-screen title cards in the final video.
+- For EACH sentinel in the script (in the order they appear), emit ONE standalone Title Card row at that position:
+  - \`script_text\` = the heading text EXACTLY as listed under "Title cards" below
+  - \`visual_type\` = "Title Card"
+  - \`visual_description\` = \`Title card displaying "<heading text>"\`
+  - \`ai_image_prompt\` = "" (empty — the renderer draws the text without an image)
+  - \`on_screen_text\` = the heading text
+  - \`stock_search_terms\` = ""
+- "Title Card" is RESERVED EXCLUSIVELY for these sentinel rows. Do NOT use it for any other shot.
+- If the script contains no \`<<TITLE_N>>\` sentinels, emit no Title Card rows.
+- EVERY sentinel in the script MUST become exactly one Title Card row at that position. Do NOT skip any sentinel.
 
 Output ONLY the JSON object. First char \`{\`, last char \`}\`.`;
 
 export interface ChannelCloneProductionRow {
   timecode: string;
   script_text: string;
-  visual_type: 'ai_image' | 'stock' | 'overlay';
+  visual_type: 'ai_image' | 'stock' | 'overlay' | 'Title Card';
   visual_description: string;
   stock_search_terms: string;
   ai_image_prompt: string;
@@ -174,7 +190,25 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
     ROWIFY_OUTPUT_SCHEMA,
   ].filter(Boolean).join('\n\n');
 
-  const userPrompt = buildRowifyUserPrompt(analysis, visualProfile, approvedScript);
+  // Extract `## Heading` lines into `<<TITLE_N>>` sentinels BEFORE the
+  // LLM sees the script. The LLM emits one Title Card row per sentinel
+  // (per the schema's "Title card sentinels" section); after parse,
+  // `normalizeTitleCards` demotes mistagged cards and synthesizes
+  // missing ones. Mirrors the main pipeline at
+  // `src/lib/auto-pipeline/stages/generate-production-doc.ts:122-298`.
+  const extracted = extractScriptTitles(approvedScript.text);
+  logger.info('[channel-clone rowify titles-extracted]', {
+    jobId,
+    titleCount: extracted.titles.length,
+    titles: extracted.titles.map((t) => t.text).slice(0, 8),
+  });
+
+  const userPrompt = buildRowifyUserPrompt(
+    analysis,
+    visualProfile,
+    { ...approvedScript, text: extracted.stripped },
+    extracted.titles,
+  );
 
   // Token budget: each row averages ~150 output tokens (timecode +
   // 1-2 sentences × 3 + standalone prompt). Average video is ~1300
@@ -201,9 +235,9 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
     return failJob(jobId, workspaceId, `Model call failed: ${errorMessage(err)}`);
   }
 
-  let rows: ChannelCloneProductionRow[];
+  let parsed: ChannelCloneProductionRow[];
   try {
-    rows = parseRowifyResponse(raw);
+    parsed = parseRowifyResponse(raw);
   } catch (err) {
     logger.error('[channel-clone rowify] parse failed', {
       jobId,
@@ -213,6 +247,40 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
     });
     return failJob(jobId, workspaceId, `Could not parse rowify output: ${errorMessage(err)}`);
   }
+
+  // Deterministic title-card repair: demote LLM-mistagged Title Cards
+  // back to ai_image and synthesize any sentinel rows the LLM dropped.
+  // `allowOverlay: false` — channel-clone Title Cards render as pure
+  // typography, no real-image overlay branch (consistent with the main
+  // pipeline's behaviour for paint_explainer_v1 / doodle_explainer_2).
+  // The `as ProductionDocRowLike[]` bridge mirrors the main pipeline at
+  // `src/lib/auto-pipeline/stages/generate-production-doc.ts:290` —
+  // ChannelCloneProductionRow's strict union doesn't satisfy the
+  // index-signature constraint on R, but the runtime shape is
+  // compatible.
+  const normalized = normalizeTitleCards(
+    parsed as unknown as ProductionDocRowLike[],
+    extracted.titles,
+    extracted.stripped,
+    { allowOverlay: false },
+  );
+  // Cards demoted by normalize land back as `visual_type: 'Animation'`
+  // (the main pipeline's "generated still" value), but channel-clone's
+  // enum is `ai_image | stock | overlay | Title Card`. Map any
+  // demoted-Animation row to 'ai_image' (channel-clone's equivalent
+  // of "generated still") so the row stays schema-valid downstream.
+  const rows: ChannelCloneProductionRow[] = normalized.rows.map((r) => {
+    const cc = r as unknown as ChannelCloneProductionRow;
+    return (r.visual_type as string) === 'Animation'
+      ? { ...cc, visual_type: 'ai_image' as const }
+      : cc;
+  });
+  logger.info('[channel-clone rowify title-cards-normalized]', {
+    jobId,
+    demotedCount: normalized.demotedCount,
+    insertedCount: normalized.insertedCount,
+    insertedTitles: normalized.insertedTitles,
+  });
 
   // Coverage sanity check — STATE 14's "every beat" rule. If the
   // emitted rows' script_text segments are missing more than a small
@@ -257,6 +325,11 @@ function buildRowifyUserPrompt(
   analysis: NonNullable<ChannelCloneJobState['analysis']>,
   visualProfile: ChannelCloneJobState['visualProfile'],
   approvedScript: NonNullable<ChannelCloneJobState['approvedScript']>,
+  /** Headings extracted from the approved script and replaced in
+   *  `approvedScript.text` with `<<TITLE_N>>` sentinels. The LLM
+   *  emits one Title Card row per sentinel; empty array ⇒ no Title
+   *  Cards expected and the "Title cards" block is omitted. */
+  titles: readonly ExtractedTitle[] = [],
 ): string {
   const visualBlock = visualProfile
     ? [
@@ -270,6 +343,13 @@ function buildRowifyUserPrompt(
       ].join('\n')
     : 'No visual profile available — derive style from the preset suffix + mixing rules alone.';
 
+  const titleBlock = titles.length > 0
+    ? [
+        'Title cards (one Title Card row per sentinel; emit each at its sentinel position in the script):',
+        ...titles.map((t) => `- ${t.sentinel} → "${t.text}"`),
+      ].join('\n')
+    : 'Title cards: none in this script.';
+
   return [
     'You are at STATE 14. Convert the approved script into scene-by-scene image prompts.',
     '',
@@ -278,6 +358,8 @@ function buildRowifyUserPrompt(
     `Approved script length: ${approvedScript.wordCount} words.`,
     '',
     visualBlock,
+    '',
+    titleBlock,
     '',
     'Approved script:',
     approvedScript.text,
@@ -300,8 +382,13 @@ export function parseRowifyResponse(raw: string): ChannelCloneProductionRow[] {
       throw new Error(`rows[${i}].timecode must look like "0:00-0:03"`);
     }
     const visualType = e.visual_type;
-    if (visualType !== 'ai_image' && visualType !== 'stock' && visualType !== 'overlay') {
-      throw new Error(`rows[${i}].visual_type must be ai_image | stock | overlay`);
+    if (
+      visualType !== 'ai_image'
+      && visualType !== 'stock'
+      && visualType !== 'overlay'
+      && visualType !== 'Title Card'
+    ) {
+      throw new Error(`rows[${i}].visual_type must be ai_image | stock | overlay | Title Card`);
     }
     if (typeof e.script_text !== 'string' || e.script_text.length === 0) {
       throw new Error(`rows[${i}].script_text must be a non-empty string`);
@@ -322,6 +409,7 @@ export function parseRowifyResponse(raw: string): ChannelCloneProductionRow[] {
       throw new Error(`rows[${i}].notes must be a string`);
     }
     // ai_image rows must carry a prompt; stock rows must carry terms.
+    // Title Card rows render typography — no image, no stock terms.
     if (visualType === 'ai_image' && e.ai_image_prompt.length === 0) {
       throw new Error(`rows[${i}]: visual_type=ai_image requires a non-empty ai_image_prompt`);
     }
@@ -344,12 +432,23 @@ export function parseRowifyResponse(raw: string): ChannelCloneProductionRow[] {
 /** Compute what fraction of the approved script (by normalized
  *  character count) is covered by the row script_text segments.
  *  Used to surface a warning when the model dropped meaningful
- *  content during rowification. Exported for tests. */
+ *  content during rowification. Title Card rows are excluded — their
+ *  script_text is the heading, not a script excerpt, so counting them
+ *  would inflate coverage and the comparison script must be the
+ *  heading-stripped form. Exported for tests. */
 export function computeCoverageFraction(rows: ChannelCloneProductionRow[], scriptText: string): number {
   const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-  const scriptNorm = norm(scriptText);
+  // Strip `## Heading` lines from the reference script before
+  // comparing — those lines were extracted into sentinels and are
+  // never part of any narration row's script_text. Without this, a
+  // script with headings always reports < 100% coverage.
+  const stripped = scriptText.replace(/^\s*##\s+.+$/gm, '').replace(/\n{3,}/g, '\n\n');
+  const scriptNorm = norm(stripped);
   if (scriptNorm.length === 0) return 1;
-  const concat = rows.map((r) => r.script_text).join(' ');
+  const concat = rows
+    .filter((r) => r.visual_type !== 'Title Card')
+    .map((r) => r.script_text)
+    .join(' ');
   const concatNorm = norm(concat);
   // Cheap coverage metric: ratio of concat length to script length,
   // capped at 1.0. Doesn't catch reorderings, but catches drop-outs.

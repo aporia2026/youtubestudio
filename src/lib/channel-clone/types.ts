@@ -389,18 +389,25 @@ export interface ChannelCloneJobState {
   productionRows?: {
     /** "0:00-0:03" — covers ~3-5s of the script. */
     timecode: string;
-    /** The narration excerpt for this row. */
+    /** The narration excerpt for this row. For Title Card rows, this
+     *  is the heading text rather than a script excerpt. */
     script_text: string;
-    /** What category of visual this row uses. */
-    visual_type: 'ai_image' | 'stock' | 'overlay';
+    /** What category of visual this row uses. 'Title Card' was added
+     *  2026-06-07 — emitted by the rowify stage when the approved
+     *  script contains `## Heading` lines (extracted into sentinels
+     *  before the LLM sees them). Renders as typography in the editor;
+     *  no image generation runs. */
+    visual_type: 'ai_image' | 'stock' | 'overlay' | 'Title Card';
     visual_description: string;
     /** Empty string when visual_type !== 'stock'. */
     stock_search_terms: string;
     /** Full standalone image prompt — per V2.0 STATE 14's
-     *  STANDALONE RULE: never references previous prompts. */
+     *  STANDALONE RULE: never references previous prompts. Empty
+     *  string for Title Card rows. */
     ai_image_prompt: string;
     /** On-screen text overlay (yellow bold word per the V2.0
-     *  visual style). Empty string when none. */
+     *  visual style). Empty string when none. For Title Card rows
+     *  this is the heading text. */
     on_screen_text: string;
     /** Free-form notes — usually the LLM explaining its rationale. */
     notes: string;
