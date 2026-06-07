@@ -33,6 +33,7 @@ import {
   type ChannelCloneRetryStage,
 } from '@/lib/channel-clone/retry-alternative';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
+import { usePersistedState } from '@/lib/use-persisted-state';
 import { ChannelCloneUploadForm } from './ChannelCloneUploadForm';
 import { ModelRetryPicker } from './ModelRetryPicker';
 import { VoiceProfileCard } from './VoiceProfileCard';
@@ -84,26 +85,49 @@ interface PipelinePresetSummary {
 }
 
 export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {}) {
-  const [url, setUrl] = useState('');
-  const [sampleVideoCount, setSampleVideoCount] = useState<3 | 5 | 8>(5);
-  const [frameIntervalSec, setFrameIntervalSec] = useState<5 | 10 | 15>(10);
-  const [topicCount, setTopicCount] = useState<5 | 10 | 15>(10);
-  const [chosenTopicIndex, setChosenTopicIndex] = useState<number | null>(null);
-  const [chosenHookIndex, setChosenHookIndex] = useState<number | null>(null);
+  // Pre-submit URL form. Lives in localStorage so a refresh / tab
+  // close / crash doesn't wipe a half-typed URL the operator hasn't
+  // submitted yet. 2026-06-08.
+  const [url, setUrl] = usePersistedState<string>('cc-url-draft', '');
+  // Per-job UI state is persisted under a per-jobId key. On the
+  // landing page (no initialJobId) we still want a sensible default;
+  // use a "landing" placeholder so the values are stable across the
+  // pre-submit flow and then re-key once a job is created. The
+  // landing entries get cleared when the user starts a fresh run.
+  const stateScope = initialJobId ?? 'landing';
+  const [sampleVideoCount, setSampleVideoCount] = usePersistedState<3 | 5 | 8>(
+    `cc-${stateScope}-sampleVideoCount`, 5);
+  const [frameIntervalSec, setFrameIntervalSec] = usePersistedState<5 | 10 | 15>(
+    `cc-${stateScope}-frameIntervalSec`, 10);
+  const [topicCount, setTopicCount] = usePersistedState<5 | 10 | 15>(
+    `cc-${stateScope}-topicCount`, 10);
+  // chosenTopicIndex / chosenHookIndex represent a radio pick that
+  // the operator made but hasn't yet confirmed. Critical to persist —
+  // refreshing in the middle of "did I tick option 3 or 4?" is a
+  // confidence loss the operator shouldn't have to live with.
+  const [chosenTopicIndex, setChosenTopicIndex] = usePersistedState<number | null>(
+    `cc-${stateScope}-chosenTopicIndex`, null);
+  const [chosenHookIndex, setChosenHookIndex] = usePersistedState<number | null>(
+    `cc-${stateScope}-chosenHookIndex`, null);
   // 95 is the new default per the tightened QA loop. Per-dimension
   // floor enforcement at threshold=95 means each rubric dim must
   // hit 7.5/10 in addition to the overall 9.5/10 — catches weak
   // outliers (hookStrength etc) that previously snuck through.
-  const [threshold, setThreshold] = useState<80 | 90 | 95 | 100>(95);
-  const [maxIterations, setMaxIterations] = useState<1 | 3 | 5>(3);
-  const [stylePresetIdHint, setStylePresetIdHint] = useState<string>('auto');
+  const [threshold, setThreshold] = usePersistedState<80 | 90 | 95 | 100>(
+    `cc-${stateScope}-threshold`, 95);
+  const [maxIterations, setMaxIterations] = usePersistedState<1 | 3 | 5>(
+    `cc-${stateScope}-maxIterations`, 3);
+  const [stylePresetIdHint, setStylePresetIdHint] = usePersistedState<string>(
+    `cc-${stateScope}-stylePresetIdHint`, 'auto');
   // Default ON: rowify derives the channel's visual DNA from the
   // analyze stage's profile + extracted frames and uses it as the
   // image-gen style instead of one of the built-in presets. This is
   // the WHOLE POINT of channel-clone — see derive-channel-style.ts.
   // Operator can flip OFF to force a built-in preset render.
-  const [useChannelStyle, setUseChannelStyle] = useState<boolean>(true);
-  const [handoffPresetId, setHandoffPresetId] = useState<string>('auto');
+  const [useChannelStyle, setUseChannelStyle] = usePersistedState<boolean>(
+    `cc-${stateScope}-useChannelStyle`, true);
+  const [handoffPresetId, setHandoffPresetId] = usePersistedState<string>(
+    `cc-${stateScope}-handoffPresetId`, 'auto');
   const [pipelinePresets, setPipelinePresets] = useState<PipelinePresetSummary[]>([]);
   const [cost, setCost] = useState<CostSummary | null>(null);
   const [job, setJob] = useState<JobView | null>(null);
@@ -112,7 +136,8 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
   // or upload reference video files directly (bypasses YouTube).
   // The upload path was added because YouTube's anti-bot stack got
   // aggressive enough that the cloud-IP path can't be relied on.
-  const [intakeMode, setIntakeMode] = useState<'url' | 'upload'>('url');
+  const [intakeMode, setIntakeMode] = usePersistedState<'url' | 'upload'>(
+    'cc-intakeMode-draft', 'url');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState<null | 'analyze' | 'topics' | 'hooks' | 'script' | 'rowify' | 'handoff' | 'publish-pack'>(null);
   const pollHandle = useRef<ReturnType<typeof setTimeout> | null>(null);

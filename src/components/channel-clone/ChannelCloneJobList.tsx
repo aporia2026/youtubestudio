@@ -83,13 +83,19 @@ export function ChannelCloneJobList() {
   );
 }
 
-/** Top-level collapsible wrapper. Default-CLOSED because the list
- *  grows quickly during iteration on the channel-clone feature
- *  itself and the user asked for it to be tucked away. One click
- *  expands. When expanded, the toolbar adds bulk actions: select-
- *  all, delete-selected, delete-failed, delete-all. */
+/** Top-level collapsible wrapper. Default-CLOSED when nothing is
+ *  running (the list grows quickly during iteration on the channel-
+ *  clone feature itself and the user asked for it to be tucked
+ *  away). Default-OPEN when any job is in an active state, so a
+ *  refresh / re-open doesn't strand the operator without a clear
+ *  "your run is still going, click here" affordance. Plus an
+ *  always-visible in-progress strip above the collapsible. */
 function CollapsibleJobList({ jobs, onChanged }: { jobs: JobListItem[]; onChanged: () => void }) {
-  const [open, setOpen] = useState(false);
+  const activeJobs = useMemo(
+    () => jobs.filter((j) => ACTIVE_STATUSES.includes(j.status)),
+    [jobs],
+  );
+  const [open, setOpen] = useState(() => activeJobs.length > 0);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState<null | 'selected' | 'failed' | 'all'>(null);
 
@@ -155,6 +161,38 @@ function CollapsibleJobList({ jobs, onChanged }: { jobs: JobListItem[]; onChange
 
   return (
     <div className="space-y-2">
+      {activeJobs.length > 0 && (
+        <div className="space-y-2 rounded border border-amber-900/60 bg-amber-950/30 p-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-amber-300">
+              In progress · {activeJobs.length} run{activeJobs.length === 1 ? '' : 's'}
+            </h3>
+            <span className="text-[10px] text-amber-200/70">
+              These keep running on the server. Click a card to resume / watch.
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {activeJobs.map((j) => (
+              <li key={j.id}>
+                <Link
+                  href={`/channel-clone/${j.id}`}
+                  className="flex items-center justify-between gap-3 rounded border border-amber-900/40 bg-amber-950/40 px-3 py-2 text-xs text-neutral-100 hover:border-amber-700 hover:bg-amber-900/40"
+                >
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium">
+                      {j.summary.sourceChannelName ?? j.sourceChannelUrl}
+                    </span>
+                    <span className="ml-2 text-[10px] text-amber-200/70">
+                      updated {new Date(j.updatedAt).toLocaleTimeString()}
+                    </span>
+                  </span>
+                  <StatusPill status={j.status} />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}

@@ -24,7 +24,8 @@
  * operator can see "is my 50 MB upload moving or stuck."
  */
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { usePersistedState } from '@/lib/use-persisted-state';
 
 type UploadStatus = 'idle' | 'queued' | 'uploading' | 'uploaded' | 'failed';
 
@@ -165,18 +166,45 @@ function nextUid(): string {
 
 export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormProps) {
   const [videos, setVideos] = useState<VideoUpload[]>([]);
-  const [sourceLabel, setSourceLabel] = useState('');
+  // Pre-submit text fields persisted to localStorage so a refresh /
+  // crash mid-fill doesn't wipe what the operator typed. Files can't
+  // be persisted (File objects don't survive JSON), but pasted
+  // transcripts can — we keep a draft map keyed by filename so a
+  // re-pick of the same file restores the transcript.
+  const [sourceLabel, setSourceLabel] = usePersistedState<string>('cc-upload-sourceLabel-draft', '');
   /** Optional canonical YouTube channel URL of the source we're
    *  cloning. When supplied, downstream stages (analyze, publish-
    *  pack) use it to reason about the actual channel — handle,
    *  niche, similar channels — instead of inferring everything
    *  from the uploaded videos alone. */
-  const [sourceChannelUrl, setSourceChannelUrl] = useState('');
-  const [frameIntervalSec, setFrameIntervalSec] = useState<5 | 10 | 15>(10);
+  const [sourceChannelUrl, setSourceChannelUrl] = usePersistedState<string>(
+    'cc-upload-sourceChannelUrl-draft', '');
+  const [frameIntervalSec, setFrameIntervalSec] = usePersistedState<5 | 10 | 15>(
+    'cc-upload-frameIntervalSec-draft', 10);
+  // filename → typed transcript. Survives across pick/re-pick of the
+  // same file. Capped implicitly because operators rarely have more
+  // than a handful of distinct reference filenames.
+  const [transcriptDrafts, setTranscriptDrafts] = usePersistedState<Record<string, string>>(
+    'cc-upload-transcript-drafts', {});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // When the operator types in a transcript field, mirror it into
+  // the per-filename draft store so a refresh + re-pick recovers it.
+  // Used by the textarea onChange handler below via updateTranscript.
+  const updateTranscript = useCallback((uid: string, value: string) => {
+    setVideos((prev) => {
+      const next = prev.map((v) => (v.uid === uid ? { ...v, transcript: value } : v));
+      const target = prev.find((v) => v.uid === uid);
+      if (target) {
+        const filename = target.file.name;
+        setTranscriptDrafts((draft) => ({ ...draft, [filename]: value }));
+      }
+      return next;
+    });
+  }, [setTranscriptDrafts]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
     setVideos((prev) => [
@@ -185,14 +213,17 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         uid: nextUid(),
         file,
         title: file.name.replace(/\.[^.]+$/, ''),
-        transcript: '',
+        // Restore any previously-typed transcript for this filename
+        // from the localStorage draft store. Brand-new files get ''.
+        transcript: transcriptDrafts[file.name] ?? '',
         uploadProgress: null,
         error: null,
         r2Key: null,
         status: 'idle',
       })),
     ]);
-  }, []);
+  }, [transcriptDrafts]);
+
 
   const removeAt = useCallback((uid: string) => {
     setVideos((prev) => prev.filter((v) => v.uid !== uid));
@@ -459,7 +490,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
                 </span>
                 <textarea
                   value={v.transcript}
-                  onChange={(e) => update(v.uid, { transcript: e.target.value })}
+                  onChange={(e) => updateTranscript(v.uid, e.target.value)}
                   disabled={submitting}
                   rows={4}
                   placeholder="Paste transcript from YouTube's Show transcript button…"
