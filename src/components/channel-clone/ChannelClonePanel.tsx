@@ -35,6 +35,7 @@ import {
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { ChannelCloneUploadForm } from './ChannelCloneUploadForm';
 import { ModelRetryPicker } from './ModelRetryPicker';
+import { VoiceProfileCard } from './VoiceProfileCard';
 
 interface JobView {
   id: string;
@@ -384,6 +385,15 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
                 }
               } : undefined}
               regenerating={busy === 'analyze'}
+            />
+          )}
+
+          {/* ── Voice profile (Plan 1A) ────────────────────────── */}
+          {job && (
+            <VoiceProfileCard
+              jobId={job.id}
+              status={job.status}
+              state={state}
             />
           )}
 

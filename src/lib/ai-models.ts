@@ -68,6 +68,13 @@ export type AppFeature =
   | 'channel-clone-script-audit'
   | 'channel-clone-rowify'
   | 'channel-clone-publish-pack'
+  // Channel-clone voice-profile (9th LLM stage; auto-runs after
+  // intake) — see _plans/2026-06-07-channel-clone-narrator-voice-elevenlabs.md.
+  // Audio-input call; default is kie-gemini-2.5-flash (verified
+  // audio-capable, cheap). A future spike will validate whether
+  // kie-gemini-3-5-flash through the OpenAI-compatible alias also
+  // accepts audio; if so the user can flip the default.
+  | 'channel-clone-voice-profile'
   // Grow
   | 'channel-analyze'
   | 'channel-description'
@@ -149,6 +156,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'channel-clone-script-audit', label: 'Channel Clone — Script Audit', description: '10-point quality audit that drives the fix-and-rescore loop until threshold', section: 'create', defaultModelId: OPUS_48 },
   { id: 'channel-clone-rowify', label: 'Channel Clone — Script → Production Rows', description: 'Converts the approved script into production-doc rows matched to the chosen style preset', section: 'create', defaultModelId: OPUS_48 },
   { id: 'channel-clone-publish-pack', label: 'Channel Clone — Publish Pack', description: 'Titles, description, SEO tags, pinned comment, and 30-day content calendar', section: 'create', defaultModelId: OPUS_48 },
+  { id: 'channel-clone-voice-profile', label: 'Channel Clone — Narrator Voice Profile', description: 'Listens to a 30s audio sample from a reference video and produces a structured voice description + paste-ready ElevenLabs Voice Design prompt', section: 'create', defaultModelId: KIE_GEMINI_FLASH },
 
   // ─── Grow ────────────────────────────────────────────────────────────
   { id: 'channel-analyze', label: 'Channel Analyze', description: 'Analyzes a YouTube channel for positioning + opportunities', section: 'grow', defaultModelId: SONNET },

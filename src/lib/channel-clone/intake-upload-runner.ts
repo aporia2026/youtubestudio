@@ -46,6 +46,8 @@ import type {
   ChannelCloneSampleVideo,
   CleanedTranscript,
 } from './types';
+import { runVoiceExtractDuringIntake } from './voice-extract-during-intake';
+import { runVoiceProfile } from './voice-profile-runner';
 
 export interface UploadedVideoInput {
   /** R2 object key inside the review bucket. Shape:
@@ -147,6 +149,11 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     if (await isCancelled()) return;
 
     const sampleVideos: ChannelCloneSampleVideo[] = [];
+    // Per-video sandbox path keyed by the synthetic videoId. Built
+    // up during the loop so the voice-extract step (Plan 1A) can
+    // re-encode an audio window from the already-downloaded MP4
+    // without spinning up a second sandbox.
+    const videoSandboxPaths: Record<string, string> = {};
     let sourceChannelName: string | null = sourceLabel.trim() || null;
 
     for (const [i, video] of videos.entries()) {
@@ -158,6 +165,7 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
         // the R2 key so ffmpeg auto-detects container/codec.
         const ext = inferExtensionFromKey(video.r2Key) ?? 'mp4';
         const videoSandboxPath = `${sandboxJobDir}/video-${i}.${ext}`;
+        videoSandboxPaths[`upload-${i + 1}`] = videoSandboxPath;
 
         // Mint a short-lived presigned GET URL for the R2 object,
         // then curl it into the sandbox. The presigned URL signs the
@@ -292,6 +300,31 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
       fetchedAt: new Date().toISOString(),
     };
     await mergeChannelCloneJobState(jobId, workspaceId, { intake: intakeResult });
+
+    // Voice-extract (Plan 1A — _plans/2026-06-07-channel-clone-narrator-voice-elevenlabs.md).
+    // Best-effort: a failure here logs and returns null without
+    // affecting the rest of intake. Done BEFORE flipping status so
+    // the operator sees voiceSample available when intake_complete
+    // lands in their poll.
+    try {
+      await runVoiceExtractDuringIntake(
+        {
+          jobId,
+          workspaceId,
+          sandbox,
+          ffmpegPath,
+          videoSandboxPaths,
+          sampleVideos,
+          sandboxJobDir,
+        },
+        log,
+      );
+    } catch (err) {
+      log.warn('voice-extract', 'unexpected throw — continuing intake', {
+        error: errorMessage(err),
+      });
+    }
+
     const flipped = await setChannelCloneJobStatusUnlessCancelled(jobId, workspaceId, 'intake_complete');
     if (!flipped) {
       log.warn('intake', 'cancellation landed during final write — staying on cancelled');
@@ -318,6 +351,19 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
         });
       });
     }
+  }
+
+  // Voice-profile LLM call (Plan 1A — best-effort, never throws).
+  // Runs OUTSIDE the sandbox finally because the LLM call only needs
+  // the R2 audio URL. Skipped when voiceSample wasn't persisted (e.g.
+  // all sample videos were silent or the encode failed).
+  try {
+    await runVoiceProfile({ jobId, workspaceId });
+  } catch (err) {
+    logger.warn('[channel-clone intake-upload] voice-profile threw unexpectedly', {
+      jobId,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

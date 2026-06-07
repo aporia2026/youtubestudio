@@ -227,6 +227,60 @@ export interface ChannelCloneJobState {
   cancelRequested?: boolean;
   analysis?: ChannelCloneAnalysis;
   visualProfile?: ChannelCloneVisualProfile;
+  /** Audio sample extracted from one reference video during intake.
+   *  Feeds the voice-profile LLM stage and the optional ElevenLabs
+   *  Instant Voice Cloning button. Absent when extraction failed
+   *  (e.g. all reference videos were silent — a rare edge case for
+   *  long-form YouTube narration). Plan 1:
+   *  _plans/2026-06-07-channel-clone-narrator-voice-elevenlabs.md */
+  voiceSample?: {
+    /** R2 key of the 30-60s audio sample (mono 16kHz MP3). */
+    r2Key: string;
+    /** Source video id this came from (matches sampleVideos[].videoId). */
+    sourceVideoId: string;
+    /** Start offset within the source video, in seconds. */
+    startSec: number;
+    durationSec: number;
+    bytes: number;
+    extractedAt: string;
+  };
+  /** Structured narrator-voice description + paste-ready ElevenLabs
+   *  Voice Design prompt produced by the voice-profile LLM stage.
+   *  Best-effort: absent when the model output was unusable or the
+   *  audio sample was missing. */
+  voiceProfile?: {
+    gender: 'male' | 'female' | 'androgynous';
+    ageBracket: 'young-adult' | 'adult' | 'middle-aged' | 'senior';
+    pace: 'slow' | 'moderate' | 'fast' | 'variable';
+    /** "warm baritone", "bright tenor", "raspy alto", … */
+    timbre: string;
+    /** "general american", "rp british", "australian", … */
+    accent: string;
+    energy: 'low' | 'measured' | 'high';
+    /** "wry, knowing, slightly detached", … */
+    emotionalRegister: string;
+    /** Recurring delivery moves: pauses, terminals, emphasis. */
+    signatureMoves: string[];
+    /** Paste-ready ElevenLabs Voice Design prompt. */
+    voiceDesignPrompt: string;
+    /** Whichever model id actually serviced this run (per the user's
+     *  per-feature picker). */
+    modelUsed: string;
+    analyzedAt: string;
+  };
+  /** ElevenLabs Instant Voice Clone result. Set when the operator
+   *  pressed "Clone this voice" in the panel and the upload succeeded.
+   *  Plan 1B wires the routes that populate this. */
+  clonedVoice?: {
+    /** ElevenLabs voice_id returned by /v1/voices/add. */
+    voiceId: string;
+    name: string;
+    /** Subscription tier in effect at clone time (Starter, Creator,
+     *  …) — surfaced so the operator can see capability headroom. */
+    subscriptionTier: string;
+    clonedAt: string;
+    clonedBy: string;
+  };
   /** All currently-known topics (from the topic-generation stage). */
   topics?: { title: string; angle: string; hook: string; difficulty: number }[];
   /** Currently selected topic index (1-based to match the user-facing

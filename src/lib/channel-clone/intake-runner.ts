@@ -37,6 +37,8 @@ import { makeJobLogger, type JobLogger } from './job-logger';
 import { createIntakeSandbox, destroyIntakeSandbox, type IntakeSandbox } from './sandbox-runtime';
 import type { ChannelCloneIntakeResult, ChannelCloneSampleVideo } from './types';
 import { downloadVideo, listChannelVideos } from './yt-dlp';
+import { runVoiceExtractDuringIntake } from './voice-extract-during-intake';
+import { runVoiceProfile } from './voice-profile-runner';
 
 export interface RunIntakeOptions {
   jobId: string;
@@ -135,6 +137,10 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
 
     // 3-5. Download + extract + read-back for each.
     const sampleVideos: ChannelCloneSampleVideo[] = [];
+    // Per-video sandbox path keyed by videoId. Plan 1A's
+    // voice-extract step uses this to re-encode an audio window from
+    // the already-downloaded MP4 without spinning up a second sandbox.
+    const videoSandboxPaths: Record<string, string> = {};
     let sourceChannelHandle: string | null = null;
     let sourceChannelName: string | null = null;
     for (const [i, meta] of videoMetas.entries()) {
@@ -142,6 +148,7 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
       log.info('intake', `processing video ${i + 1}/${videoMetas.length}`, { videoId: meta.videoId, title: meta.title });
       try {
         const dl = await downloadVideo(sandbox, ffmpegPath, cookiesPath, meta.videoUrl, sandboxJobDir, log);
+        videoSandboxPaths[meta.videoId] = dl.videoSandboxPath;
         const frameDir = `${sandboxJobDir}/frames-${meta.videoId}`;
         const framesResult = await extractFrames(sandbox, ffmpegPath, dl.videoSandboxPath, frameDir, { intervalSec: frameIntervalSec }, log);
 
@@ -260,6 +267,29 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     // snapshot of state_jsonb. The intake field is fully replaced;
     // everything else (progressLog, future stages) is preserved.
     await mergeChannelCloneJobState(jobId, workspaceId, { intake: intakeResult });
+
+    // Voice-extract (Plan 1A — _plans/2026-06-07-channel-clone-narrator-voice-elevenlabs.md).
+    // Best-effort. Done BEFORE the status flip so the operator sees
+    // voiceSample on the job when intake_complete lands.
+    try {
+      await runVoiceExtractDuringIntake(
+        {
+          jobId,
+          workspaceId,
+          sandbox,
+          ffmpegPath,
+          videoSandboxPaths,
+          sampleVideos,
+          sandboxJobDir,
+        },
+        log,
+      );
+    } catch (err) {
+      log.warn('voice-extract', 'unexpected throw — continuing intake', {
+        error: errorMessage(err),
+      });
+    }
+
     // Conditional flip: if a cancellation landed in the closing
     // milliseconds (after the last isCancelled() check but before
     // this write), the SQL guards the status update so the user's
@@ -287,6 +317,19 @@ export async function runIntake(opts: RunIntakeOptions): Promise<void> {
     // microVM. Vercel reaps on the sandbox's own lifetime timeout
     // either way, but explicit stop refunds CPU billing sooner.
     await destroyIntakeSandbox(jobId, intakeSandbox, log);
+  }
+
+  // Voice-profile LLM call (Plan 1A — best-effort, never throws).
+  // Runs OUTSIDE the sandbox finally because the LLM call only needs
+  // the R2 audio URL. Skipped automatically when voiceSample wasn't
+  // persisted by the extraction step.
+  try {
+    await runVoiceProfile({ jobId, workspaceId });
+  } catch (err) {
+    logger.warn('[channel-clone intake] voice-profile threw unexpectedly', {
+      jobId,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
