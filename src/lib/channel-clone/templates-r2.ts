@@ -137,6 +137,30 @@ export async function mintTemplateDownloadUrls(r2Keys: string[]): Promise<{ r2Ke
   return out;
 }
 
+/** Per-key existence probe via HeadObject. Used by the "reuse a
+ *  previous run's inputs" path to verify each staged video is still
+ *  present in R2 (the staging prefix has a 7-day lifecycle so old
+ *  jobs' assets eventually disappear). Returns a parallel array so
+ *  the caller can decide between full-reuse, partial-reuse, or
+ *  surface-clear-error. */
+export async function checkR2KeysExist(r2Keys: string[]): Promise<{ r2Key: string; exists: boolean }[]> {
+  const bucket = getReviewBucket();
+  const client = getR2Client();
+  const out: { r2Key: string; exists: boolean }[] = [];
+  for (const key of r2Keys) {
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      out.push({ r2Key: key, exists: true });
+    } catch {
+      // 404 / NotFound / network error — treat as "does not exist".
+      // The caller surfaces a "videos expired" message when too many
+      // misses pile up.
+      out.push({ r2Key: key, exists: false });
+    }
+  }
+  return out;
+}
+
 /** Best-effort batch delete. Errors are swallowed individually so a
  *  single 404 doesn't strand the rest of the manifest. */
 export async function deleteTemplateR2Keys(r2Keys: string[]): Promise<{ deleted: number; failed: number }> {

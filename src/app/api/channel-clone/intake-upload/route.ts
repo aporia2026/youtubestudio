@@ -25,7 +25,10 @@ import { createChannelCloneJob } from '@/lib/channel-clone/job-store';
 import { runUploadIntake, type UploadedVideoInput } from '@/lib/channel-clone/intake-upload-runner';
 import { validateYoutubeUrl } from '@/lib/channel-clone/validate-youtube-url';
 import { getChannelCloneTemplate } from '@/lib/channel-clone/templates-store';
-import { mergeChannelCloneJobState } from '@/lib/channel-clone/job-store';
+import { getChannelCloneJob, mergeChannelCloneJobState } from '@/lib/channel-clone/job-store';
+import { buildStagingKeyForJob } from '@/lib/channel-clone/intake-upload-runner';
+import { checkR2KeysExist, inferExtensionFromKey } from '@/lib/channel-clone/templates-r2';
+import type { CleanedTranscript } from '@/lib/channel-clone/types';
 
 export const maxDuration = 300;
 
@@ -59,6 +62,16 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const fromTemplateId = typeof b.fromTemplateId === 'string' ? b.fromTemplateId.trim() : '';
   if (fromTemplateId) {
     return runFromTemplate(session, fromTemplateId);
+  }
+
+  // 2026-06-08 — "reuse a previous run's inputs" path. Distinct from
+  // fromTemplateId: a template is an EXPLICITLY saved snapshot;
+  // fromJobId here is "any previous job whose staging assets are
+  // still alive in the 7-day window." Same workspace-scoped guards
+  // as fromTemplateId via `getChannelCloneJob`.
+  const fromJobId = typeof b.fromJobId === 'string' ? b.fromJobId.trim() : '';
+  if (fromJobId) {
+    return runFromPreviousJob(session, fromJobId);
   }
 
   const sourceLabel = typeof b.sourceLabel === 'string' ? b.sourceLabel.trim() : '';
@@ -264,4 +277,154 @@ async function runFromTemplate(
     }
   });
   return NextResponse.json({ jobId, fromTemplateId: templateId }, { status: 202 });
+}
+
+/** Reuse the videos + transcripts from a previous run (no Save-as-
+ *  template required). Looks at the per-job staging prefix
+ *  channel-clone-uploads-staging/<wsId>/<oldJobId>/<i>.<ext> populated
+ *  by intake-upload-runner. The prefix has a 7-day R2 lifecycle, so
+ *  we HEAD-probe each key first and bail with a clear message if too
+ *  many have expired. Transcripts are reconstructed from the saved
+ *  `state_jsonb.intake.sampleVideos[].transcript` (lines.join('\n')). */
+async function runFromPreviousJob(
+  session: { ws: string; uid: string },
+  fromJobId: string,
+): Promise<NextResponse> {
+  const oldJob = await getChannelCloneJob(fromJobId, session.ws);
+  if (!oldJob) {
+    return NextResponse.json({ error: 'previous run not found' }, { status: 404 });
+  }
+  const intake = oldJob.state_jsonb.intake;
+  if (!intake) {
+    return NextResponse.json(
+      { error: 'Previous run has no completed intake to reuse — there are no video files yet.' },
+      { status: 409 },
+    );
+  }
+  // Only upload-intake runs persist video bytes to a recoverable
+  // prefix. URL-intake runs stream through a sandbox and discard the
+  // bytes at end of intake — nothing to reuse.
+  const isUploadJob = intake.sampleVideos.every((v) => v.videoUrl.startsWith('r2://'));
+  if (!isUploadJob) {
+    return NextResponse.json(
+      { error: 'Only upload-intake runs can be reused. URL-intake (yt-dlp) runs don\'t retain video bytes after intake.' },
+      { status: 409 },
+    );
+  }
+
+  // Reconstruct the staging keys. Same deterministic format the
+  // runner used at intake-end. Walk in the same order the videos
+  // were processed.
+  const stagingKeys: string[] = intake.sampleVideos.map((v, i) => {
+    const origKey = extractOriginalKeyFromVideoUrl(v.videoUrl);
+    const ext = inferExtensionFromKey(origKey) ?? 'mp4';
+    return buildStagingKeyForJob(session.ws, fromJobId, i, ext);
+  });
+
+  // HEAD-probe every staging key. R2's 7-day lifecycle rule may
+  // have reaped some — surface a clean error rather than letting
+  // curl fail mid-sandbox.
+  const existence = await checkR2KeysExist(stagingKeys);
+  const missingCount = existence.filter((e) => !e.exists).length;
+  if (missingCount === stagingKeys.length) {
+    return NextResponse.json(
+      {
+        error: 'The video files from that run have expired from the 7-day staging window. Re-upload manually, or next time press "Save as template" while a run is fresh to keep videos around permanently.',
+      },
+      { status: 409 },
+    );
+  }
+  if (missingCount > 0) {
+    return NextResponse.json(
+      {
+        error: `${missingCount} of ${stagingKeys.length} videos from that run have expired (7-day staging window). The run is partly reusable but we don't auto-pick a subset — re-upload the missing ones manually, or save the next run as a template to avoid this.`,
+      },
+      { status: 409 },
+    );
+  }
+
+  const videos: UploadedVideoInput[] = intake.sampleVideos.map((v, i) => ({
+    r2Key: stagingKeys[i],
+    title: v.title,
+    transcript: linesToText(v.transcript),
+  }));
+
+  // Source URL on the new job. If the original carried a real
+  // channel URL, keep it; otherwise carry forward the `upload://`
+  // marker so analyze + publish-pack stages reason about it the
+  // same way the old run did.
+  const sourceUrlForRow = intake.sourceChannelUrl
+    || (intake.sourceChannelName ? `reuseOf://${fromJobId}` : `upload://${new Date().toISOString().slice(0, 10)}`);
+
+  const jobId = await createChannelCloneJob({
+    workspaceId: session.ws,
+    userId: session.uid,
+    sourceChannelUrl: sourceUrlForRow,
+    sourceCanonicalUrl: sourceUrlForRow,
+  });
+
+  // If the source job had a cloned ElevenLabs voice id, inherit it
+  // (same shape as the fromTemplateId path).
+  const inheritedVoiceId = oldJob.state_jsonb.clonedVoice?.voiceId;
+  if (inheritedVoiceId) {
+    try {
+      await mergeChannelCloneJobState(jobId, session.ws, {
+        clonedVoice: {
+          voiceId: inheritedVoiceId,
+          name: intake.sourceChannelName
+            ? `(reused) ${intake.sourceChannelName}`
+            : '(reused)',
+          subscriptionTier: 'inherited',
+          clonedAt: new Date().toISOString(),
+          clonedBy: session.uid,
+        },
+      });
+    } catch (err) {
+      logger.warn('[channel-clone intake-upload] could not inherit cloned voice (reuseOf)', {
+        jobId, fromJobId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  logger.info('[channel-clone intake-upload] kickoff reusing previous job', {
+    jobId, fromJobId, videoCount: videos.length, hadVoiceInheritance: Boolean(inheritedVoiceId),
+  });
+  after(async () => {
+    try {
+      await runUploadIntake({
+        jobId,
+        workspaceId: session.ws,
+        videos,
+        // Original intake's frameIntervalSec isn't persisted on
+        // state — default to 10 which is the form's default too.
+        frameIntervalSec: 10,
+        sourceLabel: intake.sourceChannelName ?? '',
+        sourceChannelUrl: intake.sourceChannelUrl?.startsWith('http')
+          ? intake.sourceChannelUrl
+          : undefined,
+        sourceChannelHandle: intake.sourceChannelHandle ?? null,
+      });
+    } catch (err) {
+      logger.error('[channel-clone intake-upload] runner crashed (from previous job)', {
+        jobId, fromJobId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+  return NextResponse.json({ jobId, fromJobId }, { status: 202 });
+}
+
+/** Extract the original R2 key out of `r2://bucket/key` URLs that
+ *  `intake-upload-runner` stamps onto `intake.sampleVideos[].videoUrl`. */
+function extractOriginalKeyFromVideoUrl(videoUrl: string): string {
+  const m = /^r2:\/\/[^/]+\/(.+)$/.exec(videoUrl);
+  return m ? m[1] : videoUrl;
+}
+
+/** Reconstruct the raw transcript text from the parsed
+ *  CleanedTranscript that the intake stage persisted. Drops SRT
+ *  timecodes (the upload-intake parser re-derives them from the SRT
+ *  pattern; plain text mode is fine for reuse). */
+function linesToText(transcript: CleanedTranscript | null | undefined): string {
+  if (!transcript) return '';
+  return transcript.lines.map((l) => l.text).join('\n').trim();
 }

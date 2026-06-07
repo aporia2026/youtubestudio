@@ -12,6 +12,7 @@
  */
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChannelCloneJobStatus } from '@/lib/channel-clone/types';
 
@@ -304,6 +305,7 @@ function JobCard({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {isActive && <CancelButton jobId={job.id} onCancelled={onChanged} />}
+            {!isActive && canReuseJob(job) && <ReuseButton jobId={job.id} />}
             <DeleteButton jobId={job.id} onDeleted={onChanged} />
             <StatusPill status={job.status} />
           </div>
@@ -366,6 +368,69 @@ function CancelButton({ jobId, onCancelled }: { jobId: string; onCancelled: () =
       className="rounded border border-red-900 bg-red-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-red-300 hover:border-red-700 hover:bg-red-900/60 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {cancelling ? 'Stopping…' : 'Stop'}
+    </button>
+  );
+}
+
+/** Predicate for "this job's inputs can be reused in a new run."
+ *  True for upload-intake jobs whose intake completed (so there's a
+ *  staging prefix in R2). URL-intake jobs return false because the
+ *  yt-dlp path discards video bytes after the sandbox dies. */
+function canReuseJob(job: JobListItem): boolean {
+  if (!job.summary.hasIntake) return false;
+  const url = job.sourceChannelUrl;
+  return (
+    url.startsWith('upload://')
+    || url.startsWith('template://')
+    || url.startsWith('reuseOf://')
+  );
+}
+
+/** Start a new run with this job's videos + transcripts. POSTs the
+ *  fromJobId path on /api/channel-clone/intake-upload (server-side
+ *  HEAD-probes the 7-day staging prefix and surfaces a clear error
+ *  if any video has expired). Wrapped in the card's <Link>, so
+ *  click handler stops navigation; navigates to the new job's
+ *  detail page on success. */
+function ReuseButton({ jobId }: { jobId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const handleClick = useCallback(
+    async (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (busy) return;
+      if (!window.confirm('Start a new clone run using this run\'s videos + transcripts? The new run is independent; this one stays as it is.')) return;
+      setBusy(true);
+      try {
+        const res = await fetch('/api/channel-clone/intake-upload', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ fromJobId: jobId }),
+        });
+        const data = (await res.json().catch(() => ({}))) as { jobId?: string; error?: string };
+        if (!res.ok || !data.jobId) {
+          alert(data.error ?? `Reuse failed (${res.status})`);
+          return;
+        }
+        router.push(`/channel-clone/${data.jobId}`);
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, jobId, router],
+  );
+  return (
+    <button
+      type="button"
+      onClick={(e) => void handleClick(e)}
+      disabled={busy}
+      title="Start a new run with this run's videos and transcripts. Videos expire from the staging prefix after 7 days — older runs may not be reusable."
+      className="rounded border border-emerald-900 bg-emerald-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-emerald-300 hover:border-emerald-700 hover:bg-emerald-900/60 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {busy ? '…' : '↻ Reuse'}
     </button>
   );
 }
