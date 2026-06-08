@@ -276,14 +276,20 @@ async function runSeoStage(short: ShortRow, batch: ShortsBatchRow): Promise<Stag
     // pipeline. Mirrors what POST /api/shorts/[id]/generate-style-assets
     // does — sets style_id + a queued generation_progress blob with
     // the model/vendor metadata the cron needs, then kicks the drain
-    // so work starts immediately. Failure here is logged but doesn't
-    // fail the SEO stage; the cron is also a backstop.
-    void enqueueAssetGeneration(short, batch).catch((err) => {
+    // so work starts immediately. AWAITED (not fire-and-forget):
+    // Vercel suspends the function the instant the response returns,
+    // so an unregistered background promise gets killed mid-step.
+    // The drain has its own time budget (~280s) and the per-tick cap
+    // bounds wall-clock; the cron is also a backstop. Failure here is
+    // logged but doesn't fail the SEO stage.
+    try {
+      await enqueueAssetGeneration(short, batch);
+    } catch (err) {
       console.info('[shorts-batch stage assets-enqueue error]', {
         short_id: short.id,
         message: err instanceof Error ? err.message : String(err),
       });
-    });
+    }
 
     return { stage: 'seo', shortId: short.id, ok: true, duration_ms: ms };
   } catch (err) {
@@ -331,10 +337,19 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
     },
   };
 
+  // Clear generation_claimed_at + generation_claimed_by_tick at the
+  // same time so any stale claim from a previous crashed attempt
+  // doesn't keep the cron's WHERE clause from picking this short up.
+  // (Mirrors the /generate-style-assets route's UPDATE — without these,
+  // a short whose previous tick died with a non-null lease would sit
+  // queued forever until LEASE_SECONDS expired, and on a fresh row
+  // they're already null so this is a no-op.)
   await sql`
     UPDATE shorts
        SET style_id = ${styleId},
            generation_progress = ${JSON.stringify(queued)}::jsonb,
+           generation_claimed_at = NULL,
+           generation_claimed_by_tick = NULL,
            updated_at = NOW()
      WHERE id = ${short.id}::uuid AND workspace_id = ${short.workspace_id}::uuid
   `;

@@ -134,10 +134,18 @@ export function Step3Progress({ batchId, onDone }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    const cycle = async () => {
+
+    // Two independent loops:
+    //   - fetchLoop runs every POLL_MS — cheap, refreshes the UI.
+    //     Never waits for a tick to finish.
+    //   - tickLoop also runs every POLL_MS but goes through runTick's
+    //     in-flight guard, so a held-open tick (the orchestrator's
+    //     SEO stage awaits the asset drain, which can take a few
+    //     minutes) doesn't queue overlapping ticks — the next tick
+    //     just no-ops until the previous one releases. The UI keeps
+    //     refreshing throughout via fetchLoop.
+    const refresh = async () => {
       try {
-        await runTick();
-        if (cancelled) return;
         const next = await fetchBundle();
         if (cancelled) return;
         setBundle(next);
@@ -145,16 +153,24 @@ export function Step3Progress({ batchId, onDone }: Props) {
           onDone();
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Tick failed');
+        setError(err instanceof Error ? err.message : 'Refresh failed');
       }
     };
-    void cycle();
-    const pollId = setInterval(() => {
-      void cycle();
+
+    void refresh();
+    void runTick();
+
+    const fetchId = setInterval(() => {
+      void refresh();
     }, POLL_MS);
+    const tickId = setInterval(() => {
+      void runTick();
+    }, POLL_MS);
+
     return () => {
       cancelled = true;
-      clearInterval(pollId);
+      clearInterval(fetchId);
+      clearInterval(tickId);
     };
   }, [fetchBundle, runTick, onDone]);
 
