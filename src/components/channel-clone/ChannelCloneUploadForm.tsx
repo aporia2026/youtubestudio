@@ -245,23 +245,36 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
   }, [setTranscriptDrafts]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
-    setVideos((prev) => [
-      ...prev,
-      ...Array.from(files).map<VideoUpload>((file) => ({
-        uid: nextUid(),
-        source: 'fresh',
-        file,
-        title: file.name.replace(/\.[^.]+$/, ''),
-        // Restore any previously-typed transcript for this filename
-        // from the localStorage draft store. Brand-new files get ''.
-        transcript: transcriptDrafts[file.name] ?? '',
-        uploadProgress: null,
-        error: null,
-        r2Key: null,
-        status: 'idle',
-        libraryMeta: null,
-      })),
-    ]);
+    const arr = Array.from(files);
+    console.info('[channel-clone upload] addFiles', {
+      count: arr.length,
+      names: arr.map((f) => f.name),
+      sizes: arr.map((f) => f.size),
+    });
+    if (arr.length === 0) return;
+    setVideos((prev) => {
+      const next: VideoUpload[] = [
+        ...prev,
+        ...arr.map<VideoUpload>((file) => ({
+          uid: nextUid(),
+          source: 'fresh',
+          file,
+          title: file.name.replace(/\.[^.]+$/, ''),
+          // Restore any previously-typed transcript for this filename
+          // from the localStorage draft store. Brand-new files get ''.
+          transcript: transcriptDrafts[file.name] ?? '',
+          uploadProgress: null,
+          error: null,
+          r2Key: null,
+          status: 'idle',
+          libraryMeta: null,
+        })),
+      ];
+      console.info('[channel-clone upload] state after addFiles', {
+        prevCount: prev.length, nextCount: next.length,
+      });
+      return next;
+    });
   }, [transcriptDrafts]);
 
   /** Add entries selected from the "Pick from previous uploads" picker.
@@ -520,7 +533,22 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
       >
         <button
           type="button"
-          onClick={() => fileInputRef.current?.click()}
+          onClick={(e) => {
+            // Belt-and-braces: stop the click from bubbling to the
+            // dropzone's drag handlers, then explicitly trigger the
+            // hidden file input. If the ref is null something is very
+            // wrong — fall back to a thrown error visible in the
+            // console so we can diagnose instead of silently no-op.
+            e.preventDefault();
+            e.stopPropagation();
+            const el = fileInputRef.current;
+            console.info('[channel-clone upload] choose-files click', { hasRef: Boolean(el) });
+            if (!el) {
+              console.error('[channel-clone upload] fileInputRef is null — cannot open picker');
+              return;
+            }
+            el.click();
+          }}
           className="rounded bg-neutral-200 px-4 py-2 text-xs font-medium text-neutral-900 hover:bg-white"
         >
           Choose video files
@@ -529,10 +557,16 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
           ref={fileInputRef}
           type="file"
           multiple
-          accept="video/mp4,video/webm,video/quicktime,video/x-matroska"
+          // Broader accept list so browsers that interpret the previous
+          // narrow list strictly don't drop ordinary .m4v / .webm /
+          // hand-recorded screen captures. `accept` is a hint only —
+          // the form re-validates server-side via R2 upload-token.
+          accept="video/*"
           className="hidden"
           onChange={(e) => {
-            if (e.target.files && e.target.files.length > 0) addFiles(e.target.files);
+            const count = e.target.files?.length ?? 0;
+            console.info('[channel-clone upload] file input change', { count });
+            if (e.target.files && count > 0) addFiles(e.target.files);
             // Reset the input so picking the same file twice still
             // triggers the change event.
             e.target.value = '';
@@ -607,7 +641,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
                   className="w-full resize-y rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 font-mono text-[10px] leading-relaxed text-neutral-100 outline-none focus:border-neutral-500 disabled:opacity-50"
                 />
               </label>
-              <UploadStatusRow status={v.status} progress={v.uploadProgress} />
+              <UploadStatusRow status={v.status} progress={v.uploadProgress} source={v.source} />
               {v.error && (
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <p className="flex-1 break-all text-[10px] text-red-300">{v.error}</p>
@@ -661,12 +695,20 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
  *  bytes are actively moving. The label uses lay-readable verbs
  *  ("waiting", "uploading", "done") rather than the internal enum
  *  so a confused user can self-diagnose without a glossary. */
-function UploadStatusRow({ status, progress }: { status: UploadStatus; progress: number | null }) {
+function UploadStatusRow({
+  status, progress, source,
+}: {
+  status: UploadStatus;
+  progress: number | null;
+  source: 'fresh' | 'library';
+}) {
   if (status === 'idle') return null;
   const label =
     status === 'queued' ? 'waiting in queue'
     : status === 'uploading' ? (progress !== null ? `uploading ${progress}%` : 'uploading')
-    : status === 'uploaded' ? 'uploaded — waiting for the others'
+    : status === 'uploaded' ? (
+      source === 'library' ? 'ready to reuse (no upload needed)' : 'uploaded — waiting for the others'
+    )
     : 'failed';
   const colour =
     status === 'failed' ? 'text-red-300'
@@ -733,12 +775,22 @@ interface PreviousUploadsPickerProps {
  *  open on a workspace with hundreds of past runs can take ~1-3 s.
  *  The intermediate state shows a loading line so the operator
  *  doesn't think the button broke. */
+interface ScanStats {
+  totalRunsScanned: number;
+  reusableCount: number;
+  expiredCount: number;
+}
+
 function PreviousUploadsPicker({ alreadyPickedKeys, onAdd, disabled }: PreviousUploadsPickerProps) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<UploadedVideoEntry[] | null>(null);
   const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set());
+  /** Diagnostic counters so the operator can see WHY only some
+   *  videos show up. A workspace with 50 old runs but 2 reusable
+   *  videos otherwise looks broken — surfacing the gap stops that. */
+  const [scanStats, setScanStats] = useState<ScanStats | null>(null);
 
   const refetch = useCallback(async () => {
     setLoading(true);
@@ -746,11 +798,27 @@ function PreviousUploadsPicker({ alreadyPickedKeys, onAdd, disabled }: PreviousU
     try {
       // eslint-disable-next-line no-restricted-syntax -- workspace-scoped GET
       const res = await fetch('/api/channel-clone/uploaded-videos');
-      const data = (await res.json()) as { videos?: UploadedVideoEntry[]; error?: string };
+      const data = (await res.json()) as {
+        videos?: UploadedVideoEntry[];
+        totalRunsScanned?: number;
+        reusableCount?: number;
+        expiredCount?: number;
+        error?: string;
+      };
       if (!res.ok) {
         throw new Error(data.error ?? `Could not load previous uploads (${res.status})`);
       }
+      console.info('[channel-clone picker] fetched', {
+        runsScanned: data.totalRunsScanned ?? 0,
+        reusable: data.reusableCount ?? data.videos?.length ?? 0,
+        expired: data.expiredCount ?? 0,
+      });
       setEntries(data.videos ?? []);
+      setScanStats({
+        totalRunsScanned: data.totalRunsScanned ?? 0,
+        reusableCount: data.reusableCount ?? data.videos?.length ?? 0,
+        expiredCount: data.expiredCount ?? 0,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -813,6 +881,24 @@ function PreviousUploadsPicker({ alreadyPickedKeys, onAdd, disabled }: PreviousU
                 Retry
               </button>
             </div>
+          )}
+          {!loading && !error && scanStats && (
+            <p className="text-[10px] text-neutral-500">
+              Scanned {scanStats.totalRunsScanned} previous run
+              {scanStats.totalRunsScanned === 1 ? '' : 's'} · found {scanStats.reusableCount}{' '}
+              reusable video{scanStats.reusableCount === 1 ? '' : 's'}
+              {scanStats.expiredCount > 0
+                ? ` · ${scanStats.expiredCount} no longer in storage`
+                : ''}
+              .
+              {scanStats.totalRunsScanned > 0 && scanStats.reusableCount === 0 && (
+                <>
+                  {' '}
+                  Old runs (before the staging-copy update) do not survive — every new clone-run
+                  upload from now on will be reusable here forever.
+                </>
+              )}
+            </p>
           )}
           {!loading && !error && entries && entries.length === 0 && (
             <p className="text-xs text-neutral-500">
