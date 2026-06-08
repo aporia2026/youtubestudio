@@ -55,6 +55,12 @@ export type AppFeature =
   | 'shorts-ideas'
   | 'shorts-doodle-prompt'
   | 'video-composer'
+  // Editor — variant edit-prompt auto-suggest. Fires when the user
+  // clicks "Generate variant" with an empty EDIT INSTRUCTION field.
+  // Cheap, single-sentence output; defaults to Gemini 3.5 Flash via
+  // Kie per the 2026-06-08 user decision. See
+  // _plans/2026-06-08-variant-edit-auto-suggest.md.
+  | 'variant-edit-suggest'
   // Channel-clone (the 8 LLM stages of the channel-clone pipeline —
   // see _plans/2026-06-05-channel-clone-pipeline.md). Each gets its own
   // AppFeature so the existing Settings → Model Defaults panel renders
@@ -148,6 +154,7 @@ export const APP_FEATURES: AppFeatureSpec[] = [
   { id: 'shorts-ideas', label: 'Shorts Ideas', description: 'Hook-first vertical idea generation tuned for the 60-second algorithm', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'shorts-doodle-prompt', label: 'Shorts Doodle Prompt', description: 'Builds the Doodle base-frame scene + per-chunk variant edit prompts for the vertical Doodle render', section: 'create', defaultModelId: 'gpt-5.4-mini' },
   { id: 'video-composer', label: 'Video Composer', description: 'Composer pipeline (intake → analyze → plan → compose → critic → chair)', section: 'create', defaultModelId: SONNET },
+  { id: 'variant-edit-suggest', label: 'Editor — Variant Edit Auto-Suggest', description: 'When the editor user clicks "Generate variant" with an empty EDIT INSTRUCTION field, a short LLM call suggests a small visual change (e.g. "raise the right eyebrow"). One-sentence output; very cheap.', section: 'create', defaultModelId: KIE_GEMINI_3_5_FLASH },
 
   // Channel-clone — eight LLM stages that turn a competitor URL into a
   // ready-to-render production-doc draft. Defaults are Opus 4.8 across

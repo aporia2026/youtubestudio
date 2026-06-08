@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
 import { generateText } from '@/lib/ai';
+import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
 import {
   buildVariantEditSuggestionSystemPrompt,
@@ -19,15 +20,18 @@ import {
  * user can see what was tried, then proceeds with the normal
  * Atlas Edit variant pipeline.
  *
- * Cheap LLM call — Haiku 4.5, capped at 240 chars of output, ~$0.0005
- * per request. Per-IP rate-limited to 60/min to keep abuse cheap.
+ * Cheap LLM call — default `kie-gemini-3-5-flash` (via Kie.ai) per
+ * the 2026-06-08 user decision. Capped at 240 chars of output. The
+ * user can override the model in Settings → Model Defaults via the
+ * 'variant-edit-suggest' AppFeature picker.
+ *
+ * Per-IP rate-limited to 60/min to keep abuse cheap.
  *
  * Plan: `_plans/2026-06-08-variant-edit-auto-suggest.md`.
  */
 
 export const maxDuration = 30;
 
-const SUGGEST_MODEL_ID = 'claude-haiku-4-5-20251001';
 const MAX_OUTPUT_TOKENS = 120;
 
 interface PostBody {
@@ -67,10 +71,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   const userPrompt = buildVariantEditSuggestionUserPrompt({
     scriptText, basePrompt, stylePresetId,
   });
+  const modelId = await getEffectiveModelId(session.ws, 'variant-edit-suggest');
 
   try {
     const raw = await generateText({
-      modelId: SUGGEST_MODEL_ID,
+      modelId,
       prompt: userPrompt,
       systemPrompt,
       maxTokens: MAX_OUTPUT_TOKENS,
@@ -85,6 +90,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: 'Empty suggestion output' }, { status: 502 });
     }
     logger.info('[variant-edit suggest] success', {
+      model_id: modelId,
       output_chars: suggestion.length,
       workspace_id: session.ws,
     });
