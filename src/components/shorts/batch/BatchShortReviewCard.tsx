@@ -20,6 +20,10 @@ import { YOUTUBE_CATEGORIES } from '@/lib/youtube-categories';
 import { TagTokenInput } from './TagTokenInput';
 import { PlaylistMultiSelect } from './PlaylistMultiSelect';
 import { TimezoneSelect } from './TimezoneSelect';
+import {
+  localInputValueToUtcIso,
+  utcIsoToLocalInputValue,
+} from '@/lib/timezone-conversion';
 import type { ShortRow } from '@/lib/shorts-types';
 import type { YoutubeUploadMetadata } from '@/lib/shorts-batches-types';
 
@@ -226,9 +230,9 @@ export function BatchShortReviewCard({
                   <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Schedule</label>
                   <input
                     type="datetime-local"
-                    value={publishAt ? toLocalInputValue(publishAt, tz) : ''}
+                    value={publishAt ? utcIsoToLocalInputValue(publishAt, tz) : ''}
                     onChange={(e) => {
-                      const utc = e.target.value ? localInputToUtcIso(e.target.value, tz) : null;
+                      const utc = e.target.value ? localInputValueToUtcIso(e.target.value, tz) : null;
                       setPublishAt(utc);
                     }}
                     onBlur={save}
@@ -325,39 +329,3 @@ function Toggle({
   );
 }
 
-/** Convert an ISO UTC timestamp to a local-time string in the form
- *  the <input type="datetime-local"> control expects ("YYYY-MM-DDTHH:mm"),
- *  but using the supplied IANA timezone instead of the browser's. */
-function toLocalInputValue(utcIso: string, timezone: string): string {
-  try {
-    const d = new Date(utcIso);
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: timezone,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    }).formatToParts(d);
-    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
-    return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}`;
-  } catch {
-    return '';
-  }
-}
-
-/** Convert a "YYYY-MM-DDTHH:mm" local-time string (interpreted in the
- *  supplied IANA timezone) to an ISO UTC string. */
-function localInputToUtcIso(local: string, timezone: string): string {
-  // Naive approach: build a Date as if local-time was UTC, then offset
-  // by the difference between the supplied timezone and UTC at that
-  // instant. Works for all IANA zones the platform supports.
-  const naive = new Date(`${local}:00Z`).getTime();
-  const tzOffsetMs = naive - localTimeAsUtcMs(local, timezone);
-  return new Date(naive + tzOffsetMs).toISOString();
-}
-
-/** Helper: returns the UTC milliseconds that correspond to the given
- *  "YYYY-MM-DDTHH:mm" local time in `timezone`. */
-function localTimeAsUtcMs(local: string, timezone: string): number {
-  const naive = new Date(`${local}:00Z`).getTime();
-  const local2 = new Date(naive).toLocaleString('en-US', { timeZone: timezone });
-  return new Date(local2).getTime();
-}
