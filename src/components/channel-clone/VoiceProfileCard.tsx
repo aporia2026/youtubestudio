@@ -582,14 +582,16 @@ function PendingView({
       {isStuck ? (
         <div className="space-y-2 rounded border border-amber-900/60 bg-amber-950/30 p-2 text-[11px]">
           <p className="text-amber-200">
-            Voice analysis hasn't completed after {Math.floor(ageSec / 60)}m. The runner is
-            fire-and-forget and can silently bail when Kie is rate-limited, the R2 read fails,
-            or the model returns malformed JSON. Pick a different Kie Gemini variant and
-            re-run.
+            Voice analysis hasn't completed after {Math.floor(ageSec / 60)}m. The runner walks
+            every Kie Gemini variant first, then falls through to OpenAI's gpt-audio-1.5 /
+            gpt-4o-audio-preview if Kie's audio path is broken. Re-running with a different
+            primary model is the fastest way to retrigger the whole chain.
           </p>
           <p className="text-[10px] text-amber-200/70">
-            Only Kie Gemini models are listed — they're the only family that accepts audio
-            through this runner today.
+            Pick a Kie Gemini variant below to start the chain. OpenAI audio kicks in
+            automatically only after every Kie variant fails — it's a paid fallback (~$0.06
+            per 30s sample at gpt-audio-1.5 pricing), so the runner only tries it as a last
+            resort.
           </p>
           <div className="space-y-2">
             <ModelRetryPicker

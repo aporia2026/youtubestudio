@@ -210,12 +210,134 @@ export async function runVoiceProfile(opts: RunVoiceProfileOptions): Promise<voi
     return;
   }
 
-  // Every model in the chain failed. Surface a summary in the log so
+  // Every Kie model failed. Before giving up, try OpenAI's audio path
+  // (gpt-4o-audio-preview / gpt-audio-1.5) which routes through a
+  // completely different provider — Kie's Gemini audio path has had
+  // recurring outages where every variant returns empty bodies, and
+  // we don't want a provider-side issue to strand the operator. 2026-06-08.
+  log.warn('voice-profile', 'every Kie model failed; falling through to OpenAI audio', {
+    kieChainLength: chain.length, kieAttemptErrors: attemptErrors,
+  });
+  for (const openaiModelId of OPENAI_AUDIO_FALLBACK_MODELS) {
+    log.info('voice-profile', 'openai-audio-call', { modelId: openaiModelId, audioBase64Bytes: audioBase64.length });
+    let raw: string;
+    try {
+      raw = await callOpenAIAudio(openaiModelId, audioBase64);
+    } catch (err) {
+      const reason = errorMessage(err);
+      attemptErrors.push({ modelId: openaiModelId, reason: `openai call failed: ${reason}` });
+      log.warn('voice-profile', 'openai audio call failed; trying next', { modelId: openaiModelId, reason });
+      continue;
+    }
+    let parsed: ChannelCloneJobState['voiceProfile'];
+    try {
+      parsed = parseVoiceProfileResponse(raw, openaiModelId);
+    } catch (err) {
+      const reason = errorMessage(err);
+      attemptErrors.push({ modelId: openaiModelId, reason: `openai parse failed: ${reason}` });
+      log.warn('voice-profile', 'openai parse failed; trying next', {
+        modelId: openaiModelId, rawPreview: raw.slice(0, 200), reason,
+      });
+      continue;
+    }
+    try {
+      await mergeChannelCloneJobState(jobId, workspaceId, { voiceProfile: parsed });
+    } catch (err) {
+      log.error('voice-profile', 'persist failed on openai branch — aborting', {
+        error: errorMessage(err),
+      });
+      return;
+    }
+    log.info('voice-profile', 'persisted via openai fallback', {
+      modelId: openaiModelId, gender: parsed?.gender, age: parsed?.ageBracket, pace: parsed?.pace,
+      attemptsBeforeSuccess: attemptErrors.length,
+    });
+    logger.info('[channel-clone voice-profile] done (openai fallback)', {
+      jobId, modelId: openaiModelId, attemptsBeforeSuccess: attemptErrors.length,
+    });
+    return;
+  }
+
+  // Both Kie AND OpenAI exhausted. Surface a summary in the log so
   // the operator can see WHY rather than just "still analyzing…".
-  log.error('voice-profile', 'every model in the fallback chain failed', {
-    chainLength: chain.length, attemptErrors,
+  log.error('voice-profile', 'every model in the fallback chain failed (Kie + OpenAI)', {
+    chainLength: chain.length + OPENAI_AUDIO_FALLBACK_MODELS.length, attemptErrors,
   });
   logger.error('[channel-clone voice-profile] chain exhausted', { jobId, attemptErrors });
+}
+
+/** OpenAI audio models we'll try after Kie's chain exhausts. Order:
+ *  newest first since gpt-audio-1.5 supersedes gpt-4o-audio-preview
+ *  per the 2026 audio docs, and the older preview snapshot stays as a
+ *  safety net for accounts whose tier hasn't enabled the new model
+ *  yet. Both accept base64 MP3 via the modalities:["text","audio"]
+ *  chat-completions shape. */
+const OPENAI_AUDIO_FALLBACK_MODELS: readonly string[] = [
+  'gpt-audio-1.5',
+  'gpt-4o-audio-preview',
+];
+
+/** Direct call to OpenAI's audio-enabled chat-completions endpoint.
+ *  Bypasses our generic generateText helper because that helper does
+ *  not yet support the modalities array or input_audio content parts.
+ *  Returns the model's raw assistant message text (expected JSON). */
+async function callOpenAIAudio(modelId: string, audioBase64: string): Promise<string> {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) {
+    throw new Error('OPENAI_API_KEY environment variable is not configured.');
+  }
+  const body = {
+    model: modelId,
+    // Audio-in / text-out. We don't want a TTS response; the schema
+    // demands strict JSON.
+    modalities: ['text'],
+    response_format: { type: 'json_object' },
+    messages: [
+      {
+        role: 'system',
+        content: VOICE_PROFILE_OUTPUT_SCHEMA_INSTRUCTION,
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: VOICE_PROFILE_USER_PROMPT },
+          { type: 'input_audio', input_audio: { data: audioBase64, format: 'mp3' } },
+        ],
+      },
+    ],
+    max_completion_tokens: 4096,
+    temperature: 0.4,
+  };
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const rawText = await res.text().catch(() => '');
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 500)}`);
+  }
+  if (!rawText.trim()) {
+    throw new Error('OpenAI returned empty body (200 OK but no content)');
+  }
+  let data: { choices?: { message?: { content?: string }; finish_reason?: string }[] };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`OpenAI returned non-JSON body: ${rawText.slice(0, 500)}`);
+  }
+  const text = data.choices?.[0]?.message?.content;
+  const finishReason = data.choices?.[0]?.finish_reason;
+  if (!text || typeof text !== 'string' || text.trim().length === 0) {
+    throw new Error(`OpenAI returned no text content (finish_reason=${finishReason ?? 'absent'}; body preview: ${rawText.slice(0, 300)})`);
+  }
+  if (finishReason === 'length') {
+    throw new Error(`OpenAI hit length cap on ${modelId} (output truncated; raise max_completion_tokens)`);
+  }
+  return text;
 }
 
 /** Direct call to Kie.ai's Google-native generateContent endpoint
