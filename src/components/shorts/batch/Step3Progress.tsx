@@ -63,6 +63,33 @@ export function Step3Progress({ batchId, onDone }: Props) {
     }
   }, [batchId, cancelling, router]);
 
+  const [kicking, setKicking] = useState(false);
+  const kickAssets = useCallback(async () => {
+    if (kicking) return;
+    setKicking(true);
+    try {
+      const res = await fetch(`/api/shorts/batches/${batchId}/kick-assets`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as {
+        stuck_count: number;
+        drain: { ran: boolean; reason?: string } | Record<string, unknown>;
+      };
+      const ran = (data.drain as { ran?: boolean }).ran;
+      toast.success(
+        ran
+          ? `Kicked the asset drain — ${data.stuck_count} stuck shorts will start processing now.`
+          : `Drain is busy (something is already running). Stuck count: ${data.stuck_count}.`,
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Kick failed');
+    } finally {
+      setKicking(false);
+    }
+  }, [batchId, kicking]);
+
   const cancelShort = useCallback(
     async (shortId: string) => {
       if (!confirm('Cancel this short? It will be skipped from the rest of the pipeline.')) return;
@@ -205,6 +232,15 @@ export function Step3Progress({ batchId, onDone }: Props) {
             <span className="text-sm text-[var(--text-secondary)]">
               {totals.generated} ready · {totals.failed} failed · {pct}%
             </span>
+            <button
+              type="button"
+              onClick={kickAssets}
+              disabled={kicking}
+              className="rounded-md border border-[var(--accent-purple-bright)] px-3 py-1 text-xs text-[var(--accent-purple-bright)] hover:bg-[var(--accent-purple)]/10 disabled:cursor-not-allowed disabled:opacity-50"
+              title="Manually kick the shorts asset cron — useful when shorts are stuck queued and the production cron isn't running."
+            >
+              {kicking ? 'Kicking…' : 'Kick asset cron'}
+            </button>
             <button
               type="button"
               onClick={cancelBatch}
