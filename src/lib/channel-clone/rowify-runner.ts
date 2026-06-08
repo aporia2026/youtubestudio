@@ -37,6 +37,7 @@ import {
   setChannelCloneJobStatus,
 } from './job-store';
 import { isCandidateStylePresetId, matchStylePreset } from './match-style-preset';
+import { extractJsonObjectFromModelResponse } from './parse-llm-json';
 import { getChannelCloneSystemPrompt } from './prompts/v2-content-engine';
 import type { ChannelCloneJobState } from './types';
 
@@ -368,8 +369,7 @@ function buildRowifyUserPrompt(
 
 /** Parse the model's response into typed rows. Exported for unit tests. */
 export function parseRowifyResponse(raw: string): ChannelCloneProductionRow[] {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const arr = (obj as Record<string, unknown>).rows;
   if (!Array.isArray(arr)) throw new Error('rows must be an array');

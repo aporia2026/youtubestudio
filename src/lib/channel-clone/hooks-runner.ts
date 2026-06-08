@@ -14,6 +14,7 @@
 import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
+import { extractJsonObjectFromModelResponse } from './parse-llm-json';
 import {
   getChannelCloneJob,
   replaceChannelCloneJobState,
@@ -162,8 +163,7 @@ const HOOK_ARCHETYPE_ORDER: ChannelCloneHook['archetype'][] = ['Contrarian', 'St
 
 /** Parse the model's response into 5 typed hooks. Exported for unit tests. */
 export function parseHooksResponse(raw: string): ChannelCloneHook[] {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const arr = (obj as Record<string, unknown>).hooks;
   if (!Array.isArray(arr)) throw new Error('hooks must be an array');

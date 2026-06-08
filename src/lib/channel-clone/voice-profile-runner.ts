@@ -43,6 +43,7 @@ import {
   mergeChannelCloneJobState,
 } from './job-store';
 import { makeJobLogger, type JobLogger } from './job-logger';
+import { extractJsonObjectFromModelResponse } from './parse-llm-json';
 import type { ChannelCloneJobState } from './types';
 
 const KIE_BASE = 'https://api.kie.ai';
@@ -248,8 +249,7 @@ export function parseVoiceProfileResponse(
   raw: string,
   modelId: string,
 ): NonNullable<ChannelCloneJobState['voiceProfile']> {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const o = obj as Record<string, unknown>;
 

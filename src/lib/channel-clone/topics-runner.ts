@@ -16,6 +16,7 @@
 import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
+import { extractJsonObjectFromModelResponse } from './parse-llm-json';
 import {
   getChannelCloneJob,
   replaceChannelCloneJobState,
@@ -158,8 +159,7 @@ function buildTopicsUserPrompt(
 /** Parse the model's response into a typed topics array. Exported
  *  for unit tests. */
 export function parseTopicsResponse(raw: string, expectedCount: number): ChannelCloneTopic[] {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const o = obj as Record<string, unknown>;
   const arr = o.topics;

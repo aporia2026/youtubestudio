@@ -26,6 +26,7 @@
 import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
+import { extractJsonObjectFromModelResponse } from './parse-llm-json';
 import {
   getChannelCloneJob,
   mergeChannelCloneJobState,
@@ -503,8 +504,7 @@ function describeWeakDimensions(b: ChannelCloneAuditBreakdown): string {
 // ─── Parsers (exported for tests) ────────────────────────────────────
 
 export function parseScriptResponse(raw: string): { script: string; wordCount: number } {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const o = obj as Record<string, unknown>;
   if (typeof o.script !== 'string' || o.script.length < 100) throw new Error('script must be a non-trivial string');
@@ -515,8 +515,7 @@ export function parseScriptResponse(raw: string): { script: string; wordCount: n
 }
 
 export function parseAuditResponse(raw: string): { overall: number; breakdown: ChannelCloneAuditBreakdown; verdict: string } {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const o = obj as Record<string, unknown>;
   if (typeof o.overall !== 'number' || o.overall < 0 || o.overall > 10) {

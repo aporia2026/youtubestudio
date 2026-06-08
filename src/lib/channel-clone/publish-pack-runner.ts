@@ -20,6 +20,7 @@
 import { generateText } from '@/lib/ai';
 import { getEffectiveModelId } from '@/lib/model-defaults';
 import { logger } from '@/lib/logger';
+import { extractJsonObjectFromModelResponse } from './parse-llm-json';
 import { getBuiltInStyle } from '@/lib/production-doc-styles';
 import {
   getChannelCloneJob,
@@ -213,8 +214,7 @@ export function parsePublishPackResponse(
   raw: string,
   modelId: string,
 ): NonNullable<ChannelCloneJobState['publishPack']> {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
-  const obj = JSON.parse(cleaned) as unknown;
+  const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const o = obj as Record<string, unknown>;
 
