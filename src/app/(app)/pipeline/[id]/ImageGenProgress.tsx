@@ -43,6 +43,14 @@ interface RowProgress {
   retry_budget: number | null;
   group_id: string | null;
   variant_index: number;
+  image_model_override: string | null;
+}
+
+interface AvailableModel {
+  value: string;
+  label: string;
+  provider: string;
+  hint: string | null;
 }
 
 interface ProgressPayload {
@@ -59,12 +67,17 @@ interface ProgressPayload {
   cost_usd: number;
   style_preset?: string | null;
   message?: string;
+  doc_image_model_override?: string | null;
+  default_model?: string;
+  available_models?: AvailableModel[];
 }
 
 export function ImageGenProgress({ videoId }: { videoId: string }) {
   const [data, setData] = useState<ProgressPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<number | null>(null);
+  const [changingModel, setChangingModel] = useState<boolean>(false);
+  const [rowModelOpen, setRowModelOpen] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -123,6 +136,63 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
     return data.rows.filter((r) => r.status !== 'skipped');
   }, [data]);
 
+  const handleChangeDocModel = useCallback(
+    async (model: string | null, regenerate: 'failed' | 'all' | null) => {
+      if (changingModel) return;
+      setChangingModel(true);
+      try {
+        const res = await fetch(
+          `/api/auto-pipeline/videos/${videoId}/image-progress/change-model`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              scope: 'doc',
+              model,
+              regenerate: regenerate ?? undefined,
+            }),
+          },
+        );
+        const payload = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          alert(payload.error ?? `Change failed (${res.status})`);
+          return;
+        }
+        await refresh();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      } finally {
+        setChangingModel(false);
+      }
+    },
+    [videoId, changingModel, refresh],
+  );
+
+  const handleChangeRowModel = useCallback(
+    async (rowIndex: number, model: string) => {
+      try {
+        const res = await fetch(
+          `/api/auto-pipeline/videos/${videoId}/image-progress/change-model`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ scope: 'row', model, row_index: rowIndex }),
+          },
+        );
+        const payload = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          alert(payload.error ?? `Change failed (${res.status})`);
+          return;
+        }
+        setRowModelOpen(null);
+        await refresh();
+      } catch (err) {
+        alert(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [videoId, refresh],
+  );
+
   if (error) {
     return (
       <div className="rounded border border-red-900 bg-red-950/40 p-3 text-xs text-red-300">
@@ -174,6 +244,16 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
         </div>
       </header>
 
+      {data.available_models && data.available_models.length > 0 && (
+        <DocModelPicker
+          available={data.available_models}
+          currentOverride={data.doc_image_model_override ?? null}
+          defaultModel={data.default_model ?? null}
+          busy={changingModel}
+          onChange={handleChangeDocModel}
+        />
+      )}
+
       <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {filteredRows.map((row) => (
           <li
@@ -205,16 +285,65 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
                   <p className="line-clamp-2">{row.last_error.message}</p>
                 </div>
               )}
-              {row.status === 'exhausted' && (
-                <button
-                  type="button"
-                  onClick={() => void handleRetryRow(row.index)}
-                  disabled={retrying === row.index}
-                  className="mt-1 rounded bg-amber-200 px-2 py-0.5 text-[10px] font-medium text-neutral-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
-                >
-                  {retrying === row.index ? 'Retrying…' : '↻ Retry this row'}
-                </button>
-              )}
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {row.status === 'exhausted' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRetryRow(row.index)}
+                    disabled={retrying === row.index}
+                    className="rounded bg-amber-200 px-2 py-0.5 text-[10px] font-medium text-neutral-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+                  >
+                    {retrying === row.index ? 'Retrying…' : '↻ Retry'}
+                  </button>
+                )}
+                {data.available_models && data.available_models.length > 0 && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setRowModelOpen((cur) => (cur === row.index ? null : row.index))}
+                      className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800"
+                      title={
+                        row.image_model_override
+                          ? `Per-row override: ${row.image_model_override}`
+                          : 'Use a different model just for this row'
+                      }
+                    >
+                      ⟲ Regen with model{row.image_model_override ? ' ✓' : ''}
+                    </button>
+                    {rowModelOpen === row.index && (
+                      <div className="absolute left-0 z-10 mt-1 w-72 space-y-1 rounded border border-neutral-700 bg-neutral-900 p-2 shadow-xl">
+                        <p className="text-[10px] text-neutral-400">
+                          Picks the model + regenerates this row only.
+                        </p>
+                        <select
+                          defaultValue={row.image_model_override ?? ''}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val) void handleChangeRowModel(row.index, val);
+                          }}
+                          className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-[10px] text-neutral-100"
+                        >
+                          <option value="">— pick a model —</option>
+                          {data.available_models!.map((m) => (
+                            <option key={m.value} value={m.value}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {row.image_model_override && (
+                  <span
+                    className="rounded bg-neutral-800 px-1.5 py-0.5 text-[9px] text-neutral-300"
+                    title={row.image_model_override}
+                  >
+                    model: {row.image_model_override.slice(0, 20)}
+                    {row.image_model_override.length > 20 ? '…' : ''}
+                  </span>
+                )}
+              </div>
             </div>
           </li>
         ))}
@@ -269,6 +398,97 @@ function CountBadge({
       <span className="font-semibold">{count}</span>
       <span>{label}</span>
     </span>
+  );
+}
+
+function DocModelPicker({
+  available,
+  currentOverride,
+  defaultModel,
+  busy,
+  onChange,
+}: {
+  available: AvailableModel[];
+  currentOverride: string | null;
+  defaultModel: string | null;
+  busy: boolean;
+  onChange: (model: string | null, regenerate: 'failed' | 'all' | null) => void;
+}) {
+  const [selected, setSelected] = useState<string>(currentOverride ?? defaultModel ?? '');
+  const [regenerateMode, setRegenerateMode] = useState<'none' | 'failed' | 'all'>('none');
+
+  const currentLabel = currentOverride
+    ? available.find((m) => m.value === currentOverride)?.label ?? currentOverride
+    : 'style preset default';
+
+  return (
+    <div className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px]">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="font-medium text-neutral-200">Image model</span>
+        <span className="text-[10px] text-neutral-500">
+          currently: <span className="text-neutral-300">{currentLabel}</span>
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={selected}
+          onChange={(e) => setSelected(e.target.value)}
+          disabled={busy}
+          className="flex-1 min-w-[180px] rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[11px] text-neutral-100 disabled:opacity-60"
+        >
+          <option value="">— pick a model —</option>
+          {available.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label} {m.hint ? `· ${m.hint.slice(0, 40)}${m.hint.length > 40 ? '…' : ''}` : ''}
+            </option>
+          ))}
+        </select>
+        <select
+          value={regenerateMode}
+          onChange={(e) => setRegenerateMode(e.target.value as 'none' | 'failed' | 'all')}
+          disabled={busy}
+          className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[11px] text-neutral-100 disabled:opacity-60"
+          title="What to do with rows that already have images"
+        >
+          <option value="none">apply to future only</option>
+          <option value="failed">also regen failed</option>
+          <option value="all">also regen everything</option>
+        </select>
+        <button
+          type="button"
+          onClick={() => {
+            if (!selected) {
+              alert('Pick a model first.');
+              return;
+            }
+            const verb = regenerateMode === 'all'
+              ? 'switch the model AND regenerate EVERY row (including already-done ones)'
+              : regenerateMode === 'failed'
+              ? 'switch the model AND regenerate every failed row'
+              : 'switch the default model (existing images stay, new rows use the new model)';
+            if (!window.confirm(`${verb}?`)) return;
+            onChange(selected, regenerateMode === 'none' ? null : regenerateMode);
+          }}
+          disabled={busy || !selected}
+          className="rounded bg-neutral-200 px-3 py-1 text-[11px] font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+        >
+          {busy ? 'Applying…' : 'Apply'}
+        </button>
+        {currentOverride && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!window.confirm('Clear the override and fall back to the style preset default?')) return;
+              onChange(null, null);
+            }}
+            disabled={busy}
+            className="text-[10px] text-neutral-400 underline-offset-2 hover:underline disabled:opacity-50"
+          >
+            clear override
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

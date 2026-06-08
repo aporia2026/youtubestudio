@@ -19,6 +19,7 @@
 import { NextResponse } from 'next/server';
 import { sql } from '@vercel/postgres';
 import { apiRoute } from '@/lib/route-helpers';
+import { DEFAULT_CLOUD_I2I_MODEL, I2I_MODELS } from '@/lib/image-models-i2i';
 
 interface ImageRowMetadata {
   ai_image_prompt?: string;
@@ -40,11 +41,13 @@ interface ImageRowMetadata {
     message: string;
     at: string;
   } | null;
+  image_model_override?: string;
 }
 
 interface ImageDocMetadata {
   rows?: ImageRowMetadata[];
   style_preset?: string;
+  image_model_override?: string;
 }
 
 /** Retry budget per error class. Mirrors RETRY_BUDGETS in
@@ -85,6 +88,8 @@ interface RowProgress {
   retry_budget: number | null;
   group_id: string | null;
   variant_index: number;
+  /** Per-row image model override, if set. */
+  image_model_override: string | null;
 }
 
 function computeStatus(row: ImageRowMetadata): RowStatus {
@@ -184,6 +189,7 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
       retry_budget: row.last_error ? (RETRY_BUDGETS[row.last_error.class] ?? null) : null,
       group_id: row.group_id ?? null,
       variant_index: row.variant_index ?? 0,
+      image_model_override: row.image_model_override ?? null,
     };
   });
 
@@ -196,11 +202,32 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
     skipped: rows.filter((r) => r.status === 'skipped').length,
   };
 
+  // Surface the registry of available i2i models so the UI picker
+  // can show every option with its cost hint + label. The doc-level
+  // override (if any) is the current "default" the operator sees;
+  // unset means "use the style preset's preferred_cloud_model".
+  const availableModels = I2I_MODELS
+    // The auto-pipeline can't run local ComfyUI models — filter them
+    // so the operator doesn't pick something that'd silently skip.
+    .filter((m) => m.provider !== 'comfyui-local')
+    .map((m) => ({
+      value: m.value,
+      label: m.label,
+      provider: m.provider,
+      hint: m.hint ?? null,
+    }));
+
   return NextResponse.json({
     stage: video.stage,
     rows,
     counts,
     cost_usd: Number(artefactRows[0].image_gen_cost_usd ?? 0),
     style_preset: doc.style_preset ?? null,
+    /** Doc-level model override — applied to every row that lacks
+     *  its own override. Null means "fall through to style preset
+     *  (or DEFAULT_CLOUD_I2I_MODEL)". */
+    doc_image_model_override: doc.image_model_override ?? null,
+    default_model: DEFAULT_CLOUD_I2I_MODEL,
+    available_models: availableModels,
   });
 });

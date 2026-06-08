@@ -154,6 +154,12 @@ export interface PipelineImageRow {
     message: string;
     at: string;
   } | null;
+  /** Per-row override for the i2i model. When set, takes precedence
+   *  over the doc-level override and the style preset's
+   *  preferred_cloud_model. Operator picks this from the per-row
+   *  "Regenerate with model" UI when they want one specific bad row
+   *  to use a different model. 2026-06-08. */
+  image_model_override?: string;
 }
 
 /** Doc-level fields the helper needs to dispatch correctly. */
@@ -237,6 +243,14 @@ export interface PipelineImageDoc {
     min_per_frame_ms?: number;
     max_per_frame_ms?: number;
   };
+  /** Doc-level override for the i2i model. When set, applies to every
+   *  base row in the doc that lacks a row-level override. Takes
+   *  precedence over the style preset's preferred_cloud_model.
+   *  Operator picks this from the top of the per-row progress panel
+   *  when they want to switch the whole doc to a different image
+   *  model (e.g. Grok Imagine is failing → switch to Flux 2 Pro).
+   *  2026-06-08. */
+  image_model_override?: string;
 }
 
 /** Synthesize StyleReferenceImage records from a channel-clone
@@ -358,7 +372,28 @@ export async function generateBaseImage(args: {
     };
   }
 
-  const i2iModel = style.preferred_cloud_model ?? DEFAULT_CLOUD_I2I_MODEL;
+  // i2i model resolution priority (2026-06-08):
+  //   1. row.image_model_override     — per-row override from the
+  //      per-row "Regenerate with model X" UI button.
+  //   2. doc.image_model_override     — doc-level override from the
+  //      per-doc "Switch image model" picker.
+  //   3. style.preferred_cloud_model  — style-preset default.
+  //   4. DEFAULT_CLOUD_I2I_MODEL      — final fallback.
+  // Each override is validated against the I2I registry; an unknown
+  // value falls through to the next tier so a stale row override
+  // doesn't strand the row forever.
+  const candidateOverrides: Array<string | undefined> = [
+    row.image_model_override,
+    doc.image_model_override,
+    style.preferred_cloud_model,
+  ];
+  let i2iModel: string = DEFAULT_CLOUD_I2I_MODEL;
+  for (const candidate of candidateOverrides) {
+    if (candidate && getI2IModelSpec(candidate)) {
+      i2iModel = candidate;
+      break;
+    }
+  }
   const i2iSpec = getI2IModelSpec(i2iModel);
   // Skip the audit row for local ComfyUI — no money is moving. Cloud
   // i2i (Kie / Atlas) always records. See Phase 1.0 of
