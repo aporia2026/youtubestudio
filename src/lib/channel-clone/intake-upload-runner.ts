@@ -29,6 +29,10 @@ import {
 import { cleanCaptions } from './clean-captions';
 import { extractFrames } from './ffmpeg';
 import {
+  estimateDurationSecFromWords,
+  parseFfmpegDuration,
+} from './parse-ffmpeg-duration';
+import {
   isChannelCloneJobCancelled,
   mergeChannelCloneJobState,
   setChannelCloneJobStatus,
@@ -245,10 +249,35 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
         }
 
         // Probe the video's duration so the downstream pacing math
-        // still has a real number — ffprobe is bundled with the
-        // imageio-ffmpeg static build via the same binary's
-        // -show_format flag, but ffmpeg standalone works too.
-        const durSec = await probeDurationSec(sandbox, ffmpegPath, videoSandboxPath).catch(() => 0);
+        // (and the voice-extract window-fit guard) has a real number.
+        // ffmpeg's `-i` stderr is what `probeDurationSec` parses;
+        // when that fails (regex variant, N/A, malformed file) we
+        // fall back to a word-rate estimate derived from the
+        // transcript so voice-extract isn't kneecapped by an
+        // unparseable duration line. See plan
+        // 2026-06-08-voice-extract-duration-fallback.md.
+        let durSec = await probeDurationSec(sandbox, ffmpegPath, videoSandboxPath, log).catch((err) => {
+          log.warn('intake', 'ffmpeg duration probe threw', {
+            error: errorMessage(err),
+          });
+          return 0;
+        });
+        if (durSec === 0 && transcript && transcript.wordCount > 0) {
+          // Prefer the transcript's own durationSec when SRT-cleaned
+          // (cleanCaptions stamps it from the last cue's startSec);
+          // otherwise estimate from the word count at 150 wpm.
+          if (transcript.durationSec > 0) {
+            durSec = transcript.durationSec;
+            log.info('intake', 'duration falling back to transcript timestamp', {
+              videoIndex: i, durSec,
+            });
+          } else {
+            durSec = estimateDurationSecFromWords(transcript.wordCount);
+            log.info('intake', 'duration falling back to word-rate estimate (150 wpm)', {
+              videoIndex: i, wordCount: transcript.wordCount, estimatedSec: durSec,
+            });
+          }
+        }
 
         sampleVideos.push({
           // We store the R2 key (not a presigned URL) so the row
@@ -469,10 +498,18 @@ function parseTranscript(raw: string): CleanedTranscript | null {
 }
 
 /** Use ffmpeg itself (no ffprobe needed) to print the video's
- *  duration. `-i` on a video file emits "Duration: hh:mm:ss.ms"
- *  to stderr; we parse it. Returns 0 on any failure so the
- *  downstream math has a safe default. */
-async function probeDurationSec(sandbox: UploadSandbox['sandbox'], ffmpegPath: string, videoSandboxPath: string): Promise<number> {
+ *  duration. `-i` on a video file emits "Duration: ..." to stderr; the
+ *  pure parser in `parse-ffmpeg-duration.ts` handles the format
+ *  variations (1-2 digit fields, 0-6 digit fractional seconds, N/A).
+ *  Returns 0 on any failure so the downstream math has a safe default,
+ *  but logs a diagnostic so the silent-failure we hit on 2026-06-07
+ *  doesn't recur unseen. */
+async function probeDurationSec(
+  sandbox: UploadSandbox['sandbox'],
+  ffmpegPath: string,
+  videoSandboxPath: string,
+  log: JobLogger,
+): Promise<number> {
   const probe = await runInSandbox(sandbox, {
     cmd: ffmpegPath,
     args: ['-hide_banner', '-i', videoSandboxPath, '-f', 'null', '-'],
@@ -480,11 +517,19 @@ async function probeDurationSec(sandbox: UploadSandbox['sandbox'], ffmpegPath: s
   });
   // ffmpeg prints to stderr even on success here, and exits with
   // code 0 on the `-f null` no-op output.
-  const m = /Duration:\s*(\d{2}):(\d{2}):(\d{2})\.(\d{2})/.exec(probe.stderr);
-  if (!m) return 0;
-  const hours = Number(m[1]);
-  const minutes = Number(m[2]);
-  const seconds = Number(m[3]);
-  const centi = Number(m[4]);
-  return hours * 3600 + minutes * 60 + seconds + centi / 100;
+  const parsed = parseFfmpegDuration(probe.stderr);
+  if (parsed.seconds !== null && parsed.seconds > 0) {
+    return parsed.seconds;
+  }
+  // Surface the tail of stderr so we can see what ffmpeg actually
+  // emitted next time this fires — cap at 800 chars to keep the log
+  // row readable in the live UI.
+  const stderrTail = probe.stderr.slice(-800).trim();
+  log.warn('intake', 'ffmpeg duration probe returned no usable value', {
+    videoSandboxPath,
+    exitCode: probe.exitCode,
+    matchedText: parsed.matchedText,
+    stderrTail,
+  });
+  return 0;
 }
