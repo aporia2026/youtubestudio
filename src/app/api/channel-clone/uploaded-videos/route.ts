@@ -28,8 +28,13 @@ import { logger } from '@/lib/logger';
 import {
   deleteUploadedVideo,
   listUploadedVideos,
+  tryPersistUploadedVideo,
 } from '@/lib/channel-clone/uploaded-videos-store';
 import { deleteFromBucket, getReviewBucket } from '@/lib/r2';
+import { listChannelCloneJobs } from '@/lib/channel-clone/job-store';
+import { buildStagingKeyForJob } from '@/lib/channel-clone/intake-upload-runner';
+import { checkR2KeysExist, inferExtensionFromKey } from '@/lib/channel-clone/templates-r2';
+import type { CleanedTranscript } from '@/lib/channel-clone/types';
 
 /** Disable route handler caching — the library is per-workspace and
  *  changes whenever an intake completes. */
@@ -48,6 +53,98 @@ interface UploadedVideoEntry {
    *  compatibility but the library decoupled itself from per-job
    *  ordering. */
   sourceVideoIndex: number;
+}
+
+/** One-shot backfill from pre-library-table jobs. Walks every channel-
+ *  clone job in the workspace, reconstructs the per-video staging key
+ *  for each upload-intake job's sampleVideos, HEAD-probes R2 to keep
+ *  only entries whose bytes are still alive, and INSERTs a library
+ *  row per surviving entry. Idempotent because upsertUploadedVideo
+ *  uses ON CONFLICT (workspace_id, r2_key) DO UPDATE.
+ *
+ *  Triggered automatically on the first GET that finds an empty
+ *  library so operators with pre-existing intakes see their videos
+ *  immediately instead of having to re-upload. Returns the number of
+ *  rows added so the caller can log + decide whether to re-query. */
+async function backfillLibraryFromExistingJobs(workspaceId: string): Promise<number> {
+  const jobs = await listChannelCloneJobs(workspaceId, 200);
+  // Collect every plausible library candidate, walking each job's
+  // intake.sampleVideos and reconstructing the staging key the way the
+  // runner would have stamped it.
+  interface BackfillCandidate {
+    r2Key: string;
+    title: string;
+    transcript: string;
+    transcriptWordCount: number;
+    durationSec: number;
+    sourceJobId: string;
+    sourceJobName: string | null;
+  }
+  const candidates: BackfillCandidate[] = [];
+  for (const job of jobs) {
+    const intake = job.state_jsonb.intake;
+    if (!intake) continue;
+    // Only upload-intake jobs produced staging-prefix keys. URL-intake
+    // (yt-dlp) doesn't keep video bytes around past intake.
+    const isUploadIntake = intake.sampleVideos.every((v) => v.videoUrl.startsWith('r2://'));
+    if (!isUploadIntake) continue;
+    intake.sampleVideos.forEach((video, i) => {
+      const originalKey = extractOriginalKeyFromVideoUrl(video.videoUrl);
+      const ext = inferExtensionFromKey(originalKey) ?? 'mp4';
+      const stagingKey = buildStagingKeyForJob(workspaceId, job.id, i, ext);
+      candidates.push({
+        r2Key: stagingKey,
+        title: video.title,
+        transcript: transcriptLinesToText(video.transcript),
+        transcriptWordCount: video.transcript?.wordCount ?? 0,
+        durationSec: video.durationSec,
+        sourceJobId: job.id,
+        sourceJobName: intake.sourceChannelName ?? null,
+      });
+    });
+  }
+  if (candidates.length === 0) {
+    logger.info('[channel-clone uploaded-videos backfill] no candidates', { workspaceId });
+    return 0;
+  }
+  // HEAD-probe in one batch so we only INSERT entries whose bytes are
+  // actually on R2. Dead keys are skipped — the operator's previous
+  // job-delete might have nuked them under the old coupling, and there
+  // is no recovery for those.
+  const existence = await checkR2KeysExist(candidates.map((c) => c.r2Key));
+  const alive = new Map(existence.map((e) => [e.r2Key, e.exists]));
+  let inserted = 0;
+  for (const c of candidates) {
+    if (alive.get(c.r2Key) !== true) continue;
+    await tryPersistUploadedVideo({
+      workspaceId,
+      r2Key: c.r2Key,
+      title: c.title,
+      transcript: c.transcript,
+      transcriptWordCount: c.transcriptWordCount,
+      durationSec: c.durationSec,
+      sourceJobId: c.sourceJobId,
+      sourceJobName: c.sourceJobName,
+    });
+    inserted += 1;
+  }
+  logger.info('[channel-clone uploaded-videos backfill] done', {
+    workspaceId,
+    candidates: candidates.length,
+    inserted,
+    skipped: candidates.length - inserted,
+  });
+  return inserted;
+}
+
+function extractOriginalKeyFromVideoUrl(videoUrl: string): string {
+  const m = /^r2:\/\/[^/]+\/(.+)$/.exec(videoUrl);
+  return m ? m[1] : videoUrl;
+}
+
+function transcriptLinesToText(transcript: CleanedTranscript | null | undefined): string {
+  if (!transcript) return '';
+  return transcript.lines.map((l) => l.text).join('\n').trim();
 }
 
 export const GET = apiRoute.authed(async (session) => {
@@ -83,9 +180,31 @@ export const GET = apiRoute.authed(async (session) => {
       { status: 500 },
     );
   }
+  // First-time backfill: when the library row is empty, scan the
+  // workspace's existing channel-clone jobs for upload-intake runs
+  // and insert library rows for every staging key whose R2 bytes are
+  // still alive. Runs only on an empty library to avoid HEAD-probing
+  // hundreds of jobs on every page load. Idempotent (upsert on
+  // workspace_id + r2_key), so a stale "empty" check just causes a
+  // no-op re-scan.
+  let backfilledCount = 0;
+  if (rows.length === 0) {
+    try {
+      backfilledCount = await backfillLibraryFromExistingJobs(session.ws);
+      if (backfilledCount > 0) {
+        rows = await listUploadedVideos(session.ws, 500);
+      }
+    } catch (err) {
+      logger.warn('[channel-clone uploaded-videos GET] backfill threw — returning empty', {
+        workspaceId: session.ws,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   logger.info('[channel-clone uploaded-videos GET] fetched', {
     workspaceId: session.ws,
     libraryCount: rows.length,
+    backfilledCount,
   });
   const videos: UploadedVideoEntry[] = rows.map((r) => ({
     r2Key: r.r2_key,
