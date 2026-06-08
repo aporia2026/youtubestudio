@@ -89,6 +89,8 @@ import {
   setLastEditOptionId,
 } from '@/lib/editor/settings';
 import { buildFillBlanksUnits, type WorkUnit } from '@/lib/editor/fill-blanks-units';
+import { eraseViaWhiteFill } from '@/lib/editor/white-fill-erase';
+import { isWhiteBackgroundSketchStyle } from '@/lib/sketch-style';
 import type { ImageSaliencyMap } from '@/remotion/utils';
 import {
   type ChannelVisualBrandKit,
@@ -5828,16 +5830,47 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               onErase={async ({ maskUrl }) => {
                 if (imageEditApplying) return;
                 const rowIndex = imageEditRow;
+                const sourceImageUrl = state.rowImages[rowIndex];
                 setImageEditApplying(true);
-                console.info('[editor image-edit] erase', { rowIndex });
+                // Style-aware erase routing. Ideogram v3-edit (the
+                // default backend) is photo-trained and produces noisy
+                // mosaic artifacts when asked to inpaint a white-
+                // background sketch — the doodle / paint-explainer /
+                // whiteboard family. For those styles, a deterministic
+                // canvas white-fill composite gives the correct visual
+                // result at zero cost. Photo / cinematic / stock
+                // styles still go through Ideogram. Plan:
+                // 2026-06-08-erase-white-fill-for-sketch-styles.md.
+                const useWhiteFill = isWhiteBackgroundSketchStyle(state.doc.style_preset);
+                console.info('[editor image-edit] erase', {
+                  rowIndex,
+                  style: state.doc.style_preset ?? '(none)',
+                  via: useWhiteFill ? 'white-fill' : 'ideogram',
+                });
                 try {
+                  if (useWhiteFill) {
+                    if (!sourceImageUrl) {
+                      alert('Erase failed: no source image to composite against.');
+                      return;
+                    }
+                    const newImageUrl = await eraseViaWhiteFill({
+                      sourceImageUrl,
+                      maskImageUrl: maskUrl,
+                    });
+                    commitRowImage(rowIndex, newImageUrl);
+                    console.info('[editor image-edit] erase success', {
+                      rowIndex, via: 'white-fill',
+                    });
+                    setImageEditRow(null);
+                    return;
+                  }
                   const res = await queueImageGen('edit', 'editor-erase', () =>
                     // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
                     fetch('/api/generate/production-doc/image/edit', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
-                        originalImageUrl: state.rowImages[rowIndex],
+                        originalImageUrl: sourceImageUrl,
                         intent: 'erase',
                         mask: { url: maskUrl },
                       }),
@@ -5858,7 +5891,9 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                   if (data.saliency) {
                     updateRow(rowIndex, { image_saliency: data.saliency });
                   }
-                  console.info('[editor image-edit] erase success', { rowIndex });
+                  console.info('[editor image-edit] erase success', {
+                    rowIndex, via: 'ideogram',
+                  });
                   setImageEditRow(null);
                 } catch (err) {
                   alert(`Erase failed: ${err instanceof Error ? err.message : String(err)}`);
