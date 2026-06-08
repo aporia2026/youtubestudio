@@ -134,6 +134,27 @@ const ROW_HEIGHT_PX = 104;
  *  millisecond. */
 const START_LEFT_PX = 0;
 
+/** Module-level stable references for props passed to <LibTimeline>.
+ *  The library wraps `react-virtualized` internally (Grid / MultiGrid /
+ *  CollectionView — all class components with ~14 `forceUpdate()` call
+ *  sites in their bundle). When LibTimeline receives a NEW reference
+ *  for ANY prop on every parent render — even a no-op `onChange={() =>
+ *  {}}` or an inline `style={{...}}` — react-virtualized's internal
+ *  cell-size recompute fires `forceUpdate()` synchronously, which
+ *  triggers React error #185 ("Maximum update depth exceeded") as soon
+ *  as the editor re-renders rapidly (e.g. TransformOverlay's
+ *  pointermove during an image-resize drag dispatches a transient
+ *  PATCH_ROW per frame → state.doc changes → videoConfig recomputes →
+ *  CapCutVideoLane re-renders → LibTimeline sees new props → loop).
+ *
+ *  Hoisting these to module scope guarantees the library sees the same
+ *  reference render after render. See `_plans/2026-06-08-editor-crash-recovery.md`. */
+const LIB_TIMELINE_STYLE: React.CSSProperties = { height: ROW_HEIGHT_PX, width: '100%' };
+const LIB_LANE_STYLE: React.CSSProperties = { height: ROW_HEIGHT_PX, width: '100%' };
+const LIB_TIMELINE_ON_CHANGE = (): void => {
+  /* library bookkeeping; commands flow via the callbacks we wire up */
+};
+
 export interface CapCutVideoLaneProps {
   config: VideoConfig;
   rowImages: Record<number, string>;
@@ -297,6 +318,31 @@ export function CapCutVideoLane({
   // when the user drags multiple times in a row without re-mounting.
   const shotsRef = useRef(config.shots);
   shotsRef.current = config.shots;
+
+  // Refs for the fast-changing values getActionRender reads — without
+  // these, getActionRender's identity changes on every playhead tick
+  // (which fires per Player frame, up to 30/sec) AND on every transient
+  // PATCH_ROW (which fires per pointermove tick, up to 60/sec during
+  // a TransformOverlay drag). The library's react-virtualized core
+  // detects the new prop reference in componentDidUpdate and triggers
+  // a `recomputeGridSize → forceUpdate` cascade. At 60-90 forceUpdates
+  // per second across multiple class components, React hits its
+  // "Maximum update depth" guard and throws #185.
+  //
+  // Reading the values from refs inside getActionRender keeps its
+  // identity stable across these high-frequency state churns. The
+  // library still calls getActionRender during its own render passes
+  // (triggered by editorData / config changes), so the rendered
+  // playhead glyph still updates — it just doesn't make the function
+  // itself a new reference every tick.
+  const playheadMsRef = useRef(playheadMs);
+  playheadMsRef.current = playheadMs;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+  const splitAvailableShotIndexRef = useRef(splitAvailableShotIndex);
+  splitAvailableShotIndexRef.current = splitAvailableShotIndex;
+  const pixelsPerSecondRef = useRef(pixelsPerSecond);
+  pixelsPerSecondRef.current = pixelsPerSecond;
 
   // ── Resize handlers ────────────────────────────────────────────────
   //
@@ -524,6 +570,13 @@ export function CapCutVideoLane({
           </div>
         );
       }
+      // Read fast-changing values from refs (see comment near the ref
+      // declarations above) so this function's identity stays stable
+      // across playhead ticks and transient PATCH_ROW dispatches.
+      const selection = selectionRef.current;
+      const playheadMs = playheadMsRef.current;
+      const splitAvailableShotIndex = splitAvailableShotIndexRef.current;
+      const pixelsPerSecond = pixelsPerSecondRef.current;
       const isSelected = selection === data.shotIndex;
       // Selection state — built from raw box-shadow so the library's
       // own action CSS can't override Tailwind ring utilities. Three
@@ -832,15 +885,13 @@ export function CapCutVideoLane({
         </div>
       );
     },
-    [
-      selection,
-      splitAvailableShotIndex,
-      onSplit,
-      onToggleTransition,
-      onTrim,
-      playheadMs,
-      pixelsPerSecond,
-    ],
+    // `selection`, `playheadMs`, `splitAvailableShotIndex`, and
+    // `pixelsPerSecond` are read via refs above so they aren't in the
+    // dep list — keeping this callback's identity stable across every
+    // playhead tick + transient PATCH_ROW dispatch. Only the parent-
+    // supplied user-action callbacks are dependencies, and those are
+    // already stable via the parent's own useCallback wrappers.
+    [onSplit, onToggleTransition, onTrim],
   );
 
   // Library refuses to render any clip past `minScaleCount * TICK_SECONDS`.
@@ -862,7 +913,7 @@ export function CapCutVideoLane({
       // LaneStrip's `overflow: hidden` clips ~32px off the bottom of
       // the thumbnails.
       className="capcut-video-lane"
-      style={{ height: ROW_HEIGHT_PX, width: '100%' }}
+      style={LIB_LANE_STYLE}
     >
       <LibTimeline
         ref={timelineRef}
@@ -883,14 +934,14 @@ export function CapCutVideoLane({
         // Just the row — the ruler is hidden by our global stylesheet
         // so we don't need to reserve extra space for it. The row
         // gets the full lane height.
-        style={{ height: ROW_HEIGHT_PX, width: '100%' }}
+        style={LIB_TIMELINE_STYLE}
         getActionRender={getActionRender}
         onActionResizing={handleResizing}
         onActionResizeEnd={handleResizeEnd}
         onActionMoveEnd={handleMoveEnd}
         onClickAction={handleClickAction}
         onContextMenuAction={handleContextMenuAction}
-        onChange={() => { /* library bookkeeping; commands flow via callbacks above */ }}
+        onChange={LIB_TIMELINE_ON_CHANGE}
       />
     </div>
   );
