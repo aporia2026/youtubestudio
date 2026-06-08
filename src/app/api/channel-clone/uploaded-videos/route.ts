@@ -51,7 +51,38 @@ interface UploadedVideoEntry {
 }
 
 export const GET = apiRoute.authed(async (session) => {
-  const rows = await listUploadedVideos(session.ws, 500);
+  // Hand-rolled try/catch around the SQL call so an unmigrated DB
+  // (table missing) returns an empty list with a diagnostic note
+  // instead of the generic "Internal server error" the route-helpers
+  // wrapper renders. Postgres signals a missing relation with SQLSTATE
+  // 42P01; treat it as "library empty, migration pending" and let the
+  // picker show its empty-state UI rather than blowing up.
+  let rows;
+  try {
+    rows = await listUploadedVideos(session.ws, 500);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = (err as { code?: string } | null)?.code;
+    const isRelationMissing = code === '42P01' || /relation .* does not exist/i.test(message);
+    logger.error('[channel-clone uploaded-videos GET] listUploadedVideos threw', {
+      workspaceId: session.ws, code, message, isRelationMissing,
+    });
+    if (isRelationMissing) {
+      return NextResponse.json({
+        videos: [],
+        totalRunsScanned: 0,
+        reusableCount: 0,
+        expiredCount: 0,
+        warning: 'Library table not yet provisioned on this database — migrate-on-deploy may not have run for this commit. Empty list returned.',
+      });
+    }
+    // Other DB errors: surface the message so the picker shows
+    // something more actionable than "Internal server error".
+    return NextResponse.json(
+      { error: `Database error: ${message.slice(0, 300)}` },
+      { status: 500 },
+    );
+  }
   logger.info('[channel-clone uploaded-videos GET] fetched', {
     workspaceId: session.ws,
     libraryCount: rows.length,
