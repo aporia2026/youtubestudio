@@ -210,13 +210,23 @@ function parseVisionStyleProfile(raw: string): VisionStyleProfile {
     throw new Error('vision response palette must include at least 3 valid hex colours');
   }
   const motifs = Array.isArray(o.consistent_visual_motifs) ? o.consistent_visual_motifs : [];
+  // Filter out motifs that describe in-image text / typography. Even
+  // when the source channel has text overlays as a visual motif,
+  // including that motif in the suffix makes the image model bake
+  // mis-positioned text into the rendered frame — which then gets
+  // cropped at the safe-edge crop and looks broken. Text overlays are
+  // composited separately by Remotion at the renderer layer, where
+  // positioning is precise. 2026-06-08 — user pushback on "IGNORE" /
+  // "HOSTILE UNIVERSE" labels rendered cropped at frame bottom.
+  const TEXT_MOTIF_RE = /\b(text|label|caption|word|letter|font|typography|title\s*card|subtitle|callout|onscreen\s*text|on-screen\s*text)\b/i;
   const cleanMotifs = motifs
     .filter((m): m is string => typeof m === 'string')
     .map((m) => m.trim())
     .filter((m) => m.length > 0)
+    .filter((m) => !TEXT_MOTIF_RE.test(m))
     .slice(0, 5);
   if (cleanMotifs.length < 2) {
-    throw new Error('vision response must include at least 2 consistent_visual_motifs');
+    throw new Error('vision response must include at least 2 consistent_visual_motifs (after stripping text-related motifs that would bake mis-cropped text into the image)');
   }
   return {
     art_style: (o.art_style as string).trim(),
@@ -232,8 +242,12 @@ function parseVisionStyleProfile(raw: string): VisionStyleProfile {
 }
 
 /** Build the ai_image_suffix from the vision profile. Concatenates
- *  every concrete field into one comma-joined cue list. Exported for
- *  unit tests. */
+ *  every concrete field into one comma-joined cue list, and appends
+ *  a hard "no in-image text" directive at the end so the image model
+ *  doesn't bake mis-positioned text into the frame (text overlays
+ *  are composited by Remotion at the renderer layer instead).
+ *
+ *  Exported for unit tests. */
 export function buildSuffixFromVisionProfile(p: VisionStyleProfile): string {
   const parts = [
     p.art_style,
@@ -245,6 +259,12 @@ export function buildSuffixFromVisionProfile(p: VisionStyleProfile): string {
     `texture: ${p.texture}`,
     `rendering: ${p.rendering_technique}`,
     `consistent visual motifs: ${p.consistent_visual_motifs.join('; ')}`,
+    // Anti-text directive — placed last so the image model weighs it
+    // heavily. Models give late tokens disproportionate attention
+    // ("what must appear / not appear in the image"), per the same
+    // observation that drives augmentCellPrompt's OST positioning
+    // ordering (src/lib/prompt-augmentation.ts:182-187).
+    'NO TEXT, NO LETTERS, NO WORDS, NO TYPOGRAPHY anywhere in the image — text overlays are composited separately by the renderer, never drawn into the illustration itself',
   ];
   return parts.join(', ');
 }

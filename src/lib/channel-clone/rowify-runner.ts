@@ -31,6 +31,7 @@ import type { ProductionDocRowLike } from '@/lib/production-doc-postprocess';
 import { extractScriptTitles, type ExtractedTitle } from '@/lib/script-titles';
 import { normalizeTitleCards } from '@/lib/title-card-repair';
 import { deriveChannelStyle } from './derive-channel-style';
+import { rederiveChannelStyleFromFrames } from '@/lib/auto-pipeline/rederive-channel-style';
 import {
   getChannelCloneJob,
   replaceChannelCloneJobState,
@@ -159,16 +160,59 @@ export async function runRowify(opts: RunRowifyOptions): Promise<void> {
   // preset's suffix would just classify the channel into one of our
   // existing buckets instead.
   const useChannelStyle = opts.useChannelStyle !== false;
-  const channelStyle = useChannelStyle
+  let channelStyle = useChannelStyle
     ? deriveChannelStyle(visualProfile, intake)
     : null;
   if (channelStyle) {
-    logger.info('[channel-clone rowify] channel style derived', {
+    logger.info('[channel-clone rowify] channel style derived (text profile)', {
       jobId,
       suffixPreview: channelStyle.aiImageSuffix.slice(0, 200),
       refCount: channelStyle.refR2Keys.length,
       reason: channelStyle.reason,
     });
+  }
+
+  // VISION REDERIVATION (2026-06-08, user pushback): the text-profile
+  // derivation above leans on the analyze stage's visual fields, which
+  // come out sparse on noisy channels and trigger the generic fallback
+  //   "hand-drawn illustration style, simple composition, neutral palette"
+  // — indistinguishable from doodle_explainer_v2's own fingerprint.
+  // Result: every channel-clone run produced doodle-look images
+  // regardless of the source channel's actual style.
+  //
+  // Fix: run a SECOND, vision-focused pass on the intake's actual frames
+  // and OVERWRITE the text-derived suffix when the vision pass returns
+  // concrete content. Vision pass validates field length / palette
+  // count / motif count — sparse responses throw and we keep the
+  // text-derived fallback rather than persisting an even weaker version.
+  //
+  // Best-effort: any failure (no frames, vision model error, sparse
+  // response) keeps the text-derived channelStyle and logs the reason.
+  // The rowify run still completes.
+  if (useChannelStyle && intake && channelStyle) {
+    const visionModelId = 'kie-gemini-3-5-flash';
+    try {
+      const visionStyle = await rederiveChannelStyleFromFrames({ intake, modelId: visionModelId });
+      logger.info('[channel-clone rowify] vision rederivation succeeded — overriding text profile', {
+        jobId,
+        textSuffixPreview: channelStyle.aiImageSuffix.slice(0, 100),
+        visionSuffixPreview: visionStyle.aiImageSuffix.slice(0, 200),
+        artStyle: visionStyle.rawProfile.art_style.slice(0, 120),
+        paletteHex: visionStyle.rawProfile.palette_hex.join(' '),
+        refCount: visionStyle.refR2Keys.length,
+      });
+      channelStyle = {
+        aiImageSuffix: visionStyle.aiImageSuffix,
+        refR2Keys: visionStyle.refR2Keys,
+        reason: visionStyle.reason,
+      };
+    } catch (err) {
+      logger.warn('[channel-clone rowify] vision rederivation failed — keeping text-derived suffix', {
+        jobId,
+        visionModelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // Pick the style cue that lands in every ai_image_prompt: the
