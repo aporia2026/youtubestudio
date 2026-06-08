@@ -2883,6 +2883,65 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
         return;
       }
 
+      // Auto-suggest the edit instruction when the user clicks
+      // Generate with an empty variant_edit_prompt. The /api/generate/
+      // variant-edit-prompt/suggest endpoint hits Haiku with the base
+      // row's script + image prompt and returns a short, specific
+      // change like "raise the right eyebrow". We persist it on the
+      // row so the user can see what was tried (and edit/undo if they
+      // want). Skipped when the user already typed an instruction.
+      // Plan: _plans/2026-06-08-variant-edit-auto-suggest.md.
+      if (!variantRow.variant_edit_prompt?.trim()) {
+        setVariantGenStates((prev) => ({ ...prev, [variantRowIndex]: { kind: 'generating' } }));
+        try {
+          const baseRow = liveDoc.rows[baseRowIndex];
+          console.info('[editor variants] auto-suggest edit prompt', { variantRowIndex });
+          // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC: awaits and uses response
+          const sugRes = await fetch('/api/generate/variant-edit-prompt/suggest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              scriptText: baseRow?.script_text ?? '',
+              basePrompt: baseRow?.ai_image_prompt ?? '',
+              stylePresetId: liveDoc.style_preset ?? undefined,
+            }),
+          });
+          const sugData = (await sugRes.json().catch(() => ({}))) as {
+            suggestion?: string;
+            error?: string;
+          };
+          if (!sugRes.ok || !sugData.suggestion) {
+            const msg = sugData.error || `HTTP ${sugRes.status}`;
+            setVariantGenStates((prev) => ({
+              ...prev,
+              [variantRowIndex]: { kind: 'error', message: `Auto-suggest failed: ${msg}` },
+            }));
+            toast.error(`Couldn't auto-suggest a variation: ${msg}`);
+            return;
+          }
+          updateRow(variantRowIndex, { variant_edit_prompt: sugData.suggestion });
+          // Refresh the local variantRow reference so composeVariantEditRequest
+          // below sees the just-stamped suggestion. stateRef is updated
+          // synchronously by apply → dispatch.
+          const updatedRow = stateRef.current.doc.rows[variantRowIndex];
+          if (updatedRow) {
+            Object.assign(variantRow, updatedRow);
+          }
+          console.info('[editor variants] auto-suggest done', {
+            variantRowIndex,
+            suggestion: sugData.suggestion,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setVariantGenStates((prev) => ({
+            ...prev,
+            [variantRowIndex]: { kind: 'error', message: `Auto-suggest threw: ${msg}` },
+          }));
+          toast.error(`Couldn't auto-suggest a variation: ${msg}`);
+          return;
+        }
+      }
+
       // Propagate the user's GPT Image 2 edit primary preference from
       // localStorage into the request body so the server dispatcher
       // honours it without a sync round-trip. Lazy-imported so the
@@ -2890,9 +2949,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       // SSR path that might import this file.
       const { getGptImage2EditPrimary } = await import('@/lib/editor/settings');
       const editPrimary = getGptImage2EditPrimary();
+      // Re-read the live doc — auto-suggest may have stamped a fresh
+      // variant_edit_prompt onto the row, and composeVariantEditRequest
+      // reads it from the doc passed in.
+      const refreshedDoc = stateRef.current.doc;
+      const refreshedVariantRow = refreshedDoc.rows[variantRowIndex] ?? variantRow;
       const prepared = composeVariantEditRequest(
-        liveDoc,
-        variantRow,
+        refreshedDoc,
+        refreshedVariantRow,
         sourceImageUrl,
         editPrimary,
       );

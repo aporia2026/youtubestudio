@@ -116,10 +116,14 @@ export function InspectorVariantsPanel({
   const baseRowIndex = base ? doc.rows.indexOf(base) : -1;
   const baseImageUrl = baseRowIndex >= 0 ? rowImages[baseRowIndex] : undefined;
   const editPromptText = (row.variant_edit_prompt ?? '').trim();
+  // The editPromptText.length > 0 requirement is gone (2026-06-08):
+  // an empty EDIT INSTRUCTION now triggers a fast auto-suggest call
+  // server-side that stamps a small visual change onto the row before
+  // the Atlas Edit dispatch. See generateVariantImage in EditorClient
+  // and `_plans/2026-06-08-variant-edit-auto-suggest.md`.
   const canGenerate =
     isVariant
     && genState.kind !== 'generating'
-    && editPromptText.length > 0
     && (row.variant_derives_from_previous
         // For chained variants the source is the previous variant;
         // require its image. For the first variant in a chain, fall
@@ -321,10 +325,10 @@ export function InspectorVariantsPanel({
                 color: 'var(--accent-purple-bright, #a78bfa)',
               }}
               title={
-                editPromptText.length === 0
-                  ? 'Describe what changes from the base first.'
-                  : !baseImageUrl
-                    ? 'Generate the base image first — variants edit it.'
+                !baseImageUrl
+                  ? 'Generate the base image first — variants edit it.'
+                  : editPromptText.length === 0
+                    ? 'AI will suggest a small change automatically (~$0.011 + ~$0.0005).'
                     : 'Generate this variant from the base image (~$0.011)'
               }
             >
