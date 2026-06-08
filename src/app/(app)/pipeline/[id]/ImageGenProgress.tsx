@@ -264,7 +264,11 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
         />
       )}
 
-      <ChannelStylePanel channelOverride={data.channel_style_override ?? null} />
+      <ChannelStylePanel
+        channelOverride={data.channel_style_override ?? null}
+        videoId={videoId}
+        onRederived={refresh}
+      />
 
 
       <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -443,16 +447,69 @@ function CountBadge({
 
 function ChannelStylePanel({
   channelOverride,
+  videoId,
+  onRederived,
 }: {
   channelOverride: ProgressPayload['channel_style_override'];
+  videoId: string;
+  onRederived: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState<boolean>(false);
+  const [rederiving, setRederiving] = useState<boolean>(false);
+  const [rederiveErr, setRederiveErr] = useState<string | null>(null);
+
+  const handleRederive = useCallback(
+    async (regenerate: 'failed' | 'all') => {
+      if (rederiving) return;
+      const verb = regenerate === 'all'
+        ? 'rederive the channel style AND regenerate EVERY row (including done ones)'
+        : 'rederive the channel style and regenerate every still-empty / failed row';
+      if (!window.confirm(`${verb}? This re-runs the vision model against your reference frames.`)) return;
+      setRederiving(true);
+      setRederiveErr(null);
+      try {
+        const res = await fetch(
+          `/api/auto-pipeline/videos/${videoId}/image-progress/rederive-style`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ regenerate }),
+          },
+        );
+        const payload = (await res.json().catch(() => ({}))) as {
+          ok?: boolean; error?: string; rows_reset?: number; ai_image_suffix?: string;
+        };
+        if (!res.ok || !payload.ok) {
+          setRederiveErr(payload.error ?? `Rederive failed (${res.status})`);
+          return;
+        }
+        await onRederived();
+      } catch (err) {
+        setRederiveErr(err instanceof Error ? err.message : String(err));
+      } finally {
+        setRederiving(false);
+      }
+    },
+    [videoId, rederiving, onRederived],
+  );
+
   if (!channelOverride) {
     return (
-      <div className="rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px] text-neutral-400">
-        <span className="font-medium text-neutral-300">Channel-clone style: </span>
-        not applied to this doc — image-gen is using the built-in style preset's bundled refs and
-        suffix.
+      <div className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px] text-neutral-400">
+        <p>
+          <span className="font-medium text-neutral-300">Channel-clone style: </span>
+          not applied to this doc — image-gen is using the built-in style preset's bundled refs
+          and suffix.
+        </p>
+        <button
+          type="button"
+          onClick={() => void handleRederive('failed')}
+          disabled={rederiving}
+          className="rounded border border-emerald-900 bg-emerald-950/40 px-2 py-0.5 text-[10px] text-emerald-300 hover:border-emerald-700 hover:bg-emerald-900/60 disabled:opacity-50"
+        >
+          {rederiving ? 'Rederiving…' : '✨ Derive style from reference frames'}
+        </button>
+        {rederiveErr && <p className="text-red-300">{rederiveErr}</p>}
       </div>
     );
   }
@@ -492,9 +549,9 @@ function ChannelStylePanel({
               <p className="rounded border border-amber-900 bg-amber-950/30 p-1.5 text-[10px] text-amber-200">
                 This suffix is the channel-clone library's <em>generic fallback</em>, used when the
                 analyze stage couldn't extract style cues from the reference videos. It's why
-                every generated image looks like a generic hand-drawn illustration. To fix: re-run
-                the channel-clone analyze stage with better reference videos / more frames, or
-                edit individual rows' prompts to add specific style cues.
+                every generated image looks like a generic hand-drawn illustration. Use the
+                "Rederive style" button below to run a dedicated vision pass on your reference
+                frames — that produces a proper channel-specific suffix.
               </p>
             )}
           </div>
@@ -503,6 +560,28 @@ function ChannelStylePanel({
               Derivation reason
             </p>
             <p className="text-neutral-400">{channelOverride.reason}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-t border-neutral-800 pt-2">
+            <button
+              type="button"
+              onClick={() => void handleRederive('failed')}
+              disabled={rederiving}
+              className="rounded border border-emerald-900 bg-emerald-950/40 px-2 py-0.5 text-[10px] text-emerald-300 hover:border-emerald-700 hover:bg-emerald-900/60 disabled:opacity-50"
+            >
+              {rederiving ? 'Rederiving…' : '✨ Rederive style (regen failed)'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRederive('all')}
+              disabled={rederiving}
+              className="rounded border border-amber-900 bg-amber-950/40 px-2 py-0.5 text-[10px] text-amber-300 hover:border-amber-700 hover:bg-amber-900/60 disabled:opacity-50"
+            >
+              {rederiving ? 'Rederiving…' : '✨ Rederive style (regen EVERYTHING)'}
+            </button>
+            <span className="text-[10px] text-neutral-500">
+              runs a dedicated vision pass on your channel-clone reference frames
+            </span>
+            {rederiveErr && <p className="text-[10px] text-red-300">{rederiveErr}</p>}
           </div>
         </div>
       )}

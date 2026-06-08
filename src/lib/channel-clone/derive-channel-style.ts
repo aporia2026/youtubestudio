@@ -38,10 +38,15 @@ export interface ChannelStyle {
   reason: string;
 }
 
-/** Target number of frames pulled as image-gen refs. Atlas i2i
- *  caps at 4 references per call in practice; we pick 4 by default
- *  so a single ref selection covers most generation calls. */
-const TARGET_REF_COUNT = 4;
+/** Target number of frames pulled as the channel-style POOL.
+ *  Atlas i2i caps at 4 refs per call, but we want VARIETY across the
+ *  doc — different shots should look like different parts of the
+ *  channel, not all draw from the same 4 frames. The image-gen
+ *  pipeline slices a per-row window of 4 frames out of this pool
+ *  based on row index, so scene 7 sees a different ref subset than
+ *  scene 0. 12 covers the common cases (3 frames per ref subset
+ *  rotation × 4 calls before repeat). 2026-06-08. */
+const TARGET_REF_COUNT = 12;
 
 /** Build a comma-joined style cue list from the visual profile.
  *  Handles missing/sparse profiles by falling back to the cleanest

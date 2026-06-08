@@ -161,7 +161,38 @@ export async function runScript(opts: RunScriptOptions): Promise<void> {
   await mergeChannelCloneJobState(jobId, workspaceId, { selectedHookIndex });
   const topic = topics[selectedTopicIndex - 1];
   const hook = hooks[selectedHookIndex - 1];
-  const targetWordCount = analysis.avgVideoWordCount;
+  // Target word count: prefer the LLM's average (which has channel-
+  // niche context) but FLOOR it to a duration-based estimate so 8-
+  // minute reference videos don't produce 3-minute scripts. Memory
+  // feedback_audio_verification.md warns against trusting transcript-
+  // derived numbers alone — the LLM can hallucinate low counts when
+  // transcripts are cleaned/truncated.
+  //
+  // Floor formula: average reference video duration × 1.8 words/sec
+  // (≈108 WPM, intentionally conservative — typical narration is
+  // 130-160 WPM = 2.2-2.7 wps, so 1.8 leaves ~25% headroom for
+  // music/silence). When the LLM's count is well below this floor,
+  // we override it and log the divergence so the operator can
+  // diagnose why the analyze stage under-counted. 2026-06-08 bugfix.
+  const llmAvgWords = analysis.avgVideoWordCount;
+  const intake = job.state_jsonb.intake;
+  const sampleDurations = intake?.sampleVideos.map((v) => v.durationSec).filter((d) => d > 0) ?? [];
+  const avgRefDurationSec = sampleDurations.length > 0
+    ? sampleDurations.reduce((acc, d) => acc + d, 0) / sampleDurations.length
+    : 0;
+  const durationBasedFloor = avgRefDurationSec > 0
+    ? Math.floor(avgRefDurationSec * 1.8)
+    : 0;
+  const targetWordCount = Math.max(llmAvgWords, durationBasedFloor);
+  if (durationBasedFloor > 0 && llmAvgWords > 0 && targetWordCount > llmAvgWords) {
+    logger.warn('[channel-clone script] LLM avgVideoWordCount below duration-based floor — using floor', {
+      jobId,
+      llm_avg_words: llmAvgWords,
+      avg_ref_duration_sec: Math.round(avgRefDurationSec),
+      duration_based_floor: durationBasedFloor,
+      effective_target: targetWordCount,
+    });
+  }
 
   const scriptModelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-script-generation');
   const auditModelId = opts.modelOverride ?? await getEffectiveModelId(workspaceId, 'channel-clone-script-audit');

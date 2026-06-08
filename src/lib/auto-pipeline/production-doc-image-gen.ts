@@ -326,8 +326,19 @@ export async function generateBaseImage(args: {
   // channel-clone — render each shot in the source channel's look,
   // not in our default illustration style.
   const channelOverride = doc.channel_style_override;
-  const refs = channelOverride && channelOverride.ref_r2_keys.length > 0
-    ? synthesizeChannelOverrideRefs(channelOverride.ref_r2_keys, workspaceId, style?.id ?? 'channel-clone')
+  // Per-row varied refs (2026-06-08): when the channel-override pool
+  // has more than 4 frames, pick a row-specific 4-frame window so
+  // different rows reference different parts of the channel rather
+  // than every row drawing from the same 4 frames. The window
+  // ROTATES through the pool by row index, with a 2-frame stride so
+  // adjacent rows still share style anchors. Atlas i2i caps at 4
+  // refs per call regardless of pool size, so we always slice to 4.
+  const rowIndexForSlice = lookupRowIndex(row, doc);
+  const channelRefSlice = channelOverride && channelOverride.ref_r2_keys.length > 0
+    ? pickPerRowRefSlice(channelOverride.ref_r2_keys, rowIndexForSlice, 4)
+    : [];
+  const refs = channelRefSlice.length > 0
+    ? synthesizeChannelOverrideRefs(channelRefSlice, workspaceId, style?.id ?? 'channel-clone')
     : style
       ? await loadStyleReferences(style.id, {
           excludeRejected: true,
@@ -2194,6 +2205,33 @@ export async function generateMotionCollage(args: {
  *  control flow. */
 function lookupRowIndex(row: PipelineImageRow, doc: PipelineImageDoc): number {
   return doc.rows.findIndex((r) => r === row);
+}
+
+/** Pick a per-row slice from the channel-style ref pool. The pool is
+ *  typically 12 frames (per deriveChannelStyle's TARGET_REF_COUNT);
+ *  Atlas i2i takes 4. We rotate the window through the pool with a
+ *  2-frame stride so adjacent rows share two anchors (continuity
+ *  between scenes) while distant rows pull entirely different frames
+ *  (visual variety across the doc). When the pool is smaller than
+ *  the slice size, returns the whole pool unchanged.
+ *
+ *  Exported for unit tests; called from generateBaseImage. 2026-06-08. */
+export function pickPerRowRefSlice(
+  pool: string[],
+  rowIndex: number,
+  sliceSize: number,
+): string[] {
+  if (pool.length === 0) return [];
+  if (pool.length <= sliceSize) return [...pool];
+  // Negative or unknown index falls back to the head of the pool.
+  const safeIndex = rowIndex < 0 ? 0 : rowIndex;
+  const startStride = 2;
+  const start = (safeIndex * startStride) % pool.length;
+  const slice: string[] = [];
+  for (let i = 0; i < sliceSize; i += 1) {
+    slice.push(pool[(start + i) % pool.length]);
+  }
+  return slice;
 }
 
 /**
