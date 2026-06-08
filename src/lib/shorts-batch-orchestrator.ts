@@ -267,6 +267,20 @@ async function runSeoStage(short: ShortRow, batch: ShortsBatchRow): Promise<Stag
 
     const ms = Date.now() - t0;
     console.info('[shorts-batch stage seo]', { short_id: short.id, batch_id: short.batch_id, duration_ms: ms, primary_keyword: seo.primary_keyword });
+
+    // After SEO completes, hand the short to the existing asset
+    // pipeline. Mirrors what POST /api/shorts/[id]/generate-style-assets
+    // does — sets style_id + a queued generation_progress blob with
+    // the model/vendor metadata the cron needs, then kicks the drain
+    // so work starts immediately. Failure here is logged but doesn't
+    // fail the SEO stage; the cron is also a backstop.
+    void enqueueAssetGeneration(short, batch).catch((err) => {
+      console.info('[shorts-batch stage assets-enqueue error]', {
+        short_id: short.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    });
+
     return { stage: 'seo', shortId: short.id, ok: true, duration_ms: ms };
   } catch (err) {
     const ms = Date.now() - t0;
@@ -274,6 +288,71 @@ async function runSeoStage(short: ShortRow, batch: ShortsBatchRow): Promise<Stag
     await recordGenerationError(short.id, 'seo', message);
     console.info('[shorts-batch stage error]', { short_id: short.id, stage: 'seo', message: message.slice(0, 200) });
     return { stage: 'seo', shortId: short.id, ok: false, error: message, duration_ms: ms };
+  }
+}
+
+/**
+ * Asset-generation enqueue helper. Mirrors the per-short
+ * /generate-style-assets route's DB writes + kicks the cron drain.
+ *
+ * The default style for batch shorts is 'doodle_explainer_2_short'
+ * (the standard explainer look). The user can override per-short in
+ * step 4 after assets render if they want a different style.
+ */
+async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): Promise<void> {
+  // Don't double-enqueue.
+  if (short.style_id || short.generation_progress?.phase) return;
+
+  const params = (short.generation_params ?? {}) as { batch_idea_input?: BatchIdeaInput };
+  const niche = params.batch_idea_input?.niche ?? 'general';
+
+  const seconds =
+    short.voiceover_duration_seconds
+    ?? short.estimated_duration_seconds
+    ?? Math.max(15, Math.round((short.word_count ?? 0) / 2.33));
+
+  const styleId = 'doodle_explainer_2_short';
+  const now = new Date().toISOString();
+  const queued = {
+    phase: 'queued' as const,
+    label: 'Queued — Doodle assets will start shortly…',
+    style_id: styleId,
+    started_at: now,
+    updated_at: now,
+    job: {
+      niche,
+      base_t2i_model_id: 'atlas-gpt-image-2',
+      variant_edit_primary: 'atlas' as const,
+      max_variants: Math.max(4, Math.min(10, Math.round(seconds / 6))),
+    },
+  };
+
+  await sql`
+    UPDATE shorts
+       SET style_id = ${styleId},
+           generation_progress = ${JSON.stringify(queued)}::jsonb,
+           updated_at = NOW()
+     WHERE id = ${short.id}::uuid AND workspace_id = ${short.workspace_id}::uuid
+  `;
+
+  console.info('[shorts-batch assets-enqueued]', {
+    short_id: short.id,
+    batch_id: batch.id,
+    style_id: styleId,
+    niche,
+    max_variants: queued.job.max_variants,
+  });
+
+  // Kick the shared shorts asset cron drain so the work starts now.
+  // The drain is single-flight-locked, so concurrent calls collapse.
+  try {
+    const { triggerShortsAssetDrain } = await import('./shorts-asset-cron');
+    await triggerShortsAssetDrain('batch-after-seo');
+  } catch (err) {
+    console.info('[shorts-batch assets-drain-trigger-failed]', {
+      short_id: short.id,
+      message: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
