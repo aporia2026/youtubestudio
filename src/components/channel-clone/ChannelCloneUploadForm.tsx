@@ -901,10 +901,24 @@ function PreviousUploadsPicker({ alreadyPickedKeys, onAdd, disabled }: PreviousU
             </p>
           )}
           {!loading && !error && entries && entries.length === 0 && (
-            <p className="text-xs text-neutral-500">
-              No reusable videos found. Upload some videos in a clone run and they will show up
-              here for reuse on every future run.
-            </p>
+            <div className="space-y-2">
+              <p className="text-xs text-neutral-500">
+                No reusable videos found. Upload some videos in a clone run and they will show up
+                here for reuse on every future run.
+              </p>
+              {/* Refresh button on the empty state too — without it the
+               *  picker can get stuck "0 results" forever if the first
+               *  fetch happened before any intake completed and the
+               *  operator has since landed one. */}
+              <button
+                type="button"
+                onClick={() => void refetch()}
+                disabled={loading}
+                className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] text-neutral-300 hover:border-neutral-500 disabled:opacity-40"
+              >
+                Refresh list
+              </button>
+            </div>
           )}
           {entries && entries.length > 0 && (
             <>

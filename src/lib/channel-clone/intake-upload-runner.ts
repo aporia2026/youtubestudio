@@ -138,16 +138,37 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     return failJob(jobId, workspaceId, `Could not start intake sandbox: ${errorMessage(err)}`);
   }
 
-  /** Fresh uploads (`channel-clone-uploads/<ws>/<uuid>.<ext>`) — copy
-   *  to the per-job staging prefix, then delete the original. */
-  const freshKeysToStageAndDelete: string[] = [];
+  /** Fresh uploads (`channel-clone-uploads/<ws>/<uuid>.<ext>`) that
+   *  WERE successfully processed by the loop. These get copied to the
+   *  per-job staging prefix (so the library survives) AND their
+   *  originals get deleted (the staging copy is the durable record).
+   *  We also carry the per-video metadata (title/transcript/duration)
+   *  so we can write the library row pointing at the staged key after
+   *  the copy lands. The staging-copy preserves array order, so
+   *  successfulFreshUploads[k]'s staged key is
+   *  `<jobId>/<padStart(k, 3)>.<ext>` — clean 1:1 indexing. */
+  interface SuccessfulFreshUpload {
+    originalKey: string;
+    title: string;
+    transcript: string;
+    transcriptWordCount: number;
+    durationSec: number;
+  }
+  const successfulFreshUploads: SuccessfulFreshUpload[] = [];
+  /** Fresh keys whose video FAILED to process — staging is pointless
+   *  (no metadata) but we still want to delete the original to keep
+   *  storage tidy. */
+  const failedFreshKeysToDelete: string[] = [];
   /** Library-reuse keys (`channel-clone-uploads-staging/<ws>/<oldJobId>/
-   *  ...`). Do NOT delete — the originating job still surfaces them in
-   *  the "pick from previous uploads" picker. Re-stage them under the
-   *  new job's prefix so save-as-template on this new job sees its
-   *  full set of staging keys. 2026-06-08 — when adding the picker. */
+   *  ...`). Do NOT delete — the originating job's library row still
+   *  surfaces them in the picker. Re-stage under the new job's prefix
+   *  so save-as-template sees the full set. */
   const libraryKeysToStageOnly: string[] = [];
   const r2Bucket = getReviewBucket();
+  // Hoisted out of the try block so the finally can pass it to the
+  // library-row writer. Starts at the operator-supplied sourceLabel
+  // and falls back to the first video's title inside the loop.
+  let sourceChannelName: string | null = sourceLabel.trim() || null;
   try {
     const { sandbox, workDir, ffmpegPath } = uploadSandbox;
     const sandboxJobDir = `${workDir}/intake-${jobId}`;
@@ -166,7 +187,6 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     // re-encode an audio window from the already-downloaded MP4
     // without spinning up a second sandbox.
     const videoSandboxPaths: Record<string, string> = {};
-    let sourceChannelName: string | null = sourceLabel.trim() || null;
 
     for (const [i, video] of videos.entries()) {
       if (await isCancelled()) return;
@@ -174,8 +194,6 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
       const isLibraryReuse = video.r2Key.startsWith('channel-clone-uploads-staging/');
       if (isLibraryReuse) {
         libraryKeysToStageOnly.push(video.r2Key);
-      } else {
-        freshKeysToStageAndDelete.push(video.r2Key);
       }
       try {
         // Filename inside the sandbox. Extension is preserved from
@@ -310,12 +328,33 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
           transcript,
         });
         sourceChannelName = sourceChannelName ?? video.title;
+        // Library-row metadata is only meaningful for fresh uploads —
+        // library-reuse videos already have a library row from their
+        // originating job. Capturing it here (post-success, in-order)
+        // means the index into successfulFreshUploads aligns with the
+        // staged-copy index, which is how we'll derive the staged
+        // r2_key when we write the library row post-staging.
+        if (!isLibraryReuse) {
+          successfulFreshUploads.push({
+            originalKey: video.r2Key,
+            title: video.title,
+            transcript: transcript ? transcript.lines.map((l) => l.text).join('\n').trim() : '',
+            transcriptWordCount: transcript?.wordCount ?? 0,
+            durationSec: Math.round(durSec),
+          });
+        }
         log.info('intake', `video ${i + 1}/${videos.length} done`, {
           frames: frames.length,
           transcript: transcript ? `${transcript.wordCount} words` : 'none',
           durationSec: Math.round(durSec),
         });
       } catch (err) {
+        if (!isLibraryReuse) {
+          // Fresh upload that failed mid-processing — schedule the
+          // source bytes for delete-only cleanup so storage isn't
+          // wasted on an unreusable upload.
+          failedFreshKeysToDelete.push(video.r2Key);
+        }
         log.warn('intake', `video ${i + 1}/${videos.length} failed; skipping`, {
           error: errorMessage(err),
         });
@@ -390,18 +429,28 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     });
   } finally {
     await destroyUploadSandbox(jobId, uploadSandbox, log);
-    // Source-upload cleanup. Plan 2 (template snapshots) needs the
-    // operator's uploaded videos to survive the original-job-deleted
-    // case, so we COPY each source object into the per-job staging
-    // prefix BEFORE deleting the original. The staging prefix has a
-    // 7-day R2 lifecycle rule (see ops docs); if no template is saved
-    // within that window, the lifecycle rule reaps it.
+    // Source-upload cleanup + library-row persistence.
+    //   1. Stage every successful fresh upload + every library-reuse
+    //      source into channel-clone-uploads-staging/<wsId>/<jobId>/.
+    //   2. Delete the original fresh-upload keys (both the successful
+    //      ones — staged copy is now durable — and the failed ones).
+    //   3. For each successful fresh upload, INSERT a library row
+    //      pointing at its STAGED key so the next run's "Pick from
+    //      previous uploads" picker shows the video with its title +
+    //      transcript pre-filled.
     //
-    // The staging key is deterministic
-    // (`channel-clone-uploads-staging/<wsId>/<jobId>/<i>.<ext>`) so the
-    // save-as-template route can reconstruct the list from the job's
-    // sampleVideos without us persisting a new state field.
-    await stageAndDeleteSourceUploads(jobId, workspaceId, freshKeysToStageAndDelete, libraryKeysToStageOnly, r2Bucket);
+    // Library rows persist independently of the job row, so a future
+    // DELETE of this job no longer erases reusability. The staging
+    // prefix is permanent (no R2 TTL since 2026-06-08, commit
+    // 4ec629ab); the library row + R2 bytes outlive the job.
+    await stageDeleteAndPersistLibrary(
+      jobId, workspaceId,
+      successfulFreshUploads,
+      libraryKeysToStageOnly,
+      failedFreshKeysToDelete,
+      sourceChannelName,
+      r2Bucket,
+    );
   }
 
   // Voice-profile LLM call (Plan 1A — best-effort, never throws).
@@ -439,32 +488,55 @@ function stagingKeyForVideo(workspaceId: string, jobId: string, index: number, e
   return `channel-clone-uploads-staging/${workspaceId}/${jobId}/${String(index).padStart(3, '0')}.${ext}`;
 }
 
-/** Post-intake R2 cleanup. Two key classes:
- *   - `freshKeys` (under `channel-clone-uploads/<ws>/<uuid>`): copy to
- *     the per-job staging prefix, then DELETE the original. The
- *     original was a one-shot upload landing pad — once the bytes are
- *     in staging we don't need it anywhere else.
- *   - `libraryKeys` (already under `channel-clone-uploads-staging/<ws>/
- *     <oldJobId>/...`): copy to the new job's staging prefix so save-
- *     as-template on this new job sees its full set of keys; but DO
- *     NOT delete the original — the originating job still surfaces
- *     them in the "pick from previous uploads" picker and other future
- *     runs may want to reuse the same video too.
+interface SuccessfulFreshUploadForStaging {
+  originalKey: string;
+  title: string;
+  transcript: string;
+  transcriptWordCount: number;
+  durationSec: number;
+}
+
+/** Post-intake cleanup + library persistence. Three key classes:
+ *   - `successfulFresh` (under `channel-clone-uploads/<ws>/<uuid>`,
+ *     metadata captured): copy to staging, delete original, and INSERT
+ *     a library row pointing at the staged key.
+ *   - `libraryReuseKeys` (already under
+ *     `channel-clone-uploads-staging/<ws>/<oldJobId>/...`): copy to
+ *     the new job's staging prefix so save-as-template on the new run
+ *     sees its full set of keys, but DO NOT delete the original and
+ *     DO NOT insert a duplicate library row — the originating job
+ *     already owns the row.
+ *   - `failedFreshKeys`: delete-only. No metadata available so no
+ *     library row + no staged copy worth keeping.
  *
- *  Both copy ops are best-effort and per-key; failures are logged so
- *  a single bad object doesn't strand the rest. */
-async function stageAndDeleteSourceUploads(
+ *  Copy operations are best-effort and per-key; failures are logged
+ *  so a single bad object doesn't strand the rest. Library-row inserts
+ *  are wrapped in tryPersistUploadedVideo (log-and-swallow) so a DB
+ *  hiccup never fails the intake. */
+async function stageDeleteAndPersistLibrary(
   jobId: string,
   workspaceId: string,
-  freshKeys: string[],
-  libraryKeys: string[],
+  successfulFresh: SuccessfulFreshUploadForStaging[],
+  libraryReuseKeys: string[],
+  failedFreshKeys: string[],
+  sourceChannelName: string | null,
   bucket: string,
 ): Promise<void> {
-  // Lazy-import the R2 copy helper so the existing intake-upload-runner
-  // module graph stays compact for callers that never hit this path.
+  // Lazy-import the R2 copy helper + the library-row helper so the
+  // existing intake-upload-runner module graph stays compact for
+  // callers that never hit this path.
   const { copyR2KeysToPrefix } = await import('./templates-r2');
+  const { tryPersistUploadedVideo } = await import('./uploaded-videos-store');
   const destPrefix = `channel-clone-uploads-staging/${workspaceId}/${jobId}`;
-  const allKeysToCopy = [...freshKeys, ...libraryKeys];
+
+  // Build the source-key list for the copy. The order matters because
+  // the dest filenames are derived by index in copyR2KeysToPrefix —
+  // successfulFresh first (matching successfulFresh[k]'s staged key to
+  // index k), then libraryReuseKeys.
+  const successfulFreshOriginalKeys = successfulFresh.map((f) => f.originalKey);
+  const allKeysToCopy = [...successfulFreshOriginalKeys, ...libraryReuseKeys];
+
+  let stagedFreshDestKeys: string[] = [];
   if (allKeysToCopy.length > 0) {
     try {
       const result = await copyR2KeysToPrefix({
@@ -472,9 +544,17 @@ async function stageAndDeleteSourceUploads(
         destPrefix,
         bucket,
       });
+      // Map source → dest so we can later look up the staged key
+      // each successfulFresh entry landed at, even if some copies in
+      // the middle of the list failed.
+      const sourceToDest = new Map(result.copiedKeys.map((c) => [c.sourceKey, c.destKey]));
+      stagedFreshDestKeys = successfulFreshOriginalKeys.map((k) => sourceToDest.get(k) ?? '');
       logger.info('[channel-clone intake-upload] staging-copy done', {
-        jobId, copied: result.copiedKeys.length, failed: result.failedIndices.length,
-        freshCount: freshKeys.length, libraryReuseCount: libraryKeys.length,
+        jobId,
+        copied: result.copiedKeys.length,
+        failed: result.failedIndices.length,
+        freshCount: successfulFresh.length,
+        libraryReuseCount: libraryReuseKeys.length,
       });
     } catch (err) {
       logger.warn('[channel-clone intake-upload] staging-copy threw', {
@@ -482,9 +562,43 @@ async function stageAndDeleteSourceUploads(
       });
     }
   }
-  // R2 source delete runs only for FRESH uploads. Library-reuse keys
-  // are left in place so the originating job's picker entry survives.
-  for (const key of freshKeys) {
+
+  // Library-row persistence. One row per SUCCESSFUL FRESH upload, at
+  // the staged key. Library reuses don't insert a new row (their
+  // originating job already owns one). Failures are absorbed inside
+  // tryPersistUploadedVideo.
+  for (let k = 0; k < successfulFresh.length; k++) {
+    const entry = successfulFresh[k];
+    const stagedKey = stagedFreshDestKeys[k];
+    if (!stagedKey) {
+      // The staging-copy didn't return a dest for this entry — most
+      // likely the per-key CopyObject failed. Skip the library row
+      // since we'd be advertising a key that isn't on R2. The R2
+      // delete of the original still runs below so storage doesn't
+      // leak.
+      logger.warn('[channel-clone intake-upload] no staged dest for fresh entry — skipping library row', {
+        jobId, originalKey: entry.originalKey,
+      });
+      continue;
+    }
+    await tryPersistUploadedVideo({
+      workspaceId,
+      r2Key: stagedKey,
+      title: entry.title,
+      transcript: entry.transcript,
+      transcriptWordCount: entry.transcriptWordCount,
+      durationSec: entry.durationSec,
+      sourceJobId: jobId,
+      sourceJobName: sourceChannelName,
+    });
+  }
+
+  // R2 source delete runs for BOTH successful-fresh originals (the
+  // staging copy is now the durable record) and failed-fresh originals
+  // (no copy worth keeping). Library-reuse keys are left untouched —
+  // they live on under their originating job's prefix.
+  const allFreshKeysToDelete = [...successfulFreshOriginalKeys, ...failedFreshKeys];
+  for (const key of allFreshKeysToDelete) {
     void stagingKeyForVideo; // referenced for the export-only helper above
     deleteFromBucket(bucket, key).catch((err) => {
       logger.warn('[channel-clone intake-upload] r2 delete failed', {

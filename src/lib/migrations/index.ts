@@ -124,6 +124,7 @@ import migration0121 from './0121_create_channel_clone_templates';
 import migration0122 from './0122_create_shorts_batches';
 import migration0123 from './0123_add_youtube_columns_to_shorts';
 import migration0124 from './0124_create_youtube_quota_usage';
+import migration0125 from './0125_create_channel_clone_uploaded_videos';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -255,6 +256,7 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0122,
   migration0123,
   migration0124,
+  migration0125,
 ]);
 
 /**

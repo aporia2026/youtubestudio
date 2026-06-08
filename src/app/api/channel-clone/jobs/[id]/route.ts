@@ -19,9 +19,13 @@ import {
   getChannelCloneJob,
   setChannelCloneJobStatus,
 } from '@/lib/channel-clone/job-store';
-import { deleteR2Prefix } from '@/lib/channel-clone/templates-r2';
 import { logger } from '@/lib/logger';
 import type { ChannelCloneJobStatus } from '@/lib/channel-clone/types';
+
+// The DELETE handler used to fire-and-forget deleteR2Prefix() against
+// the per-job staging prefix. We removed that on 2026-06-08 so the
+// channel_clone_uploaded_videos library (mig 0125) outlives any single
+// job. The import is intentionally not here.
 
 export const maxDuration = 10;
 
@@ -108,16 +112,13 @@ export const DELETE = apiRoute.authed(async (session, _req: NextRequest, ctx: Ro
     // 404 for both keeps existence private.
     return NextResponse.json({ error: 'job not found' }, { status: 404 });
   }
-  // Fire-and-forget the staging-prefix cleanup. 2026-06-08 — we
-  // dropped the 7-day R2 lifecycle on this prefix so reuse stays
-  // possible indefinitely; the only way the prefix gets reclaimed
-  // now is when the operator deletes the run (here) or saves it as
-  // a template (which migrates into the templates prefix). Errors
-  // are swallowed so a slow R2 doesn't bubble back to the user.
-  void deleteR2Prefix(`channel-clone-uploads-staging/${session.ws}/${id}/`).catch((err) => {
-    logger.warn('[channel-clone job-delete] staging prefix cleanup failed', {
-      jobId: id, error: err instanceof Error ? err.message : String(err),
-    });
-  });
+  // Library + R2 staging are now DECOUPLED from job lifecycle.
+  // 2026-06-08 — deleting a job no longer touches R2 or the
+  // channel_clone_uploaded_videos table. The user pushed back on the
+  // previous coupling — "It needs to save the uploaded videos and
+  // transcripts regardless! These are all videos that are in our
+  // storage!" — and they were right. Reusable videos outlive the
+  // jobs that uploaded them; the operator manages the library
+  // separately via /api/channel-clone/uploaded-videos DELETE.
   return NextResponse.json({ ok: true });
 });
