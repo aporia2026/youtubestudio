@@ -24,6 +24,14 @@ import {
   newTabId,
   type ProjectPatchedBroadcast,
 } from '@/lib/project/broadcast-sync';
+import {
+  clearDraft,
+  decideRecovery,
+  readDraft,
+  writeDraft,
+  type DraftEnvelope,
+  type DraftPayload,
+} from './draft-storage';
 
 const AUTO_SAVE_DEBOUNCE_MS = 800;
 
@@ -45,6 +53,19 @@ export interface UseEditorStoreReturn {
   saveStatus: SaveStatus;
   canUndo: boolean;
   canRedo: boolean;
+  /** Set when a localStorage draft from a prior crashed session is
+   *  detected at mount AND the draft sits on top of the current
+   *  server version (safe to restore). The editor surfaces a banner
+   *  with Restore / Discard buttons; both actions clear this back to
+   *  null. Null when no draft exists or the draft is stale. */
+  recoverableDraft: { savedAt: number; baseVersion: number } | null;
+  /** Apply the recoverable draft to live state + mark dirty so the
+   *  next autosave commits it. No-op when there's no draft to
+   *  recover. */
+  acceptRecoverableDraft: () => void;
+  /** Drop the localStorage draft without applying it. Used by the
+   *  "Discard" button on the recovery banner. */
+  discardRecoverableDraft: () => void;
 }
 
 export interface UseEditorStoreOptions {
@@ -392,6 +413,118 @@ export function useEditorStore(
     };
   }, [state, performSave]);
 
+  // ─── Crash-recovery draft (2026-06-08) ──────────────────────────
+  //
+  // The 800ms autosave debounce above is great for batching, but it
+  // means there's an 800ms window after every edit where a React
+  // crash (error #185, an unhandled throw, browser tab killed) wipes
+  // the unsaved work. The user reported losing everything on a
+  // crash; this layer protects against that by mirroring the dirty
+  // state into localStorage SYNCHRONOUSLY on every dispatch.
+  //
+  // Storage shape + recovery decision live in `draft-storage.ts`
+  // (pure, unit-tested). The hook just wires write/read/clear into
+  // the lifecycle.
+  const [recoverableDraft, setRecoverableDraft] = useState<
+    { savedAt: number; baseVersion: number } | null
+  >(null);
+  const pendingDraftPayloadRef = useRef<DraftPayload | null>(null);
+
+  // Mount-time recovery probe. Reads any saved draft, decides
+  // whether it's safe to surface, and either offers it to the
+  // caller (via recoverableDraft) or discards it. Runs ONCE per
+  // mount on purpose — checking after every state change would
+  // re-trigger the banner the moment the user starts editing.
+  useEffect(() => {
+    if (!projectId) return;
+    const draft = readDraft(projectId);
+    const decision = decideRecovery(draft, state.version);
+    if (decision === 'restore' && draft) {
+      console.info('[editor draft] recoverable draft detected', {
+        projectId,
+        savedAt: draft.savedAt,
+        baseVersion: draft.baseVersion,
+      });
+      pendingDraftPayloadRef.current = draft.payload;
+      setRecoverableDraft({ savedAt: draft.savedAt, baseVersion: draft.baseVersion });
+    } else if (decision === 'stale') {
+      console.info('[editor draft] discarding stale draft', {
+        projectId,
+        draftBaseVersion: draft?.baseVersion,
+        serverVersion: state.version,
+      });
+      clearDraft(projectId);
+    }
+    // intentionally no deps beyond mount — we only want to probe once
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Write the draft on every dirty state change; clear it after the
+  // save commits (isDirty flips false). Synchronous localStorage
+  // write — fires before the next render can throw, so a React
+  // crash inside the same tick preserves the just-dispatched edits.
+  useEffect(() => {
+    if (!projectId) return;
+    if (!state.isDirty) {
+      // The save just committed (or initial load); drop any prior
+      // draft so the next mount doesn't re-offer a superseded one.
+      clearDraft(projectId);
+      return;
+    }
+    const envelope: DraftEnvelope = {
+      v: 1,
+      savedAt: Date.now(),
+      baseVersion: state.version,
+      payload: persistableFromState(state),
+    };
+    const result = writeDraft(projectId, envelope);
+    if (!result.ok && result.reason === 'quota') {
+      // QuotaExceeded — log once per mount, don't spam. The
+      // in-memory edits are still safe; only crash survival is
+      // degraded.
+      console.warn('[editor draft] localStorage quota exceeded; crash recovery disabled', {
+        projectId,
+      });
+    }
+  }, [state, projectId]);
+
+  const acceptRecoverableDraft = useCallback(() => {
+    const payload = pendingDraftPayloadRef.current;
+    if (!payload) return;
+    console.info('[editor draft] accepting recovered draft', { projectId });
+    dispatch({
+      type: 'RESTORE_DRAFT',
+      doc: payload.doc,
+      rowImages: payload.rowImages,
+      voiceoverUrl: payload.voiceoverUrl,
+      captions: payload.captions as EditorState['captions'],
+      rowOverlays: payload.rowOverlays,
+      rowVideoClips: payload.rowVideoClips,
+      musicUrl: payload.musicUrl,
+      brandKitOverride: payload.brandKitOverride as EditorState['brandKitOverride'],
+      channelId: payload.channelId,
+      voiceoverAlignment: payload.voiceoverAlignment as EditorState['voiceoverAlignment'],
+      flags: payload.flags as EditorState['flags'],
+      linkedProjectId: payload.linkedProjectId,
+      linkedScheduleItemId: payload.linkedScheduleItemId,
+      visualKitOverride: payload.visualKitOverride as EditorState['visualKitOverride'],
+      version: stateRef.current.version,
+    });
+    pendingDraftPayloadRef.current = null;
+    setRecoverableDraft(null);
+    // The draft-write effect above will re-write the envelope with
+    // the restored state on the next render; we don't need to
+    // explicitly call writeDraft here.
+  }, [projectId]);
+
+  const discardRecoverableDraft = useCallback(() => {
+    if (!projectId) return;
+    console.info('[editor draft] discarding recovered draft (user choice)', { projectId });
+    clearDraft(projectId);
+    pendingDraftPayloadRef.current = null;
+    setRecoverableDraft(null);
+  }, [projectId]);
+
   // Cmd/Ctrl+S — force-flush on save shortcut. Listens at the window
   // so it works even when focus is in a text input inside the editor.
   useEffect(() => {
@@ -599,5 +732,8 @@ export function useEditorStore(
     saveStatus,
     canUndo: state.undoStack.length > 0,
     canRedo: state.redoStack.length > 0,
+    recoverableDraft,
+    acceptRecoverableDraft,
+    discardRecoverableDraft,
   };
 }

@@ -480,7 +480,10 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       },
     },
   );
-  const { state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo } = store;
+  const {
+    state, apply, flushSave, reloadFromServer, saveStatus, canUndo, canRedo,
+    recoverableDraft, acceptRecoverableDraft, discardRecoverableDraft,
+  } = store;
   applyRef.current = apply;
 
   // Mid-session save-error escalation (2026-06-04). Mirrors the
@@ -4091,6 +4094,70 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
             }
           }}
         />
+      )}
+      {/* Crash-recovery banner — fires once on mount when a
+          localStorage draft from a prior crashed/closed session is
+          detected. Restore replays the unsaved edits and the next
+          autosave commits them; Discard drops the draft. See
+          src/lib/editor/draft-storage.ts. */}
+      {recoverableDraft && (
+        <div
+          role="alert"
+          aria-label="Recoverable unsaved edits"
+          style={{
+            padding: '10px 14px',
+            background: 'var(--accent-amber-soft, rgba(245, 158, 11, 0.12))',
+            border: '1px solid var(--accent-amber, #f59e0b)',
+            borderRadius: 8,
+            margin: '0 0 8px 0',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            fontSize: 13,
+            color: 'var(--fg)',
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            Unsaved edits from{' '}
+            {new Date(recoverableDraft.savedAt).toLocaleString()} were
+            found. Restore them?
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              acceptRecoverableDraft();
+              console.info('[editor draft banner] restored');
+            }}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--accent-amber, #f59e0b)',
+              background: 'var(--accent-amber, #f59e0b)',
+              color: '#1a1a1a',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Restore
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              discardRecoverableDraft();
+              console.info('[editor draft banner] discarded');
+            }}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--editor-edge)',
+              background: 'transparent',
+              color: 'var(--fg)',
+              cursor: 'pointer',
+            }}
+          >
+            Discard
+          </button>
+        </div>
       )}
       <div
         ref={previewContainerRef}

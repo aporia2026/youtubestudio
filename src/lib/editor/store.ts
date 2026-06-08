@@ -181,6 +181,32 @@ export type EditorCommand =
       visualKitOverride?: ChannelVisualBrandKit;
       version: number;
     }
+  /** Load a localStorage-backed crash-recovery draft into state.
+   *  Same payload shape as RESET_FROM_SERVER, but FLIPS isDirty TRUE
+   *  so the next autosave debounce persists the recovered work to the
+   *  server. Used by the editor's mount-time recovery prompt — see
+   *  `src/lib/editor/draft-storage.ts`. */
+  | {
+      type: 'RESTORE_DRAFT';
+      doc: ProductionDoc;
+      rowImages: Record<number, string>;
+      voiceoverUrl?: string;
+      captions?: CaptionsBundle;
+      rowOverlays?: Record<number, RowOverlayRenderState>;
+      rowVideoClips?: Record<number, RowVideoClipState>;
+      musicUrl?: string;
+      brandKitOverride?: Partial<BrandKit>;
+      channelId?: string;
+      voiceoverAlignment?: ForcedAlignmentResponse;
+      flags?: ProjectPayloadFlags;
+      linkedProjectId?: string;
+      linkedScheduleItemId?: string;
+      visualKitOverride?: ChannelVisualBrandKit;
+      /** The server version the draft was based on. Stays as the
+       *  local version so the next save's optimistic-concurrency
+       *  check still works. */
+      version: number;
+    }
   | { type: 'UNDO' }
   | { type: 'REDO' }
   | {
@@ -878,6 +904,7 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
         inverse: null,
       };
 
+    case 'RESTORE_DRAFT':
     case 'RESET_FROM_SERVER':
       return {
         next: {
@@ -897,7 +924,11 @@ function applyMutation(state: EditorState, cmd: EditorCommand): MutationResult {
           linkedScheduleItemId: cmd.linkedScheduleItemId,
           visualKitOverride: cmd.visualKitOverride,
           version: cmd.version,
-          isDirty: false,
+          // RESTORE_DRAFT flips dirty TRUE so the next autosave
+          // commits the recovered work to the server. RESET_FROM_SERVER
+          // is a clean reload from the canonical store — dirty stays
+          // false until the user makes a new edit.
+          isDirty: cmd.type === 'RESTORE_DRAFT',
           undoStack: [],
           redoStack: [],
           selection: null,
