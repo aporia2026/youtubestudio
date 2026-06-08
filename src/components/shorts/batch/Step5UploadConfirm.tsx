@@ -11,11 +11,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import type { ShortsBatchWithShorts } from '@/lib/shorts-batches-types';
 import type {
+  ShortsBatchWithShorts,
   BatchUploadOutcome,
   SingleShortUploadOutcome,
-} from '@/lib/shorts-batch-uploader';
+} from '@/lib/shorts-batches-types';
 
 interface QuotaSnapshot {
   channelId: string;

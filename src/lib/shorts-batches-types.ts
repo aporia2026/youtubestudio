@@ -204,3 +204,35 @@ export interface YoutubeUploadResult {
   status: ShortYoutubeStatus;
   publishAtUtc: string | null;
 }
+
+/** Per-playlist attachment outcome. Mirrors what
+ *  `addVideoToPlaylists` (in `youtube-playlists.ts`) returns. Lives
+ *  here so client components can type-check upload responses without
+ *  importing the server-only uploader. */
+export interface PlaylistAttachmentResult {
+  playlistId: string;
+  success: boolean;
+  error: string | null;
+}
+
+/** Result for a single short upload — same shape whether the caller
+ *  invoked the one-off path or the drain-all path. */
+export interface SingleShortUploadOutcome {
+  shortId: string;
+  ok: boolean;
+  videoId: string | null;
+  status: ShortYoutubeStatus | null;
+  playlistResults: PlaylistAttachmentResult[];
+  error: string | null;
+}
+
+/** Result for the drain-all path — one outcome per short the
+ *  uploader picked up plus any that were skipped. */
+export interface BatchUploadOutcome {
+  batchId: string;
+  processed: SingleShortUploadOutcome[];
+  /** Shorts that were in the batch but skipped (e.g. not yet
+   *  rendered, already uploaded). The UI can show "X skipped:
+   *  awaiting render" if the count is non-zero. */
+  skipped: Array<{ shortId: string; reason: string }>;
+}

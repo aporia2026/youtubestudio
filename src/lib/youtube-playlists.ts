@@ -18,6 +18,10 @@
  * Cheap relative to videos.insert (100 units).
  */
 
+import type { PlaylistAttachmentResult } from './shorts-batches-types';
+// Re-export so existing callers keep working with this import path.
+export type { PlaylistAttachmentResult };
+
 const PLAYLISTS_LIST_BASE = 'https://www.googleapis.com/youtube/v3/playlists';
 const PLAYLIST_ITEMS_BASE = 'https://www.googleapis.com/youtube/v3/playlistItems';
 
@@ -28,16 +32,6 @@ export interface YoutubePlaylist {
   id: string;
   title: string;
   itemCount: number | null;
-}
-
-/** Outcome for a single playlist attachment. The uploader records
- *  the array verbatim so the review queue can show which playlist
- *  attachments failed (e.g. private playlist owned by another
- *  account) without rolling back the upload itself. */
-export interface PlaylistAttachmentResult {
-  playlistId: string;
-  success: boolean;
-  error: string | null;
 }
 
 /**

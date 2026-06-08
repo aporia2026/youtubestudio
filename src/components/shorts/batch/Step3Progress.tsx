@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ShortsBatchWithShorts, BatchTickResult } from '@/lib/shorts-batches-types';
 import type { ShortRow } from '@/lib/shorts-types';
-import { nextStageFor } from '@/lib/shorts-batch-orchestrator';
+import { nextStageFor } from '@/lib/shorts-batch-stages';
 
 interface Props {
   batchId: string;

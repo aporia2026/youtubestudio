@@ -58,35 +58,25 @@ import type {
   ShortsBatchRow,
   YoutubeUploadMetadata,
 } from './shorts-batches-types';
+// Pure stage helpers live in their own module so client components
+// (Step3Progress) can use them without dragging this server-only
+// orchestrator (and its transitive Node-only deps) into the browser
+// bundle. Re-exported here for callers that already import from this
+// path.
+export {
+  isShortTerminal,
+  nextStageFor,
+  allShortsAtTerminal,
+  type BatchStage,
+} from './shorts-batch-stages';
+import { isShortTerminal, nextStageFor, allShortsAtTerminal } from './shorts-batch-stages';
+import type { BatchStage } from './shorts-batch-stages';
 
 /** Concurrency cap per tick. Three is enough to keep wall-clock
  *  decent (3 voiceover calls in parallel ≈ 30s instead of 90s) while
  *  staying well under ElevenLabs's typical concurrency limits and
  *  the Vercel function budget. */
 export const MAX_PER_TICK = 3;
-
-/** A short is "terminal" (the orchestrator is done with it) when
- *  either render finished OR the generation pipeline errored. */
-export function isShortTerminal(short: ShortRow): boolean {
-  if (short.rendered_video_url) return true;
-  if (short.generation_progress?.phase === 'error') return true;
-  return false;
-}
-
-/** Pure: figure out the next stage for a given short, or null if
- *  the short is at a terminal state (or awaiting render that
- *  the asset pipeline owns). Exposed for unit tests so the stage
- *  matrix is verifiable without a DB. */
-export type BatchStage = 'extract' | 'voiceover' | 'seo' | 'awaiting_render' | 'terminal';
-
-export function nextStageFor(short: ShortRow): BatchStage {
-  if (isShortTerminal(short)) return 'terminal';
-  if (!short.short_script) return 'extract';
-  if (!short.voiceover_audio_url) return 'voiceover';
-  if (!short.seo_result) return 'seo';
-  if (!short.rendered_video_url) return 'awaiting_render';
-  return 'terminal';
-}
 
 /** Pick up to `MAX_PER_TICK` shorts from the batch that the
  *  orchestrator can actually advance this tick (i.e. nextStage is
@@ -103,17 +93,6 @@ export function pickShortsToAdvance(shorts: readonly ShortRow[]): ShortRow[] {
     }
   }
   return out;
-}
-
-/** True when every short in the cohort is at a terminal state OR
- *  awaiting render (the orchestrator has no more stages to run for
- *  ANY short in the batch). Used to decide whether to transition the
- *  batch out of 'generating'. The transition to 'review' itself only
- *  happens when every short is fully terminal — awaiting_render
- *  blocks the batch from advancing because the user can't review
- *  a not-yet-rendered short. */
-export function allShortsAtTerminal(shorts: readonly ShortRow[]): boolean {
-  return shorts.every(isShortTerminal);
 }
 
 // ─── Stage executors ────────────────────────────────────────────────

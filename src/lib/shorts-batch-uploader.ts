@@ -31,7 +31,7 @@
 import { sql } from '@vercel/postgres';
 import { getValidAccessToken } from './google-oauth';
 import { uploadVideo, VIDEOS_INSERT_QUOTA_UNITS } from './youtube-upload';
-import { addVideoToPlaylists, type PlaylistAttachmentResult } from './youtube-playlists';
+import { addVideoToPlaylists } from './youtube-playlists';
 import { recordUploadCharge } from './youtube-quota';
 import { getBatchWithShorts } from './shorts-batches';
 import type { ShortRow } from './shorts-types';
@@ -39,29 +39,15 @@ import type {
   ShortYoutubeStatus,
   YoutubeUploadMetadata,
   YoutubeUploadResult,
+  PlaylistAttachmentResult,
+  SingleShortUploadOutcome,
+  BatchUploadOutcome,
 } from './shorts-batches-types';
-
-/** Result for a single short upload — same shape whether the caller
- *  invoked the one-off path or the drain-all path. */
-export interface SingleShortUploadOutcome {
-  shortId: string;
-  ok: boolean;
-  videoId: string | null;
-  status: ShortYoutubeStatus | null;
-  playlistResults: PlaylistAttachmentResult[];
-  error: string | null;
-}
-
-/** Result for the drain-all path — one outcome per short the
- *  uploader picked up. */
-export interface BatchUploadOutcome {
-  batchId: string;
-  processed: SingleShortUploadOutcome[];
-  /** Shorts that were in the batch but skipped (e.g. not yet
-   *  rendered, already uploaded). The UI can show "X skipped:
-   *  awaiting render" if the count is non-zero. */
-  skipped: Array<{ shortId: string; reason: string }>;
-}
+// Re-export the outcome types so existing callers can keep their
+// import paths. The actual definitions live in `shorts-batches-types.ts`
+// (client-safe) so UI components don't pull this server-only module
+// into the browser bundle even via `import type`.
+export type { SingleShortUploadOutcome, BatchUploadOutcome };
 
 /** Pure: tell the caller why a short can't be uploaded right now, or
  *  null if it's eligible. Exposed so the upload-all path can show a
