@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import { bulkDeleteChannelCloneJobs } from '@/lib/channel-clone/job-store';
+import { deleteR2Prefix } from '@/lib/channel-clone/templates-r2';
 import { logger } from '@/lib/logger';
 
 export const maxDuration = 15;
@@ -55,24 +56,26 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
         );
       }
     }
-    const deleted = await bulkDeleteChannelCloneJobs(session.ws, { ids: ids as string[] });
+    const deletedIds = await bulkDeleteChannelCloneJobs(session.ws, { ids: ids as string[] });
     logger.info('[channel-clone bulk-delete] by ids', {
       workspaceId: session.ws,
       requested: ids.length,
-      deleted,
+      deleted: deletedIds.length,
     });
-    return NextResponse.json({ deleted });
+    fireStagingCleanup(session.ws, deletedIds);
+    return NextResponse.json({ deleted: deletedIds.length });
   }
 
   // Mode 2: scope.
   if (b.scope === 'all' || b.scope === 'failed') {
-    const deleted = await bulkDeleteChannelCloneJobs(session.ws, { scope: b.scope });
+    const deletedIds = await bulkDeleteChannelCloneJobs(session.ws, { scope: b.scope });
     logger.info('[channel-clone bulk-delete] by scope', {
       workspaceId: session.ws,
       scope: b.scope,
-      deleted,
+      deleted: deletedIds.length,
     });
-    return NextResponse.json({ deleted });
+    fireStagingCleanup(session.ws, deletedIds);
+    return NextResponse.json({ deleted: deletedIds.length });
   }
 
   return NextResponse.json(
@@ -80,3 +83,17 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     { status: 400 },
   );
 });
+
+/** Fire-and-forget cleanup of the per-job staging-prefix R2 objects
+ *  for every id that was actually deleted. Mirrors the per-job
+ *  DELETE handler. Per-job errors are swallowed so a slow R2 doesn't
+ *  block the route response. */
+function fireStagingCleanup(workspaceId: string, deletedIds: string[]): void {
+  for (const id of deletedIds) {
+    void deleteR2Prefix(`channel-clone-uploads-staging/${workspaceId}/${id}/`).catch((err) => {
+      logger.warn('[channel-clone bulk-delete] staging cleanup failed for id', {
+        jobId: id, error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+}

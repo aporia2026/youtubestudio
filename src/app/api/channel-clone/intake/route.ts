@@ -20,7 +20,7 @@
 import { after, NextRequest, NextResponse } from 'next/server';
 import { apiRoute } from '@/lib/route-helpers';
 import { logger } from '@/lib/logger';
-import { createChannelCloneJob } from '@/lib/channel-clone/job-store';
+import { createChannelCloneJob, getChannelCloneJob } from '@/lib/channel-clone/job-store';
 import { runIntake } from '@/lib/channel-clone/intake-runner';
 import { validateYoutubeUrl } from '@/lib/channel-clone/validate-youtube-url';
 
@@ -37,6 +37,19 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
   const b = (body ?? {}) as Record<string, unknown>;
+
+  // 2026-06-08 — "reuse a previous URL-intake run" path. The
+  // yt-dlp pipeline doesn't keep video bytes around, so we can't
+  // literally reuse the files, but we CAN one-click re-run with the
+  // operator's original source URL + the same sample count derived
+  // from the previous run. The recent-runs Reuse button hits this
+  // branch for URL-intake jobs and the fromJobId branch on
+  // /intake-upload for upload-intake jobs.
+  const fromJobId = typeof b.fromJobId === 'string' ? b.fromJobId.trim() : '';
+  if (fromJobId) {
+    return runFromPreviousUrlJob(session, fromJobId);
+  }
+
   const rawUrl = typeof b.url === 'string' ? b.url : '';
   if (!rawUrl) {
     return NextResponse.json({ error: 'url is required' }, { status: 400 });
@@ -104,3 +117,72 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
 
   return NextResponse.json({ jobId }, { status: 202 });
 });
+
+/** Reuse a URL-intake job by re-running yt-dlp + ffmpeg against the
+ *  same source channel URL. yt-dlp downloads fresh bytes — the
+ *  staging-prefix machinery only applies to upload-intake. Sample
+ *  count is inferred from the previous run's actual videos (close
+ *  enough to the original ask); frame interval falls back to the
+ *  default. Errors don't throw — we surface them via the job row's
+ *  `last_error` the same as a fresh intake. */
+async function runFromPreviousUrlJob(
+  session: { ws: string; uid: string },
+  fromJobId: string,
+): Promise<NextResponse> {
+  const oldJob = await getChannelCloneJob(fromJobId, session.ws);
+  if (!oldJob) {
+    return NextResponse.json({ error: 'previous run not found' }, { status: 404 });
+  }
+  const canonical = oldJob.source_canonical_url;
+  if (!canonical || canonical.startsWith('upload://') || canonical.startsWith('template://') || canonical.startsWith('reuseOf://')) {
+    return NextResponse.json(
+      { error: 'That run was an upload-intake — use the upload-intake reuse path instead.' },
+      { status: 409 },
+    );
+  }
+  const validation = validateYoutubeUrl(canonical);
+  if (!validation.ok) {
+    return NextResponse.json(
+      { error: `Cannot re-run: stored source URL is no longer valid (${validation.error}).` },
+      { status: 409 },
+    );
+  }
+  // Sample count: count of actually-fetched videos on the prior run
+  // (clipped to the allowed set). Falls back to 5 if intake never
+  // finished.
+  const sampleVideos = oldJob.state_jsonb.intake?.sampleVideos ?? [];
+  const inferredCount = sampleVideos.length;
+  const sampleVideoCount: 3 | 5 | 8 = inferredCount >= 8 ? 8
+    : inferredCount >= 5 ? 5
+    : inferredCount >= 3 ? 3
+    : 5;
+  const frameIntervalSec: 5 | 10 | 15 = 10;
+
+  const jobId = await createChannelCloneJob({
+    workspaceId: session.ws,
+    userId: session.uid,
+    sourceChannelUrl: canonical,
+    sourceCanonicalUrl: validation.parsed.canonical,
+  });
+  logger.info('[channel-clone intake] kickoff reusing URL-intake job', {
+    jobId, fromJobId, canonical, sampleVideoCount, frameIntervalSec,
+  });
+  after(async () => {
+    try {
+      await runIntake({
+        jobId,
+        workspaceId: session.ws,
+        canonicalUrl: validation.parsed.canonical,
+        kind: validation.parsed.kind,
+        sampleVideoCount,
+        frameIntervalSec,
+      });
+    } catch (err) {
+      logger.error('[channel-clone intake] runner crashed (URL reuse)', {
+        jobId, fromJobId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+  return NextResponse.json({ jobId, fromJobId }, { status: 202 });
+}

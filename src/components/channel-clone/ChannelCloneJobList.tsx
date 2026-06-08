@@ -305,7 +305,7 @@ function JobCard({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {isActive && <CancelButton jobId={job.id} onCancelled={onChanged} />}
-            {!isActive && canReuseJob(job) && <ReuseButton jobId={job.id} />}
+            {!isActive && canReuseJob(job) && <ReuseButton jobId={job.id} mode={isUploadJob(job) ? 'upload' : 'url'} />}
             <DeleteButton jobId={job.id} onDeleted={onChanged} />
             <StatusPill status={job.status} />
           </div>
@@ -373,11 +373,19 @@ function CancelButton({ jobId, onCancelled }: { jobId: string; onCancelled: () =
 }
 
 /** Predicate for "this job's inputs can be reused in a new run."
- *  True for upload-intake jobs whose intake completed (so there's a
- *  staging prefix in R2). URL-intake jobs return false because the
- *  yt-dlp path discards video bytes after the sandbox dies. */
+ *  Upload-intake jobs reuse the staging-prefix copies + the typed
+ *  transcripts; URL-intake jobs re-fetch with yt-dlp using the
+ *  stored canonical URL. Both paths require intake to have produced
+ *  at least the source URL / staging prefix. */
 function canReuseJob(job: JobListItem): boolean {
   if (!job.summary.hasIntake) return false;
+  // Any intake-complete job has either an upload sentinel OR a real
+  // YouTube canonical URL — both are reusable through their
+  // respective routes.
+  return true;
+}
+
+function isUploadJob(job: JobListItem): boolean {
   const url = job.sourceChannelUrl;
   return (
     url.startsWith('upload://')
@@ -386,24 +394,33 @@ function canReuseJob(job: JobListItem): boolean {
   );
 }
 
-/** Start a new run with this job's videos + transcripts. POSTs the
- *  fromJobId path on /api/channel-clone/intake-upload (server-side
- *  HEAD-probes the 7-day staging prefix and surfaces a clear error
- *  if any video has expired). Wrapped in the card's <Link>, so
- *  click handler stops navigation; navigates to the new job's
- *  detail page on success. */
-function ReuseButton({ jobId }: { jobId: string }) {
+/** Start a new run from this job's inputs. Upload-intake jobs reuse
+ *  the staged video files + the transcripts the operator typed;
+ *  URL-intake jobs re-run yt-dlp against the stored source URL. Both
+ *  POST a `{ fromJobId }` body — the route handler picks the right
+ *  intake path. Survives the "New Session" button because everything
+ *  lives server-side; clearing localStorage drafts is independent. */
+function ReuseButton({ jobId, mode }: { jobId: string; mode: 'upload' | 'url' }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const target = mode === 'upload'
+    ? '/api/channel-clone/intake-upload'
+    : '/api/channel-clone/intake';
+  const confirmMsg = mode === 'upload'
+    ? 'Start a new clone run using this run\'s uploaded videos + typed transcripts? The new run is independent; this one stays as it is.'
+    : 'Start a new clone run against the same source channel URL? yt-dlp will re-download fresh videos + captions. The previous run stays as it is.';
+  const tooltip = mode === 'upload'
+    ? 'Start a new run with this run\'s uploaded videos + transcripts. Videos stay in the staging prefix until the run is deleted.'
+    : 'Start a new URL-intake run with the same source channel URL. yt-dlp re-downloads fresh.';
   const handleClick = useCallback(
     async (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       if (busy) return;
-      if (!window.confirm('Start a new clone run using this run\'s videos + transcripts? The new run is independent; this one stays as it is.')) return;
+      if (!window.confirm(confirmMsg)) return;
       setBusy(true);
       try {
-        const res = await fetch('/api/channel-clone/intake-upload', {
+        const res = await fetch(target, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ fromJobId: jobId }),
@@ -420,14 +437,14 @@ function ReuseButton({ jobId }: { jobId: string }) {
         setBusy(false);
       }
     },
-    [busy, jobId, router],
+    [busy, jobId, router, target, confirmMsg],
   );
   return (
     <button
       type="button"
       onClick={(e) => void handleClick(e)}
       disabled={busy}
-      title="Start a new run with this run's videos and transcripts. Videos expire from the staging prefix after 7 days — older runs may not be reusable."
+      title={tooltip}
       className="rounded border border-emerald-900 bg-emerald-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-emerald-300 hover:border-emerald-700 hover:bg-emerald-900/60 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {busy ? '…' : '↻ Reuse'}

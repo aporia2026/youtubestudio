@@ -21,7 +21,7 @@
  * `_plans/2026-06-07-channel-clone-preset-templates.md`.
  */
 
-import { CopyObjectCommand, DeleteObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { CopyObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, HeadObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { logger } from '@/lib/logger';
 import { getDownloadUrlForBucket, getReviewBucket } from '@/lib/r2';
 
@@ -183,6 +183,76 @@ export async function deleteTemplateR2Keys(r2Keys: string[]): Promise<{ deleted:
   logger.info('[channel-clone templates r2] batch delete done', {
     totalKeys: r2Keys.length, deleted, failed,
   });
+  return { deleted, failed };
+}
+
+/** Walk an R2 prefix and delete every object underneath it. Used to
+ *  reclaim per-job staging copies when the operator deletes a run
+ *  from the recent-runs list. Iterative ListObjectsV2 → batched
+ *  DeleteObjects so a long prefix (rare — channel-clone-uploads-
+ *  staging only holds 1-8 videos per job) doesn't OOM us.
+ *
+ *  Best-effort: per-batch errors are logged and execution continues
+ *  so a single hiccup doesn't strand the rest. Returns the count of
+ *  successfully deleted objects so the caller can surface telemetry. */
+export async function deleteR2Prefix(prefix: string): Promise<{ deleted: number; failed: number }> {
+  const bucket = getReviewBucket();
+  const client = getR2Client();
+  let deleted = 0;
+  let failed = 0;
+  let continuationToken: string | undefined;
+
+  do {
+    let listResult;
+    try {
+      listResult = await client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+          MaxKeys: 1000,
+        }),
+      );
+    } catch (err) {
+      logger.warn('[channel-clone r2-prefix-delete] list failed; aborting', {
+        prefix, error: err instanceof Error ? err.message : String(err),
+      });
+      return { deleted, failed: failed + 1 };
+    }
+    const objects = listResult.Contents ?? [];
+    if (objects.length > 0) {
+      try {
+        const delResult = await client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: {
+              Objects: objects
+                .map((o) => o.Key)
+                .filter((k): k is string => typeof k === 'string')
+                .map((Key) => ({ Key })),
+              Quiet: true,
+            },
+          }),
+        );
+        const errs = delResult.Errors ?? [];
+        deleted += objects.length - errs.length;
+        failed += errs.length;
+        if (errs.length > 0) {
+          logger.warn('[channel-clone r2-prefix-delete] batch had per-object errors', {
+            prefix, batchSize: objects.length, errorCount: errs.length,
+          });
+        }
+      } catch (err) {
+        failed += objects.length;
+        logger.warn('[channel-clone r2-prefix-delete] batch delete failed', {
+          prefix, batchSize: objects.length, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    continuationToken = listResult.IsTruncated ? listResult.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  logger.info('[channel-clone r2-prefix-delete] done', { prefix, deleted, failed });
   return { deleted, failed };
 }
 

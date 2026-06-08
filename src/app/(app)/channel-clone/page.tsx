@@ -15,6 +15,7 @@ import type { Metadata } from 'next';
 import { ChannelClonePanel } from '@/components/channel-clone/ChannelClonePanel';
 import { ChannelCloneJobList } from '@/components/channel-clone/ChannelCloneJobList';
 import { ChannelCloneConfigView } from '@/components/channel-clone/ChannelCloneConfigView';
+import { NewSessionButton } from '@/components/channel-clone/NewSessionButton';
 
 export const metadata: Metadata = {
   title: 'Channel Clone',
@@ -25,8 +26,11 @@ export const metadata: Metadata = {
 export default function ChannelClonePage() {
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
-      <header className="space-y-1">
-        <h1 className="text-xl font-semibold text-neutral-100">Channel Clone</h1>
+      <header className="space-y-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <h1 className="text-xl font-semibold text-neutral-100">Channel Clone</h1>
+          <NewSessionButton />
+        </div>
         <p className="text-sm text-neutral-400">
           Turn any explainer YouTube channel into a ready-to-render production-doc draft.
           The pipeline walks through intake, deep style/audience analysis, topic ideation,

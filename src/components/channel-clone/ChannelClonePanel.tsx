@@ -370,20 +370,23 @@ export function ChannelClonePanel({ initialJobId }: ChannelClonePanelProps = {})
             <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">{job.lastError}</p>
           )}
           {isFailedStatus(job.status) && (
-            <RetryWithModel
-              jobId={job.id}
-              failedStatus={job.status}
-              jobState={state}
-              busy={busy !== null}
-              uiHints={{
-                topicCount,
-                threshold,
-                maxIterations,
-                useChannelStyle,
-                stylePresetId: stylePresetIdHint === 'auto' ? undefined : stylePresetIdHint,
-              }}
-              onRetried={() => { void pollOnce(job.id); }}
-            />
+            <>
+              <RetryWithModel
+                jobId={job.id}
+                failedStatus={job.status}
+                jobState={state}
+                busy={busy !== null}
+                uiHints={{
+                  topicCount,
+                  threshold,
+                  maxIterations,
+                  useChannelStyle,
+                  stylePresetId: stylePresetIdHint === 'auto' ? undefined : stylePresetIdHint,
+                }}
+                onRetried={() => { void pollOnce(job.id); }}
+              />
+              {state?.intake && <ReuseFromFailedJobButton job={job} />}
+            </>
           )}
           {state?.progressLog && state.progressLog.length > 0 && (
             <ProgressLogView entries={state.progressLog} active={ACTIVE_STATUSES.includes(job.status)} />
@@ -1553,6 +1556,81 @@ function RowifyView({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** Reuse-from-failed-job affordance. Renders directly under the
+ *  RetryWithModel block on a failed-stage panel so the operator
+ *  sees BOTH options:
+ *
+ *    - Retry with model    — resume from THIS run, re-firing the
+ *                            failed stage with a different model.
+ *    - Start new run       — abandon this run (it stays in the list
+ *                            for reference); kick off a fresh job
+ *                            using the same uploaded videos / typed
+ *                            transcripts (upload-intake) or the
+ *                            same source channel URL (URL-intake).
+ *
+ *  Most operators won't need this — Retry-with-model on a Kie 500
+ *  is usually the answer. But when an intake/topics/etc. failed in
+ *  a way the operator suspects can't be fixed by a model swap, the
+ *  fresh-run path is sometimes simpler than chasing the bug. */
+function ReuseFromFailedJobButton({ job }: { job: JobView }) {
+  const [busy, setBusy] = useState(false);
+  const isUpload =
+    job.sourceCanonicalUrl.startsWith('upload://')
+    || job.sourceCanonicalUrl.startsWith('template://')
+    || job.sourceCanonicalUrl.startsWith('reuseOf://');
+  const target = isUpload
+    ? '/api/channel-clone/intake-upload'
+    : '/api/channel-clone/intake';
+  const confirmMsg = isUpload
+    ? 'Start a new run with the SAME uploaded videos and transcripts? The current failed run stays in the list for reference.'
+    : 'Start a new URL-intake run against the SAME source channel URL? yt-dlp re-downloads fresh. The current failed run stays for reference.';
+  const handleClick = useCallback(async () => {
+    if (busy) return;
+    if (!window.confirm(confirmMsg)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(target, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fromJobId: job.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { jobId?: string; error?: string };
+      if (!res.ok || !data.jobId) {
+        alert(data.error ?? `Reuse failed (${res.status})`);
+        return;
+      }
+      window.location.href = `/channel-clone/${data.jobId}`;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, target, confirmMsg, job.id]);
+  return (
+    <div className="rounded border border-emerald-900/40 bg-emerald-950/20 p-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="space-y-0.5">
+          <p className="font-medium text-emerald-300">…or start a fresh run with these inputs</p>
+          <p className="text-[10px] text-emerald-200/70">
+            Different from "Retry with model" above — this kicks off a brand-new run from intake.
+            {isUpload
+              ? ' Same uploaded videos + transcripts, fresh job id.'
+              : ' Same source channel URL, fresh yt-dlp fetch.'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleClick()}
+          disabled={busy}
+          className="rounded bg-emerald-200 px-3 py-1 text-[11px] font-medium text-neutral-900 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+        >
+          {busy ? 'Starting…' : '↻ Start new run from these inputs'}
+        </button>
+      </div>
     </div>
   );
 }

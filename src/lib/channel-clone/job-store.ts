@@ -168,40 +168,47 @@ export async function deleteChannelCloneJob(
 export async function bulkDeleteChannelCloneJobs(
   workspaceId: string,
   opts: { ids?: string[]; scope?: 'all' | 'failed' },
-): Promise<number> {
+): Promise<string[]> {
+  // RETURNING id::text so the caller can fire per-job R2 cleanup
+  // (channel-clone-uploads-staging/<wsId>/<jobId>/) for each deleted
+  // row. Previously this returned just a count; the count is now the
+  // length of the returned array.
   if (opts.ids && opts.ids.length > 0) {
-    const { rowCount } = await sql.query(
+    const { rows } = await sql.query<{ id: string }>(
       `
       DELETE FROM channel_clone_jobs
        WHERE workspace_id = $1::uuid
          AND id = ANY($2::uuid[])
+       RETURNING id::text
       `,
       [workspaceId, opts.ids],
     );
-    return rowCount ?? 0;
+    return rows.map((r) => r.id);
   }
   if (opts.scope === 'failed') {
-    const { rowCount } = await sql.query(
+    const { rows } = await sql.query<{ id: string }>(
       `
       DELETE FROM channel_clone_jobs
        WHERE workspace_id = $1::uuid
          AND (status LIKE '%_failed' OR status = 'cancelled')
+       RETURNING id::text
       `,
       [workspaceId],
     );
-    return rowCount ?? 0;
+    return rows.map((r) => r.id);
   }
   if (opts.scope === 'all') {
-    const { rowCount } = await sql.query(
+    const { rows } = await sql.query<{ id: string }>(
       `
       DELETE FROM channel_clone_jobs
        WHERE workspace_id = $1::uuid
+       RETURNING id::text
       `,
       [workspaceId],
     );
-    return rowCount ?? 0;
+    return rows.map((r) => r.id);
   }
-  return 0;
+  return [];
 }
 
 /** Mark a job for cancellation. Atomic in SQL: sets
