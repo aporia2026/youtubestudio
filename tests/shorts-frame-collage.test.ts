@@ -93,6 +93,7 @@ function doodleRow(overrides: Partial<ShortRow> = {}): ShortRow {
     voiceover_duration_seconds: null,
     rendered_video_url: null,
     ai_model: null,
+    generation_params: {},
     notes: null,
     hook_score: null,
     dismissed_at: null,

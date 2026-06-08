@@ -89,6 +89,11 @@ export interface ShortRow {
   voiceover_duration_seconds: number | null;
   rendered_video_url: string | null;
   ai_model: string | null;
+  /** Per-row generation params blob (model id, niche, tone, target
+   *  seconds, batch_idea_input for bulk-batch placeholder shorts).
+   *  Stored on insert + read by the orchestrator's extract stage.
+   *  Shape is open — readers must validate the subset they care about. */
+  generation_params: Record<string, unknown>;
   notes: string | null;
   // Phase 1 (migration 0109): Mode A + auto-fan-out fields. Nullable on
   // rows that predate the column.
