@@ -1828,10 +1828,18 @@ export async function generateMotionCollage(args: {
         atlasUrl = edit.url;
         atlasPredictionId = edit.providerRequestId;
       } else if (refsAware) {
+        // Native 16:9 — Atlas's 2560×1440 is one of four supported sizes
+        // (see `AtlasSize` in atlas-cloud-images.ts) and matches the
+        // 1920×1080 canvas exactly with zero post-crop. Was previously
+        // 1536×1024 (3:2) → cropTo16x9AndUpload, which destroyed ~7.8%
+        // off the top + bottom of every panel — the user repeatedly hit
+        // labels and characters clipped at the top edge in motion-
+        // collage rows because the AI placed them where the crop would
+        // land. Plan: 2026-06-08-motion-collage-native-16x9.md.
         const atlasResult = await generateAtlasI2I({
           prompt: panel0Prompt,
           images: cappedRefs,
-          size: '1536x1024',
+          size: '2560x1440',
           quality: 'low',
         });
         atlasUrl = atlasResult.url;
@@ -1839,17 +1847,17 @@ export async function generateMotionCollage(args: {
       } else {
         const atlasResult = await generateAtlasT2I({
           prompt: panel0Prompt,
-          size: '1536x1024',
+          size: '2560x1440',
           quality: 'low',
         });
         atlasUrl = atlasResult.url;
         atlasPredictionId = atlasResult.predictionId ?? null;
       }
       providerRequestId = atlasPredictionId;
-      const croppedUrl = panel0FromCache
-        // Edit already returns 16:9 cropped — skip the redundant crop.
-        ? atlasUrl
-        : await cropTo16x9AndUpload(atlasUrl, 'prodoc-images-atlas-crop');
+      // Native 16:9 source — no crop needed. (Cache-hit Edit also
+      // returns 16:9 since its source IS panel 0, which is now 16:9
+      // natively. Both branches collapse to a no-op here.)
+      const croppedUrl = atlasUrl;
       const upscale = await upscaleViaRecraft(croppedUrl);
       const panelDurationMs = Date.now() - panelStart;
       const panelCostUsd = 0.0135;
