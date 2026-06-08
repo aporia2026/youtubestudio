@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { BASE_T2I_MODELS, type ShortsBaseT2iModelId } from '@/lib/shorts-base-t2i';
 import type { ShortsBatchWithShorts, BatchTickResult } from '@/lib/shorts-batches-types';
 import type { ShortRow, GenerationProgressState } from '@/lib/shorts-types';
 
@@ -74,6 +75,35 @@ export function Step3Progress({ batchId, onDone }: Props) {
         toast.success('Short cancelled');
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Cancel failed');
+      }
+    },
+    [],
+  );
+
+  /** Re-enqueue the short's asset generation with a different base
+   *  T2I model. Useful when the default (Atlas GPT Image 2) is
+   *  slow / erroring and the user wants to try Nano Banana or Flux
+   *  instead. POSTs to the existing /generate-style-assets endpoint
+   *  with the model override; the endpoint resets generation_progress
+   *  to 'queued' for the picked model. */
+  const retryAssetsWithModel = useCallback(
+    async (shortId: string, modelId: ShortsBaseT2iModelId) => {
+      try {
+        const res = await fetch(`/api/shorts/${shortId}/generate-style-assets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            style_id: 'doodle_explainer_2_short',
+            shorts_base_t2i_model_id: modelId,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        toast.success(`Re-queued with ${modelId}`);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Retry failed');
       }
     },
     [],
@@ -185,7 +215,13 @@ export function Step3Progress({ batchId, onDone }: Props) {
 
       <div className="space-y-2">
         {bundle.shorts.map((s) => (
-          <ShortProgressRow key={s.id} short={s} nowMs={now} onCancel={cancelShort} />
+          <ShortProgressRow
+            key={s.id}
+            short={s}
+            nowMs={now}
+            onCancel={cancelShort}
+            onRetryAssets={retryAssetsWithModel}
+          />
         ))}
       </div>
     </section>
@@ -281,10 +317,12 @@ function ShortProgressRow({
   short,
   nowMs,
   onCancel,
+  onRetryAssets,
 }: {
   short: ShortRow;
   nowMs: number;
   onCancel: (shortId: string) => void;
+  onRetryAssets: (shortId: string, modelId: ShortsBaseT2iModelId) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const stages = deriveStages(short);
@@ -293,6 +331,12 @@ function ShortProgressRow({
   const isError = stages.some((s) => s.status === 'failed');
   const isReady = stages.every((s) => s.status === 'done');
   const activeStage = stages.find((s) => s.status === 'active');
+  // The asset model swap is available when the active stage is Assets
+  // (or assets failed) — that's when the user wants to try a different
+  // base T2I model. For other stages the retry-model picker isn't
+  // meaningful.
+  const isStuckOnAssets =
+    !isReady && (activeStage?.key === 'assets' || stages.some((s) => s.key === 'assets' && s.status === 'failed'));
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
@@ -314,6 +358,15 @@ function ShortProgressRow({
             {expanded ? '▾' : '▸'}
           </span>
         </button>
+        {isStuckOnAssets && (
+          <RetryAssetsPicker
+            currentModelId={
+              (short.generation_progress?.job?.base_t2i_model_id as ShortsBaseT2iModelId | undefined)
+              ?? 'atlas-gpt-image-2'
+            }
+            onPick={(modelId) => onRetryAssets(short.id, modelId)}
+          />
+        )}
         {!isError && !isReady && (
           <button
             type="button"
@@ -463,21 +516,208 @@ function Log({
   }
 
   return (
-    <div className="space-y-1.5 font-mono">
-      {lines.map((l, i) => (
-        <div key={i} className="flex items-baseline gap-3">
-          <span className="shrink-0 text-[var(--text-muted)]">{formatTime(l.when)}</span>
-          <span className={`flex-1 ${l.cls ?? 'text-[var(--text-primary)]'}`}>{l.text}</span>
-        </div>
-      ))}
-      <div className="mt-2 border-t border-[var(--border)] pt-2 text-[var(--text-muted)]">
+    <div className="space-y-3 font-mono">
+      <div className="space-y-1.5">
+        {lines.map((l, i) => (
+          <div key={i} className="flex items-baseline gap-3">
+            <span className="shrink-0 text-[var(--text-muted)]">{formatTime(l.when)}</span>
+            <span className={`flex-1 ${l.cls ?? 'text-[var(--text-primary)]'}`}>{l.text}</span>
+          </div>
+        ))}
+      </div>
+
+      <AssetJobDetail gp={gp} />
+
+      <div className="border-t border-[var(--border)] pt-2 text-[var(--text-muted)]">
         Last DB write: {formatElapsed(elapsedMs)}
         {elapsedMs > 5 * 60_000 && (
           <span className="ml-2 text-[var(--accent-yellow)]">
-            (no activity in 5+ min — may be stuck on render trigger)
+            (no activity in 5+ min — may be stuck behind the asset queue)
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Detailed dump of the asset pipeline's job state. Shows the model
+ *  + vendor + niche the cron is using, plus per-variant retry counts
+ *  and any per-variant error messages. Hidden when no job state
+ *  exists (i.e. the short hasn't reached the asset stage yet). */
+function AssetJobDetail({ gp }: { gp: GenerationProgressState }) {
+  if (!gp.phase && !gp.job) return null;
+  const job = gp.job;
+
+  return (
+    <div className="rounded-md border border-[var(--border)] bg-[var(--bg-card)]/60 p-2.5 text-[10.5px]">
+      <div className="mb-1.5 text-[var(--text-secondary)]">Asset pipeline</div>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[var(--text-muted)]">
+        {gp.phase && (
+          <>
+            <dt>phase</dt>
+            <dd className="text-[var(--text-primary)]">{gp.phase}</dd>
+          </>
+        )}
+        {gp.current !== undefined && gp.total !== undefined && (
+          <>
+            <dt>variant</dt>
+            <dd className="text-[var(--text-primary)]">{gp.current} of {gp.total}</dd>
+          </>
+        )}
+        {gp.style_id && (
+          <>
+            <dt>style</dt>
+            <dd className="text-[var(--text-primary)]">{gp.style_id}</dd>
+          </>
+        )}
+        {gp.started_at && (
+          <>
+            <dt>started</dt>
+            <dd className="text-[var(--text-primary)]">{formatTime(gp.started_at)}</dd>
+          </>
+        )}
+        {gp.updated_at && (
+          <>
+            <dt>updated</dt>
+            <dd className="text-[var(--text-primary)]">{formatTime(gp.updated_at)}</dd>
+          </>
+        )}
+        {job?.niche && (
+          <>
+            <dt>niche</dt>
+            <dd className="text-[var(--text-primary)]">{job.niche}</dd>
+          </>
+        )}
+        {job?.base_t2i_model_id && (
+          <>
+            <dt>base model</dt>
+            <dd className="text-[var(--text-primary)]">{job.base_t2i_model_id}</dd>
+          </>
+        )}
+        {job?.variant_edit_primary && (
+          <>
+            <dt>variant editor</dt>
+            <dd className="text-[var(--text-primary)]">{job.variant_edit_primary}</dd>
+          </>
+        )}
+        {job?.max_variants !== undefined && (
+          <>
+            <dt>max variants</dt>
+            <dd className="text-[var(--text-primary)]">{job.max_variants}</dd>
+          </>
+        )}
+        {job?.cost_usd !== undefined && job.cost_usd > 0 && (
+          <>
+            <dt>cost so far</dt>
+            <dd className="text-[var(--text-primary)]">${job.cost_usd.toFixed(3)}</dd>
+          </>
+        )}
+      </dl>
+
+      {job?.variant_attempts && Object.keys(job.variant_attempts).length > 0 && (
+        <div className="mt-2 border-t border-[var(--border)] pt-2">
+          <div className="mb-1 text-[var(--text-secondary)]">Variant attempts</div>
+          <ul className="space-y-0.5">
+            {Object.entries(job.variant_attempts).map(([idx, count]) => (
+              <li key={idx} className="text-[var(--text-muted)]">
+                variant #{idx}: {count} attempt{count === 1 ? '' : 's'}
+                {job.variant_errors?.[idx] && (
+                  <span className="ml-2 text-red-300">· {job.variant_errors[idx]}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {gp.error_message && (
+        <div className="mt-2 border-t border-[var(--border)] pt-2 text-red-300">
+          Error: {gp.error_message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Small inline picker that lets the user swap the base T2I model
+ *  mid-batch — surfaces the 4 registered models with their costs
+ *  + hints. Closes on outside click. */
+function RetryAssetsPicker({
+  currentModelId,
+  onPick,
+}: {
+  currentModelId: ShortsBaseT2iModelId;
+  onPick: (modelId: ShortsBaseT2iModelId) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)]"
+        title="Retry assets with a different image model"
+      >
+        Try other model ▾
+      </button>
+      {open && (
+        <div className="absolute right-0 z-20 mt-1 w-72 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl">
+          <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Pick a base image model
+          </div>
+          {BASE_T2I_MODELS.map((m) => {
+            const isCurrent = m.id === currentModelId;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpen(false);
+                  onPick(m.id);
+                }}
+                disabled={isCurrent}
+                className={[
+                  'block w-full px-3 py-2 text-left text-xs transition-colors',
+                  isCurrent
+                    ? 'cursor-not-allowed bg-white/[0.04] text-[var(--text-muted)]'
+                    : 'text-[var(--text-primary)] hover:bg-white/[0.05]',
+                ].join(' ')}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">{m.label}</span>
+                  <span className="text-[var(--text-muted)]">
+                    ${m.costUsd.toFixed(3)}/img
+                    {isCurrent && ' · current'}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-[var(--text-muted)]">{m.hint}</p>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
