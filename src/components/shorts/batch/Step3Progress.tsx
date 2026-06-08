@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { BASE_T2I_MODELS, type ShortsBaseT2iModelId } from '@/lib/shorts-base-t2i';
+import { BASE_T2I_MODELS, type ShortsBaseT2iModelId } from '@/lib/shorts-base-t2i-types';
 import type { ShortsBatchWithShorts, BatchTickResult } from '@/lib/shorts-batches-types';
 import type { ShortRow, GenerationProgressState } from '@/lib/shorts-types';
 
