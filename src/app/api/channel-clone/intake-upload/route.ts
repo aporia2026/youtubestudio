@@ -43,6 +43,15 @@ const MAX_TRANSCRIPT_LEN = 200_000; // ~30k words — comfortable for a 60-min e
  *  points at another workspace's object even with their own session. */
 const R2_KEY_RE = /^channel-clone-uploads\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.[a-z0-9]{2,5}$/i;
 
+/** Staging-prefix R2 key shape — written by intake-upload-runner at
+ *  the end of every successful upload-intake run. Used by the "pick
+ *  from previous uploads" flow so the operator can reuse individual
+ *  videos from prior runs without re-uploading. Format:
+ *    channel-clone-uploads-staging/<workspaceId>/<jobId>/<NNN>.<ext>
+ *  Workspace ownership is enforced via the prefix segment (matched
+ *  against session.ws below). 2026-06-08. */
+const R2_STAGING_KEY_RE = /^channel-clone-uploads-staging\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/\d{3}\.[a-z0-9]{2,5}$/i;
+
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   let body: unknown;
   try {
@@ -128,9 +137,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     }
     const v = raw as Record<string, unknown>;
     const r2Key = typeof v.r2Key === 'string' ? v.r2Key : '';
-    if (!R2_KEY_RE.test(r2Key)) {
+    const isFreshUpload = R2_KEY_RE.test(r2Key);
+    const isStagingReuse = R2_STAGING_KEY_RE.test(r2Key);
+    if (!isFreshUpload && !isStagingReuse) {
       return NextResponse.json(
-        { error: `videos[${i}].r2Key must be a channel-clone-uploads R2 key (upload via /api/channel-clone/r2-upload-url first)` },
+        { error: `videos[${i}].r2Key must be a channel-clone-uploads or channel-clone-uploads-staging R2 key` },
         { status: 400 },
       );
     }
@@ -138,7 +149,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
     // key minted in another workspace. The presigned URL would also
     // sign correctly server-side, but we don't want one tenant's
     // session to surface another's objects via the runner.
-    const expectedPrefix = `channel-clone-uploads/${session.ws}/`;
+    const expectedPrefix = isStagingReuse
+      ? `channel-clone-uploads-staging/${session.ws}/`
+      : `channel-clone-uploads/${session.ws}/`;
     if (!r2Key.startsWith(expectedPrefix)) {
       return NextResponse.json(
         { error: `videos[${i}].r2Key belongs to another workspace` },

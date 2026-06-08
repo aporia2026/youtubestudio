@@ -29,11 +29,22 @@ import { usePersistedState } from '@/lib/use-persisted-state';
 
 type UploadStatus = 'idle' | 'queued' | 'uploading' | 'uploaded' | 'failed';
 
+/** A row in the form. Two flavours:
+ *    - source: 'fresh'   — operator picked a File; we PUT to R2 then
+ *                          kick intake with the resulting staging key.
+ *    - source: 'library' — operator picked an existing video from a
+ *                          previous run via PreviousUploadsPicker. The
+ *                          r2Key is already valid (staging-prefix),
+ *                          status is 'uploaded' from the start, no
+ *                          File present, title + transcript pre-filled. */
 interface VideoUpload {
   /** Local-only React key + identity. */
   uid: string;
-  file: File;
-  /** Display title — defaults to filename minus extension. */
+  source: 'fresh' | 'library';
+  /** Present only for source === 'fresh'. */
+  file: File | null;
+  /** Display title — defaults to filename minus extension for fresh
+   *  rows, or the title from the previous run for library rows. */
   title: string;
   transcript: string;
   /** 0–100 during upload, null otherwise. */
@@ -41,7 +52,8 @@ interface VideoUpload {
   /** Per-row error so a single broken upload doesn't blow away the
    *  other rows' progress. */
   error: string | null;
-  /** R2 object key once upload finishes — used by the kickoff POST.
+  /** R2 object key. For fresh: set after upload. For library: set from
+   *  the picker (staging-prefix key from the originating job).
    *  The server validates the key prefix matches the caller's
    *  workspace before signing a download URL for the sandbox. */
   r2Key: string | null;
@@ -52,6 +64,29 @@ interface VideoUpload {
    *    uploaded  — Vercel Blob confirmed; awaiting kickoff
    *    failed    — see `error` */
   status: UploadStatus;
+  /** Display metadata for library entries — shown instead of the
+   *  filename + filesize on fresh rows. */
+  libraryMeta: LibraryMeta | null;
+}
+
+interface LibraryMeta {
+  sourceJobName: string | null;
+  sourceJobCreatedAt: string;
+  durationSec: number;
+  transcriptWordCount: number;
+}
+
+/** Wire shape returned by GET /api/channel-clone/uploaded-videos. */
+interface UploadedVideoEntry {
+  r2Key: string;
+  title: string;
+  transcript: string;
+  transcriptWordCount: number;
+  durationSec: number;
+  sourceJobId: string;
+  sourceJobName: string | null;
+  sourceJobCreatedAt: string;
+  sourceVideoIndex: number;
 }
 
 /** Maximum concurrent R2 uploads. The browser's per-origin
@@ -194,11 +229,14 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
   // When the operator types in a transcript field, mirror it into
   // the per-filename draft store so a refresh + re-pick recovers it.
   // Used by the textarea onChange handler below via updateTranscript.
+  // Library entries have no File to key against, so they don't
+  // contribute to the per-filename draft cache — their transcript
+  // lives only on the row.
   const updateTranscript = useCallback((uid: string, value: string) => {
     setVideos((prev) => {
       const next = prev.map((v) => (v.uid === uid ? { ...v, transcript: value } : v));
       const target = prev.find((v) => v.uid === uid);
-      if (target) {
+      if (target?.file) {
         const filename = target.file.name;
         setTranscriptDrafts((draft) => ({ ...draft, [filename]: value }));
       }
@@ -211,6 +249,7 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
       ...prev,
       ...Array.from(files).map<VideoUpload>((file) => ({
         uid: nextUid(),
+        source: 'fresh',
         file,
         title: file.name.replace(/\.[^.]+$/, ''),
         // Restore any previously-typed transcript for this filename
@@ -220,9 +259,42 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         error: null,
         r2Key: null,
         status: 'idle',
+        libraryMeta: null,
       })),
     ]);
   }, [transcriptDrafts]);
+
+  /** Add entries selected from the "Pick from previous uploads" picker.
+   *  Each entry already has a valid staging-prefix r2Key, its title,
+   *  and its operator-pasted transcript from the originating run — so
+   *  the row starts in 'uploaded' state with nothing pending. The
+   *  submit flow's `if (v.status === 'uploaded' && v.r2Key)` short-
+   *  circuit skips the actual R2 PUT for these. */
+  const addLibraryEntries = useCallback((entries: UploadedVideoEntry[]) => {
+    setVideos((prev) => {
+      const existing = new Set(prev.map((v) => v.r2Key).filter((k): k is string => !!k));
+      const newOnes: VideoUpload[] = entries
+        .filter((e) => !existing.has(e.r2Key))
+        .map((e) => ({
+          uid: nextUid(),
+          source: 'library',
+          file: null,
+          title: e.title,
+          transcript: e.transcript,
+          uploadProgress: null,
+          error: null,
+          r2Key: e.r2Key,
+          status: 'uploaded',
+          libraryMeta: {
+            sourceJobName: e.sourceJobName,
+            sourceJobCreatedAt: e.sourceJobCreatedAt,
+            durationSec: e.durationSec,
+            transcriptWordCount: e.transcriptWordCount,
+          },
+        }));
+      return [...prev, ...newOnes];
+    });
+  }, []);
 
 
   const removeAt = useCallback((uid: string) => {
@@ -265,11 +337,14 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
   /** Per-row Retry button handler. Re-runs uploadOneVideo for one
    *  uid. Does NOT trigger the kickoff — the operator can keep
    *  retrying individual rows, then click the main Start button
-   *  again once they're all green. */
+   *  again once they're all green. Library entries have no File so
+   *  there is nothing to retry — they are immutable assets reused
+   *  from a previous run; if their staging key disappeared the
+   *  intake-upload route will reject them with a clear message. */
   const retryRow = useCallback(
     async (uid: string) => {
       const target = videos.find((v) => v.uid === uid);
-      if (!target) return;
+      if (!target || !target.file) return;
       try {
         await uploadOneVideo(uid, target.file);
       } catch (err) {
@@ -284,7 +359,8 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
     if (videos.length === 0) return;
     for (const v of videos) {
       if (!v.title.trim()) {
-        setSubmitError(`Each video needs a title (missing on "${v.file.name}").`);
+        const label = v.file?.name ?? v.libraryMeta?.sourceJobName ?? 'a reused video';
+        setSubmitError(`Each video needs a title (missing on "${label}").`);
         return;
       }
     }
@@ -309,8 +385,13 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
       // hit its Retry button after the others finish.
       type Result = { uid: string; r2Key: string } | { uid: string; failed: true };
       const results = await limitedParallel<VideoUpload, Result>(videos, MAX_PARALLEL_UPLOADS, async (v) => {
+        // Library entries + already-uploaded fresh rows skip the PUT.
         if (v.status === 'uploaded' && v.r2Key) {
           return { uid: v.uid, r2Key: v.r2Key };
+        }
+        if (!v.file) {
+          update(v.uid, { status: 'failed', error: 'No file attached and no reusable r2Key — remove this row and re-add.' });
+          return { uid: v.uid, failed: true };
         }
         try {
           const r2Key = await uploadOneVideo(v.uid, v.file);
@@ -409,6 +490,12 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
         </label>
       </div>
 
+      <PreviousUploadsPicker
+        alreadyPickedKeys={new Set(videos.map((v) => v.r2Key).filter((k): k is string => !!k))}
+        onAdd={addLibraryEntries}
+        disabled={submitting}
+      />
+
       <div
         className={`rounded border-2 border-dashed p-4 text-center transition-colors ${
           dragOver ? 'border-neutral-300 bg-neutral-900' : 'border-neutral-700 bg-neutral-950/60'
@@ -459,11 +546,34 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
       {videos.length > 0 && (
         <ul className="space-y-3">
           {videos.map((v) => (
-            <li key={v.uid} className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-xs">
+            <li
+              key={v.uid}
+              className={`space-y-2 rounded border p-3 text-xs ${
+                v.source === 'library'
+                  ? 'border-sky-900 bg-sky-950/20'
+                  : 'border-neutral-800 bg-neutral-950'
+              }`}
+            >
               <div className="flex items-baseline justify-between gap-3">
                 <div className="min-w-0 flex-1 truncate">
-                  <span className="font-mono text-[10px] text-neutral-500">{(v.file.size / (1024 * 1024)).toFixed(1)} MB</span>
-                  <span className="ml-2 text-neutral-300">{v.file.name}</span>
+                  {v.source === 'fresh' && v.file ? (
+                    <>
+                      <span className="font-mono text-[10px] text-neutral-500">
+                        {(v.file.size / (1024 * 1024)).toFixed(1)} MB
+                      </span>
+                      <span className="ml-2 text-neutral-300">{v.file.name}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="rounded bg-sky-900/60 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-sky-200">
+                        reused
+                      </span>
+                      <span className="ml-2 text-neutral-300">
+                        {v.libraryMeta?.sourceJobName ?? 'previous run'} ·{' '}
+                        {v.libraryMeta ? formatDurationSec(v.libraryMeta.durationSec) : ''}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -501,14 +611,16 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
               {v.error && (
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <p className="flex-1 break-all text-[10px] text-red-300">{v.error}</p>
-                  <button
-                    type="button"
-                    onClick={() => void retryRow(v.uid)}
-                    disabled={v.status === 'uploading'}
-                    className="shrink-0 rounded border border-amber-700 bg-amber-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-amber-300 hover:border-amber-500 hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    Retry
-                  </button>
+                  {v.source === 'fresh' && (
+                    <button
+                      type="button"
+                      onClick={() => void retryRow(v.uid)}
+                      disabled={v.status === 'uploading'}
+                      className="shrink-0 rounded border border-amber-700 bg-amber-950/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-amber-300 hover:border-amber-500 hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Retry
+                    </button>
+                  )}
                 </div>
               )}
             </li>
@@ -526,7 +638,17 @@ export function ChannelCloneUploadForm({ onSubmitted }: ChannelCloneUploadFormPr
           ? 'Uploading + starting intake…'
           : videos.length === 0
             ? 'Pick at least one video to start'
-            : `Start intake from ${videos.length} upload${videos.length === 1 ? '' : 's'}`}
+            : (() => {
+                const freshCount = videos.filter((v) => v.source === 'fresh').length;
+                const libraryCount = videos.length - freshCount;
+                if (freshCount === 0) {
+                  return `Start intake from ${libraryCount} reused video${libraryCount === 1 ? '' : 's'}`;
+                }
+                if (libraryCount === 0) {
+                  return `Start intake from ${freshCount} upload${freshCount === 1 ? '' : 's'}`;
+                }
+                return `Start intake from ${freshCount} upload${freshCount === 1 ? '' : 's'} + ${libraryCount} reused`;
+              })()}
       </button>
       {submitError && <p className="text-xs text-red-400">{submitError}</p>}
     </div>
@@ -564,6 +686,204 @@ function UploadStatusRow({ status, progress }: { status: UploadStatus; progress:
             }`}
             style={{ width: `${progress}%` }}
           />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Format a duration in seconds as `M:SS`. Cheap, no Intl. */
+function formatDurationSec(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return '?:??';
+  const total = Math.round(sec);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Format an ISO timestamp as a short relative date (e.g. "2d ago",
+ *  "5 May"). Lay-readable; no Intl.RelativeTimeFormat to keep the
+ *  bundle small. */
+function formatShortDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  const now = Date.now();
+  const diffMs = now - d.getTime();
+  const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+  if (diffDays < 1) return 'today';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+interface PreviousUploadsPickerProps {
+  /** R2 keys already present in the form (so duplicate picks are
+   *  visibly disabled in the picker rather than silently dropped). */
+  alreadyPickedKeys: Set<string>;
+  onAdd: (entries: UploadedVideoEntry[]) => void;
+  disabled: boolean;
+}
+
+/** Expandable "Pick from previous uploads" panel. Lazy-fetches the
+ *  workspace-scoped library on first open so a page load doesn't burn
+ *  R2 HEAD probes for operators who never use the feature. Renders a
+ *  checkbox list with per-item title + source-run label + duration +
+ *  transcript word count, plus a refresh button.
+ *
+ *  Bandwidth note: the API HEAD-probes every staging key, so first
+ *  open on a workspace with hundreds of past runs can take ~1-3 s.
+ *  The intermediate state shows a loading line so the operator
+ *  doesn't think the button broke. */
+function PreviousUploadsPicker({ alreadyPickedKeys, onAdd, disabled }: PreviousUploadsPickerProps) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [entries, setEntries] = useState<UploadedVideoEntry[] | null>(null);
+  const [checkedKeys, setCheckedKeys] = useState<Set<string>>(new Set());
+
+  const refetch = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- workspace-scoped GET
+      const res = await fetch('/api/channel-clone/uploaded-videos');
+      const data = (await res.json()) as { videos?: UploadedVideoEntry[]; error?: string };
+      if (!res.ok) {
+        throw new Error(data.error ?? `Could not load previous uploads (${res.status})`);
+      }
+      setEntries(data.videos ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Lazy first-fetch on open. Idempotent: re-opens reuse the cached
+  // entries — operator clicks Refresh if they want a fresh probe.
+  useEffect(() => {
+    if (open && entries === null && !loading && error === null) {
+      void refetch();
+    }
+  }, [open, entries, loading, error, refetch]);
+
+  const toggleKey = (key: string) => {
+    setCheckedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleAdd = () => {
+    if (!entries || checkedKeys.size === 0) return;
+    const picked = entries.filter((e) => checkedKeys.has(e.r2Key));
+    onAdd(picked);
+    setCheckedKeys(new Set());
+    setOpen(false);
+  };
+
+  return (
+    <div className="rounded border border-sky-900/60 bg-sky-950/10">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        disabled={disabled}
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-xs text-sky-200 hover:text-sky-100 disabled:opacity-50"
+      >
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-[10px]">{open ? '▼' : '▶'}</span>
+          <span className="font-medium">Pick from previous uploads</span>
+        </span>
+        <span className="text-[10px] text-sky-400/80">
+          reuse videos + transcripts you already uploaded
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-2 border-t border-sky-900/60 p-3">
+          {loading && <p className="text-xs text-neutral-400">Scanning previous runs…</p>}
+          {error && (
+            <div className="flex items-center justify-between gap-2 text-xs text-red-300">
+              <span className="flex-1 break-all">{error}</span>
+              <button
+                type="button"
+                onClick={() => void refetch()}
+                className="shrink-0 rounded border border-red-700 bg-red-950/30 px-2 py-0.5 text-[10px] hover:bg-red-900/50"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {!loading && !error && entries && entries.length === 0 && (
+            <p className="text-xs text-neutral-500">
+              No reusable videos found. Upload some videos in a clone run and they will show up
+              here for reuse on every future run.
+            </p>
+          )}
+          {entries && entries.length > 0 && (
+            <>
+              <ul className="max-h-72 space-y-1 overflow-y-auto pr-1">
+                {entries.map((e) => {
+                  const alreadyPicked = alreadyPickedKeys.has(e.r2Key);
+                  const checked = checkedKeys.has(e.r2Key);
+                  return (
+                    <li
+                      key={e.r2Key}
+                      className={`rounded border p-2 text-xs ${
+                        alreadyPicked
+                          ? 'border-neutral-800 bg-neutral-900/40 opacity-60'
+                          : checked
+                            ? 'border-emerald-700 bg-emerald-950/30'
+                            : 'border-neutral-800 bg-neutral-900 hover:border-neutral-600'
+                      }`}
+                    >
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={checked || alreadyPicked}
+                          disabled={alreadyPicked}
+                          onChange={() => toggleKey(e.r2Key)}
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-neutral-200">{e.title}</div>
+                          <div className="text-[10px] text-neutral-500">
+                            {e.sourceJobName ?? 'previous run'} ·{' '}
+                            {formatShortDate(e.sourceJobCreatedAt)} ·{' '}
+                            {formatDurationSec(e.durationSec)} ·{' '}
+                            {e.transcriptWordCount > 0
+                              ? `${e.transcriptWordCount.toLocaleString()} words`
+                              : 'no transcript'}
+                            {alreadyPicked && ' · already in list'}
+                          </div>
+                        </div>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => void refetch()}
+                  disabled={loading}
+                  className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-[10px] text-neutral-300 hover:border-neutral-500 disabled:opacity-40"
+                >
+                  Refresh list
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAdd}
+                  disabled={checkedKeys.size === 0}
+                  className="rounded bg-sky-300 px-3 py-1 text-xs font-medium text-sky-950 hover:bg-sky-200 disabled:bg-neutral-700 disabled:text-neutral-400"
+                >
+                  {checkedKeys.size === 0
+                    ? 'Add to upload list'
+                    : `Add ${checkedKeys.size} to upload list`}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

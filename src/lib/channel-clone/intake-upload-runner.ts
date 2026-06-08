@@ -138,7 +138,15 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     return failJob(jobId, workspaceId, `Could not start intake sandbox: ${errorMessage(err)}`);
   }
 
-  const r2KeysToCleanup: string[] = [];
+  /** Fresh uploads (`channel-clone-uploads/<ws>/<uuid>.<ext>`) — copy
+   *  to the per-job staging prefix, then delete the original. */
+  const freshKeysToStageAndDelete: string[] = [];
+  /** Library-reuse keys (`channel-clone-uploads-staging/<ws>/<oldJobId>/
+   *  ...`). Do NOT delete — the originating job still surfaces them in
+   *  the "pick from previous uploads" picker. Re-stage them under the
+   *  new job's prefix so save-as-template on this new job sees its
+   *  full set of staging keys. 2026-06-08 — when adding the picker. */
+  const libraryKeysToStageOnly: string[] = [];
   const r2Bucket = getReviewBucket();
   try {
     const { sandbox, workDir, ffmpegPath } = uploadSandbox;
@@ -163,7 +171,12 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     for (const [i, video] of videos.entries()) {
       if (await isCancelled()) return;
       log.info('intake', `processing video ${i + 1}/${videos.length}`, { title: video.title });
-      r2KeysToCleanup.push(video.r2Key);
+      const isLibraryReuse = video.r2Key.startsWith('channel-clone-uploads-staging/');
+      if (isLibraryReuse) {
+        libraryKeysToStageOnly.push(video.r2Key);
+      } else {
+        freshKeysToStageAndDelete.push(video.r2Key);
+      }
       try {
         // Filename inside the sandbox. Extension is preserved from
         // the R2 key so ffmpeg auto-detects container/codec.
@@ -378,7 +391,7 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
     // (`channel-clone-uploads-staging/<wsId>/<jobId>/<i>.<ext>`) so the
     // save-as-template route can reconstruct the list from the job's
     // sampleVideos without us persisting a new state field.
-    await stageAndDeleteSourceUploads(jobId, workspaceId, r2KeysToCleanup, r2Bucket);
+    await stageAndDeleteSourceUploads(jobId, workspaceId, freshKeysToStageAndDelete, libraryKeysToStageOnly, r2Bucket);
   }
 
   // Voice-profile LLM call (Plan 1A — best-effort, never throws).
@@ -416,32 +429,42 @@ function stagingKeyForVideo(workspaceId: string, jobId: string, index: number, e
   return `channel-clone-uploads-staging/${workspaceId}/${jobId}/${String(index).padStart(3, '0')}.${ext}`;
 }
 
-/** For each source key the runner accumulated, COPY it server-side
- *  to the per-job staging prefix and then DELETE the original. Both
- *  ops are best-effort and per-key; failures are logged so a single
- *  bad object doesn't strand the rest. */
+/** Post-intake R2 cleanup. Two key classes:
+ *   - `freshKeys` (under `channel-clone-uploads/<ws>/<uuid>`): copy to
+ *     the per-job staging prefix, then DELETE the original. The
+ *     original was a one-shot upload landing pad — once the bytes are
+ *     in staging we don't need it anywhere else.
+ *   - `libraryKeys` (already under `channel-clone-uploads-staging/<ws>/
+ *     <oldJobId>/...`): copy to the new job's staging prefix so save-
+ *     as-template on this new job sees its full set of keys; but DO
+ *     NOT delete the original — the originating job still surfaces
+ *     them in the "pick from previous uploads" picker and other future
+ *     runs may want to reuse the same video too.
+ *
+ *  Both copy ops are best-effort and per-key; failures are logged so
+ *  a single bad object doesn't strand the rest. */
 async function stageAndDeleteSourceUploads(
   jobId: string,
   workspaceId: string,
-  sourceKeys: string[],
+  freshKeys: string[],
+  libraryKeys: string[],
   bucket: string,
 ): Promise<void> {
   // Lazy-import the R2 copy helper so the existing intake-upload-runner
   // module graph stays compact for callers that never hit this path.
   const { copyR2KeysToPrefix } = await import('./templates-r2');
-  if (sourceKeys.length > 0) {
+  const destPrefix = `channel-clone-uploads-staging/${workspaceId}/${jobId}`;
+  const allKeysToCopy = [...freshKeys, ...libraryKeys];
+  if (allKeysToCopy.length > 0) {
     try {
-      // Staging prefix matches the `stagingKeyForVideo` helper format.
-      // Save-as-template later re-COPYs from here into the real
-      // per-template prefix. A 7-day R2 lifecycle rule on
-      // channel-clone-uploads-staging/ reaps unsaved snapshots.
       const result = await copyR2KeysToPrefix({
-        sourceKeys,
-        destPrefix: `channel-clone-uploads-staging/${workspaceId}/${jobId}`,
+        sourceKeys: allKeysToCopy,
+        destPrefix,
         bucket,
       });
       logger.info('[channel-clone intake-upload] staging-copy done', {
         jobId, copied: result.copiedKeys.length, failed: result.failedIndices.length,
+        freshCount: freshKeys.length, libraryReuseCount: libraryKeys.length,
       });
     } catch (err) {
       logger.warn('[channel-clone intake-upload] staging-copy threw', {
@@ -449,10 +472,9 @@ async function stageAndDeleteSourceUploads(
       });
     }
   }
-  // R2 source delete runs regardless of staging outcome — even if the
-  // staging copy failed, the operator can re-upload to retry the
-  // template save flow. Per-key errors are swallowed.
-  for (const key of sourceKeys) {
+  // R2 source delete runs only for FRESH uploads. Library-reuse keys
+  // are left in place so the originating job's picker entry survives.
+  for (const key of freshKeys) {
     void stagingKeyForVideo; // referenced for the export-only helper above
     deleteFromBucket(bucket, key).catch((err) => {
       logger.warn('[channel-clone intake-upload] r2 delete failed', {
