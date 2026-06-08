@@ -76,6 +76,12 @@ const VOICE_PROFILE_USER_PROMPT = [
 export interface RunVoiceProfileOptions {
   jobId: string;
   workspaceId: string;
+  /** Per-invocation model override. When set, the runner uses this
+   *  model id instead of the workspace's configured default for
+   *  `channel-clone-voice-profile`. Surfaced via the stuck-analyzing
+   *  retry picker so operators can route around a Kie outage by
+   *  switching to a different Kie Gemini variant. 2026-06-08. */
+  modelOverride?: string;
 }
 
 /** Run the voice-profile stage. Never throws — failure paths log
@@ -96,7 +102,8 @@ export async function runVoiceProfile(opts: RunVoiceProfileOptions): Promise<voi
     return;
   }
 
-  const modelId = await getEffectiveModelId(workspaceId, 'channel-clone-voice-profile');
+  const modelId = opts.modelOverride
+    ?? await getEffectiveModelId(workspaceId, 'channel-clone-voice-profile');
   const model = getModelById(modelId);
   if (!model) {
     log.error('voice-profile', 'configured model id is not in the registry', { modelId });

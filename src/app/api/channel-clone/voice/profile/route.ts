@@ -32,12 +32,17 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
   }
-  const jobId = typeof (body as { jobId?: unknown })?.jobId === 'string'
-    ? (body as { jobId: string }).jobId.trim()
-    : '';
+  const b = (body ?? {}) as Record<string, unknown>;
+  const jobId = typeof b.jobId === 'string' ? b.jobId.trim() : '';
   if (!jobId) {
     return NextResponse.json({ error: 'jobId is required' }, { status: 400 });
   }
+  // Optional per-invocation model override surfaced by the stuck-
+  // analyzing card's picker. Honoured by runVoiceProfile in place
+  // of the workspace's configured Settings -> Model Defaults value.
+  const modelOverride = typeof b.modelId === 'string' && b.modelId.trim()
+    ? b.modelId.trim()
+    : undefined;
 
   const before = await getChannelCloneJob(jobId, session.ws);
   if (!before) {
@@ -51,9 +56,9 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   }
 
   logger.info('[channel-clone voice-profile retry] kickoff', {
-    jobId, workspaceId: session.ws,
+    jobId, workspaceId: session.ws, modelOverride: modelOverride ?? null,
   });
-  await runVoiceProfile({ jobId, workspaceId: session.ws });
+  await runVoiceProfile({ jobId, workspaceId: session.ws, modelOverride });
 
   const after = await getChannelCloneJob(jobId, session.ws);
   if (!after) {

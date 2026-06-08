@@ -24,8 +24,11 @@
  * See _plans/2026-06-07-channel-clone-narrator-voice-elevenlabs.md.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChannelCloneJobState, ChannelCloneJobStatus } from '@/lib/channel-clone/types';
+import { ModelRetryPicker } from './ModelRetryPicker';
+import { pickRetryAlternative } from '@/lib/channel-clone/retry-alternative';
+import { getFeatureDefaultModelId } from '@/lib/ai-models';
 
 interface SourceChannel {
   /** Best-effort source channel name. Drives the default clone-name
@@ -490,6 +493,17 @@ function PendingView({
   const [retrying, setRetrying] = useState<boolean>(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
+  // Model picker for the retry. Defaults to a Kie Gemini alternative
+  // to whatever the workspace's configured default is — so a Kie 500
+  // on one variant routes to a sibling variant on click.
+  const configuredDefault = useMemo<string | null>(
+    () => getFeatureDefaultModelId('channel-clone-voice-profile'),
+    [],
+  );
+  const [modelId, setModelId] = useState<string>(
+    () => pickRetryAlternative(configuredDefault ?? '', 'voice-profile'),
+  );
+
   useEffect(() => {
     if (isStuck) return;
     if (ageSec > 60) {
@@ -506,12 +520,12 @@ function PendingView({
     setRetrying(true);
     setRetryError(null);
     // eslint-disable-next-line no-console
-    console.info('[channel-clone voice-card]', { state: 'profile-retry-start', jobId });
+    console.info('[channel-clone voice-card]', { state: 'profile-retry-start', jobId, modelId });
     try {
       const res = await fetch('/api/channel-clone/voice/profile', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ jobId }),
+        body: JSON.stringify({ jobId, modelId }),
       });
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !data.ok) {
@@ -524,7 +538,7 @@ function PendingView({
     } finally {
       setRetrying(false);
     }
-  }, [jobId, retrying, onChanged]);
+  }, [jobId, modelId, retrying, onChanged]);
 
   return (
     <div className="space-y-2 text-neutral-400">
@@ -535,23 +549,33 @@ function PendingView({
         <div className="space-y-2 rounded border border-amber-900/60 bg-amber-950/30 p-2 text-[11px]">
           <p className="text-amber-200">
             Voice analysis hasn't completed after {Math.floor(ageSec / 60)}m. The runner is
-            fire-and-forget and can silently bail when Kie is rate-limited, the configured model
-            isn't a Kie Gemini one, the R2 read fails, or the model returns malformed JSON.
+            fire-and-forget and can silently bail when Kie is rate-limited, the R2 read fails,
+            or the model returns malformed JSON. Pick a different Kie Gemini variant and
+            re-run.
           </p>
           <p className="text-[10px] text-amber-200/70">
-            Check Settings → Model Defaults for "Channel Clone — Narrator Voice Profile". It should
-            point at a Kie Gemini model (default: Gemini 3.5 Flash via Kie.ai).
+            Only Kie Gemini models are listed — they're the only family that accepts audio
+            through this runner today.
           </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void handleRetry()}
+          <div className="space-y-2">
+            <ModelRetryPicker
+              value={modelId}
+              onChange={setModelId}
+              stage="voice-profile"
+              originalModelId={configuredDefault}
               disabled={retrying}
-              className="rounded bg-amber-200 px-3 py-1 text-[11px] font-medium text-neutral-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
-            >
-              {retrying ? 'Re-running…' : 'Re-run voice analysis'}
-            </button>
-            {retryError && <span className="text-[10px] text-red-300">{retryError}</span>}
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleRetry()}
+                disabled={retrying}
+                className="rounded bg-amber-200 px-3 py-1 text-[11px] font-medium text-neutral-900 hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+              >
+                {retrying ? 'Re-running…' : 'Re-run voice analysis'}
+              </button>
+              {retryError && <span className="text-[10px] text-red-300">{retryError}</span>}
+            </div>
           </div>
         </div>
       ) : (

@@ -105,11 +105,17 @@ export function isModelCompatibleWithStage(
   modelId: string,
   stage: ChannelCloneRetryStage,
 ): boolean {
-  if (!getModelById(modelId)) return false;
+  const model = getModelById(modelId);
+  if (!model) return false;
   if (MULTIMODAL_AUDIO_STAGES.has(stage)) {
-    // Plan 1 verification spike will tighten this further. Today,
-    // only Gemini-family models are documented to accept audio.
-    return modelId.includes('gemini');
+    // voice-profile-runner hand-rolls a call to Kie's Google-native
+    // `:generateContent` endpoint with `inline_data` audio. Direct
+    // Google models are NOT wired (they'd need a separate router
+    // branch) and non-Gemini providers don't accept audio at all.
+    // So today the only audio-capable models are the kie-gemini-*
+    // family — six models, all the variants from 2.5 through 3.5
+    // Flash. Verified by the Plan 1B spike on 2026-06-07.
+    return model.provider === 'kie' && modelId.startsWith('kie-gemini');
   }
   if (MULTIMODAL_IMAGE_STAGES.has(stage)) {
     return !TEXT_ONLY_MODEL_IDS.has(modelId);
@@ -155,6 +161,19 @@ export function pickRetryAlternative(
     if (isModelCompatibleWithStage(candidateId, stage)) return candidateId;
     return compatible[0].id;
   };
+
+  // voice-profile is audio-only; cross-provider doesn't apply (only
+  // Kie Gemini works). Stay within the family and pick a sibling
+  // variant so a Kie outage on one Gemini version routes to another.
+  if (stage === 'voice-profile') {
+    if (failedModelId === 'kie-gemini-3-5-flash') return ensureCompatible('kie-gemini-2.5-flash');
+    if (failedModelId === 'kie-gemini-2.5-flash') return ensureCompatible('kie-gemini-3-5-flash');
+    if (failedModelId === 'kie-gemini-3-pro') return ensureCompatible('kie-gemini-2.5-pro');
+    if (failedModelId === 'kie-gemini-2.5-pro') return ensureCompatible('kie-gemini-3-pro');
+    if (failedModelId === 'kie-gemini-3.1-pro') return ensureCompatible('kie-gemini-3-pro');
+    if (failedModelId === 'kie-gemini-3-flash') return ensureCompatible('kie-gemini-3-5-flash');
+    return ensureCompatible('kie-gemini-3-5-flash');
+  }
 
   const failed = getModelById(failedModelId);
   if (!failed) {

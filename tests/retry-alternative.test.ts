@@ -83,12 +83,22 @@ describe('retry-alternative: isModelCompatibleWithStage', () => {
     expect(isModelCompatibleWithStage('kie-gemini-3-5-flash', 'analyze')).toBe(true);
   });
 
-  it('restricts voice-profile to Gemini-family ids only', () => {
-    // Allowed
+  it('restricts voice-profile to Kie Gemini ids only', () => {
+    // Allowed — the runner hand-rolls a call to Kie's
+    // :generateContent endpoint with inline_data audio, so the kie-
+    // gemini-* family is the only audio-capable path today.
     expect(isModelCompatibleWithStage('kie-gemini-2.5-flash', 'voice-profile')).toBe(true);
+    expect(isModelCompatibleWithStage('kie-gemini-2.5-pro', 'voice-profile')).toBe(true);
+    expect(isModelCompatibleWithStage('kie-gemini-3-flash', 'voice-profile')).toBe(true);
+    expect(isModelCompatibleWithStage('kie-gemini-3-pro', 'voice-profile')).toBe(true);
+    expect(isModelCompatibleWithStage('kie-gemini-3.1-pro', 'voice-profile')).toBe(true);
     expect(isModelCompatibleWithStage('kie-gemini-3-5-flash', 'voice-profile')).toBe(true);
-    expect(isModelCompatibleWithStage('gemini-2.5-pro', 'voice-profile')).toBe(true);
-    // Blocked — no audio surface in current routers
+    // Blocked — direct Google Gemini works on Google's API but not
+    // on our Kie endpoint wrapper; the runner would 404 on those.
+    expect(isModelCompatibleWithStage('gemini-2.5-pro', 'voice-profile')).toBe(false);
+    expect(isModelCompatibleWithStage('gemini-2.5-flash', 'voice-profile')).toBe(false);
+    expect(isModelCompatibleWithStage('gemini-3-pro', 'voice-profile')).toBe(false);
+    // Blocked — non-Gemini providers don't accept audio at all.
     expect(isModelCompatibleWithStage('claude-opus-4-8', 'voice-profile')).toBe(false);
     expect(isModelCompatibleWithStage('gpt-5.4-mini', 'voice-profile')).toBe(false);
     expect(isModelCompatibleWithStage('sonar', 'voice-profile')).toBe(false);
@@ -111,12 +121,12 @@ describe('retry-alternative: getCompatibleModelsForStage', () => {
     }
   });
 
-  it('returns only gemini-named entries on voice-profile', () => {
+  it('returns only Kie Gemini entries on voice-profile', () => {
     const filtered = getCompatibleModelsForStage('voice-profile');
     for (const m of filtered) {
-      expect(m.id).toMatch(/gemini/);
+      expect(m.id).toMatch(/^kie-gemini-/);
     }
-    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.length).toBe(6); // 2.5 flash + 2.5 pro + 3 flash + 3 pro + 3.1 pro + 3.5 flash
   });
 
   it('preserves AI_MODELS source order so the picker UI is stable', () => {
@@ -165,6 +175,18 @@ describe('retry-alternative: pickRetryAlternative cross-provider heuristic', () 
   it('jumps direct Google → Kie equivalent', () => {
     expect(pickRetryAlternative('gemini-2.5-flash', 'topics')).toBe('kie-gemini-2.5-flash');
     expect(pickRetryAlternative('gemini-3-pro', 'topics')).toBe('kie-gemini-3-pro');
+  });
+
+  it('voice-profile failure jumps to a sibling Kie Gemini, never to Anthropic / OpenAI', () => {
+    expect(pickRetryAlternative('kie-gemini-3-5-flash', 'voice-profile')).toBe('kie-gemini-2.5-flash');
+    expect(pickRetryAlternative('kie-gemini-2.5-flash', 'voice-profile')).toBe('kie-gemini-3-5-flash');
+    expect(pickRetryAlternative('kie-gemini-3-pro', 'voice-profile')).toBe('kie-gemini-2.5-pro');
+    expect(pickRetryAlternative('kie-gemini-2.5-pro', 'voice-profile')).toBe('kie-gemini-3-pro');
+    expect(pickRetryAlternative('kie-gemini-3.1-pro', 'voice-profile')).toBe('kie-gemini-3-pro');
+    expect(pickRetryAlternative('kie-gemini-3-flash', 'voice-profile')).toBe('kie-gemini-3-5-flash');
+    // Fallback when nothing matched: still Kie Gemini, not Anthropic.
+    expect(pickRetryAlternative('claude-opus-4-8', 'voice-profile')).toMatch(/^kie-gemini-/);
+    expect(pickRetryAlternative('unknown', 'voice-profile')).toMatch(/^kie-gemini-/);
   });
 
   it('jumps Perplexity → Anthropic balanced', () => {
