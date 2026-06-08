@@ -17,23 +17,74 @@ import { apiRoute, type RouteContext } from '@/lib/route-helpers';
 import {
   deleteChannelCloneJob,
   getChannelCloneJob,
+  setChannelCloneJobStatus,
 } from '@/lib/channel-clone/job-store';
 import { deleteR2Prefix } from '@/lib/channel-clone/templates-r2';
 import { logger } from '@/lib/logger';
+import type { ChannelCloneJobStatus } from '@/lib/channel-clone/types';
 
 export const maxDuration = 10;
 
 type Params = { id: string };
+
+/** A `*_running` job whose last DB write is older than this is treated
+ *  as orphaned — the Vercel function that owned it almost certainly
+ *  died (timeout, OOM, redeploy mid-flight). Threshold is the longest
+ *  per-stage maxDuration (intake-upload = 600 s) plus a 2-minute buffer
+ *  for downstream voice-profile / final DB writes that don't refresh
+ *  updated_at until they emit a log. */
+const STALE_RUNNING_THRESHOLD_MS = 12 * 60 * 1000;
+
+/** Map a `*_running` status to its `*_failed` sibling so the panel
+ *  can surface a clean Retry path. Anything not in this map is
+ *  considered active by definition. */
+const RUNNING_TO_FAILED: Partial<Record<ChannelCloneJobStatus, ChannelCloneJobStatus>> = {
+  intake_running: 'intake_failed',
+  analyze_running: 'analyze_failed',
+  topics_running: 'topics_failed',
+  hooks_running: 'hooks_failed',
+  script_running: 'script_failed',
+  rowify_running: 'rowify_failed',
+  publish_pack_running: 'publish_pack_failed',
+  handoff_running: 'handoff_failed',
+};
 
 export const GET = apiRoute.authed(async (session, _req: NextRequest, ctx: RouteContext<Params>) => {
   const { id } = await ctx.params;
   if (!id) {
     return NextResponse.json({ error: 'job id is required' }, { status: 400 });
   }
-  const row = await getChannelCloneJob(id, session.ws);
+  let row = await getChannelCloneJob(id, session.ws);
   if (!row) {
     return NextResponse.json({ error: 'job not found' }, { status: 404 });
   }
+
+  // Stale-job auto-recovery. The runner appends to state_jsonb on
+  // every log line, so updated_at is a reliable heartbeat. When a
+  // *_running row goes that long without a write the underlying
+  // function is dead — converting the status to *_failed surfaces a
+  // clean Retry path in the UI instead of an "INTAKE RUNNING — 30min
+  // ago" zombie. We only do this for *_running statuses; *_complete
+  // and *_failed are correct on the row.
+  const failedStatus = RUNNING_TO_FAILED[row.status];
+  if (failedStatus) {
+    const ageMs = Date.now() - new Date(row.updated_at).getTime();
+    if (ageMs > STALE_RUNNING_THRESHOLD_MS) {
+      const minutes = Math.floor(ageMs / 60_000);
+      const message = `${row.status.replace('_running', '')} runner went silent for ${minutes}min — the serverless function was killed. Retry from the panel.`;
+      logger.warn('[channel-clone jobs GET] auto-recovering stale running job', {
+        jobId: id, status: row.status, ageMs, ageMin: minutes,
+      });
+      await setChannelCloneJobStatus(id, session.ws, failedStatus, { lastError: message });
+      // Re-read so the response reflects the change without a second
+      // GET round-trip.
+      row = await getChannelCloneJob(id, session.ws);
+      if (!row) {
+        return NextResponse.json({ error: 'job not found' }, { status: 404 });
+      }
+    }
+  }
+
   return NextResponse.json({
     id: row.id,
     sourceChannelUrl: row.source_channel_url,

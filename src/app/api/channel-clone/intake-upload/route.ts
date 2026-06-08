@@ -30,7 +30,14 @@ import { buildStagingKeyForJob } from '@/lib/channel-clone/intake-upload-runner'
 import { checkR2KeysExist, inferExtensionFromKey } from '@/lib/channel-clone/templates-r2';
 import type { CleanedTranscript } from '@/lib/channel-clone/types';
 
-export const maxDuration = 300;
+/** 600 s = 10 min. Intake walks every uploaded video (ffmpeg frame
+ *  extract + R2 upload), then runs voice-extract (ffmpeg encode +
+ *  silence probe + R2 upload), then the voice-profile LLM call. At
+ *  ~25–35 s per video the worst case 8-video job + voice work was
+ *  bumping right against the previous 300 s cap. 2026-06-08 — bumped
+ *  to 600 s after the user hit "INTAKE RUNNING — updated 60 s ago"
+ *  with the runner clearly killed mid-flight near the loop end. */
+export const maxDuration = 600;
 
 const VALID_FRAME_INTERVALS = new Set([5, 10, 15]);
 const MAX_VIDEOS_PER_JOB = 8;

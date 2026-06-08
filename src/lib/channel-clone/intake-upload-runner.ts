@@ -323,6 +323,11 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
       }
     }
 
+    log.info('intake', 'loop finished — persisting intake result', {
+      processed: sampleVideos.length,
+      requested: videos.length,
+    });
+
     if (sampleVideos.length === 0) {
       log.error('intake', 'all uploads failed during frame-extract');
       return failJob(jobId, workspaceId, 'All uploads failed during frame-extract. Check the file format and re-upload.');
@@ -342,12 +347,16 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
       fetchedAt: new Date().toISOString(),
     };
     await mergeChannelCloneJobState(jobId, workspaceId, { intake: intakeResult });
+    log.info('intake', 'intake result persisted', {
+      sampleVideoCount: sampleVideos.length,
+    });
 
     // Voice-extract (Plan 1A — _plans/2026-06-07-channel-clone-narrator-voice-elevenlabs.md).
     // Best-effort: a failure here logs and returns null without
     // affecting the rest of intake. Done BEFORE flipping status so
     // the operator sees voiceSample available when intake_complete
     // lands in their poll.
+    log.info('intake', 'starting voice-extract step');
     try {
       await runVoiceExtractDuringIntake(
         {
@@ -366,6 +375,7 @@ export async function runUploadIntake(opts: RunUploadIntakeOptions): Promise<voi
         error: errorMessage(err),
       });
     }
+    log.info('intake', 'voice-extract step finished — flipping status to complete');
 
     const flipped = await setChannelCloneJobStatusUnlessCancelled(jobId, workspaceId, 'intake_complete');
     if (!flipped) {

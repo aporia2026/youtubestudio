@@ -1578,8 +1578,24 @@ function RowifyView({
  *  fresh-run path is sometimes simpler than chasing the bug. */
 function ReuseFromFailedJobButton({ job }: { job: JobView }) {
   const [busy, setBusy] = useState(false);
+  /** Detect upload vs URL intake. Three signals — first match wins:
+   *    1. The job's sample videos (if intake completed) all carry
+   *       r2:// videoUrls. Strongest signal — only upload-intake
+   *       produces these.
+   *    2. The source URL marker prefix is one of the upload-side
+   *       sentinels. Covers the case where intake didn't get far
+   *       enough to populate sampleVideos but the operator didn't
+   *       paste a real channel URL alongside their uploads.
+   *    3. Fall through to URL-intake. The default for a real youtube
+   *       channel URL with no sampleVideos yet.
+   *
+   *  Before 2026-06-08 this was just (2) — which silently broke
+   *  recovery for upload-intake runs where the operator pasted a
+   *  real channel URL (recommended UX) alongside their uploads. */
+  const sampleVideos = job.state.intake?.sampleVideos ?? [];
   const isUpload =
-    job.sourceCanonicalUrl.startsWith('upload://')
+    (sampleVideos.length > 0 && sampleVideos.every((v) => v.videoUrl.startsWith('r2://')))
+    || job.sourceCanonicalUrl.startsWith('upload://')
     || job.sourceCanonicalUrl.startsWith('template://')
     || job.sourceCanonicalUrl.startsWith('reuseOf://');
   const target = isUpload
