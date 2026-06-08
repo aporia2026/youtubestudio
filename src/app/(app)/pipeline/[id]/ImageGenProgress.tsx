@@ -35,6 +35,7 @@ interface RowProgress {
   index: number;
   status: RowStatus;
   prompt_preview: string;
+  prompt_full: string;
   visual_type: string | null;
   on_screen_text: string | null;
   thumbnail_url: string | null;
@@ -70,7 +71,14 @@ interface ProgressPayload {
   doc_image_model_override?: string | null;
   default_model?: string;
   available_models?: AvailableModel[];
+  channel_style_override?: {
+    ai_image_suffix: string;
+    ref_r2_keys: string[];
+    reason: string;
+  } | null;
 }
+
+const GENERIC_FALLBACK_SUFFIX = 'hand-drawn illustration style, simple composition, neutral palette';
 
 export function ImageGenProgress({ videoId }: { videoId: string }) {
   const [data, setData] = useState<ProgressPayload | null>(null);
@@ -78,6 +86,8 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
   const [retrying, setRetrying] = useState<number | null>(null);
   const [changingModel, setChangingModel] = useState<boolean>(false);
   const [rowModelOpen, setRowModelOpen] = useState<number | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [editingRow, setEditingRow] = useState<RowProgress | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -254,13 +264,19 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
         />
       )}
 
+      <ChannelStylePanel channelOverride={data.channel_style_override ?? null} />
+
+
       <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
         {filteredRows.map((row) => (
           <li
             key={row.index}
             className={`flex items-start gap-3 rounded border p-2 text-[11px] ${BORDER_BY_STATUS[row.status]}`}
           >
-            <Thumbnail row={row} />
+            <Thumbnail
+              row={row}
+              onClick={row.thumbnail_url ? () => setPreviewUrl(row.thumbnail_url) : undefined}
+            />
             <div className="min-w-0 flex-1 space-y-1">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-mono text-[10px] text-neutral-500">
@@ -286,6 +302,14 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
                 </div>
               )}
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setEditingRow(row)}
+                  className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] text-neutral-300 hover:border-neutral-500 hover:bg-neutral-800"
+                  title="View / edit the prompt and regenerate this row"
+                >
+                  ✎ Edit & regen
+                </button>
                 {row.status === 'exhausted' && (
                   <button
                     type="button"
@@ -348,6 +372,22 @@ export function ImageGenProgress({ videoId }: { videoId: string }) {
           </li>
         ))}
       </ul>
+
+      {previewUrl && (
+        <ImagePreviewModal url={previewUrl} onClose={() => setPreviewUrl(null)} />
+      )}
+      {editingRow && data && (
+        <EditRowModal
+          videoId={videoId}
+          row={editingRow}
+          availableModels={data.available_models ?? []}
+          onClose={() => setEditingRow(null)}
+          onSaved={async () => {
+            setEditingRow(null);
+            await refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -398,6 +438,75 @@ function CountBadge({
       <span className="font-semibold">{count}</span>
       <span>{label}</span>
     </span>
+  );
+}
+
+function ChannelStylePanel({
+  channelOverride,
+}: {
+  channelOverride: ProgressPayload['channel_style_override'];
+}) {
+  const [open, setOpen] = useState<boolean>(false);
+  if (!channelOverride) {
+    return (
+      <div className="rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px] text-neutral-400">
+        <span className="font-medium text-neutral-300">Channel-clone style: </span>
+        not applied to this doc — image-gen is using the built-in style preset's bundled refs and
+        suffix.
+      </div>
+    );
+  }
+  const suffix = channelOverride.ai_image_suffix ?? '';
+  const isGenericFallback = suffix.trim() === GENERIC_FALLBACK_SUFFIX;
+  const refCount = channelOverride.ref_r2_keys?.length ?? 0;
+  return (
+    <div className="rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px]">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span>
+          <span className="font-medium text-neutral-200">Channel-clone style</span>
+          <span className="ml-2 text-neutral-500">{open ? '▾' : '▸'}</span>
+          <span className="ml-2 text-[10px] text-neutral-500">
+            {refCount} reference frame{refCount === 1 ? '' : 's'} ·{' '}
+            {isGenericFallback ? (
+              <span className="text-amber-300">⚠ generic fallback suffix — NOT cloned from your channel</span>
+            ) : (
+              <span className="text-emerald-300">derived from analyze stage</span>
+            )}
+          </span>
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <div className="space-y-0.5">
+            <p className="text-[10px] uppercase tracking-wide text-neutral-500">
+              Style suffix appended to every prompt
+            </p>
+            <p className="whitespace-pre-wrap rounded bg-neutral-900 p-2 text-neutral-200">
+              {suffix || '(empty)'}
+            </p>
+            {isGenericFallback && (
+              <p className="rounded border border-amber-900 bg-amber-950/30 p-1.5 text-[10px] text-amber-200">
+                This suffix is the channel-clone library's <em>generic fallback</em>, used when the
+                analyze stage couldn't extract style cues from the reference videos. It's why
+                every generated image looks like a generic hand-drawn illustration. To fix: re-run
+                the channel-clone analyze stage with better reference videos / more frames, or
+                edit individual rows' prompts to add specific style cues.
+              </p>
+            )}
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-[10px] uppercase tracking-wide text-neutral-500">
+              Derivation reason
+            </p>
+            <p className="text-neutral-400">{channelOverride.reason}</p>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -492,21 +601,246 @@ function DocModelPicker({
   );
 }
 
-function Thumbnail({ row }: { row: RowProgress }) {
+function Thumbnail({
+  row,
+  onClick,
+}: {
+  row: RowProgress;
+  onClick?: () => void;
+}) {
   if (row.thumbnail_url) {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={row.thumbnail_url}
-        alt={`Row ${row.index} preview`}
-        className="h-14 w-14 shrink-0 rounded border border-neutral-800 object-cover"
-        loading="lazy"
-      />
+      <button
+        type="button"
+        onClick={onClick}
+        className="block h-14 w-14 shrink-0 overflow-hidden rounded border border-neutral-800 hover:border-neutral-400 focus:border-neutral-300 focus:outline-none"
+        title="Click to preview"
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={row.thumbnail_url}
+          alt={`Row ${row.index} preview`}
+          className="h-full w-full object-cover"
+          loading="lazy"
+        />
+      </button>
     );
   }
   return (
     <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded border border-dashed border-neutral-700 bg-neutral-950 text-[10px] text-neutral-500">
       {row.status === 'pending' ? '…' : row.status === 'exhausted' ? '✗' : '·'}
+    </div>
+  );
+}
+
+function ImagePreviewModal({ url, onClose }: { url: string; onClose: () => void }) {
+  // Close on Escape; click outside the image to dismiss.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      onClick={onClose}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={url}
+        alt="Full preview"
+        className="max-h-[90vh] max-w-[90vw] rounded border border-neutral-700 object-contain"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-4 top-4 rounded border border-neutral-700 bg-neutral-900 px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-800"
+      >
+        ✕ Close
+      </button>
+    </div>
+  );
+}
+
+function EditRowModal({
+  videoId,
+  row,
+  availableModels,
+  onClose,
+  onSaved,
+}: {
+  videoId: string;
+  row: RowProgress;
+  availableModels: AvailableModel[];
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [prompt, setPrompt] = useState<string>(row.prompt_full);
+  const [model, setModel] = useState<string>(row.image_model_override ?? '');
+  const [regenerate, setRegenerate] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const promptChanged = prompt.trim() !== row.prompt_full.trim();
+  const modelChanged = (model || null) !== (row.image_model_override ?? null);
+  const dirty = promptChanged || modelChanged;
+
+  const handleSave = useCallback(async () => {
+    if (!dirty && !regenerate) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const body: Record<string, unknown> = {
+        row_index: row.index,
+        regenerate,
+      };
+      if (promptChanged) body.prompt = prompt.trim();
+      if (modelChanged) body.image_model_override = model === '' ? null : model;
+      const res = await fetch(
+        `/api/auto-pipeline/videos/${videoId}/image-progress/edit-row`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      const payload = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setErr(payload.error ?? `Save failed (${res.status})`);
+        return;
+      }
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [dirty, regenerate, promptChanged, modelChanged, prompt, model, videoId, row.index, onClose, onSaved]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !saving) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, saving]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={() => {
+        if (!saving) onClose();
+      }}
+    >
+      <div
+        className="w-full max-w-2xl space-y-3 rounded border border-neutral-700 bg-neutral-900 p-4 text-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between">
+          <h3 className="font-medium text-neutral-100">
+            Edit row #{row.index}
+            {row.variant_index > 0 && <span className="text-neutral-500"> · v{row.variant_index}</span>}
+          </h3>
+          <button
+            type="button"
+            onClick={() => !saving && onClose()}
+            disabled={saving}
+            className="text-xs text-neutral-400 hover:text-neutral-200 disabled:opacity-50"
+          >
+            ✕
+          </button>
+        </header>
+
+        {row.thumbnail_url && (
+          <div className="rounded border border-neutral-800 bg-neutral-950 p-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={row.thumbnail_url}
+              alt="Current preview"
+              className="mx-auto max-h-48 rounded"
+            />
+            <p className="mt-1 text-center text-[10px] text-neutral-500">current image</p>
+          </div>
+        )}
+
+        <label className="block space-y-1">
+          <span className="text-[11px] uppercase tracking-wide text-neutral-400">
+            Prompt ({prompt.length}/1500 chars)
+          </span>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            disabled={saving}
+            rows={8}
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 font-mono text-[11px] text-neutral-100 focus:border-neutral-500 focus:outline-none disabled:opacity-60"
+          />
+        </label>
+
+        <label className="block space-y-1">
+          <span className="text-[11px] uppercase tracking-wide text-neutral-400">
+            Image model override
+          </span>
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            disabled={saving}
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-xs text-neutral-100 disabled:opacity-60"
+          >
+            <option value="">(inherit doc / style default)</option>
+            {availableModels.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+                {m.hint ? ` — ${m.hint.slice(0, 60)}${m.hint.length > 60 ? '…' : ''}` : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-2 text-xs text-neutral-300">
+          <input
+            type="checkbox"
+            checked={regenerate}
+            onChange={(e) => setRegenerate(e.target.checked)}
+            disabled={saving}
+            className="h-3.5 w-3.5"
+          />
+          <span>
+            Regenerate this row now
+            <span className="text-[10px] text-neutral-500"> (clears the existing image so the next cron tick re-runs it)</span>
+          </span>
+        </label>
+
+        {err && (
+          <p className="rounded border border-red-900 bg-red-950/40 px-2 py-1 text-[11px] text-red-300">
+            {err}
+          </p>
+        )}
+
+        <div className="flex items-center justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={() => !saving && onClose()}
+            disabled={saving}
+            className="rounded px-3 py-1 text-xs text-neutral-400 hover:text-neutral-200 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saving || (!dirty && !regenerate)}
+            className="rounded bg-neutral-200 px-3 py-1 text-xs font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+          >
+            {saving ? 'Saving…' : regenerate ? 'Save & regenerate' : 'Save'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

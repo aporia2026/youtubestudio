@@ -47,7 +47,13 @@ interface ImageRowMetadata {
 interface ImageDocMetadata {
   rows?: ImageRowMetadata[];
   style_preset?: string;
+  style_id?: string;
   image_model_override?: string;
+  channel_style_override?: {
+    ai_image_suffix: string;
+    ref_r2_keys: string[];
+    reason: string;
+  } | null;
 }
 
 /** Retry budget per error class. Mirrors RETRY_BUDGETS in
@@ -79,7 +85,10 @@ export type RowStatus =
 interface RowProgress {
   index: number;
   status: RowStatus;
+  /** First 200 chars for the card list (UI keeps it compact). */
   prompt_preview: string;
+  /** Full prompt for the prompt-editor modal. */
+  prompt_full: string;
   visual_type: string | null;
   on_screen_text: string | null;
   thumbnail_url: string | null;
@@ -181,6 +190,7 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
       index,
       status,
       prompt_preview: prompt.slice(0, 200),
+      prompt_full: prompt,
       visual_type: row.visual_type ?? null,
       on_screen_text: (row.on_screen_text ?? '').trim() || null,
       thumbnail_url: row.image_url ?? row.motion_collage_image_url ?? null,
@@ -222,12 +232,21 @@ export const GET = apiRoute.authed<{ id: string }>(async (session, _req, ctx) =>
     rows,
     counts,
     cost_usd: Number(artefactRows[0].image_gen_cost_usd ?? 0),
-    style_preset: doc.style_preset ?? null,
+    style_preset: doc.style_preset ?? doc.style_id ?? null,
     /** Doc-level model override — applied to every row that lacks
      *  its own override. Null means "fall through to style preset
      *  (or DEFAULT_CLOUD_I2I_MODEL)". */
     doc_image_model_override: doc.image_model_override ?? null,
     default_model: DEFAULT_CLOUD_I2I_MODEL,
     available_models: availableModels,
+    /** Channel-clone style override — what the channel-clone job
+     *  derived from the operator's reference videos. The
+     *  ai_image_suffix is appended to every row's prompt; the
+     *  ref_r2_keys are used as Atlas i2i references. Surfaced here
+     *  so the operator can see exactly what style cues the pipeline
+     *  is applying and whether the channel-clone derivation
+     *  actually produced something useful or fell back to the
+     *  generic "hand-drawn illustration" default. */
+    channel_style_override: doc.channel_style_override ?? null,
   });
 });
