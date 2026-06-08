@@ -260,41 +260,59 @@ function ShortsPageInner() {
 
   // Shared tab strip — appears at the top of every tab so the user can
   // switch from anywhere. Pulled into a const so the extract + inbox
-  // branches stay in sync.
+  // branches stay in sync. The "Bulk batch" link routes to
+  // /shorts/batch — the multi-step generate-and-upload workflow added
+  // by `_plans/2026-06-08-shorts-bulk-batch-youtube-upload.md`.
   const tabStrip = (
-    <div
-      role="tablist"
-      style={{
-        marginLeft: 'auto',
-        display: 'inline-flex',
-        gap: 4,
-        padding: 4,
-        borderRadius: 12,
-        background: 'rgba(255,255,255,0.04)',
-        border: '1px solid rgba(255,255,255,0.08)',
-      }}
-    >
-      {(['create', 'extract', 'inbox'] as const).map((t) => (
-        <button
-          key={t}
-          role="tab"
-          aria-selected={tab === t}
-          type="button"
-          onClick={() => setTab(t)}
-          style={{
-            padding: '6px 14px',
-            borderRadius: 8,
-            border: 'none',
-            cursor: tab === t ? 'default' : 'pointer',
-            fontSize: 13,
-            fontWeight: tab === t ? 600 : 500,
-            background: tab === t ? 'rgba(124,58,237,0.9)' : 'transparent',
-            color: tab === t ? '#fff' : 'var(--text-secondary, rgba(255,255,255,0.7))',
-          }}
-        >
-          {t === 'create' ? 'Create' : t === 'extract' ? 'Extract' : 'Inbox'}
-        </button>
-      ))}
+    <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+      <Link
+        href="/shorts/batch"
+        style={{
+          padding: '6px 12px',
+          borderRadius: 8,
+          fontSize: 12,
+          fontWeight: 500,
+          background: 'rgba(16,185,129,0.15)',
+          color: '#10b981',
+          border: '1px solid rgba(16,185,129,0.4)',
+          textDecoration: 'none',
+        }}
+      >
+        Bulk batch →
+      </Link>
+      <div
+        role="tablist"
+        style={{
+          display: 'inline-flex',
+          gap: 4,
+          padding: 4,
+          borderRadius: 12,
+          background: 'rgba(255,255,255,0.04)',
+          border: '1px solid rgba(255,255,255,0.08)',
+        }}
+      >
+        {(['create', 'extract', 'inbox'] as const).map((t) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={tab === t}
+            type="button"
+            onClick={() => setTab(t)}
+            style={{
+              padding: '6px 14px',
+              borderRadius: 8,
+              border: 'none',
+              cursor: tab === t ? 'default' : 'pointer',
+              fontSize: 13,
+              fontWeight: tab === t ? 600 : 500,
+              background: tab === t ? 'rgba(124,58,237,0.9)' : 'transparent',
+              color: tab === t ? '#fff' : 'var(--text-secondary, rgba(255,255,255,0.7))',
+            }}
+          >
+            {t === 'create' ? 'Create' : t === 'extract' ? 'Extract' : 'Inbox'}
+          </button>
+        ))}
+      </div>
     </div>
   );
 
