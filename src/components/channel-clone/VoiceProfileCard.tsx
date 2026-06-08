@@ -109,7 +109,30 @@ export function VoiceProfileCard({
     });
   }, [jobId, sessionKey]);
 
+  // Operator-initiated skip — the voice-profile runner can hang
+  // indefinitely when Kie's Gemini audio path is broken (rate limit,
+  // outage, returns empty body), and the picker offers no clear way
+  // to move past it because the rest of the pipeline doesn't actually
+  // depend on a voice profile. The skip flag is per-jobId per-session
+  // so the operator can dismiss the card and continue, without
+  // touching server state. To bring the card back: clear the
+  // sessionStorage key.
+  const skipKey = `cc-voice-profile-skipped:${jobId}`;
+  const [skipped, setSkipped] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.sessionStorage.getItem(skipKey) === '1';
+  });
+  const handleSkip = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(skipKey, '1');
+    }
+    setSkipped(true);
+    // eslint-disable-next-line no-console
+    console.info('[channel-clone voice-card]', { state: 'skipped', jobId });
+  }, [jobId, skipKey]);
+
   if (!shouldShowCard) return null;
+  if (skipped && !profile) return null;
 
   return (
     <section className="rounded border border-neutral-800 bg-neutral-950">
@@ -140,7 +163,12 @@ export function VoiceProfileCard({
               onCloneStateChanged={onCloneStateChanged}
             />
           ) : sample ? (
-            <PendingView sample={sample} jobId={jobId} onChanged={onCloneStateChanged} />
+            <PendingView
+              sample={sample}
+              jobId={jobId}
+              onChanged={onCloneStateChanged}
+              onSkip={handleSkip}
+            />
           ) : (
             <EmptyView status={status} />
           )}
@@ -475,10 +503,16 @@ function PendingView({
   sample,
   jobId,
   onChanged,
+  onSkip,
 }: {
   sample: NonNullable<ChannelCloneJobState['voiceSample']>;
   jobId: string;
   onChanged: (() => void) | undefined;
+  /** Hide the card for this session. Used when the operator has tried
+   *  every model variant and Kie's Gemini audio path is genuinely
+   *  unavailable. The rest of the pipeline doesn't depend on a voice
+   *  profile, so skipping is safe. */
+  onSkip: () => void;
 }) {
   // Detect "stuck analyzing" — the runner is fire-and-forget after
   // intake completes and can silently bail (Kie 500, model defaults
@@ -574,8 +608,22 @@ function PendingView({
               >
                 {retrying ? 'Re-running…' : 'Re-run voice analysis'}
               </button>
+              <button
+                type="button"
+                onClick={onSkip}
+                disabled={retrying}
+                className="rounded border border-neutral-700 bg-neutral-900 px-3 py-1 text-[11px] text-neutral-300 hover:border-neutral-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Skip — continue without voice profile
+              </button>
               {retryError && <span className="text-[10px] text-red-300">{retryError}</span>}
             </div>
+            <p className="text-[10px] text-neutral-500">
+              Voice profile is informational — the rest of the pipeline (analyze, topics,
+              hooks, script, rowify, publish-pack, handoff) does not depend on it. Skip to move
+              past this card; the only feature you lose is the auto-suggested ElevenLabs Voice
+              Design prompt.
+            </p>
           </div>
         </div>
       ) : (
