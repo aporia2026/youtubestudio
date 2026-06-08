@@ -128,10 +128,20 @@ function readCostCap(): number {
   return Number.isFinite(n) && n > 0 ? n : 10;
 }
 
+/** Per-tick deadline. Vercel's function maxDuration is 300s; we bail
+ *  out of the row loop when we've used ~85% of that so the persist +
+ *  cleanup at the end has comfortable headroom. Without this guard,
+ *  one slow Kie poll (up to 285s by itself per kie-poll.ts) could
+ *  blow the entire tick, returning HTTP 504 and silently re-trying
+ *  the same work next tick. 2026-06-08 bugfix. */
+const TICK_DEADLINE_BUDGET_MS = 255_000;
+
 export async function handleGenerateProductionDocImages(
   ctx: StageHandlerContext,
 ): Promise<StageOutcome> {
   const { video } = ctx;
+  const tickStartedAtMs = Date.now();
+  const deadlineExceeded = (): boolean => Date.now() - tickStartedAtMs > TICK_DEADLINE_BUDGET_MS;
 
   // 1) Load the latest production_doc artefact. The handler runs
   //    AFTER generate-production-doc, so this row should exist; if
@@ -594,7 +604,24 @@ export async function handleGenerateProductionDocImages(
     }
   }
 
+  let deadlineHitDeferredCount = 0;
   for (const item of plan) {
+    // Tick-deadline guard. Each row's image-gen call goes through
+    // pollKieResult which can take up to 285s on a slow Kie task
+    // (95 attempts × 3s interval per kie-poll.ts). If we're close to
+    // the Vercel function ceiling, defer the remaining plan to the
+    // next tick rather than rolling the dice on a 504. The work done
+    // so far gets persisted by the UPDATE at the end of the handler.
+    if (deadlineExceeded()) {
+      deadlineHitDeferredCount = plan.length - plan.indexOf(item);
+      logger.warn('[pipeline image-gen] tick deadline reached; deferring remaining rows', {
+        pipeline_video_id: video.id,
+        deferred: deadlineHitDeferredCount,
+        elapsed_ms: Date.now() - tickStartedAtMs,
+        budget_ms: TICK_DEADLINE_BUDGET_MS,
+      });
+      break;
+    }
     const row: PipelineImageRow = doc.rows[item.index];
 
     // ─── doodle_explainer_2 motion_collage routing ────────────────────
@@ -1133,7 +1160,7 @@ export async function handleGenerateProductionDocImages(
   let propGenSucceeded = 0;
   let propGenSkipped = 0;
   let propGenFailed = 0;
-  if (isPaintExplainerV1) {
+  if (isPaintExplainerV1 && !deadlineExceeded()) {
     const cache = doc.paint_explainer_v1_prop_cache ?? {};
     // Walk all rows once, collect unique hints not yet in cache.
     const pendingHints = new Set<string>();
