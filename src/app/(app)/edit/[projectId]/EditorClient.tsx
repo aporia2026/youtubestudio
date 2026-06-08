@@ -32,6 +32,7 @@ import { Player, type PlayerRef } from '@remotion/player';
 import { YouTubeVideo } from '@/remotion/compositions/YouTubeVideo';
 import {
   productionDocToVideoConfig,
+  resolveOstRendering,
   summarizeConfigForDiagnostics,
   composeVariantEditRequest,
   type ProductionDoc,
@@ -841,9 +842,21 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
       // _plans/2026-05-26-collage-default-on-with-per-cell-augmentation.md.
       const cells = stillBlank.map((i) => {
         const row = liveState.doc.rows[i];
+        // Forward the per-row / doc-default OST mode so the server
+        // doesn't fall back to its 'bake' back-compat default and
+        // bake text into images whose mode is actually 'overlay' —
+        // which would surface the same text both inside the image
+        // pixels AND on the Remotion overlay layer. Shared resolver
+        // with the renderer so both surfaces agree row-by-row.
+        const ostMode = resolveOstRendering(
+          row?.on_screen_text_mode,
+          liveState.doc.on_screen_text_mode_default,
+          row?.on_screen_text,
+        ).mode;
         return {
           prompt: row?.ai_image_prompt?.trim() || row?.visual_description?.trim() || '',
           onScreenText: row?.on_screen_text ?? '',
+          onScreenTextMode: ostMode,
           sectionTitle: row?.section_title ?? '',
         };
       });
@@ -1064,6 +1077,15 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               prompt,
               model,
               onScreenText: row.on_screen_text ?? '',
+              // See the collage-cells comment above for why this mode
+              // gets forwarded — without it the server defaults to
+              // 'bake' and the AI duplicates the overlay text into the
+              // image pixels.
+              onScreenTextMode: resolveOstRendering(
+                row.on_screen_text_mode,
+                liveState.doc.on_screen_text_mode_default,
+                row.on_screen_text,
+              ).mode,
               sectionTitle: row.section_title ?? '',
               styleId: liveState.doc.style_preset || undefined,
             }),
@@ -1280,6 +1302,14 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               prompt,
               model: resolvedModel,
               onScreenText: row.on_screen_text ?? '',
+              // Forward the OST mode so the server doesn't bake text
+              // into images whose mode is 'overlay' (see the
+              // collage-cells branch above for the long version).
+              onScreenTextMode: resolveOstRendering(
+                row.on_screen_text_mode,
+                liveState.doc.on_screen_text_mode_default,
+                row.on_screen_text,
+              ).mode,
               sectionTitle: row.section_title ?? '',
               styleId: liveState.doc.style_preset || undefined,
               excludeRefIds:
