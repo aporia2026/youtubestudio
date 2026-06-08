@@ -16,8 +16,17 @@ export const YOUTUBE_SCOPES = [
   // to Data-API-only stats until the user re-runs the connect flow.
   'https://www.googleapis.com/auth/yt-analytics.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/spreadsheets',
-  'https://www.googleapis.com/auth/drive.file',
+  // NOTE: Sheets + Drive scopes intentionally NOT bundled here. YouTube
+  // brand accounts (sub-accounts attached to a personal Google account
+  // for channel management) have no Sheets/Drive access — when the
+  // consent screen tries to grant scopes the account can't grant, Google
+  // refuses the entire consent with "Service unavailable" and the user
+  // can never connect a brand-account channel. Sheets/Drive access is
+  // available via the separate `getAuthorizationUrlForSheets()` flow
+  // below, scoped to the workspace's `google_auth_tokens` row rather
+  // than the channel's OAuth token. Every Sheets/Drive call in the
+  // codebase routes through `getValidSheetsToken(workspaceId)` — none
+  // depend on the channel token having these scopes.
 ];
 
 function getOAuthConfig() {
