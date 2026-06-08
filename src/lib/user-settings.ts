@@ -115,6 +115,10 @@ export interface UserSettings {
    *  per-short at SEO-seeding time. `null` or absent ⇒ empty
    *  template (SEO output fills the description directly). */
   shorts_batch_default_description_template?: string | null;
+  /** Favorited TTS voices for the voice picker. Each entry pins a
+   *  voice from a specific provider so identical voice IDs across
+   *  providers don't collide. Empty / absent ⇒ no favorites. */
+  tts_favorite_voices?: Array<{ providerId: string; voiceId: string }>;
   /** Default "age restricted (18+)" answer for new batches. `null`
    *  or absent ⇒ false at the batch level. */
   shorts_batch_default_age_restricted?: boolean | null;
@@ -248,6 +252,23 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.shorts_batch_default_description_template = obj.shorts_batch_default_description_template;
   } else if (obj.shorts_batch_default_description_template === null) {
     out.shorts_batch_default_description_template = null;
+  }
+  if (Array.isArray(obj.tts_favorite_voices)) {
+    const cleaned: Array<{ providerId: string; voiceId: string }> = [];
+    for (const item of obj.tts_favorite_voices) {
+      if (
+        item
+        && typeof item === 'object'
+        && typeof (item as { providerId?: unknown }).providerId === 'string'
+        && typeof (item as { voiceId?: unknown }).voiceId === 'string'
+      ) {
+        cleaned.push({
+          providerId: (item as { providerId: string }).providerId,
+          voiceId: (item as { voiceId: string }).voiceId,
+        });
+      }
+    }
+    out.tts_favorite_voices = cleaned;
   }
   if (typeof obj.shorts_batch_default_age_restricted === 'boolean') {
     out.shorts_batch_default_age_restricted = obj.shorts_batch_default_age_restricted;
