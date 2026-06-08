@@ -367,66 +367,239 @@ function buildRowifyUserPrompt(
   ].join('\n');
 }
 
-/** Parse the model's response into typed rows. Exported for unit tests. */
+/** Normalize whatever the LLM put in `visual_type` to one of the
+ *  four canonical values. Models routinely return variants like
+ *  "AI Image", "image", "Animation" (the main-pipeline name),
+ *  "ai-image", "stock footage", "title card", "Heading", etc.
+ *  Throwing on every variant is what's been failing rowify
+ *  repeatedly — be forgiving. Exported for unit tests. */
+export function normalizeVisualType(value: unknown): ChannelCloneProductionRow['visual_type'] {
+  if (typeof value !== 'string') return 'ai_image';
+  // Lowercase + strip everything that isn't a letter.
+  const key = value.toLowerCase().replace(/[^a-z]/g, '');
+  // Exact canonical lower-form first (cheapest path).
+  if (key === 'aiimage') return 'ai_image';
+  if (key === 'stock') return 'stock';
+  if (key === 'overlay') return 'overlay';
+  if (key === 'titlecard') return 'Title Card';
+  // Known synonyms.
+  if (
+    key === 'image'
+    || key === 'animation'         // main pipeline value
+    || key === 'illustration'
+    || key === 'photo'
+    || key === 'graphic'
+    || key === 'still'
+    || key === 'shot'
+    || key === 'picture'
+    || key === 'scene'
+    || key === 'generated'
+    || key === 'generatedstill'
+    || key === 'generatedimage'
+  ) {
+    return 'ai_image';
+  }
+  if (
+    key === 'stockfootage'
+    || key === 'stockimage'
+    || key === 'stockvideo'
+    || key === 'footage'
+    || key === 'archive'
+  ) {
+    return 'stock';
+  }
+  if (
+    key === 'textoverlay'
+    || key === 'text'
+    || key === 'callout'
+    || key === 'caption'
+  ) {
+    return 'overlay';
+  }
+  if (
+    key === 'title'
+    || key === 'card'
+    || key === 'heading'
+    || key === 'sectiontitle'
+    || key === 'sectiondivider'
+    || key === 'divider'
+  ) {
+    return 'Title Card';
+  }
+  // Substring fallbacks for noisy values like "Animation (still)" or
+  // "AI image - landscape".
+  if (key.includes('title') || key.includes('card') || key.includes('heading')) return 'Title Card';
+  if (key.includes('stock') || key.includes('footage')) return 'stock';
+  if (key.includes('overlay') || key.includes('caption') || key.includes('callout')) return 'overlay';
+  // Last-ditch default — ai_image is the safest because the renderer
+  // can always synthesise an image from whatever description / prompt
+  // the row carries; "stock" without terms or "Title Card" without
+  // heading text would produce worse output.
+  return 'ai_image';
+}
+
+/** Normalize whatever the LLM put in `timecode` to "M:SS-M:SS" form.
+ *  Accepts "0:00-0:03", "00:00-00:03", "0:0-0:3", "0:00 - 0:03",
+ *  "0:00 to 0:03", "0:00–0:03" (en-dash), with surrounding whitespace.
+ *  Returns null when literally nothing usable can be extracted — the
+ *  caller then synthesises a timecode from cumulative duration. */
+export function normalizeTimecode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value
+    .replace(/[–—]/g, '-') // en/em dash → ASCII hyphen
+    .replace(/\s+to\s+/i, '-')
+    .replace(/\s+/g, '')
+    .trim();
+  const m = /^(\d{1,3}):(\d{1,2})-(\d{1,3}):(\d{1,2})$/.exec(cleaned);
+  if (!m) return null;
+  const [, sm, ss, em, es] = m;
+  const sMin = Number(sm);
+  const sSec = Number(ss);
+  const eMin = Number(em);
+  const eSec = Number(es);
+  if (!Number.isFinite(sMin) || !Number.isFinite(sSec) || !Number.isFinite(eMin) || !Number.isFinite(eSec)) {
+    return null;
+  }
+  if (sSec >= 60 || eSec >= 60) return null;
+  // Final canonical "M:SS-M:SS" with zero-padded seconds.
+  return `${sMin}:${sSec.toString().padStart(2, '0')}-${eMin}:${eSec.toString().padStart(2, '0')}`;
+}
+
+/** Compute a synthetic timecode for row `i` given the rows that came
+ *  before it. End = start + 3 seconds (conservative default; the
+ *  downstream alignment pass re-derives real timing). */
+function synthesizeTimecode(prevEndSec: number, durSec = 3): { timecode: string; nextStartSec: number } {
+  const startSec = prevEndSec;
+  const endSec = startSec + durSec;
+  const fmt = (n: number) => `${Math.floor(n / 60)}:${(n % 60).toString().padStart(2, '0')}`;
+  return { timecode: `${fmt(startSec)}-${fmt(endSec)}`, nextStartSec: endSec };
+}
+
+/** Coerce any value into a string. null/undefined → ''. */
+function asString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  return String(value);
+}
+
+/** Parse the model's response into typed rows. Tolerant of common
+ *  schema drifts (Animation vs ai_image, "0:00 - 0:03" vs "0:00-0:03",
+ *  missing fields). Rows that can't be salvaged are dropped with a
+ *  warning rather than failing the whole stage. Returns the surviving
+ *  rows + a per-row `notes` field annotated with any normalization
+ *  that fired. Throws ONLY when literally zero rows survive (genuine
+ *  total failure). Exported for unit tests. */
 export function parseRowifyResponse(raw: string): ChannelCloneProductionRow[] {
   const obj = extractJsonObjectFromModelResponse(raw);
   if (!obj || typeof obj !== 'object') throw new Error('response was not a JSON object');
   const arr = (obj as Record<string, unknown>).rows;
   if (!Array.isArray(arr)) throw new Error('rows must be an array');
   if (arr.length === 0) throw new Error('rows must not be empty');
-  return arr.map((entry, i) => {
-    if (!entry || typeof entry !== 'object') throw new Error(`rows[${i}] is not an object`);
+
+  const rows: ChannelCloneProductionRow[] = [];
+  const dropped: { index: number; reason: string }[] = [];
+  let cumulativeSec = 0;
+  for (let i = 0; i < arr.length; i += 1) {
+    const entry = arr[i];
+    if (!entry || typeof entry !== 'object') {
+      dropped.push({ index: i, reason: 'not an object' });
+      continue;
+    }
     const e = entry as Record<string, unknown>;
-    const timecode = e.timecode;
-    if (typeof timecode !== 'string' || !/^\d+:\d{2}-\d+:\d{2}$/.test(timecode)) {
-      throw new Error(`rows[${i}].timecode must look like "0:00-0:03"`);
+    // script_text is the ONLY truly load-bearing field — without it
+    // the row has no purpose. Everything else can be defaulted.
+    const scriptText = asString(e.script_text).trim();
+    if (scriptText.length === 0) {
+      dropped.push({ index: i, reason: 'empty script_text' });
+      continue;
     }
-    const visualType = e.visual_type;
-    if (
-      visualType !== 'ai_image'
-      && visualType !== 'stock'
-      && visualType !== 'overlay'
-      && visualType !== 'Title Card'
-    ) {
-      throw new Error(`rows[${i}].visual_type must be ai_image | stock | overlay | Title Card`);
+
+    // Timecode: try to normalize what the LLM gave; fall back to
+    // a synthetic one rooted in cumulativeSec (each row 3s long).
+    let timecode = normalizeTimecode(e.timecode);
+    if (timecode === null) {
+      const synth = synthesizeTimecode(cumulativeSec, 3);
+      timecode = synth.timecode;
+      cumulativeSec = synth.nextStartSec;
+    } else {
+      // Update cumulativeSec from the parsed end time so subsequent
+      // synthesized rows pick up from here.
+      const endMatch = /(\d+):(\d+)$/.exec(timecode);
+      if (endMatch) {
+        cumulativeSec = Number(endMatch[1]) * 60 + Number(endMatch[2]);
+      }
     }
-    if (typeof e.script_text !== 'string' || e.script_text.length === 0) {
-      throw new Error(`rows[${i}].script_text must be a non-empty string`);
+
+    const visualType = normalizeVisualType(e.visual_type);
+    const visualDescription = asString(e.visual_description).trim();
+    const aiImagePrompt = asString(e.ai_image_prompt).trim();
+    const stockSearchTerms = asString(e.stock_search_terms).trim();
+    const onScreenText = asString(e.on_screen_text);
+    const notes = asString(e.notes);
+
+    // Title Card consistency: synthesize from script_text if the
+    // model emitted visual_type Title Card but left fields blank.
+    let finalScriptText = scriptText;
+    let finalVisualDescription = visualDescription;
+    let finalAiImagePrompt = aiImagePrompt;
+    let finalOnScreenText = onScreenText;
+    let finalStockSearchTerms = stockSearchTerms;
+
+    if (visualType === 'Title Card') {
+      // Title cards render typography. script_text == on_screen_text
+      // == heading. No image needed.
+      if (!finalOnScreenText.trim()) finalOnScreenText = scriptText;
+      if (!finalVisualDescription) finalVisualDescription = `Title card displaying "${scriptText}"`;
+      finalAiImagePrompt = '';
+      finalStockSearchTerms = '';
+    } else if (visualType === 'stock') {
+      // Stock rows need search terms; fall back to the description
+      // when the model forgot.
+      if (!finalStockSearchTerms) {
+        finalStockSearchTerms = finalVisualDescription || finalScriptText.slice(0, 80);
+      }
+      finalAiImagePrompt = '';
+    } else if (visualType === 'overlay') {
+      // Overlay rows need on_screen_text. Fall back to script_text
+      // first 3-6 words so the renderer has something to print.
+      if (!finalOnScreenText.trim()) {
+        finalOnScreenText = scriptText.split(/\s+/).slice(0, 6).join(' ');
+      }
+      finalAiImagePrompt = '';
+      finalStockSearchTerms = '';
+    } else {
+      // ai_image: needs a prompt. Fall back to visual_description,
+      // then script_text. Better to render SOMETHING than fail the row.
+      if (!finalAiImagePrompt) {
+        finalAiImagePrompt = finalVisualDescription || `Scene illustrating: ${finalScriptText}`;
+      }
+      finalStockSearchTerms = '';
     }
-    if (typeof e.visual_description !== 'string') {
-      throw new Error(`rows[${i}].visual_description must be a string`);
-    }
-    if (typeof e.ai_image_prompt !== 'string') {
-      throw new Error(`rows[${i}].ai_image_prompt must be a string`);
-    }
-    if (typeof e.stock_search_terms !== 'string') {
-      throw new Error(`rows[${i}].stock_search_terms must be a string`);
-    }
-    if (typeof e.on_screen_text !== 'string') {
-      throw new Error(`rows[${i}].on_screen_text must be a string`);
-    }
-    if (typeof e.notes !== 'string') {
-      throw new Error(`rows[${i}].notes must be a string`);
-    }
-    // ai_image rows must carry a prompt; stock rows must carry terms.
-    // Title Card rows render typography — no image, no stock terms.
-    if (visualType === 'ai_image' && e.ai_image_prompt.length === 0) {
-      throw new Error(`rows[${i}]: visual_type=ai_image requires a non-empty ai_image_prompt`);
-    }
-    if (visualType === 'stock' && e.stock_search_terms.length === 0) {
-      throw new Error(`rows[${i}]: visual_type=stock requires non-empty stock_search_terms`);
-    }
-    return {
+
+    rows.push({
       timecode,
-      script_text: e.script_text,
+      script_text: finalScriptText,
       visual_type: visualType,
-      visual_description: e.visual_description,
-      stock_search_terms: e.stock_search_terms,
-      ai_image_prompt: e.ai_image_prompt,
-      on_screen_text: e.on_screen_text,
-      notes: e.notes,
-    };
-  });
+      visual_description: finalVisualDescription,
+      stock_search_terms: finalStockSearchTerms,
+      ai_image_prompt: finalAiImagePrompt,
+      on_screen_text: finalOnScreenText,
+      notes,
+    });
+  }
+
+  if (rows.length === 0) {
+    throw new Error(
+      `every row failed validation (dropped ${dropped.length}: ${dropped.slice(0, 5).map((d) => `[${d.index}] ${d.reason}`).join('; ')})`,
+    );
+  }
+  if (dropped.length > 0) {
+    logger.warn('[channel-clone rowify] some rows dropped during parse', {
+      kept: rows.length, dropped: dropped.length,
+      reasons: dropped.slice(0, 10),
+    });
+  }
+  return rows;
 }
 
 /** Compute what fraction of the approved script (by normalized

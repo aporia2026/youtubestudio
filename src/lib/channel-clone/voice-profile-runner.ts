@@ -37,7 +37,7 @@
 import { logger } from '@/lib/logger';
 import { getDownloadUrlForBucket, getReviewBucket } from '@/lib/r2';
 import { getEffectiveModelId } from '@/lib/model-defaults';
-import { getModelById, KIE_MODEL_MAP } from '@/lib/ai-models';
+import { KIE_MODEL_MAP } from '@/lib/ai-models';
 import {
   getChannelCloneJob,
   mergeChannelCloneJobState,
@@ -84,8 +84,45 @@ export interface RunVoiceProfileOptions {
   modelOverride?: string;
 }
 
-/** Run the voice-profile stage. Never throws — failure paths log
- *  and return without touching the job's status. */
+/** Ordered fallback chain of audio-capable models. When one model
+ *  fails (Kie 500, parse error, network), the runner walks down this
+ *  list before giving up. Order: try the operator-picked / configured
+ *  model FIRST, then 3.5 Flash (fast + cheap + good), then 2.5 Flash
+ *  (older but stable), then 3 Pro (slower but smart), then 2.5 Pro,
+ *  then 3 Flash, then 3.1 Pro. All Kie Gemini variants — those are
+ *  the only audio-capable models on our current Kie wiring. */
+const VOICE_PROFILE_FALLBACK_MODELS: readonly string[] = [
+  'kie-gemini-3-5-flash',
+  'kie-gemini-2.5-flash',
+  'kie-gemini-3-pro',
+  'kie-gemini-2.5-pro',
+  'kie-gemini-3-flash',
+  'kie-gemini-3.1-pro',
+];
+
+/** Build the ordered list of model ids to try for ONE invocation of
+ *  runVoiceProfile. Operator-picked / configured model goes first,
+ *  then the fallback chain (deduped). Exported for unit tests. */
+export function buildVoiceProfileModelChain(primary: string): string[] {
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  const push = (id: string) => {
+    if (!seen.has(id) && KIE_MODEL_MAP[id]) {
+      chain.push(id);
+      seen.add(id);
+    }
+  };
+  push(primary);
+  for (const fallback of VOICE_PROFILE_FALLBACK_MODELS) {
+    push(fallback);
+  }
+  return chain;
+}
+
+/** Run the voice-profile stage. Walks an ordered fallback chain of
+ *  Kie Gemini models so a transient Kie 500 (or parse failure on one
+ *  model) doesn't strand the operator. Never throws — failure paths
+ *  log and return without touching the job's status. */
 export async function runVoiceProfile(opts: RunVoiceProfileOptions): Promise<void> {
   const { jobId, workspaceId } = opts;
   const log: JobLogger = makeJobLogger(jobId, workspaceId, 'voice-profile');
@@ -102,34 +139,13 @@ export async function runVoiceProfile(opts: RunVoiceProfileOptions): Promise<voi
     return;
   }
 
-  const modelId = opts.modelOverride
+  const configured = opts.modelOverride
     ?? await getEffectiveModelId(workspaceId, 'channel-clone-voice-profile');
-  const model = getModelById(modelId);
-  if (!model) {
-    log.error('voice-profile', 'configured model id is not in the registry', { modelId });
-    return;
-  }
-  // Today we only have a working audio wire format for Kie Gemini
-  // (via Kie's Google-native `:generateContent` endpoint). Anything
-  // else routes through a path that doesn't accept audio yet.
-  if (model.provider !== 'kie' || !modelId.startsWith('kie-gemini')) {
-    log.warn('voice-profile', 'configured model does not support audio in our current router; skipping', {
-      modelId, provider: model.provider,
-    });
-    return;
-  }
-  const kieConfig = KIE_MODEL_MAP[modelId];
-  if (!kieConfig) {
-    log.error('voice-profile', 'no KIE_MODEL_MAP entry for configured model', { modelId });
-    return;
-  }
-  // The kieModelId in KIE_MODEL_MAP for Gemini is typically the
-  // OpenAI-compatible alias (e.g. `gemini-3-5-flash-openai`). For
-  // the native :generateContent endpoint we strip that suffix —
-  // Google's API doesn't recognise it.
-  const nativeModelId = kieConfig.kieModelId.replace(/-openai$/, '');
+  const chain = buildVoiceProfileModelChain(configured);
+  log.info('voice-profile', 'model chain', { primary: configured, chain });
 
-  // Pull the audio bytes back from R2 → memory → base64 for the call.
+  // Pull the audio bytes back from R2 → memory → base64 ONCE. Every
+  // model in the chain sees the same buffer.
   let audioBase64: string;
   try {
     const downloadUrl = await getDownloadUrlForBucket(getReviewBucket(), state.voiceSample.r2Key);
@@ -144,37 +160,62 @@ export async function runVoiceProfile(opts: RunVoiceProfileOptions): Promise<voi
     return;
   }
 
-  log.info('voice-profile', 'model-call', { modelId, nativeModelId, audioBase64Bytes: audioBase64.length });
+  const attemptErrors: { modelId: string; reason: string }[] = [];
+  for (const modelId of chain) {
+    const kieConfig = KIE_MODEL_MAP[modelId];
+    if (!kieConfig) {
+      attemptErrors.push({ modelId, reason: 'no KIE_MODEL_MAP entry' });
+      continue;
+    }
+    const nativeModelId = kieConfig.kieModelId.replace(/-openai$/, '');
+    log.info('voice-profile', 'model-call', { modelId, nativeModelId, audioBase64Bytes: audioBase64.length });
 
-  let raw: string;
-  try {
-    raw = await callKieGeminiAudio(nativeModelId, audioBase64);
-  } catch (err) {
-    log.error('voice-profile', 'model call failed', { error: errorMessage(err) });
-    return;
-  }
+    let raw: string;
+    try {
+      raw = await callKieGeminiAudio(nativeModelId, audioBase64);
+    } catch (err) {
+      const reason = errorMessage(err);
+      attemptErrors.push({ modelId, reason: `call failed: ${reason}` });
+      log.warn('voice-profile', 'model call failed; trying next in chain', { modelId, reason });
+      continue;
+    }
 
-  let parsed: ChannelCloneJobState['voiceProfile'];
-  try {
-    parsed = parseVoiceProfileResponse(raw, modelId);
-  } catch (err) {
-    log.error('voice-profile', 'parse failed', {
-      modelId, rawPreview: raw.slice(0, 400), error: errorMessage(err),
+    let parsed: ChannelCloneJobState['voiceProfile'];
+    try {
+      parsed = parseVoiceProfileResponse(raw, modelId);
+    } catch (err) {
+      const reason = errorMessage(err);
+      attemptErrors.push({ modelId, reason: `parse failed: ${reason}` });
+      log.warn('voice-profile', 'parse failed; trying next in chain', {
+        modelId, rawPreview: raw.slice(0, 200), reason,
+      });
+      continue;
+    }
+
+    try {
+      await mergeChannelCloneJobState(jobId, workspaceId, { voiceProfile: parsed });
+    } catch (err) {
+      log.error('voice-profile', 'persist failed — aborting (data integrity beats fallback here)', {
+        error: errorMessage(err),
+      });
+      return;
+    }
+
+    log.info('voice-profile', 'persisted', {
+      modelId, gender: parsed?.gender, age: parsed?.ageBracket, pace: parsed?.pace,
+      attemptsBeforeSuccess: attemptErrors.length,
+      attemptErrors: attemptErrors.length > 0 ? attemptErrors : undefined,
     });
+    logger.info('[channel-clone voice-profile] done', { jobId, modelId, attemptsBeforeSuccess: attemptErrors.length });
     return;
   }
 
-  try {
-    await mergeChannelCloneJobState(jobId, workspaceId, { voiceProfile: parsed });
-  } catch (err) {
-    log.error('voice-profile', 'persist failed', { error: errorMessage(err) });
-    return;
-  }
-
-  log.info('voice-profile', 'persisted', {
-    modelId, gender: parsed?.gender, age: parsed?.ageBracket, pace: parsed?.pace,
+  // Every model in the chain failed. Surface a summary in the log so
+  // the operator can see WHY rather than just "still analyzing…".
+  log.error('voice-profile', 'every model in the fallback chain failed', {
+    chainLength: chain.length, attemptErrors,
   });
-  logger.info('[channel-clone voice-profile] done', { jobId, modelId });
+  logger.error('[channel-clone voice-profile] chain exhausted', { jobId, attemptErrors });
 }
 
 /** Direct call to Kie.ai's Google-native generateContent endpoint
