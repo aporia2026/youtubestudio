@@ -34,6 +34,8 @@ import {
   type EditOptionId,
 } from '@/lib/image-edit-pricing';
 import { recordIntent, markDelivered, markFailed } from '@/lib/provider-generations';
+import { eraseViaServerWhiteFill } from '@/lib/erase-white-fill-server';
+import { isWhiteBackgroundSketchStyle } from '@/lib/sketch-style';
 
 export const maxDuration = 300;
 
@@ -100,6 +102,14 @@ interface EditRequestBody {
    *  when the resolved option's backend kind is `'atlas'`. See
    *  _plans/2026-05-29-gpt-image-2-edit-provider-fallback.md. */
   gptImage2EditPrimary?: 'atlas' | 'kie';
+  /** The doc's active style preset id. When `intent === 'erase'` AND
+   *  the style is a white-background sketch style (doodle_explainer /
+   *  doodle_explainer_2 / paint_explainer_v1 / whiteboard), the route
+   *  takes a deterministic canvas white-fill composite path instead
+   *  of dispatching to Ideogram v3 — Ideogram is photo-trained and
+   *  produces noisy mosaic garbage on sketch art. See
+   *  `_plans/2026-06-08-erase-white-fill-and-ost-mode-wiring.md`. */
+  styleId?: string;
 }
 
 /** Pick the EditOption to dispatch for this request. Encapsulates the
@@ -210,6 +220,55 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       return NextResponse.json({ error: `Mask URL: ${maskCheck.error}` }, { status: 400 });
     }
     maskUrl = body.mask.url;
+  }
+
+  // Style-aware erase routing. Ideogram v3 (the default erase backend)
+  // is photo-trained and produces noisy mosaic garbage when asked to
+  // inpaint hand-drawn art on a white canvas — the doodle / paint-
+  // explainer / whiteboard family. For those styles we composite
+  // server-side: paint pure white over the masked region with sharp
+  // and upload the result. Zero AI cost, instant, perfect for the
+  // sketch case.
+  //
+  // The earlier client-side equivalent in src/lib/editor/white-fill-erase.ts
+  // failed in production because R2 doesn't expose the CORS headers
+  // the canvas's `getImageData()` requires. Moving it server-side
+  // sidesteps CORS entirely. Plan:
+  // `_plans/2026-06-08-erase-white-fill-and-ost-mode-wiring.md`.
+  if (isErase && isWhiteBackgroundSketchStyle(body.styleId) && maskUrl) {
+    console.info('[image-edit request] erase white-fill', {
+      styleId: body.styleId,
+      srcPreview: originalImageUrl.slice(0, 80),
+      maskPreview: maskUrl.slice(0, 80),
+    });
+    try {
+      const newImageUrl = await eraseViaServerWhiteFill({
+        sourceImageUrl: originalImageUrl,
+        maskImageUrl: maskUrl,
+      });
+      // Saliency intentionally not recomputed for white-fill: the
+      // operation paints a flat white region inside the source image,
+      // so the existing saliency map is still close to correct.
+      // Skipping the extra fetch keeps the latency low (white-fill is
+      // sub-second; a re-fetch + sharp roundtrip would noticeably
+      // delay the user feedback). If a follow-up auto-shift needs
+      // fresh saliency, the next regen path will recompute it.
+      return NextResponse.json({
+        imageUrl: newImageUrl,
+        saliency: null,
+        kind: 'white-fill',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('[image-edit erase white-fill] failed', {
+        styleId: body.styleId,
+        error: msg,
+      });
+      return NextResponse.json(
+        { error: `White-fill erase failed: ${msg}` },
+        { status: 500 },
+      );
+    }
   }
 
   // KIE_API_KEY is required for every existing backend (kie-standard,

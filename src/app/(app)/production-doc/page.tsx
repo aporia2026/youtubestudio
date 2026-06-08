@@ -6,8 +6,6 @@ import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { COLLAGE_TESTER_PUBLIC, EDITOR_V1_PUBLIC, PROD_DOC_REDESIGN_V1_PUBLIC } from '@/lib/feature-flags';
 import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
-import { eraseViaWhiteFill } from '@/lib/editor/white-fill-erase';
-import { isWhiteBackgroundSketchStyle } from '@/lib/sketch-style';
 import { mutate, getState as getOutboxState } from '@/lib/mutate';
 import { getPref, setPref } from '@/lib/user-prefs';
 import { CollageTesterPanel } from '@/components/production-doc/CollageTesterPanel';
@@ -7671,7 +7669,7 @@ function ProductionDocPage() {
     rowIndex: number,
     originalImageUrl: string,
     prompt: string,
-    opts: { optionId?: string; maskUrl?: string; intent?: 'erase' } = {},
+    opts: { optionId?: string; maskUrl?: string; intent?: 'erase'; styleId?: string } = {},
   ): Promise<{ ok: true; imageUrl: string; saliency: ImageSaliencyMap | null } | { ok: false; error: string }> {
     try {
       const res = await queueImageGen('edit', 'editor-edit', () =>
@@ -7685,6 +7683,10 @@ function ProductionDocPage() {
             optionId: opts.optionId,
             mask: opts.maskUrl ? { url: opts.maskUrl } : undefined,
             intent: opts.intent,
+            // styleId is consumed by the route's erase-intent branch
+            // to pick white-fill vs Ideogram for sketch-on-white
+            // styles. Ignored for non-erase edits.
+            styleId: opts.styleId,
           }),
         }),
       );
@@ -14563,30 +14565,16 @@ function ProductionDocPage() {
                 }
               }}
               onErase={async ({ maskUrl }) => {
-                // Style-aware erase: doodle / paint-explainer /
-                // whiteboard styles get a deterministic canvas white-
-                // fill instead of Ideogram v3-edit (which produces
-                // noisy mosaic artifacts on sketch-on-white art).
-                // Plan: 2026-06-08-erase-white-fill-for-sketch-styles.md.
-                if (isWhiteBackgroundSketchStyle(doc?.style_preset)) {
-                  try {
-                    const newImageUrl = await eraseViaWhiteFill({
-                      sourceImageUrl: src,
-                      maskImageUrl: maskUrl,
-                    });
-                    setEditResult({ imageUrl: newImageUrl, saliency: null });
-                    setEditBrushOpen(false);
-                    console.info('[prodoc image-edit] erase success', {
-                      rowIndex: idx, via: 'white-fill',
-                    });
-                  } catch (err) {
-                    toast.error(err instanceof Error ? err.message : 'Erase failed');
-                  }
-                  return;
-                }
+                // Style-aware erase routing is now server-side: the
+                // edit route checks `styleId` and picks white-fill vs
+                // Ideogram itself. The earlier client-side white-fill
+                // failed in production because R2 doesn't expose CORS
+                // headers the canvas's getImageData() requires. Plan:
+                // _plans/2026-06-08-erase-white-fill-and-ost-mode-wiring.md.
                 const r = await editImageForRow(idx, src, '', {
                   intent: 'erase',
                   maskUrl,
+                  styleId: doc?.style_preset,
                 });
                 if (r.ok) {
                   setEditResult({ imageUrl: r.imageUrl, saliency: r.saliency });
