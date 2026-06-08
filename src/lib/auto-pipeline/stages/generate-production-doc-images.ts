@@ -145,12 +145,17 @@ export async function handleGenerateProductionDocImages(
   //    return that workspace's artefact unchallenged. The orchestrator
   //    only routes here through a properly-scoped claim, but defense
   //    in depth — never trust the input row's id alone (rule 13).
+  // pipeline_stage_artefacts has NO `id` column — its primary key is
+  // composite (pipeline_run_video_id, stage, attempt_number, artefact_kind).
+  // Pull the attempt_number back so the UPDATE later can target the
+  // exact row via the composite PK. Bug 2026-06-08: previous SELECT
+  // referenced psa.id and threw "column psa.id does not exist".
   const { rows: artefactRows } = await sql.query<{
-    id: string;
+    attempt_number: number;
     metadata_jsonb: Record<string, unknown> | null;
   }>(
     `
-    SELECT psa.id::text AS id, psa.metadata_jsonb
+    SELECT psa.attempt_number, psa.metadata_jsonb
       FROM pipeline_stage_artefacts psa
       JOIN pipeline_run_videos prv ON prv.id = psa.pipeline_run_video_id
      WHERE psa.pipeline_run_video_id = $1::uuid
@@ -170,7 +175,7 @@ export async function handleGenerateProductionDocImages(
       failureMessage: 'No production-doc artefact found; image-gen stage reached without prior stage completing.',
     };
   }
-  const artefactId = artefactRows[0].id;
+  const artefactAttemptNumber = artefactRows[0].attempt_number;
   const metadata = artefactRows[0].metadata_jsonb as Record<string, unknown>;
   const doc = metadata.doc as PipelineImageDoc | undefined;
   if (!doc || !Array.isArray(doc.rows)) {
@@ -1194,13 +1199,18 @@ export async function handleGenerateProductionDocImages(
     doc,
     image_gen_stage_cost_usd: alreadySpentUsd + tickCostUsd,
   };
+  // Composite-PK UPDATE; mirrors the SELECT above. There is no `id`
+  // column on pipeline_stage_artefacts -- 2026-06-08 bugfix.
   await sql.query(
     `
     UPDATE pipeline_stage_artefacts
        SET metadata_jsonb = $1::jsonb
-     WHERE id = $2::uuid
+     WHERE pipeline_run_video_id = $2::uuid
+       AND stage = 'generating_production_doc'
+       AND attempt_number = $3
+       AND artefact_kind = 'production_doc'
     `,
-    [JSON.stringify(updatedMetadata), artefactId],
+    [JSON.stringify(updatedMetadata), video.id, artefactAttemptNumber],
   );
 
   // 8) Decide: more work remaining → advance to SAME stage (cron
