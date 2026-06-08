@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { VideoSummary } from './page';
 import { formatAgo } from './page';
+import { ImageGenProgress } from './ImageGenProgress';
 
 interface FlatFix {
   id: string;
@@ -648,6 +649,17 @@ function ActivityPanel({ video }: { video: VideoSummary }) {
           currently claiming this row. The orchestrator may have crashed mid-handler
           or the LLM call may be timing out. Check server logs or kill the video and
           retry from a fresh batch.
+        </div>
+      )}
+
+      {/* Per-row image-gen visibility. Mounted when the video is in
+          the image-gen stage (active OR terminally failed there) so
+          the operator can see exactly which images are done / pending
+          / failed and retry individual rows. 2026-06-08. */}
+      {(video.stage === 'generating_production_doc_images'
+        || video.stage === 'production_doc_images_failed') && (
+        <div className="mt-4 border-t border-neutral-800 pt-4">
+          <ImageGenProgress videoId={video.id} />
         </div>
       )}
     </div>
