@@ -119,7 +119,11 @@ import migration0116 from './0116_add_pipeline_preset_pacing_profile';
 import migration0117 from './0117_add_shorts_assets_context';
 import migration0118 from './0118_shorts_duration_columns_to_real';
 import migration0119 from './0119_create_channel_clone_jobs';
+import migration0120 from './0120_add_shorts_qa_result';
 import migration0121 from './0121_create_channel_clone_templates';
+import migration0122 from './0122_create_shorts_batches';
+import migration0123 from './0123_add_youtube_columns_to_shorts';
+import migration0124 from './0124_create_youtube_quota_usage';
 
 /**
  * Ordered list of all migrations. Append new migrations to the end with the
@@ -246,7 +250,11 @@ export const allMigrations: readonly Migration[] = Object.freeze([
   migration0117,
   migration0118,
   migration0119,
+  migration0120,
   migration0121,
+  migration0122,
+  migration0123,
+  migration0124,
 ]);
 
 /**

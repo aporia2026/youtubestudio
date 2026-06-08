@@ -643,6 +643,13 @@ export async function listShortsForWorkspace(
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
         assets_context,
+        qa_result, qa_score, qa_run_at::text AS qa_run_at,
+        batch_id,
+        youtube_video_id, youtube_status,
+        youtube_publish_at::text AS youtube_publish_at,
+        youtube_metadata,
+        youtube_uploaded_at::text AS youtube_uploaded_at,
+        youtube_upload_error,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -669,6 +676,13 @@ export async function listShortsForWorkspace(
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
         assets_context,
+        qa_result, qa_score, qa_run_at::text AS qa_run_at,
+        batch_id,
+        youtube_video_id, youtube_status,
+        youtube_publish_at::text AS youtube_publish_at,
+        youtube_metadata,
+        youtube_uploaded_at::text AS youtube_uploaded_at,
+        youtube_upload_error,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -693,6 +707,13 @@ export async function listShortsForWorkspace(
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
         assets_context,
+        qa_result, qa_score, qa_run_at::text AS qa_run_at,
+        batch_id,
+        youtube_video_id, youtube_status,
+        youtube_publish_at::text AS youtube_publish_at,
+        youtube_metadata,
+        youtube_uploaded_at::text AS youtube_uploaded_at,
+        youtube_upload_error,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -718,6 +739,13 @@ export async function listShortsForWorkspace(
         source_youtube_video_id, clip_start_ms, clip_end_ms,
         style_id, style_assets, captions_config, generation_progress,
         assets_context,
+        qa_result, qa_score, qa_run_at::text AS qa_run_at,
+        batch_id,
+        youtube_video_id, youtube_status,
+        youtube_publish_at::text AS youtube_publish_at,
+        youtube_metadata,
+        youtube_uploaded_at::text AS youtube_uploaded_at,
+        youtube_upload_error,
         created_at::text AS created_at,
         updated_at::text AS updated_at
       FROM shorts
@@ -741,6 +769,13 @@ export async function listShortsForWorkspace(
       source_youtube_video_id, clip_start_ms, clip_end_ms,
       style_id, style_assets, captions_config, generation_progress,
       assets_context,
+      qa_result, qa_score, qa_run_at::text AS qa_run_at,
+      batch_id,
+      youtube_video_id, youtube_status,
+      youtube_publish_at::text AS youtube_publish_at,
+      youtube_metadata,
+      youtube_uploaded_at::text AS youtube_uploaded_at,
+      youtube_upload_error,
       created_at::text AS created_at,
       updated_at::text AS updated_at
     FROM shorts
@@ -765,6 +800,13 @@ export async function getShort(id: string, workspaceId: string): Promise<ShortRo
       source_youtube_video_id, clip_start_ms, clip_end_ms,
       style_id, style_assets, captions_config, generation_progress,
       assets_context,
+      qa_result, qa_score, qa_run_at::text AS qa_run_at,
+      batch_id,
+      youtube_video_id, youtube_status,
+      youtube_publish_at::text AS youtube_publish_at,
+      youtube_metadata,
+      youtube_uploaded_at::text AS youtube_uploaded_at,
+      youtube_upload_error,
       created_at::text AS created_at,
       updated_at::text AS updated_at
     FROM shorts

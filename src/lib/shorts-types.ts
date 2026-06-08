@@ -119,6 +119,26 @@ export interface ShortRow {
   // omits the block. See `_plans/2026-06-04-shorts-captions-position-
   // and-assets-context.md`.
   assets_context: string | null;
+  // Migration 0120 — persisted content-QA result. Null until the user
+  // runs the editor's QA tab. `qa_score` is the 0..100 composite
+  // denormalised for badge/sort/filter; `qa_run_at` powers the
+  // "last run X" pill + the per-short Re-run cooldown. See
+  // `_plans/2026-06-07-shorts-script-qa-tab.md`.
+  qa_result: import('./shorts-content-qa-types').ShortsContentQaResult | null;
+  qa_score: number | null;
+  qa_run_at: string | null;
+  // Migration 0123 — bulk-batch + YouTube upload state. Every field
+  // is independently nullable; rows that predate the batch feature
+  // (or single-short flows) keep batch_id NULL and youtube_status
+  // NULL until the user opts into upload. See
+  // `_plans/2026-06-08-shorts-bulk-batch-youtube-upload.md`.
+  batch_id: string | null;
+  youtube_video_id: string | null;
+  youtube_status: import('./shorts-batches-types').ShortYoutubeStatus | null;
+  youtube_publish_at: string | null;
+  youtube_metadata: import('./shorts-batches-types').YoutubeUploadMetadata;
+  youtube_uploaded_at: string | null;
+  youtube_upload_error: string | null;
   created_at: string;
   updated_at: string;
 }

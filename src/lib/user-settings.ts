@@ -73,6 +73,58 @@ export interface UserSettings {
    *  DEFAULT_BASE_T2I_MODEL_ID ('atlas-gpt-image-2', the cost-optimal
    *  default). */
   shorts_base_t2i_model_id?: string | null;
+  /** Shorts content-QA composite threshold (0..100). Composite below
+   *  this turns the editor tab badge red. `null` or absent ⇒
+   *  SHORTS_QA_DEFAULT_COMPOSITE_THRESHOLD (80). */
+  shorts_qa_composite_threshold?: number | null;
+  /** Shorts content-QA per-dimension floor (0..100). Any dimension
+   *  below this is auto-promoted to a critical issue. `null` or
+   *  absent ⇒ SHORTS_QA_DEFAULT_PER_DIMENSION_FLOOR (70). */
+  shorts_qa_per_dimension_floor?: number | null;
+  /** Hard cap on Brave fact-check queries per QA run (1..10). Cost
+   *  control. `null` or absent ⇒ SHORTS_QA_DEFAULT_FACT_CHECK_CLAIM_CAP
+   *  (5). */
+  shorts_qa_fact_check_claim_cap?: number | null;
+  /** Shorts content-QA fact-check on/off switch. When `false`, the
+   *  grader still flags claims but the Brave + judge pass is skipped
+   *  entirely. `null` or absent ⇒ SHORTS_QA_DEFAULT_FACT_CHECK_ENABLED
+   *  (true). */
+  shorts_qa_fact_check_enabled?: boolean | null;
+  /** Shorts bulk-batch default voice preset id (ElevenLabs or Google
+   *  voice id). Applied as the seed for step 2's voice picker. `null`
+   *  or absent ⇒ no default; the picker shows the workspace TTS
+   *  default. See `_plans/2026-06-08-shorts-bulk-batch-youtube-upload.md`. */
+  shorts_batch_default_voice_id?: string | null;
+  /** Default YouTube category id for new batches (e.g. '22' for
+   *  People & Blogs). `null` or absent ⇒ the picker requires an
+   *  explicit choice. */
+  shorts_batch_default_youtube_category_id?: string | null;
+  /** Default ISO 639-1 language for new batches. `null` or absent ⇒
+   *  picker defaults to 'en'. */
+  shorts_batch_default_youtube_language?: string | null;
+  /** Default COPPA "made for kids" answer for new batches. `null`
+   *  or absent ⇒ picker requires an explicit choice (YouTube rejects
+   *  uploads without it). */
+  shorts_batch_default_made_for_kids?: boolean | null;
+  /** Default IANA timezone for batch schedule pickers (e.g.
+   *  'America/New_York'). `null` or absent ⇒ picker auto-detects the
+   *  browser's timezone. */
+  shorts_batch_default_timezone?: string | null;
+  /** Default description template applied to new batches. Supports
+   *  `{{title}}`, `{{hook}}`, `{{payoff}}` placeholders, expanded
+   *  per-short at SEO-seeding time. `null` or absent ⇒ empty
+   *  template (SEO output fills the description directly). */
+  shorts_batch_default_description_template?: string | null;
+  /** Default "age restricted (18+)" answer for new batches. `null`
+   *  or absent ⇒ false at the batch level. */
+  shorts_batch_default_age_restricted?: boolean | null;
+  /** Default "contains paid promotion" answer for new batches.
+   *  `null` or absent ⇒ false at the batch level. */
+  shorts_batch_default_paid_promotion?: boolean | null;
+  /** Default "AI content disclosure" answer for new batches. `null`
+   *  or absent ⇒ true at the uploader (since this app generates
+   *  with AI). User can flip per-short in the review queue. */
+  shorts_batch_default_ai_content_disclosure?: boolean | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -146,6 +198,71 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.shorts_base_t2i_model_id = obj.shorts_base_t2i_model_id;
   } else if (obj.shorts_base_t2i_model_id === null) {
     out.shorts_base_t2i_model_id = null;
+  }
+  if (typeof obj.shorts_qa_composite_threshold === 'number' && Number.isFinite(obj.shorts_qa_composite_threshold)) {
+    out.shorts_qa_composite_threshold = obj.shorts_qa_composite_threshold;
+  } else if (obj.shorts_qa_composite_threshold === null) {
+    out.shorts_qa_composite_threshold = null;
+  }
+  if (typeof obj.shorts_qa_per_dimension_floor === 'number' && Number.isFinite(obj.shorts_qa_per_dimension_floor)) {
+    out.shorts_qa_per_dimension_floor = obj.shorts_qa_per_dimension_floor;
+  } else if (obj.shorts_qa_per_dimension_floor === null) {
+    out.shorts_qa_per_dimension_floor = null;
+  }
+  if (typeof obj.shorts_qa_fact_check_claim_cap === 'number' && Number.isFinite(obj.shorts_qa_fact_check_claim_cap)) {
+    out.shorts_qa_fact_check_claim_cap = obj.shorts_qa_fact_check_claim_cap;
+  } else if (obj.shorts_qa_fact_check_claim_cap === null) {
+    out.shorts_qa_fact_check_claim_cap = null;
+  }
+  if (typeof obj.shorts_qa_fact_check_enabled === 'boolean') {
+    out.shorts_qa_fact_check_enabled = obj.shorts_qa_fact_check_enabled;
+  } else if (obj.shorts_qa_fact_check_enabled === null) {
+    out.shorts_qa_fact_check_enabled = null;
+  }
+  if (typeof obj.shorts_batch_default_voice_id === 'string') {
+    out.shorts_batch_default_voice_id = obj.shorts_batch_default_voice_id;
+  } else if (obj.shorts_batch_default_voice_id === null) {
+    out.shorts_batch_default_voice_id = null;
+  }
+  if (typeof obj.shorts_batch_default_youtube_category_id === 'string') {
+    out.shorts_batch_default_youtube_category_id = obj.shorts_batch_default_youtube_category_id;
+  } else if (obj.shorts_batch_default_youtube_category_id === null) {
+    out.shorts_batch_default_youtube_category_id = null;
+  }
+  if (typeof obj.shorts_batch_default_youtube_language === 'string') {
+    out.shorts_batch_default_youtube_language = obj.shorts_batch_default_youtube_language;
+  } else if (obj.shorts_batch_default_youtube_language === null) {
+    out.shorts_batch_default_youtube_language = null;
+  }
+  if (typeof obj.shorts_batch_default_made_for_kids === 'boolean') {
+    out.shorts_batch_default_made_for_kids = obj.shorts_batch_default_made_for_kids;
+  } else if (obj.shorts_batch_default_made_for_kids === null) {
+    out.shorts_batch_default_made_for_kids = null;
+  }
+  if (typeof obj.shorts_batch_default_timezone === 'string') {
+    out.shorts_batch_default_timezone = obj.shorts_batch_default_timezone;
+  } else if (obj.shorts_batch_default_timezone === null) {
+    out.shorts_batch_default_timezone = null;
+  }
+  if (typeof obj.shorts_batch_default_description_template === 'string') {
+    out.shorts_batch_default_description_template = obj.shorts_batch_default_description_template;
+  } else if (obj.shorts_batch_default_description_template === null) {
+    out.shorts_batch_default_description_template = null;
+  }
+  if (typeof obj.shorts_batch_default_age_restricted === 'boolean') {
+    out.shorts_batch_default_age_restricted = obj.shorts_batch_default_age_restricted;
+  } else if (obj.shorts_batch_default_age_restricted === null) {
+    out.shorts_batch_default_age_restricted = null;
+  }
+  if (typeof obj.shorts_batch_default_paid_promotion === 'boolean') {
+    out.shorts_batch_default_paid_promotion = obj.shorts_batch_default_paid_promotion;
+  } else if (obj.shorts_batch_default_paid_promotion === null) {
+    out.shorts_batch_default_paid_promotion = null;
+  }
+  if (typeof obj.shorts_batch_default_ai_content_disclosure === 'boolean') {
+    out.shorts_batch_default_ai_content_disclosure = obj.shorts_batch_default_ai_content_disclosure;
+  } else if (obj.shorts_batch_default_ai_content_disclosure === null) {
+    out.shorts_batch_default_ai_content_disclosure = null;
   }
   return out;
 }

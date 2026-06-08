@@ -50,6 +50,16 @@ function baseRow(overrides: Partial<ShortRow> = {}): ShortRow {
     captions_config: {},
     generation_progress: {},
     assets_context: null,
+    qa_result: null,
+    qa_score: null,
+    qa_run_at: null,
+    batch_id: null,
+    youtube_video_id: null,
+    youtube_status: null,
+    youtube_publish_at: null,
+    youtube_metadata: {},
+    youtube_uploaded_at: null,
+    youtube_upload_error: null,
     created_at: '2026-06-04T00:00:00Z',
     updated_at: '2026-06-04T00:00:00Z',
     ...overrides,
@@ -207,6 +217,20 @@ describe('badgeFor', () => {
       ),
     ).toBe('good');
     expect(badgeFor('render', baseRow())).toBe('none');
+  });
+
+  it('leaves the QA tab badge blank until QA has been run', () => {
+    expect(badgeFor('qa', baseRow())).toBe('none');
+  });
+
+  it('flags the QA tab green when the last run was at or above threshold', () => {
+    expect(badgeFor('qa', baseRow({ qa_score: 80, qa_run_at: '2026-06-07T00:00:00Z' }))).toBe('good');
+    expect(badgeFor('qa', baseRow({ qa_score: 95, qa_run_at: '2026-06-07T00:00:00Z' }))).toBe('good');
+  });
+
+  it('flags the QA tab red when the last run was below threshold', () => {
+    expect(badgeFor('qa', baseRow({ qa_score: 79, qa_run_at: '2026-06-07T00:00:00Z' }))).toBe('error');
+    expect(badgeFor('qa', baseRow({ qa_score: 0, qa_run_at: '2026-06-07T00:00:00Z' }))).toBe('error');
   });
 });
 
