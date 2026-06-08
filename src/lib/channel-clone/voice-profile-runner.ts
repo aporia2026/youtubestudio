@@ -222,7 +222,16 @@ export async function runVoiceProfile(opts: RunVoiceProfileOptions): Promise<voi
  *  with audio inline_data. Bypasses the OpenAI-compatible alias the
  *  rest of the app uses for Gemini. Returns the model's raw text
  *  response (expected to be a single JSON object — schema enforced
- *  by the prompt). */
+ *  by the prompt).
+ *
+ *  Diagnostic contract: every failure mode (HTTP non-2xx, empty body,
+ *  non-JSON body, missing candidates, MAX_TOKENS finish reason)
+ *  surfaces enough detail in the thrown error for the runner's log
+ *  line to be actionable without re-running. 2026-06-08 — the user
+ *  hit a full-chain failure ("every model in the fallback chain
+ *  failed" with reasons "Unexpected end of JSON input") and there
+ *  was no way to tell whether Kie returned empty bodies, error
+ *  payloads, or truncated output. */
 async function callKieGeminiAudio(nativeModelId: string, audioBase64: string): Promise<string> {
   const key = process.env.KIE_API_KEY;
   if (!key) {
@@ -242,7 +251,12 @@ async function callKieGeminiAudio(nativeModelId: string, audioBase64: string): P
     ],
     generationConfig: {
       temperature: 0.4,
-      maxOutputTokens: 1024,
+      // Bumped from 1024 → 4096 on 2026-06-08 after a 3-5-flash run
+      // returned truncated JSON ("unbalanced braces"). The voice-
+      // profile schema sums to ~400 output tokens in practice; 4096
+      // is comfortable headroom that still bounds the model and keeps
+      // cost predictable.
+      maxOutputTokens: 4096,
       responseMimeType: 'application/json',
     },
   };
@@ -254,14 +268,42 @@ async function callKieGeminiAudio(nativeModelId: string, audioBase64: string): P
     },
     body: JSON.stringify(body),
   });
+  // Read as text first so we can surface the body on parse failure.
+  // res.json() throws "Unexpected end of JSON input" on empty bodies
+  // with no way to tell from the error message what came back.
+  const rawText = await res.text().catch(() => '');
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Kie generateContent returned ${res.status}: ${text.slice(0, 500)}`);
+    throw new Error(`HTTP ${res.status}: ${rawText.slice(0, 500)}`);
   }
-  const data = (await res.json()) as KieGenerateContentResponse;
+  if (!rawText.trim()) {
+    throw new Error('Kie returned empty response body (200 OK but no content)');
+  }
+  let data: KieGenerateContentResponse;
+  try {
+    data = JSON.parse(rawText) as KieGenerateContentResponse;
+  } catch {
+    throw new Error(`Kie returned non-JSON body: ${rawText.slice(0, 500)}`);
+  }
+  // Capture finishReason (MAX_TOKENS, SAFETY, RECITATION, STOP) on the
+  // thrown error when no text comes back so the operator can tell the
+  // difference between "model refused" and "we asked for too few
+  // tokens" and "API misconfigured".
+  const finishReason = data.candidates?.[0]?.finishReason ?? null;
   const text = extractTextFromGeminiResponse(data);
   if (!text) {
-    throw new Error('Kie generateContent returned no text content');
+    const promptFeedback = data.promptFeedback ? ` promptFeedback=${JSON.stringify(data.promptFeedback)}` : '';
+    throw new Error(
+      `Kie returned no text content (finishReason=${finishReason ?? 'absent'}${promptFeedback}; body preview: ${rawText.slice(0, 300)})`,
+    );
+  }
+  // If the model HIT max tokens we'd rather know than silently accept
+  // a truncated response that the brace-matching parser will choke on.
+  // Throw so the chain falls through; the next model gets a fresh
+  // shot with the same budget.
+  if (finishReason === 'MAX_TOKENS') {
+    throw new Error(
+      `Kie hit MAX_TOKENS on ${nativeModelId} (output likely truncated; consider bumping maxOutputTokens further or shortening the schema instruction)`,
+    );
   }
   return text;
 }
@@ -273,6 +315,10 @@ interface KieGenerateContentResponse {
     };
     finishReason?: string;
   }[];
+  /** Gemini surfaces input-side issues (blocked prompt / safety) here
+   *  rather than in candidates. Logging it on the failure path tells
+   *  us whether the AUDIO was rejected vs the OUTPUT was empty. */
+  promptFeedback?: unknown;
 }
 
 /** Pull the first text part from a Gemini generateContent response.
