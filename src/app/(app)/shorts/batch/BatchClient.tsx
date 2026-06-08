@@ -15,18 +15,25 @@
  *   4 → review (batch row in 'review' status)
  *   5 → upload (uploading + done)
  *
- * Transitions are deliberate (only the per-step "Continue" buttons
- * advance) — never automatic except 3→4 when the orchestrator reports
- * the batch is done, and 4→5 when the user clicks "Continue to upload".
+ * Persistence: every piece of pre-create state lives in localStorage
+ * via useBatchDraft, namespaced by workspaceId+userId. A refresh
+ * lands the user back on their current step with their selected
+ * ideas, niche choice, generated ideas list, and defaults intact.
+ * Post-create state is server-backed (the batch row); the in-progress
+ * batchId is also kept in the draft so a refresh during steps 3-5
+ * doesn't strand the user.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { BatchStepper, type BatchStep } from '@/components/shorts/batch/BatchStepper';
-import { Step1IdeaPicker } from '@/components/shorts/batch/Step1IdeaPicker';
+import { RecentBatchesPanel } from '@/components/shorts/batch/RecentBatchesPanel';
+import { Step1IdeaPicker, type Step1FormState } from '@/components/shorts/batch/Step1IdeaPicker';
 import { Step2BatchSetup } from '@/components/shorts/batch/Step2BatchSetup';
 import { Step3Progress } from '@/components/shorts/batch/Step3Progress';
 import { Step4ReviewQueue } from '@/components/shorts/batch/Step4ReviewQueue';
 import { Step5UploadConfirm } from '@/components/shorts/batch/Step5UploadConfirm';
+import { useBatchDraft } from '@/lib/use-batch-draft';
 import type { BatchIdeaInput } from '@/lib/shorts-batches';
 import type { ShortsBatchDefaults } from '@/lib/shorts-batches-types';
 
@@ -37,6 +44,8 @@ interface ChannelOption {
 }
 
 interface Props {
+  workspaceId: string;
+  userId: string;
   channels: ChannelOption[];
   activeChannelId: string;
   defaultVoiceId: string | null;
@@ -50,29 +59,94 @@ interface Props {
   defaultAiContentDisclosure: boolean;
 }
 
+interface BatchDraft {
+  step: BatchStep;
+  selectedIdeas: BatchIdeaInput[];
+  channelId: string;
+  defaults: ShortsBatchDefaults;
+  step1Form: Step1FormState;
+  batchId: string | null;
+}
+
+const EMPTY_STEP1_FORM: Step1FormState = {
+  nicheChoice: '__manual__',
+  manualNiche: '',
+  count: 8,
+  tone: '',
+  excludeUploaded: true,
+  generatedIdeas: [],
+};
+
 export function BatchClient(props: Props) {
-  const [step, setStep] = useState<BatchStep>(1);
-  const [selectedIdeas, setSelectedIdeas] = useState<BatchIdeaInput[]>([]);
-  const [channelId, setChannelId] = useState<string>(props.activeChannelId);
-  const [defaults, setDefaults] = useState<ShortsBatchDefaults>(() => ({
-    voiceId: props.defaultVoiceId ?? undefined,
-    language: props.defaultLanguage,
-    categoryId: props.defaultCategoryId ?? undefined,
-    descriptionTemplate: props.defaultDescriptionTemplate || undefined,
-    tagsPool: [],
-    defaultPrivacy: 'public',
-    scheduleCadence: 'manual',
-    madeForKids: props.defaultMadeForKids ?? undefined,
-    ageRestricted: props.defaultAgeRestricted,
-    paidPromotion: props.defaultPaidPromotion,
-    aiContentDisclosure: props.defaultAiContentDisclosure,
-    timezone:
-      props.defaultTimezone
-      ?? (typeof window !== 'undefined'
-        ? Intl.DateTimeFormat().resolvedOptions().timeZone
-        : 'UTC'),
-  }));
-  const [batchId, setBatchId] = useState<string | null>(null);
+  const router = useRouter();
+
+  const seedDraft: BatchDraft = {
+    step: 1,
+    selectedIdeas: [],
+    channelId: props.activeChannelId,
+    defaults: {
+      voiceId: props.defaultVoiceId ?? undefined,
+      language: props.defaultLanguage,
+      categoryId: props.defaultCategoryId ?? undefined,
+      descriptionTemplate: props.defaultDescriptionTemplate || undefined,
+      tagsPool: [],
+      defaultPrivacy: 'public',
+      scheduleCadence: 'manual',
+      madeForKids: props.defaultMadeForKids ?? undefined,
+      ageRestricted: props.defaultAgeRestricted,
+      paidPromotion: props.defaultPaidPromotion,
+      aiContentDisclosure: props.defaultAiContentDisclosure,
+      timezone: props.defaultTimezone ?? 'UTC',
+    },
+    step1Form: EMPTY_STEP1_FORM,
+    batchId: null,
+  };
+
+  const [draft, setDraft, clearDraft] = useBatchDraft<BatchDraft>(
+    props.workspaceId,
+    props.userId,
+    seedDraft,
+  );
+
+  // Detect the browser's timezone once on mount and patch the draft
+  // if the seed was UTC (server-side default) and the draft hasn't
+  // been edited yet. This is a one-shot UX nicety — once the user
+  // picks a timezone explicitly, we leave it alone.
+  const [tzPatched, setTzPatched] = useState(false);
+  useEffect(() => {
+    if (tzPatched) return;
+    if (draft.defaults.timezone && draft.defaults.timezone !== 'UTC') {
+      setTzPatched(true);
+      return;
+    }
+    if (typeof window === 'undefined') return;
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz && tz !== 'UTC') {
+        setDraft((d) => ({ ...d, defaults: { ...d.defaults, timezone: tz } }));
+      }
+    } catch {
+      /* noop */
+    }
+    setTzPatched(true);
+  }, [tzPatched, draft.defaults.timezone, setDraft]);
+
+  const setStep = (next: BatchStep) => setDraft((d) => ({ ...d, step: next }));
+  const setSelectedIdeas = (ideas: BatchIdeaInput[]) =>
+    setDraft((d) => ({ ...d, selectedIdeas: ideas }));
+  const setChannelId = (next: string) => setDraft((d) => ({ ...d, channelId: next }));
+  const setDefaults = (next: ShortsBatchDefaults) =>
+    setDraft((d) => ({ ...d, defaults: next }));
+  const setStep1Form = (next: Step1FormState) =>
+    setDraft((d) => ({ ...d, step1Form: next }));
+
+  const onBatchCreated = (id: string) => {
+    // Switch to the resume URL so refreshes after this point reload
+    // from the server. Then clear the local draft — the batch row
+    // is now the source of truth.
+    router.push(`/shorts/batch/${id}`);
+    clearDraft();
+  };
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -86,49 +160,41 @@ export function BatchClient(props: Props) {
         </p>
       </header>
 
-      <BatchStepper current={step} batchId={batchId} />
+      <RecentBatchesPanel />
+
+      <BatchStepper current={draft.step} batchId={draft.batchId} />
 
       <div className="mt-8">
-        {step === 1 && (
+        {draft.step === 1 && (
           <Step1IdeaPicker
-            selectedIdeas={selectedIdeas}
-            onChange={setSelectedIdeas}
+            form={draft.step1Form}
+            onFormChange={setStep1Form}
+            selectedIdeas={draft.selectedIdeas}
+            onSelectedIdeasChange={setSelectedIdeas}
             onContinue={() => setStep(2)}
           />
         )}
-        {step === 2 && (
+        {draft.step === 2 && (
           <Step2BatchSetup
             channels={props.channels}
-            channelId={channelId}
+            channelId={draft.channelId}
             onChannelChange={setChannelId}
-            defaults={defaults}
+            defaults={draft.defaults}
             onChange={setDefaults}
-            selectedCount={selectedIdeas.length}
+            selectedCount={draft.selectedIdeas.length}
             onBack={() => setStep(1)}
-            onCreated={(id) => {
-              setBatchId(id);
-              setStep(3);
-            }}
-            ideaInputs={selectedIdeas}
+            onCreated={onBatchCreated}
+            ideaInputs={draft.selectedIdeas}
           />
         )}
-        {step === 3 && batchId && (
-          <Step3Progress
-            batchId={batchId}
-            onDone={() => setStep(4)}
-          />
+        {draft.step === 3 && draft.batchId && (
+          <Step3Progress batchId={draft.batchId} onDone={() => setStep(4)} />
         )}
-        {step === 4 && batchId && (
-          <Step4ReviewQueue
-            batchId={batchId}
-            onContinue={() => setStep(5)}
-          />
+        {draft.step === 4 && draft.batchId && (
+          <Step4ReviewQueue batchId={draft.batchId} onContinue={() => setStep(5)} />
         )}
-        {step === 5 && batchId && (
-          <Step5UploadConfirm
-            batchId={batchId}
-            channelId={channelId}
-          />
+        {draft.step === 5 && draft.batchId && (
+          <Step5UploadConfirm batchId={draft.batchId} channelId={draft.channelId} />
         )}
       </div>
     </div>

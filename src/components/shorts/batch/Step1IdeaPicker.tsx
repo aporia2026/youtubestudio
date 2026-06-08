@@ -21,13 +21,24 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { BatchIdeaInput } from '@/lib/shorts-batches';
 
-interface RawIdea {
+export interface RawIdea {
   hook: string;
   title: string;
   payoff: string;
   thesis?: string;
   shotConcept?: string;
   confidence?: number;
+}
+
+/** Step 1 form state — lifted to BatchClient so it persists across
+ *  refreshes via the draft localStorage hook. */
+export interface Step1FormState {
+  nicheChoice: string;
+  manualNiche: string;
+  count: number;
+  tone: string;
+  excludeUploaded: boolean;
+  generatedIdeas: RawIdea[];
 }
 
 interface SavedNiche {
@@ -44,23 +55,35 @@ interface ShortListItem {
 }
 
 interface Props {
+  form: Step1FormState;
+  onFormChange: (next: Step1FormState) => void;
   selectedIdeas: BatchIdeaInput[];
-  onChange: (ideas: BatchIdeaInput[]) => void;
+  onSelectedIdeasChange: (ideas: BatchIdeaInput[]) => void;
   onContinue: () => void;
 }
 
 const SENTINEL_MANUAL = '__manual__';
 
-export function Step1IdeaPicker({ selectedIdeas, onChange, onContinue }: Props) {
+export function Step1IdeaPicker({
+  form,
+  onFormChange,
+  selectedIdeas,
+  onSelectedIdeasChange,
+  onContinue,
+}: Props) {
   const [savedNiches, setSavedNiches] = useState<SavedNiche[]>([]);
-  const [nicheChoice, setNicheChoice] = useState<string>(SENTINEL_MANUAL);
-  const [manualNiche, setManualNiche] = useState('');
-  const [count, setCount] = useState(8);
-  const [tone, setTone] = useState('');
-  const [excludeUploaded, setExcludeUploaded] = useState(true);
   const [uploadedTitleCount, setUploadedTitleCount] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [ideas, setIdeas] = useState<RawIdea[]>([]);
+
+  // Local helpers so the rest of the component reads like before.
+  const { nicheChoice, manualNiche, count, tone, excludeUploaded, generatedIdeas: ideas } = form;
+  const setNicheChoice = (next: string) => onFormChange({ ...form, nicheChoice: next });
+  const setManualNiche = (next: string) => onFormChange({ ...form, manualNiche: next });
+  const setCount = (next: number) => onFormChange({ ...form, count: next });
+  const setTone = (next: string) => onFormChange({ ...form, tone: next });
+  const setExcludeUploaded = (next: boolean) => onFormChange({ ...form, excludeUploaded: next });
+  const setIdeas = (next: RawIdea[]) => onFormChange({ ...form, generatedIdeas: next });
+  const onChange = onSelectedIdeasChange;
 
   // Load saved niches on mount. Failures degrade silently — user
   // can still type manually.

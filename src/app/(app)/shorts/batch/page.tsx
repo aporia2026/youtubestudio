@@ -73,6 +73,8 @@ export default async function BatchPage() {
 
   return (
     <BatchClient
+      workspaceId={session.ws}
+      userId={session.uid}
       channels={connectedChannels}
       activeChannelId={activeChannelId}
       defaultVoiceId={settings.shorts_batch_default_voice_id ?? null}

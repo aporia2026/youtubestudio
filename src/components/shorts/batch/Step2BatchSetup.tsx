@@ -1,22 +1,32 @@
 'use client';
 
 /**
- * Step 2 — batch setup form. The user picks: channel (if multiple),
- * voice, language, YouTube category, default playlist(s),
- * description template, tag pool, default privacy, schedule cadence,
- * timezone, and the three mandatory disclosures (made-for-kids,
- * age-restricted, paid-promotion, AI-content).
+ * Step 2 — batch setup form. INTENTIONALLY MINIMAL.
  *
- * On "Start generation", POSTs /api/shorts/batches and PATCHes the
- * status to 'generating' — the orchestrator picks up from there.
+ * Plan: _plans/2026-06-08-shorts-bulk-batch-youtube-upload.md.
+ *
+ * What goes here: the things the SEO optimizer CAN'T pick for the
+ * user — channel (uploads need a target), voice (every short needs
+ * one), and the COPPA "made for kids" declaration (legally required).
+ *
+ * What does NOT go here: title, description, tags, language,
+ * playlists, category. The SEO optimizer writes those per-short
+ * based on the actual content; the user verifies + edits in the
+ * step-4 review queue. Asking up-front before the shorts even
+ * exist would be premature and content-blind.
+ *
+ * What's in "Advanced": optional defaults the user MIGHT want to
+ * pre-set — schedule cadence, timezone, default category, default
+ * privacy, the rarely-needed age-restricted / paid-promotion flags,
+ * AI-content disclosure. Collapsed by default to keep the page
+ * focused on the three required choices.
  */
 
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { YOUTUBE_CATEGORIES } from '@/lib/youtube-categories';
+import { YOUTUBE_CATEGORIES, DEFAULT_YOUTUBE_CATEGORY_ID } from '@/lib/youtube-categories';
 import { TimezoneSelect } from './TimezoneSelect';
-import { TagTokenInput } from './TagTokenInput';
-import { PlaylistMultiSelect } from './PlaylistMultiSelect';
+import { VoicePicker } from './VoicePicker';
 import type { BatchIdeaInput } from '@/lib/shorts-batches';
 import type { ShortsBatchDefaults } from '@/lib/shorts-batches-types';
 
@@ -39,7 +49,7 @@ interface Props {
 }
 
 const SCHEDULE_CADENCES: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'manual', label: 'Manual (set per-short later)' },
+  { value: 'manual', label: 'Manual (set per-short in step 5)' },
   { value: 'every_30_min', label: 'Every 30 minutes' },
   { value: 'every_hour', label: 'Every hour' },
   { value: 'every_3_hours', label: 'Every 3 hours' },
@@ -60,25 +70,22 @@ export function Step2BatchSetup({
   onCreated,
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const activeChannel = channels.find((c) => c.id === channelId);
 
   const patch = (p: Partial<ShortsBatchDefaults>) => onChange({ ...defaults, ...p });
 
   const start = async () => {
     if (!activeChannel) {
-      toast.error('Pick a YouTube channel first.');
-      return;
-    }
-    if (!activeChannel.oauth_connected) {
-      toast.error('This channel is not OAuth-connected. Connect it in Settings → Channels first.');
-      return;
-    }
-    if (defaults.madeForKids === undefined) {
-      toast.error('Made-for-kids must be set explicitly (COPPA requirement).');
+      toast.error('Pick a YouTube channel.');
       return;
     }
     if (!defaults.voiceId) {
-      toast.error('Pick a voice — every short in the batch will use it.');
+      toast.error('Pick a voice — every short uses it.');
+      return;
+    }
+    if (defaults.madeForKids === undefined) {
+      toast.error('Made-for-kids must be answered (YouTube/COPPA requirement).');
       return;
     }
 
@@ -89,7 +96,17 @@ export function Step2BatchSetup({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           channelId,
-          defaults,
+          defaults: {
+            language: defaults.language ?? 'en',
+            categoryId: defaults.categoryId ?? DEFAULT_YOUTUBE_CATEGORY_ID,
+            defaultPrivacy: defaults.defaultPrivacy ?? 'public',
+            aiContentDisclosure: defaults.aiContentDisclosure ?? true,
+            ageRestricted: defaults.ageRestricted ?? false,
+            paidPromotion: defaults.paidPromotion ?? false,
+            scheduleCadence: defaults.scheduleCadence ?? 'manual',
+            timezone: defaults.timezone,
+            ...defaults,
+          },
           ideaInputs,
         }),
       });
@@ -99,8 +116,6 @@ export function Step2BatchSetup({
       }
       const { batchId } = (await createRes.json()) as { batchId: string };
 
-      // Transition into 'generating' so the orchestrator picks it up
-      // on the next /run-tick poll.
       const statusRes = await fetch(`/api/shorts/batches/${batchId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -124,196 +139,183 @@ export function Step2BatchSetup({
   return (
     <section className="space-y-6">
       <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
-        <h2 className="mb-4 text-lg font-medium text-[var(--text-primary)]">
-          Batch defaults
+        <h2 className="mb-2 text-lg font-medium text-[var(--text-primary)]">
+          A few essentials, then we&apos;re off
         </h2>
         <p className="mb-6 text-sm text-[var(--text-secondary)]">
-          These apply to every short in this batch ({selectedCount} selected). You can
-          override any of them per-short in the review queue.
+          The SEO optimizer writes title, description, tags, and category for
+          every short — you&apos;ll review and edit them in step 4. Right here
+          we just need the channel, the voice, and your COPPA declaration.
         </p>
 
-        {channels.length > 1 && (
-          <div className="mb-6">
-            <Label hint="Where uploads land at the end of the batch.">YouTube channel</Label>
+        <div className="space-y-5">
+          <div>
+            <Label hint="Where uploads land at the end of the batch.">
+              YouTube channel <Required />
+            </Label>
             <select
               value={channelId}
               onChange={(e) => onChannelChange(e.target.value)}
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
+              className={selectClass}
             >
               {channels.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.title ?? c.id} {c.oauth_connected ? '' : ' — not connected'}
+                  {c.title ?? c.id}
+                  {c.oauth_connected ? '' : ' — not connected'}
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <Label hint="Used for every voiceover in the batch.">
+              Voice <Required />
+            </Label>
+            <VoicePicker
+              value={defaults.voiceId ?? ''}
+              onChange={(voiceId) => patch({ voiceId })}
+              required
+            />
+          </div>
+
+          <fieldset className="rounded-md border border-[var(--accent-yellow)]/40 bg-[var(--accent-yellow)]/10 p-3">
+            <legend className="px-1 text-sm font-medium text-[var(--text-primary)]">
+              Made for kids (COPPA) <Required />
+            </legend>
+            <p className="mb-2 text-xs text-[var(--text-secondary)]">
+              YouTube rejects uploads without this. You can change it per-short
+              later if a particular video needs the other answer.
+            </p>
+            <div className="flex items-center gap-4 text-sm text-[var(--text-primary)]">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  checked={defaults.madeForKids === true}
+                  onChange={() => patch({ madeForKids: true })}
+                  className="h-4 w-4 accent-[var(--accent-purple)]"
+                />
+                Yes, made for kids
+              </label>
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="radio"
+                  checked={defaults.madeForKids === false}
+                  onChange={() => patch({ madeForKids: false })}
+                  className="h-4 w-4 accent-[var(--accent-purple)]"
+                />
+                No, not for kids
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="mt-6 text-xs text-[var(--text-secondary)] underline hover:text-[var(--text-primary)]"
+        >
+          {showAdvanced ? '▾ Hide advanced defaults' : '▸ Show advanced defaults (optional)'}
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-4 space-y-5 border-t border-[var(--border)] pt-4">
+            <p className="text-xs text-[var(--text-muted)]">
+              Anything you skip here gets a sensible default. You can still
+              override per-short in step 4.
+            </p>
+
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+              <div>
+                <Label hint="Smart default: Education (27).">Default category</Label>
+                <select
+                  value={defaults.categoryId ?? DEFAULT_YOUTUBE_CATEGORY_ID}
+                  onChange={(e) => patch({ categoryId: e.target.value })}
+                  className={selectClass}
+                >
+                  {YOUTUBE_CATEGORIES.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <Label hint="Smart default: Public. Scheduled videos go private then flip to this at publishAt.">
+                  Default privacy
+                </Label>
+                <select
+                  value={defaults.defaultPrivacy ?? 'public'}
+                  onChange={(e) =>
+                    patch({ defaultPrivacy: e.target.value as 'public' | 'private' | 'unlisted' })
+                  }
+                  className={selectClass}
+                >
+                  <option value="public">Public</option>
+                  <option value="unlisted">Unlisted</option>
+                  <option value="private">Private</option>
+                </select>
+              </div>
+
+              <div>
+                <Label>Schedule cadence</Label>
+                <select
+                  value={defaults.scheduleCadence ?? 'manual'}
+                  onChange={(e) =>
+                    patch({
+                      scheduleCadence: e.target.value as ShortsBatchDefaults['scheduleCadence'],
+                    })
+                  }
+                  className={selectClass}
+                >
+                  {SCHEDULE_CADENCES.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <Label>Timezone</Label>
+                <TimezoneSelect
+                  value={defaults.timezone ?? 'UTC'}
+                  onChange={(tz) => patch({ timezone: tz })}
+                />
+              </div>
+            </div>
+
+            <fieldset className="rounded-md border border-[var(--border)] p-3">
+              <legend className="px-1 text-sm font-medium text-[var(--text-primary)]">
+                Disclosures
+              </legend>
+              <p className="mb-2 text-xs text-[var(--text-muted)]">
+                Apply across the batch. Per-short overrides in step 4.
+                Age-restricted + paid-promotion are read-only via the YouTube
+                API today — toggling them here records intent; you finish in
+                YouTube Studio after upload.
+              </p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <Toggle
+                  label="AI content disclosure"
+                  hint="On by default since we generate with AI."
+                  value={defaults.aiContentDisclosure ?? true}
+                  onChange={(v) => patch({ aiContentDisclosure: v })}
+                />
+                <Toggle
+                  label="Age restricted (18+)"
+                  value={defaults.ageRestricted ?? false}
+                  onChange={(v) => patch({ ageRestricted: v })}
+                />
+                <Toggle
+                  label="Contains paid promotion"
+                  value={defaults.paidPromotion ?? false}
+                  onChange={(v) => patch({ paidPromotion: v })}
+                />
+              </div>
+            </fieldset>
           </div>
         )}
-
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <div>
-            <Label hint="Used for every voiceover in the batch. Voice id from the TTS picker.">
-              Voice id <Required />
-            </Label>
-            <input
-              type="text"
-              value={defaults.voiceId ?? ''}
-              onChange={(e) => patch({ voiceId: e.target.value || undefined })}
-              placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-purple)] focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <Label hint="ISO 639-1 (en, es, he, fr, …). Sets defaultLanguage on the YouTube snippet.">
-              Language
-            </Label>
-            <input
-              type="text"
-              value={defaults.language ?? ''}
-              onChange={(e) => patch({ language: e.target.value || undefined })}
-              placeholder="en"
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-purple)] focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <Label hint="The YouTube category for every uploaded video.">
-              Category
-            </Label>
-            <select
-              value={defaults.categoryId ?? ''}
-              onChange={(e) => patch({ categoryId: e.target.value || undefined })}
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
-            >
-              <option value="">— pick a category —</option>
-              {YOUTUBE_CATEGORIES.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <Label hint="Privacy at publish time. If you set a schedule below, the video stays private until publishAt and flips to this value.">
-              Default privacy at publish
-            </Label>
-            <select
-              value={defaults.defaultPrivacy ?? 'public'}
-              onChange={(e) =>
-                patch({ defaultPrivacy: e.target.value as 'public' | 'private' | 'unlisted' })
-              }
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
-            >
-              <option value="public">Public</option>
-              <option value="unlisted">Unlisted</option>
-              <option value="private">Private</option>
-            </select>
-          </div>
-
-          <div className="md:col-span-2">
-            <Label hint="Attach every uploaded short to these playlists. Optional.">
-              Default playlists
-            </Label>
-            <PlaylistMultiSelect
-              channelId={channelId}
-              value={defaults.playlistIds ?? []}
-              onChange={(next) => patch({ playlistIds: next })}
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <Label hint="Tags get a 500-char combined cap from YouTube — including the commas it inserts.">
-              Default tag pool
-            </Label>
-            <TagTokenInput
-              tags={defaults.tagsPool ?? []}
-              onChange={(next) => patch({ tagsPool: next })}
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <Label hint="Used as the YouTube description. Placeholders: {{title}}, {{hook}}, {{payoff}}. Leave empty to use the SEO-generated description verbatim.">
-              Description template
-            </Label>
-            <textarea
-              value={defaults.descriptionTemplate ?? ''}
-              onChange={(e) => patch({ descriptionTemplate: e.target.value || undefined })}
-              rows={5}
-              placeholder="{{title}}\n\nNew short: {{hook}}\n\nSubscribe for more!"
-              className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-purple)] focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <Label hint="Determines when each short publishes. Applies one offset per short starting from your chosen first time in step 5.">
-              Schedule cadence
-            </Label>
-            <select
-              value={defaults.scheduleCadence ?? 'manual'}
-              onChange={(e) =>
-                patch({
-                  scheduleCadence: e.target.value as ShortsBatchDefaults['scheduleCadence'],
-                })
-              }
-              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
-            >
-              {SCHEDULE_CADENCES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <Label hint="The timezone the scheduler uses to interpret your chosen times.">
-              Timezone
-            </Label>
-            <TimezoneSelect
-              value={defaults.timezone ?? 'UTC'}
-              onChange={(tz) => patch({ timezone: tz })}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-lg border border-[var(--accent-yellow)]/40 bg-[var(--accent-yellow)]/10 p-5">
-        <h2 className="mb-3 text-lg font-medium text-[var(--text-primary)]">
-          YouTube disclosures
-        </h2>
-        <p className="mb-4 text-xs text-[var(--text-secondary)]">
-          Made-for-kids is required by YouTube on every upload (COPPA). The other
-          three default to the values you set; you can flip any of them per-short
-          in the review queue.
-        </p>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <RadioBool
-            label="Made for kids (COPPA)"
-            hint="YouTube rejects uploads without an explicit answer."
-            required
-            value={defaults.madeForKids}
-            onChange={(v) => patch({ madeForKids: v })}
-          />
-          <RadioBool
-            label="Age restricted (18+)"
-            hint="Note: this flag is read-only via the YouTube API today; you'll need to set it in YouTube Studio after upload."
-            value={defaults.ageRestricted}
-            onChange={(v) => patch({ ageRestricted: v })}
-          />
-          <RadioBool
-            label="Contains paid promotion"
-            hint="Note: also read-only via the YouTube API; set in YouTube Studio after upload."
-            value={defaults.paidPromotion}
-            onChange={(v) => patch({ paidPromotion: v })}
-          />
-          <RadioBool
-            label="AI content disclosure"
-            hint="On by default since this pipeline generates with AI. Flip off per-short if the short isn't realistic-looking (e.g. obvious doodle art)."
-            value={defaults.aiContentDisclosure}
-            onChange={(v) => patch({ aiContentDisclosure: v })}
-          />
-        </div>
       </div>
 
       <div className="flex items-center justify-between">
@@ -328,7 +330,7 @@ export function Step2BatchSetup({
           type="button"
           onClick={start}
           disabled={submitting || selectedCount === 0}
-          className="rounded-md bg-[var(--accent-purple)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(124,58,237,0.35)] disabled:cursor-not-allowed disabled:bg-white/[0.05] disabled:text-[var(--text-muted)] hover:bg-[var(--accent-purple-bright)]"
+          className="rounded-md bg-[var(--accent-purple)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(124,58,237,0.35)] hover:bg-[var(--accent-purple-bright)] disabled:cursor-not-allowed disabled:bg-white/[0.05] disabled:text-[var(--text-muted)] disabled:shadow-none"
         >
           {submitting ? 'Starting…' : `Start generating ${selectedCount} shorts →`}
         </button>
@@ -356,45 +358,32 @@ function Required() {
   return <span className="ml-1 text-[var(--accent-yellow)]">*</span>;
 }
 
-function RadioBool({
+function Toggle({
   label,
   hint,
   value,
   onChange,
-  required,
 }: {
   label: string;
   hint?: string;
-  value: boolean | undefined;
+  value: boolean;
   onChange: (next: boolean) => void;
-  required?: boolean;
 }) {
   return (
-    <fieldset className="rounded-md border border-[var(--accent-yellow)]/40 bg-[var(--bg-card)] p-3">
-      <legend className="text-sm font-medium text-[var(--text-primary)]">
-        {label} {required && <Required />}
-      </legend>
-      {hint && <p className="mb-2 text-xs text-[var(--text-muted)]">{hint}</p>}
-      <div className="flex items-center gap-4">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            checked={value === true}
-            onChange={() => onChange(true)}
-            className="h-4 w-4 accent-[var(--accent-purple)]"
-          />
-          Yes
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            checked={value === false}
-            onChange={() => onChange(false)}
-            className="h-4 w-4 accent-[var(--accent-purple)]"
-          />
-          No
-        </label>
-      </div>
-    </fieldset>
+    <label className="flex cursor-pointer items-start gap-2 text-sm text-[var(--text-primary)]">
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 accent-[var(--accent-purple)]"
+      />
+      <span>
+        {label}
+        {hint && <span className="block text-xs text-[var(--text-muted)]">{hint}</span>}
+      </span>
+    </label>
   );
 }
+
+const selectClass =
+  'w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none';
