@@ -67,14 +67,24 @@ export async function claimNextVideo(tickId: string): Promise<{
   // priority within the run (lowest priority number = first). That
   // way a long-running batch from yesterday drains before a new
   // batch from today.
+  //
+  // Stale-claim recovery (2026-06-08 bugfix): a claim older than
+  // STALE_CLAIM_THRESHOLD is presumed dead. The most common cause is
+  // a Vercel function timeout (HTTP 504) — the runtime killed the
+  // process mid-handler so neither advanceStage / failStage /
+  // releaseClaim got a chance to clear claimed_at. Without this
+  // filter, the video sits forever showing "live" in the UI while
+  // every cron tick logs "queue empty". 6 minutes is well past
+  // Vercel's 300s maxDuration, so a genuinely-still-running tick
+  // can't have its claim stolen.
   const { rows } = await sql.query<PipelineRunVideoRow>(
     `
     WITH claim AS (
-      SELECT v.id
+      SELECT v.id, v.claimed_at, v.claimed_by_tick
         FROM pipeline_run_videos v
         JOIN pipeline_runs r ON r.id = v.pipeline_run_id
        WHERE v.stage = ANY($1::text[])
-         AND v.claimed_at IS NULL
+         AND (v.claimed_at IS NULL OR v.claimed_at < NOW() - INTERVAL '6 minutes')
        ORDER BY r.created_at ASC, v.priority ASC
        LIMIT 1
        FOR UPDATE OF v SKIP LOCKED
@@ -85,10 +95,30 @@ export async function claimNextVideo(tickId: string): Promise<{
            updated_at = NOW()
       FROM claim
      WHERE pipeline_run_videos.id = claim.id
-    RETURNING pipeline_run_videos.*
+    RETURNING pipeline_run_videos.*,
+              claim.claimed_at AS prior_claimed_at,
+              claim.claimed_by_tick AS prior_claimed_by_tick
     `,
     [activeStagesList, tickId],
   );
+
+  // Surface stale-claim takeovers in the logs so the operator can
+  // see when "stuck" rows get recovered.
+  if (rows.length > 0) {
+    const recovered = rows[0] as PipelineRunVideoRow & {
+      prior_claimed_at: string | null;
+      prior_claimed_by_tick: string | null;
+    };
+    if (recovered.prior_claimed_at) {
+      logger.warn('auto-pipeline: recovered stale claim', {
+        pipeline_video_id: recovered.id,
+        stage: recovered.stage,
+        prior_tick_id: recovered.prior_claimed_by_tick,
+        prior_claimed_at: recovered.prior_claimed_at,
+        new_tick_id: tickId,
+      });
+    }
+  }
 
   if (rows.length === 0) return null;
   const video = rows[0];
