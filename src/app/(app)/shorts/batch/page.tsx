@@ -92,16 +92,16 @@ export default async function BatchPage() {
 function NoChannelsState() {
   return (
     <div className="mx-auto max-w-2xl px-6 py-16 text-center">
-      <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+      <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
         Bulk batch needs a YouTube channel
       </h1>
-      <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="mt-3 text-sm text-[var(--text-secondary)]">
         Add a channel in Settings first — the batch flow uploads every short
         in the batch to a specific channel.
       </p>
       <Link
         href="/settings"
-        className="mt-6 inline-block rounded-md bg-zinc-900 px-5 py-2 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
+        className="mt-6 inline-block rounded-md bg-[var(--accent-purple)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(124,58,237,0.35)] hover:bg-[var(--accent-purple-bright)]"
       >
         Go to Settings →
       </Link>
@@ -113,17 +113,17 @@ function NoChannelsState() {
 function NoConnectedChannelsState({ channelCount }: { channelCount: number }) {
   return (
     <div className="mx-auto max-w-2xl px-6 py-16 text-center">
-      <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+      <h1 className="text-2xl font-semibold text-[var(--text-primary)]">
         Connect a channel before batching
       </h1>
-      <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="mt-3 text-sm text-[var(--text-secondary)]">
         Your workspace has {channelCount} channel{channelCount === 1 ? '' : 's'},
         but none are connected to YouTube yet. Connect one in Settings so the
         batch flow can upload on its behalf.
       </p>
       <Link
         href="/settings"
-        className="mt-6 inline-block rounded-md bg-zinc-900 px-5 py-2 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
+        className="mt-6 inline-block rounded-md bg-[var(--accent-purple)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(124,58,237,0.35)] hover:bg-[var(--accent-purple-bright)]"
       >
         Open Settings →
       </Link>

@@ -44,17 +44,17 @@ export function TagTokenInput({
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-300 bg-white p-2 dark:border-zinc-600 dark:bg-zinc-900">
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
         {tags.map((tag, i) => (
           <span
             key={`${tag}-${i}`}
-            className="inline-flex items-center gap-1 rounded-full bg-zinc-200 px-2 py-0.5 text-xs text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
+            className="inline-flex items-center gap-1 rounded-full bg-[var(--accent-purple)]/20 px-2 py-0.5 text-xs text-[var(--text-primary)]"
           >
             {tag}
             <button
               type="button"
               onClick={() => remove(i)}
-              className="text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
+              className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"
               aria-label={`Remove tag ${tag}`}
             >
               ×
@@ -76,13 +76,13 @@ export function TagTokenInput({
           }}
           onBlur={() => tryAdd(draft)}
           placeholder={placeholder}
-          className="min-w-[120px] flex-1 border-0 bg-transparent text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none dark:text-zinc-100"
+          className="min-w-[120px] flex-1 border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none"
         />
       </div>
       <p
         className={[
           'text-xs',
-          remaining < 50 ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400',
+          remaining < 50 ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-muted)]',
         ].join(' ')}
       >
         {remaining} characters remaining (YouTube caps combined tag length at {YOUTUBE_TAGS_COMBINED_MAX})

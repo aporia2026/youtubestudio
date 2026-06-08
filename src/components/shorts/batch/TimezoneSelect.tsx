@@ -67,7 +67,7 @@ export function TimezoneSelect({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className={[
-        'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100',
+        'w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none',
         className,
       ].join(' ')}
     >

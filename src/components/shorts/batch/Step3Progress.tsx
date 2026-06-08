@@ -83,10 +83,10 @@ export function Step3Progress({ batchId, onDone }: Props) {
   }, [fetchBundle, runTick, onDone]);
 
   if (!bundle && !error) {
-    return <p className="text-sm text-zinc-500 dark:text-zinc-400">Starting orchestrator…</p>;
+    return <p className="text-sm text-[var(--text-muted)]">Starting orchestrator…</p>;
   }
   if (error) {
-    return <p className="text-sm text-amber-600 dark:text-amber-400">{error}</p>;
+    return <p className="text-sm text-[var(--accent-yellow)]">{error}</p>;
   }
   if (!bundle) return null;
 
@@ -95,29 +95,29 @@ export function Step3Progress({ batchId, onDone }: Props) {
 
   return (
     <section className="space-y-6">
-      <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-800">
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-medium text-zinc-900 dark:text-zinc-100">
+          <h2 className="text-lg font-medium text-[var(--text-primary)]">
             Generating {totals.planned} shorts
           </h2>
-          <span className="text-sm text-zinc-600 dark:text-zinc-400">
+          <span className="text-sm text-[var(--text-secondary)]">
             {totals.generated} ready · {totals.failed} failed · {pct}%
           </span>
         </div>
-        <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+        <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
           <div
-            className="h-full bg-zinc-900 transition-all dark:bg-white"
+            className="h-full bg-[var(--accent-purple)] transition-all"
             style={{ width: `${pct}%` }}
           />
         </div>
         {lastTick && (
-          <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+          <p className="mt-3 text-xs text-[var(--text-muted)]">
             Last tick: claimed {lastTick.claimed}, advanced {lastTick.advanced}, failed {lastTick.failed} ({lastTick.duration_ms}ms)
           </p>
         )}
       </div>
 
-      <ul className="divide-y divide-zinc-200 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:divide-zinc-700 dark:border-zinc-700 dark:bg-zinc-800">
+      <ul className="divide-y divide-[var(--border)] overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
         {bundle.shorts.map((s) => (
           <ShortRowItem key={s.id} short={s} />
         ))}
@@ -131,13 +131,13 @@ function ShortRowItem({ short }: { short: ShortRow }) {
   const error = short.generation_progress?.phase === 'error' ? short.generation_progress.error_message : null;
 
   const badge = (() => {
-    if (error) return { label: 'Error', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200' };
-    if (stage === 'terminal' && short.rendered_video_url) return { label: 'Ready', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' };
-    if (stage === 'awaiting_render') return { label: 'Awaiting render', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200' };
-    if (stage === 'extract') return { label: 'Writing script…', cls: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200' };
-    if (stage === 'voiceover') return { label: 'Voiceover…', cls: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200' };
-    if (stage === 'seo') return { label: 'SEO…', cls: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200' };
-    return { label: stage, cls: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200' };
+    if (error) return { label: 'Error', cls: 'bg-red-500/15 text-red-300' };
+    if (stage === 'terminal' && short.rendered_video_url) return { label: 'Ready', cls: 'bg-[var(--accent-green)]/15 text-[var(--accent-green)]' };
+    if (stage === 'awaiting_render') return { label: 'Awaiting render', cls: 'bg-[var(--accent-yellow)]/15 text-[var(--accent-yellow)]' };
+    if (stage === 'extract') return { label: 'Writing script…', cls: 'bg-white/[0.08] text-[var(--text-secondary)]' };
+    if (stage === 'voiceover') return { label: 'Voiceover…', cls: 'bg-white/[0.08] text-[var(--text-secondary)]' };
+    if (stage === 'seo') return { label: 'SEO…', cls: 'bg-white/[0.08] text-[var(--text-secondary)]' };
+    return { label: stage, cls: 'bg-white/[0.08] text-[var(--text-secondary)]' };
   })();
 
   return (
@@ -145,11 +145,11 @@ function ShortRowItem({ short }: { short: ShortRow }) {
       <span className={['shrink-0 rounded-full px-2 py-0.5 text-xs font-medium', badge.cls].join(' ')}>
         {badge.label}
       </span>
-      <span className="flex-1 truncate text-zinc-900 dark:text-zinc-100">
+      <span className="flex-1 truncate text-[var(--text-primary)]">
         {short.title ?? short.hook ?? '(untitled)'}
       </span>
       {error && (
-        <span className="max-w-md truncate text-xs text-red-600 dark:text-red-400" title={error}>
+        <span className="max-w-md truncate text-xs text-red-400" title={error}>
           {error}
         </span>
       )}

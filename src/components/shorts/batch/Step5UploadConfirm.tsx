@@ -73,7 +73,7 @@ export function Step5UploadConfirm({
     }
   };
 
-  if (!bundle) return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
+  if (!bundle) return <p className="text-sm text-[var(--text-muted)]">Loading…</p>;
 
   const readyToUpload = bundle.shorts.filter(
     (s) => s.rendered_video_url && !s.youtube_video_id,
@@ -82,42 +82,42 @@ export function Step5UploadConfirm({
 
   return (
     <section className="space-y-6">
-      <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-800">
-        <h2 className="mb-4 text-lg font-medium text-zinc-900 dark:text-zinc-100">
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
+        <h2 className="mb-4 text-lg font-medium text-[var(--text-primary)]">
           Upload to YouTube
         </h2>
         <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
-          <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-700">
-            <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">Ready to upload</p>
-            <p className="mt-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+          <div className="rounded-md border border-[var(--border)] p-3">
+            <p className="text-xs uppercase text-[var(--text-muted)]">Ready to upload</p>
+            <p className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">
               {readyToUpload.length}
             </p>
             {alreadyUploaded.length > 0 && (
-              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
                 ({alreadyUploaded.length} already uploaded — skipped)
               </p>
             )}
           </div>
-          <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-700">
-            <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">
+          <div className="rounded-md border border-[var(--border)] p-3">
+            <p className="text-xs uppercase text-[var(--text-muted)]">
               Quota today (approximate)
             </p>
             {quota ? (
               <>
-                <p className="mt-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-100">
+                <p className="mt-1 text-2xl font-semibold text-[var(--text-primary)]">
                   ~{quota.estimatedRemainingUploads} uploads left
                 </p>
-                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
                   {quota.unitsCharged} of 10,000 units used · resets at UTC midnight
                 </p>
               </>
             ) : (
-              <p className="text-xs italic text-zinc-500 dark:text-zinc-400">Loading…</p>
+              <p className="text-xs italic text-[var(--text-muted)]">Loading…</p>
             )}
           </div>
         </div>
         {quota && readyToUpload.length > quota.estimatedRemainingUploads && (
-          <p className="mt-3 rounded-md bg-amber-50 p-3 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+          <p className="mt-3 rounded-md bg-[var(--accent-yellow)]/10 p-3 text-xs text-[var(--accent-yellow)]">
             You're trying to upload {readyToUpload.length} shorts but only ~
             {quota.estimatedRemainingUploads} fit in today's quota. YouTube will
             reject the overflow with 403 quotaExceeded. Consider scheduling some
@@ -131,27 +131,27 @@ export function Step5UploadConfirm({
           type="button"
           onClick={uploadAll}
           disabled={uploading || readyToUpload.length === 0}
-          className="rounded-md bg-emerald-700 px-5 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-400 hover:bg-emerald-800"
+          className="rounded-md bg-[var(--accent-green)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(16,185,129,0.35)] disabled:cursor-not-allowed disabled:bg-white/[0.05] disabled:text-[var(--text-muted)] hover:bg-[var(--accent-green)]/80"
         >
           {uploading ? 'Uploading…' : `Upload all (${readyToUpload.length})`}
         </button>
       </div>
 
       {outcome && (
-        <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-800">
-          <h3 className="mb-3 text-sm font-medium text-zinc-900 dark:text-zinc-100">
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
+          <h3 className="mb-3 text-sm font-medium text-[var(--text-primary)]">
             Upload results
           </h3>
-          <ul className="divide-y divide-zinc-200 dark:divide-zinc-700">
+          <ul className="divide-y divide-[var(--border)]">
             {outcome.processed.map((p) => (
               <OutcomeRow key={p.shortId} outcome={p} />
             ))}
             {outcome.skipped.map((s) => (
               <li key={`skip-${s.shortId}`} className="flex items-center gap-3 py-2 text-sm">
-                <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                <span className="shrink-0 rounded-full bg-white/[0.08] px-2 py-0.5 text-xs text-[var(--text-secondary)]">
                   Skipped
                 </span>
-                <span className="flex-1 truncate text-zinc-500 dark:text-zinc-400">{s.reason}</span>
+                <span className="flex-1 truncate text-[var(--text-muted)]">{s.reason}</span>
               </li>
             ))}
           </ul>
@@ -168,19 +168,19 @@ function OutcomeRow({ outcome }: { outcome: SingleShortUploadOutcome }) {
         className={[
           'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium',
           outcome.ok
-            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
-            : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200',
+            ? 'bg-[var(--accent-green)]/15 text-[var(--accent-green)]'
+            : 'bg-red-500/15 text-red-300',
         ].join(' ')}
       >
         {outcome.ok ? outcome.status ?? 'uploaded' : 'failed'}
       </span>
-      <span className="flex-1 truncate text-zinc-900 dark:text-zinc-100">
+      <span className="flex-1 truncate text-[var(--text-primary)]">
         {outcome.videoId ? (
           <a
             href={`https://studio.youtube.com/video/${outcome.videoId}/edit`}
             target="_blank"
             rel="noreferrer"
-            className="underline hover:text-zinc-700 dark:hover:text-zinc-300"
+            className="underline hover:text-[var(--accent-purple-bright)]"
           >
             {outcome.videoId}
           </a>
@@ -189,7 +189,7 @@ function OutcomeRow({ outcome }: { outcome: SingleShortUploadOutcome }) {
         )}
       </span>
       {outcome.playlistResults.length > 0 && (
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+        <span className="text-xs text-[var(--text-muted)]">
           + {outcome.playlistResults.filter((r) => r.success).length} playlists
         </span>
       )}

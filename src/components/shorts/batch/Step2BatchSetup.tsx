@@ -123,11 +123,11 @@ export function Step2BatchSetup({
 
   return (
     <section className="space-y-6">
-      <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-800">
-        <h2 className="mb-4 text-lg font-medium text-zinc-900 dark:text-zinc-100">
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
+        <h2 className="mb-4 text-lg font-medium text-[var(--text-primary)]">
           Batch defaults
         </h2>
-        <p className="mb-6 text-sm text-zinc-600 dark:text-zinc-400">
+        <p className="mb-6 text-sm text-[var(--text-secondary)]">
           These apply to every short in this batch ({selectedCount} selected). You can
           override any of them per-short in the review queue.
         </p>
@@ -138,7 +138,7 @@ export function Step2BatchSetup({
             <select
               value={channelId}
               onChange={(e) => onChannelChange(e.target.value)}
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
             >
               {channels.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -159,7 +159,7 @@ export function Step2BatchSetup({
               value={defaults.voiceId ?? ''}
               onChange={(e) => patch({ voiceId: e.target.value || undefined })}
               placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-purple)] focus:outline-none"
             />
           </div>
 
@@ -172,7 +172,7 @@ export function Step2BatchSetup({
               value={defaults.language ?? ''}
               onChange={(e) => patch({ language: e.target.value || undefined })}
               placeholder="en"
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-purple)] focus:outline-none"
             />
           </div>
 
@@ -183,7 +183,7 @@ export function Step2BatchSetup({
             <select
               value={defaults.categoryId ?? ''}
               onChange={(e) => patch({ categoryId: e.target.value || undefined })}
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
             >
               <option value="">— pick a category —</option>
               {YOUTUBE_CATEGORIES.map((c) => (
@@ -203,7 +203,7 @@ export function Step2BatchSetup({
               onChange={(e) =>
                 patch({ defaultPrivacy: e.target.value as 'public' | 'private' | 'unlisted' })
               }
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
             >
               <option value="public">Public</option>
               <option value="unlisted">Unlisted</option>
@@ -241,7 +241,7 @@ export function Step2BatchSetup({
               onChange={(e) => patch({ descriptionTemplate: e.target.value || undefined })}
               rows={5}
               placeholder="{{title}}\n\nNew short: {{hook}}\n\nSubscribe for more!"
-              className="w-full resize-y rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-xs text-zinc-900 placeholder-zinc-400 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:border-[var(--accent-purple)] focus:outline-none"
             />
           </div>
 
@@ -256,7 +256,7 @@ export function Step2BatchSetup({
                   scheduleCadence: e.target.value as ShortsBatchDefaults['scheduleCadence'],
                 })
               }
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
             >
               {SCHEDULE_CADENCES.map((s) => (
                 <option key={s.value} value={s.value}>
@@ -278,11 +278,11 @@ export function Step2BatchSetup({
         </div>
       </div>
 
-      <div className="rounded-lg border border-amber-200 bg-amber-50 p-5 dark:border-amber-700 dark:bg-amber-900/30">
-        <h2 className="mb-3 text-lg font-medium text-zinc-900 dark:text-zinc-100">
+      <div className="rounded-lg border border-[var(--accent-yellow)]/40 bg-[var(--accent-yellow)]/10 p-5">
+        <h2 className="mb-3 text-lg font-medium text-[var(--text-primary)]">
           YouTube disclosures
         </h2>
-        <p className="mb-4 text-xs text-zinc-700 dark:text-zinc-300">
+        <p className="mb-4 text-xs text-[var(--text-secondary)]">
           Made-for-kids is required by YouTube on every upload (COPPA). The other
           three default to the values you set; you can flip any of them per-short
           in the review queue.
@@ -320,7 +320,7 @@ export function Step2BatchSetup({
         <button
           type="button"
           onClick={onBack}
-          className="rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          className="rounded-md border border-[var(--border)] px-4 py-2 text-sm text-[var(--text-primary)] hover:bg-white/[0.05]"
         >
           ← Back
         </button>
@@ -328,7 +328,7 @@ export function Step2BatchSetup({
           type="button"
           onClick={start}
           disabled={submitting || selectedCount === 0}
-          className="rounded-md bg-zinc-900 px-5 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-400 hover:bg-zinc-700 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+          className="rounded-md bg-[var(--accent-purple)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(124,58,237,0.35)] disabled:cursor-not-allowed disabled:bg-white/[0.05] disabled:text-[var(--text-muted)] hover:bg-[var(--accent-purple-bright)]"
         >
           {submitting ? 'Starting…' : `Start generating ${selectedCount} shorts →`}
         </button>
@@ -346,14 +346,14 @@ function Label({
 }) {
   return (
     <span className="mb-1 block">
-      <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-100">{children}</span>
-      {hint && <span className="block text-xs text-zinc-500 dark:text-zinc-400">{hint}</span>}
+      <span className="block text-sm font-medium text-[var(--text-primary)]">{children}</span>
+      {hint && <span className="block text-xs text-[var(--text-muted)]">{hint}</span>}
     </span>
   );
 }
 
 function Required() {
-  return <span className="ml-1 text-amber-600 dark:text-amber-400">*</span>;
+  return <span className="ml-1 text-[var(--accent-yellow)]">*</span>;
 }
 
 function RadioBool({
@@ -370,18 +370,18 @@ function RadioBool({
   required?: boolean;
 }) {
   return (
-    <fieldset className="rounded-md border border-amber-200 bg-white p-3 dark:border-amber-700 dark:bg-zinc-800">
-      <legend className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+    <fieldset className="rounded-md border border-[var(--accent-yellow)]/40 bg-[var(--bg-card)] p-3">
+      <legend className="text-sm font-medium text-[var(--text-primary)]">
         {label} {required && <Required />}
       </legend>
-      {hint && <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">{hint}</p>}
+      {hint && <p className="mb-2 text-xs text-[var(--text-muted)]">{hint}</p>}
       <div className="flex items-center gap-4">
         <label className="flex items-center gap-2 text-sm">
           <input
             type="radio"
             checked={value === true}
             onChange={() => onChange(true)}
-            className="h-4 w-4 accent-zinc-900 dark:accent-white"
+            className="h-4 w-4 accent-[var(--accent-purple)]"
           />
           Yes
         </label>
@@ -390,7 +390,7 @@ function RadioBool({
             type="radio"
             checked={value === false}
             onChange={() => onChange(false)}
-            className="h-4 w-4 accent-zinc-900 dark:accent-white"
+            className="h-4 w-4 accent-[var(--accent-purple)]"
           />
           No
         </label>

@@ -73,7 +73,7 @@ export function BatchShortReviewCard({
   const descCharsLeft = YOUTUBE_DESCRIPTION_MAX - (metadata.description ?? '').length;
 
   return (
-    <article className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
+    <article className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
       <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-[200px_1fr]">
         <div className="flex flex-col items-center gap-2">
           {short.rendered_video_url ? (
@@ -84,7 +84,7 @@ export function BatchShortReviewCard({
               className="aspect-[9/16] w-[180px] rounded-md bg-black"
             />
           ) : (
-            <div className="flex aspect-[9/16] w-[180px] items-center justify-center rounded-md bg-zinc-100 text-xs text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400">
+            <div className="flex aspect-[9/16] w-[180px] items-center justify-center rounded-md bg-white/[0.05] text-xs text-[var(--text-muted)]">
               No render yet
             </div>
           )}
@@ -93,13 +93,13 @@ export function BatchShortReviewCard({
               href={`https://studio.youtube.com/video/${short.youtube_video_id}/edit`}
               target="_blank"
               rel="noreferrer"
-              className="text-xs text-emerald-600 underline hover:text-emerald-800 dark:text-emerald-400"
+              className="text-xs text-[var(--accent-green)] underline hover:text-[var(--accent-green)]/80"
             >
               Open in YouTube Studio →
             </a>
           )}
           {short.youtube_status === 'failed' && short.youtube_upload_error && (
-            <p className="max-w-[180px] text-xs text-red-600 dark:text-red-400" title={short.youtube_upload_error}>
+            <p className="max-w-[180px] text-xs text-red-400" title={short.youtube_upload_error}>
               Upload failed: {short.youtube_upload_error.slice(0, 80)}
               {short.youtube_upload_error.length > 80 ? '…' : ''}
             </p>
@@ -108,19 +108,19 @@ export function BatchShortReviewCard({
 
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Title</label>
+            <label className="block text-xs font-medium text-[var(--text-secondary)]">Title</label>
             <input
               type="text"
               value={metadata.title ?? ''}
               onChange={(e) => patch({ title: e.target.value })}
               onBlur={save}
               maxLength={YOUTUBE_TITLE_MAX}
-              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
             />
             <span
               className={[
                 'mt-0.5 block text-xs',
-                titleCharsLeft < 10 ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400',
+                titleCharsLeft < 10 ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-muted)]',
               ].join(' ')}
             >
               {titleCharsLeft} chars left
@@ -130,26 +130,26 @@ export function BatchShortReviewCard({
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="text-xs text-zinc-600 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+            className="text-xs text-[var(--text-secondary)] underline hover:text-[var(--text-primary)]"
           >
             {expanded ? 'Hide details' : 'Edit description, tags, schedule…'}
           </button>
 
           {expanded && (
-            <div className="space-y-3 border-t border-zinc-200 pt-3 dark:border-zinc-700">
+            <div className="space-y-3 border-t border-[var(--border)] pt-3">
               <div>
-                <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Description</label>
+                <label className="block text-xs font-medium text-[var(--text-secondary)]">Description</label>
                 <textarea
                   value={metadata.description ?? ''}
                   onChange={(e) => patch({ description: e.target.value })}
                   onBlur={save}
                   rows={5}
-                  className="w-full resize-y rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                  className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
                 />
                 <span
                   className={[
                     'mt-0.5 block text-xs',
-                    descCharsLeft < 100 ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400',
+                    descCharsLeft < 100 ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-muted)]',
                   ].join(' ')}
                 >
                   {descCharsLeft} chars left
@@ -157,7 +157,7 @@ export function BatchShortReviewCard({
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Tags</label>
+                <label className="block text-xs font-medium text-[var(--text-secondary)]">Tags</label>
                 <TagTokenInput
                   tags={metadata.tags ?? []}
                   onChange={(tags) => {
@@ -169,14 +169,14 @@ export function BatchShortReviewCard({
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 <div>
-                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Category</label>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)]">Category</label>
                   <select
                     value={metadata.categoryId ?? ''}
                     onChange={(e) => {
                       patch({ categoryId: e.target.value || undefined });
                       void save();
                     }}
-                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                    className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
                   >
                     <option value="">—</option>
                     {YOUTUBE_CATEGORIES.map((c) => (
@@ -187,14 +187,14 @@ export function BatchShortReviewCard({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Privacy at publish</label>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)]">Privacy at publish</label>
                   <select
                     value={metadata.privacy ?? 'public'}
                     onChange={(e) => {
                       patch({ privacy: e.target.value as 'public' | 'private' | 'unlisted' });
                       void save();
                     }}
-                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                    className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
                   >
                     <option value="public">Public</option>
                     <option value="unlisted">Unlisted</option>
@@ -202,19 +202,19 @@ export function BatchShortReviewCard({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Language</label>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)]">Language</label>
                   <input
                     type="text"
                     value={metadata.defaultLanguage ?? ''}
                     onChange={(e) => patch({ defaultLanguage: e.target.value || undefined })}
                     onBlur={save}
-                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                    className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Playlists</label>
+                <label className="block text-xs font-medium text-[var(--text-secondary)]">Playlists</label>
                 <PlaylistMultiSelect
                   channelId={channelId}
                   value={metadata.playlistIds ?? []}
@@ -227,7 +227,7 @@ export function BatchShortReviewCard({
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Schedule</label>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)]">Schedule</label>
                   <input
                     type="datetime-local"
                     value={publishAt ? utcIsoToLocalInputValue(publishAt, tz) : ''}
@@ -236,7 +236,7 @@ export function BatchShortReviewCard({
                       setPublishAt(utc);
                     }}
                     onBlur={save}
-                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 focus:border-zinc-900 focus:outline-none dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                    className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)] focus:border-[var(--accent-purple)] focus:outline-none"
                   />
                   <button
                     type="button"
@@ -244,19 +244,19 @@ export function BatchShortReviewCard({
                       setPublishAt(null);
                       void save();
                     }}
-                    className="mt-1 text-xs text-zinc-500 underline hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+                    className="mt-1 text-xs text-[var(--text-muted)] underline hover:text-[var(--text-primary)]"
                   >
                     Clear (publish immediately)
                   </button>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-600 dark:text-zinc-400">Timezone</label>
+                  <label className="block text-xs font-medium text-[var(--text-secondary)]">Timezone</label>
                   <TimezoneSelect value={tz} onChange={setTz} />
                 </div>
               </div>
 
-              <fieldset className="rounded-md border border-zinc-200 p-3 dark:border-zinc-700">
-                <legend className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Disclosures</legend>
+              <fieldset className="rounded-md border border-[var(--border)] p-3">
+                <legend className="text-xs font-medium text-[var(--text-secondary)]">Disclosures</legend>
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                   <Toggle
                     label="Made for kids"
@@ -292,7 +292,7 @@ export function BatchShortReviewCard({
                   />
                 </div>
                 {(metadata.ageRestricted || metadata.paidPromotion) && (
-                  <p className="mt-2 text-xs italic text-amber-600 dark:text-amber-400">
+                  <p className="mt-2 text-xs italic text-[var(--accent-yellow)]">
                     Age-restricted and paid-promotion can't be set via the YouTube API — finish in Studio after upload.
                   </p>
                 )}
@@ -300,7 +300,7 @@ export function BatchShortReviewCard({
             </div>
           )}
 
-          {saving && <span className="text-xs italic text-zinc-500 dark:text-zinc-400">Saving…</span>}
+          {saving && <span className="text-xs italic text-[var(--text-muted)]">Saving…</span>}
         </div>
       </div>
     </article>
@@ -322,7 +322,7 @@ function Toggle({
         type="checkbox"
         checked={value}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-zinc-900 dark:accent-white"
+        className="h-4 w-4 accent-[var(--accent-purple)]"
       />
       {label}
     </label>

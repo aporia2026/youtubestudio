@@ -4,9 +4,8 @@
  * BatchStepper — top-of-page step indicator for the /shorts/batch
  * workflow. Pure presentation; the parent owns step state.
  *
- * Per rule 16 (UI/UX must be clean + intuitive): every step has a
- * short label so the user knows what's coming, and the active step
- * + already-completed steps are visually distinct from upcoming.
+ * Visual language matches the rest of the app: dark surface with
+ * subtle violet accent on the active step.
  */
 
 export type BatchStep = 1 | 2 | 3 | 4 | 5;
@@ -27,7 +26,7 @@ export function BatchStepper({
   batchId: string | null;
 }) {
   return (
-    <ol className="flex w-full items-center gap-1 overflow-x-auto rounded-lg border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-900">
+    <ol className="flex w-full items-center gap-1 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-2">
       {STEPS.map((s, i) => {
         const isActive = s.n === current;
         const isComplete = s.n < current;
@@ -37,20 +36,20 @@ export function BatchStepper({
             className={[
               'flex min-w-[160px] flex-1 items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
               isActive
-                ? 'bg-zinc-900 text-white shadow-sm dark:bg-white dark:text-zinc-900'
+                ? 'bg-[var(--accent-purple)] text-white shadow-[0_0_30px_rgba(124,58,237,0.35)]'
                 : isComplete
-                ? 'bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200'
-                : 'text-zinc-500 dark:text-zinc-400',
+                ? 'bg-white/[0.05] text-[var(--text-primary)]'
+                : 'text-[var(--text-muted)]',
             ].join(' ')}
           >
             <span
               className={[
                 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
                 isActive
-                  ? 'bg-white text-zinc-900 dark:bg-zinc-900 dark:text-white'
+                  ? 'bg-white text-[var(--accent-purple)]'
                   : isComplete
-                  ? 'bg-zinc-500 text-white'
-                  : 'bg-zinc-300 text-zinc-600 dark:bg-zinc-600 dark:text-zinc-300',
+                  ? 'bg-[var(--accent-purple)]/40 text-white'
+                  : 'bg-white/[0.05] text-[var(--text-muted)]',
               ].join(' ')}
               aria-hidden
             >
@@ -61,14 +60,14 @@ export function BatchStepper({
               <span
                 className={[
                   'text-xs',
-                  isActive ? 'text-zinc-200 dark:text-zinc-600' : 'text-zinc-500 dark:text-zinc-500',
+                  isActive ? 'text-white/80' : 'text-[var(--text-muted)]',
                 ].join(' ')}
               >
                 {s.hint}
               </span>
             </span>
             {i < STEPS.length - 1 && (
-              <span aria-hidden className="ml-auto text-zinc-300 dark:text-zinc-600">
+              <span aria-hidden className="ml-auto text-[var(--text-muted)]">
                 →
               </span>
             )}
@@ -76,7 +75,7 @@ export function BatchStepper({
         );
       })}
       {batchId && (
-        <li className="ml-2 hidden shrink-0 rounded-md border border-zinc-200 px-2 py-1 text-xs text-zinc-500 sm:block dark:border-zinc-700 dark:text-zinc-400">
+        <li className="ml-2 hidden shrink-0 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] sm:block">
           batch <code className="font-mono text-[10px]">{batchId.slice(0, 8)}</code>
         </li>
       )}

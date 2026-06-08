@@ -62,37 +62,37 @@ export function PlaylistMultiSelect({
   };
 
   if (loading) {
-    return <p className="text-xs text-zinc-500 dark:text-zinc-400">Loading playlists…</p>;
+    return <p className="text-xs text-[var(--text-muted)]">Loading playlists…</p>;
   }
   if (error) {
-    return <p className="text-xs text-amber-600 dark:text-amber-400">{error}</p>;
+    return <p className="text-xs text-[var(--accent-yellow)]">{error}</p>;
   }
   if (!playlists || playlists.length === 0) {
     return (
-      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="text-xs text-[var(--text-muted)]">
         No playlists on this channel yet.
       </p>
     );
   }
 
   return (
-    <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
       {playlists.map((pl) => {
         const checked = value.includes(pl.id);
         return (
           <label
             key={pl.id}
-            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm hover:bg-white/[0.05]"
           >
             <input
               type="checkbox"
               checked={checked}
               onChange={() => toggle(pl.id)}
-              className="h-4 w-4 accent-zinc-900 dark:accent-white"
+              className="h-4 w-4 accent-[var(--accent-purple)]"
             />
-            <span className="flex-1 truncate text-zinc-900 dark:text-zinc-100">{pl.title}</span>
+            <span className="flex-1 truncate text-[var(--text-primary)]">{pl.title}</span>
             {pl.itemCount !== null && (
-              <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              <span className="text-xs text-[var(--text-muted)]">
                 {pl.itemCount} videos
               </span>
             )}

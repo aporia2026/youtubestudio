@@ -37,8 +37,8 @@ export function Step4ReviewQueue({
     void load();
   }, [load]);
 
-  if (error) return <p className="text-sm text-amber-600 dark:text-amber-400">{error}</p>;
-  if (!bundle) return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
+  if (error) return <p className="text-sm text-[var(--accent-yellow)]">{error}</p>;
+  if (!bundle) return <p className="text-sm text-[var(--text-muted)]">Loading…</p>;
 
   const { batch, shorts } = bundle;
   const ready = shorts.filter((s) => s.rendered_video_url);
@@ -47,21 +47,21 @@ export function Step4ReviewQueue({
 
   return (
     <section className="space-y-6">
-      <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-800">
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-medium text-zinc-900 dark:text-zinc-100">
+            <h2 className="text-lg font-medium text-[var(--text-primary)]">
               Review {ready.length} ready shorts
             </h2>
-            <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
               Edit any field — saves on blur. When you're happy, continue to upload.
             </p>
           </div>
           {(stillRendering.length > 0 || errored.length > 0) && (
-            <div className="text-right text-xs text-zinc-500 dark:text-zinc-400">
+            <div className="text-right text-xs text-[var(--text-muted)]">
               {stillRendering.length > 0 && <div>{stillRendering.length} still rendering</div>}
               {errored.length > 0 && (
-                <div className="text-red-600 dark:text-red-400">{errored.length} failed</div>
+                <div className="text-red-400">{errored.length} failed</div>
               )}
             </div>
           )}
@@ -79,7 +79,7 @@ export function Step4ReviewQueue({
           />
         ))}
         {ready.length === 0 && (
-          <p className="rounded-md border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+          <p className="rounded-md border border-dashed border-[var(--border)] p-6 text-center text-sm text-[var(--text-muted)]">
             No shorts rendered yet. The asset pipeline runs separately — once a
             short's render completes, it'll appear here for review.
           </p>
@@ -91,7 +91,7 @@ export function Step4ReviewQueue({
           type="button"
           onClick={onContinue}
           disabled={ready.length === 0}
-          className="rounded-md bg-zinc-900 px-5 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-400 hover:bg-zinc-700 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+          className="rounded-md bg-[var(--accent-purple)] px-5 py-2 text-sm font-medium text-white shadow-[0_0_30px_rgba(124,58,237,0.35)] disabled:cursor-not-allowed disabled:bg-white/[0.05] disabled:text-[var(--text-muted)] hover:bg-[var(--accent-purple-bright)]"
         >
           Continue to upload →
         </button>
