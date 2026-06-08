@@ -17,6 +17,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import type { ShortsBatchWithShorts, BatchTickResult } from '@/lib/shorts-batches-types';
 import type { ShortRow, GenerationProgressState } from '@/lib/shorts-types';
 
@@ -29,11 +31,53 @@ const POLL_MS = 4_000;
 const TIMER_MS = 1_000;
 
 export function Step3Progress({ batchId, onDone }: Props) {
+  const router = useRouter();
   const [bundle, setBundle] = useState<ShortsBatchWithShorts | null>(null);
   const [lastTick, setLastTick] = useState<BatchTickResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [cancelling, setCancelling] = useState(false);
   const tickInFlightRef = useRef(false);
+
+  const cancelBatch = useCallback(async () => {
+    if (cancelling) return;
+    if (!confirm('Cancel this batch? In-progress shorts will be marked as failed.')) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/shorts/batches/${batchId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'failed' }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      toast.success('Batch cancelled');
+      router.push('/shorts/batch');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Cancel failed');
+    } finally {
+      setCancelling(false);
+    }
+  }, [batchId, cancelling, router]);
+
+  const cancelShort = useCallback(
+    async (shortId: string) => {
+      if (!confirm('Cancel this short? It will be skipped from the rest of the pipeline.')) return;
+      try {
+        const res = await fetch(`/api/shorts/${shortId}/cancel`, { method: 'POST' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        toast.success('Short cancelled');
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Cancel failed');
+      }
+    },
+    [],
+  );
 
   const fetchBundle = useCallback(async () => {
     const res = await fetch(`/api/shorts/batches/${batchId}`);
@@ -107,13 +151,23 @@ export function Step3Progress({ batchId, onDone }: Props) {
   return (
     <section className="space-y-6">
       <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-5">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-lg font-medium text-[var(--text-primary)]">
             Generating {totals.planned} shorts
           </h2>
-          <span className="text-sm text-[var(--text-secondary)]">
-            {totals.generated} ready · {totals.failed} failed · {pct}%
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-[var(--text-secondary)]">
+              {totals.generated} ready · {totals.failed} failed · {pct}%
+            </span>
+            <button
+              type="button"
+              onClick={cancelBatch}
+              disabled={cancelling}
+              className="rounded-md border border-red-500/30 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cancelling ? 'Cancelling…' : 'Cancel batch'}
+            </button>
+          </div>
         </div>
         <div className="h-2 w-full overflow-hidden rounded-full bg-white/[0.08]">
           <div
@@ -131,7 +185,7 @@ export function Step3Progress({ batchId, onDone }: Props) {
 
       <div className="space-y-2">
         {bundle.shorts.map((s) => (
-          <ShortProgressRow key={s.id} short={s} nowMs={now} />
+          <ShortProgressRow key={s.id} short={s} nowMs={now} onCancel={cancelShort} />
         ))}
       </div>
     </section>
@@ -223,7 +277,15 @@ function deriveStages(short: ShortRow): DerivedStage[] {
   });
 }
 
-function ShortProgressRow({ short, nowMs }: { short: ShortRow; nowMs: number }) {
+function ShortProgressRow({
+  short,
+  nowMs,
+  onCancel,
+}: {
+  short: ShortRow;
+  nowMs: number;
+  onCancel: (shortId: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const stages = deriveStages(short);
   const updatedMs = new Date(short.updated_at).getTime();
@@ -234,23 +296,38 @@ function ShortProgressRow({ short, nowMs }: { short: ShortRow; nowMs: number }) 
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm"
-      >
+      <div className="flex w-full items-center gap-3 px-4 py-3 text-sm">
         <StatusDot status={isError ? 'failed' : isReady ? 'done' : 'active'} />
-        <span className="flex-1 truncate text-[var(--text-primary)]">
-          {short.title ?? short.hook ?? '(untitled)'}
-        </span>
-        <span className="hidden text-xs text-[var(--text-muted)] md:inline">
-          {isError ? 'Failed' : isReady ? 'Ready' : `Working on ${activeStage?.label}…`}
-        </span>
-        <ElapsedBadge ms={elapsedMs} active={!isError && !isReady} />
-        <span className="text-xs text-[var(--text-muted)]" aria-hidden>
-          {expanded ? '▾' : '▸'}
-        </span>
-      </button>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex flex-1 items-center gap-3 text-left"
+        >
+          <span className="flex-1 truncate text-[var(--text-primary)]">
+            {short.title ?? short.hook ?? '(untitled)'}
+          </span>
+          <span className="hidden text-xs text-[var(--text-muted)] md:inline">
+            {isError ? 'Failed' : isReady ? 'Ready' : `Working on ${activeStage?.label}…`}
+          </span>
+          <ElapsedBadge ms={elapsedMs} active={!isError && !isReady} />
+          <span className="text-xs text-[var(--text-muted)]" aria-hidden>
+            {expanded ? '▾' : '▸'}
+          </span>
+        </button>
+        {!isError && !isReady && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel(short.id);
+            }}
+            className="shrink-0 rounded-md border border-red-500/30 px-2 py-1 text-xs text-red-300 hover:bg-red-500/10"
+            title="Cancel this short"
+          >
+            ✕
+          </button>
+        )}
+      </div>
 
       <div className="border-t border-[var(--border)] px-4 py-3">
         <ol className="flex flex-wrap items-center gap-1.5">

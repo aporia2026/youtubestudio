@@ -175,6 +175,11 @@ export type GenerationProgressPhase =
   | 'base'
   | 'variant'
   | 'done'
+  /** Set by the shorts-batch orchestrator's trigger_render stage after
+   *  /api/render/short has been kicked. Distinguishes "render in flight"
+   *  from "assets done, render not yet triggered" so concurrent batch
+   *  ticks don't double-fire the render route. */
+  | 'rendering'
   | 'error';
 
 /**

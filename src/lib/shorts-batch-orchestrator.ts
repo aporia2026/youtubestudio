@@ -79,15 +79,19 @@ import type { BatchStage } from './shorts-batch-stages';
 export const MAX_PER_TICK = 3;
 
 /** Pick up to `MAX_PER_TICK` shorts from the batch that the
- *  orchestrator can actually advance this tick (i.e. nextStage is
- *  'extract' | 'voiceover' | 'seo'). 'awaiting_render' shorts are
- *  intentionally skipped — they're owned by the existing asset
- *  pipeline cron, not this orchestrator. */
+ *  orchestrator can actually advance this tick. 'awaiting_render'
+ *  shorts are intentionally skipped — they're owned by the existing
+ *  asset pipeline cron + the render route, not this orchestrator. */
 export function pickShortsToAdvance(shorts: readonly ShortRow[]): ShortRow[] {
   const out: ShortRow[] = [];
   for (const s of shorts) {
     const stage = nextStageFor(s);
-    if (stage === 'extract' || stage === 'voiceover' || stage === 'seo') {
+    if (
+      stage === 'extract' ||
+      stage === 'voiceover' ||
+      stage === 'seo' ||
+      stage === 'trigger_render'
+    ) {
       out.push(s);
       if (out.length >= MAX_PER_TICK) break;
     }
@@ -358,15 +362,104 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
 
 /** Dispatch a short to the correct stage runner. Exposed so a
  *  per-short retry route can re-run just one short without going
- *  through the batch tick. */
-export async function advanceShort(short: ShortRow, batch: ShortsBatchRow): Promise<StageOutcome> {
+ *  through the batch tick.
+ *
+ *  `sessionCookie` is the caller's `yt_studio_session` cookie value,
+ *  forwarded so the render stage can call POST /api/render/short
+ *  with the same auth the user has. Optional — the trigger_render
+ *  stage degrades to "skipped, user must trigger render manually"
+ *  if it's missing. */
+export async function advanceShort(
+  short: ShortRow,
+  batch: ShortsBatchRow,
+  sessionCookie?: string,
+): Promise<StageOutcome> {
   const stage = nextStageFor(short);
   switch (stage) {
-    case 'extract':   return runExtractStage(short);
-    case 'voiceover': return runVoiceoverStage(short, batch);
-    case 'seo':       return runSeoStage(short, batch);
+    case 'extract':         return runExtractStage(short);
+    case 'voiceover':       return runVoiceoverStage(short, batch);
+    case 'seo':             return runSeoStage(short, batch);
+    case 'trigger_render':  return runTriggerRenderStage(short, sessionCookie);
     default:
       return { stage, shortId: short.id, ok: true, duration_ms: 0 };
+  }
+}
+
+/** Kick off the final mp4 render for a short whose assets are ready.
+ *  Sets phase='rendering' before the call so a parallel tick doesn't
+ *  re-fire. On failure, falls back to 'awaiting_render' so the next
+ *  tick can retry (or the user can trigger manually). */
+async function runTriggerRenderStage(short: ShortRow, sessionCookie?: string): Promise<StageOutcome> {
+  const t0 = Date.now();
+  try {
+    if (!sessionCookie) {
+      return {
+        stage: 'trigger_render',
+        shortId: short.id,
+        ok: true,
+        duration_ms: Date.now() - t0,
+      };
+    }
+
+    // Mark as rendering BEFORE the kickoff so concurrent ticks don't
+    // both fire the render route. The kickoff returns ~300ms (Lambda)
+    // or holds the function for the duration of the render (Vercel);
+    // either way nextStageFor sees 'rendering' and returns
+    // 'awaiting_render', which pickShortsToAdvance skips.
+    const now = new Date().toISOString();
+    await sql`
+      UPDATE shorts
+         SET generation_progress = jsonb_set(
+               COALESCE(generation_progress, '{}'::jsonb),
+               '{phase}',
+               '"rendering"'::jsonb
+             ) || jsonb_build_object(
+               'label', 'Render queued — final mp4 will appear when done',
+               'updated_at', ${now}::text
+             ),
+             updated_at = NOW()
+       WHERE id = ${short.id}::uuid
+    `;
+
+    const baseUrl =
+      process.env.NEXT_PUBLIC_BASE_URL
+      || (process.env.VERCEL_PROJECT_PRODUCTION_URL && `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`)
+      || (process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`)
+      || 'http://localhost:3000';
+
+    const res = await fetch(`${baseUrl}/api/render/short`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `yt_studio_session=${sessionCookie}`,
+      },
+      body: JSON.stringify({ shortId: short.id }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => `HTTP ${res.status}`);
+      throw new Error(detail.slice(0, 200) || `HTTP ${res.status}`);
+    }
+
+    const ms = Date.now() - t0;
+    console.info('[shorts-batch stage trigger-render]', {
+      short_id: short.id,
+      batch_id: short.batch_id,
+      duration_ms: ms,
+    });
+    return { stage: 'trigger_render', shortId: short.id, ok: true, duration_ms: ms };
+  } catch (err) {
+    const ms = Date.now() - t0;
+    const message = err instanceof Error ? err.message : String(err);
+    // Roll back the 'rendering' marker so a subsequent tick can retry.
+    await sql`
+      UPDATE shorts
+         SET generation_progress = generation_progress - 'phase',
+             updated_at = NOW()
+       WHERE id = ${short.id}::uuid
+    `.catch(() => {});
+    console.info('[shorts-batch stage error]', { short_id: short.id, stage: 'trigger_render', message: message.slice(0, 200) });
+    return { stage: 'trigger_render', shortId: short.id, ok: false, error: message, duration_ms: ms };
   }
 }
 
@@ -380,8 +473,11 @@ export async function advanceShort(short: ShortRow, batch: ShortsBatchRow): Prom
 export async function processBatchTick(args: {
   batchId: string;
   workspaceId: string;
+  /** Forwarded from run-tick so the trigger_render stage can call
+   *  /api/render/short with the user's auth. Optional. */
+  sessionCookie?: string;
 }): Promise<BatchTickResult> {
-  const { batchId, workspaceId } = args;
+  const { batchId, workspaceId, sessionCookie } = args;
   const t0 = Date.now();
 
   const bundle = await getBatchWithShorts(batchId, workspaceId);
@@ -402,7 +498,7 @@ export async function processBatchTick(args: {
     concurrency: claimed.length,
   });
 
-  const outcomes = await Promise.all(claimed.map((s) => advanceShort(s, batch)));
+  const outcomes = await Promise.all(claimed.map((s) => advanceShort(s, batch, sessionCookie)));
 
   const advanced = outcomes.filter((o) => o.ok).length;
   const failed = outcomes.filter((o) => !o.ok).length;
