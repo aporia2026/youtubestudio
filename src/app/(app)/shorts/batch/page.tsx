@@ -37,11 +37,17 @@ export default async function BatchPage() {
   // Channels — fall back to empty list on read failure; the
   // empty-state UI below explains what's missing instead of
   // throwing.
+  // Channels table calls the display column `name`, not `title` (per
+  // db.ts:270 — `name TEXT NOT NULL`). We alias to `title` here so
+  // the client component's prop shape stays semantic ("title" reads
+  // better in UI code than "name").
   type ChannelRow = { id: string; title: string | null; oauth_connected: boolean };
   let channels: ChannelRow[] = [];
   try {
     const { rows } = await sql<ChannelRow>`
-      SELECT id, title, COALESCE(oauth_connected, false) AS oauth_connected
+      SELECT id,
+             COALESCE(account_label, name) AS title,
+             COALESCE(oauth_connected, false) AS oauth_connected
         FROM channels
        WHERE workspace_id = ${session.ws}::uuid
        ORDER BY created_at ASC
