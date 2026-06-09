@@ -507,9 +507,11 @@ interface ProductionRow {
   zenn_pose?: string;
   zenn_world_overlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;
   zenn_canvas_reveal_layers?: Array<{
-    image_url: string;
+    prompt_hint?: string;
+    image_url?: string;
     reveal_at_ms: number;
-    duration_ms: number;
+    duration_ms?: number;
+    fade_in_ms?: number;
   }>;
 }
 

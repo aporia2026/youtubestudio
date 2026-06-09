@@ -52,6 +52,8 @@
  */
 import { sql } from '@vercel/postgres';
 import { logger } from '../../logger';
+import { generateGptImage2Edit } from '../../gpt-image-2-edit';
+import { mirrorImageToR2 } from '../../image-gen-dispatch';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import {
   generateBaseImage,
@@ -88,6 +90,19 @@ const ZENN_CHARACTER_BANK_HARD_CAP = 12;
  *  dispatcher's `result.costUsd` (which may be slightly under).
  *  Matches the live-verified Kie i2i price documented in plan §11. */
 const COST_PER_CHARACTER_BANK_ENTRY = 0.05;
+
+/** Hard cap on how many fresh canvas_reveal sibling-layer
+ *  generations a single tick can run. Each is a Kie i2i Edit call
+ *  at ~$0.05 / ~30 s. Three per tick × 30 s = 90 s, well under the
+ *  TICK_DEADLINE_BUDGET_MS budget alongside the character-bank
+ *  sub-pass. Deferred layers come back next tick because the
+ *  row's `zenn_canvas_reveal_layers` entry is still missing its
+ *  `image_url`. PR 4. */
+const MAX_ZENN_CANVAS_REVEAL_PER_TICK = 3;
+
+/** Same per-call cost as character-bank Kie i2i. Used for the
+ *  cap pre-check on the canvas_reveal sub-pass. */
+const COST_PER_CANVAS_REVEAL_LAYER = 0.05;
 
 /** Per-job hard cost cap. Read from env so Vercel can override
  *  without a redeploy. Defaults to $10. Mirrors the helper in
@@ -139,9 +154,23 @@ interface ZennWorldDef {
   recurring_props?: Array<{ name: string; image_url: string }>;
 }
 
+/** Mirror of the canvas_reveal layer entry on
+ *  `ProductionRow.zenn_canvas_reveal_layers`. Pipeline reads
+ *  `prompt_hint` and writes `image_url` once the Kie i2i Edit
+ *  generates the sibling frame. Other fields are renderer-only and
+ *  pass through unchanged. */
+interface ZennCanvasRevealLayer {
+  prompt_hint?: string;
+  image_url?: string;
+  reveal_at_ms: number;
+  duration_ms?: number;
+  fade_in_ms?: number;
+}
+
 interface ZennPipelineRow extends PipelineImageRow {
   zenn_character_id?: string;
   zenn_world_overlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;
+  zenn_canvas_reveal_layers?: ZennCanvasRevealLayer[];
 }
 
 interface ZennPipelineDoc extends PipelineImageDoc {
@@ -330,6 +359,76 @@ export function fillWorldPalette(
   return next;
 }
 
+/** Build the Kie i2i Edit prompt envelope for a canvas_reveal layer.
+ *  The envelope is the load-bearing instruction that gets the model
+ *  to ADD a new element to the existing scene rather than re-paint it
+ *  from scratch (which would defeat the "evolving canvas" device the
+ *  beat exists for). Parallel to `buildCharacterContinuationEditPrompt`
+ *  but with different intent: continuation preserves character
+ *  identity across scenes; canvas_reveal preserves the whole image
+ *  while adding one element.
+ *
+ *  Exported for testing. */
+export function buildCanvasRevealEditPrompt(promptHint: string): string {
+  const hint = promptHint.trim();
+  return [
+    `Add the following new element to this existing image: ${hint}.`,
+    'CRITICAL: every existing element in the image (characters, props,',
+    'backgrounds, on-screen text) must remain EXACTLY identical to the',
+    'input. Do not move, recolor, redraw, or remove anything that is',
+    'already in the scene. Only ADD the new element described above,',
+    'positioned so it integrates naturally with the existing composition.',
+    'Match the existing line weight, color palette, and overall hand-drawn',
+    'style of the input image precisely.',
+  ].join(' ');
+}
+
+/** One unit of canvas_reveal work — a layer that needs generation. */
+interface CanvasRevealWorkItem {
+  rowIndex: number;
+  layerIndex: number;
+  promptHint: string;
+  baseImageUrl: string;
+}
+
+/** Plan the canvas_reveal work for this tick. Walks doc.rows, finds
+ *  every layer entry with a non-empty `prompt_hint` and an empty
+ *  `image_url`, and orders the result row-major (row 0 layers first,
+ *  then row 1, etc.) so the deterministic prefix that gets generated
+ *  per tick is stable across re-ticks.
+ *
+ *  Layers whose row has no `image_url` are skipped — canvas_reveal
+ *  edits a base image, so the base must exist first. These rows
+ *  come back next tick once the prior stage populates `image_url`.
+ *
+ *  Layers whose `prompt_hint` is empty are skipped too — the LLM
+ *  emitted a layer with no instruction; nothing to generate.
+ *
+ *  Exported for testing. */
+export function planCanvasRevealWork(doc: ZennPipelineDoc): CanvasRevealWorkItem[] {
+  const out: CanvasRevealWorkItem[] = [];
+  for (let i = 0; i < doc.rows.length; i++) {
+    const row = doc.rows[i];
+    const baseUrl = (row.image_url ?? '').trim();
+    if (!baseUrl) continue;
+    const layers = row.zenn_canvas_reveal_layers;
+    if (!Array.isArray(layers)) continue;
+    for (let li = 0; li < layers.length; li++) {
+      const layer = layers[li];
+      const hint = (layer?.prompt_hint ?? '').trim();
+      if (!hint) continue;
+      if (layer.image_url?.trim()) continue;
+      out.push({
+        rowIndex: i,
+        layerIndex: li,
+        promptHint: hint,
+        baseImageUrl: baseUrl,
+      });
+    }
+  }
+  return out;
+}
+
 export async function handleGenerateZennV1Images(
   ctx: StageHandlerContext,
 ): Promise<StageOutcome> {
@@ -401,22 +500,36 @@ export async function handleGenerateZennV1Images(
     (!doc.zenn_v1_world?.sky_color_hex ||
       !doc.zenn_v1_world?.ground_color_hex ||
       !doc.zenn_v1_world?.wall_color_hex);
+  const canvasRevealToGenerate = planCanvasRevealWork(doc);
 
   // 4) Nothing to do — advance straight to thumbnail.
-  if (charactersToGenerate.length === 0 && !worldNeedsFill) {
-    logger.info('[zenn-v1 stage] all done; no character bank or world work pending', {
+  if (
+    charactersToGenerate.length === 0 &&
+    !worldNeedsFill &&
+    canvasRevealToGenerate.length === 0
+  ) {
+    logger.info('[zenn-v1 stage] all done; no character bank, world, or canvas_reveal work pending', {
       pipeline_video_id: video.id,
       total_rows: doc.rows.length,
     });
     return { kind: 'advance', nextStage: 'generating_thumbnail', costUsd: 0 };
   }
 
-  // 5) Cost cap pre-check. Counts every character we'd attempt
-  //    THIS tick, plus already-spent dollars carried over from the
-  //    prior image-gen stage's running total. World palette fill
-  //    is free.
-  const tickPlanSize = Math.min(charactersToGenerate.length, MAX_ZENN_CHARACTER_PER_TICK);
-  const remainingCostUsd = tickPlanSize * COST_PER_CHARACTER_BANK_ENTRY;
+  // 5) Cost cap pre-check. Counts every character + canvas_reveal
+  //    layer we'd attempt THIS tick, plus already-spent dollars
+  //    carried over from the prior image-gen stage's running total.
+  //    World palette fill is free.
+  const characterTickPlanSize = Math.min(
+    charactersToGenerate.length,
+    MAX_ZENN_CHARACTER_PER_TICK,
+  );
+  const canvasRevealTickPlanSize = Math.min(
+    canvasRevealToGenerate.length,
+    MAX_ZENN_CANVAS_REVEAL_PER_TICK,
+  );
+  const remainingCostUsd =
+    characterTickPlanSize * COST_PER_CHARACTER_BANK_ENTRY +
+    canvasRevealTickPlanSize * COST_PER_CANVAS_REVEAL_LAYER;
   const alreadySpentUsd = parsePriorStageSpend(metadata);
   const capUsd = readCostCap();
   if (alreadySpentUsd + remainingCostUsd > capUsd) {
@@ -528,6 +641,86 @@ export async function handleGenerateZennV1Images(
     });
   }
 
+  // 7.5) Sub-pass 3: canvas_reveal sibling-frame generation. For each
+  //      layer carrying a `prompt_hint` without an `image_url`, run a
+  //      Kie i2i Edit from the row's base image and mirror the result
+  //      to R2 before stamping the URL on the layer. Capped at
+  //      MAX_ZENN_CANVAS_REVEAL_PER_TICK per tick. Skips if the
+  //      character-bank sub-pass already used the deadline budget.
+  let canvasRevealAttempted = 0;
+  let canvasRevealSucceeded = 0;
+  let canvasRevealFailed = 0;
+  let canvasRevealDeferred = 0;
+  for (const item of canvasRevealToGenerate) {
+    if (deadlineExceeded()) {
+      const remaining = canvasRevealToGenerate.length - canvasRevealAttempted;
+      canvasRevealDeferred += remaining;
+      logger.warn('[zenn-v1 stage] tick deadline reached; deferring remaining canvas_reveal layers', {
+        pipeline_video_id: video.id,
+        deferred: remaining,
+        elapsed_ms: Date.now() - tickStartedAtMs,
+        budget_ms: TICK_DEADLINE_BUDGET_MS,
+      });
+      break;
+    }
+    if (canvasRevealAttempted >= MAX_ZENN_CANVAS_REVEAL_PER_TICK) {
+      canvasRevealDeferred += 1;
+      logger.info('[zenn-v1 canvas-reveal] deferred to next tick', {
+        pipeline_video_id: video.id,
+        row_index: item.rowIndex,
+        layer_index: item.layerIndex,
+        cap: MAX_ZENN_CANVAS_REVEAL_PER_TICK,
+      });
+      continue;
+    }
+
+    canvasRevealAttempted += 1;
+    const editPrompt = buildCanvasRevealEditPrompt(item.promptHint);
+    const t0 = Date.now();
+    try {
+      // Kie i2i Edit is the canonical zenn_v1 provider (user decision
+      // 2026-06-10). Plan §11 documents the pricing acceptance.
+      const dispatched = await generateGptImage2Edit({
+        prompt: editPrompt,
+        sourceImageUrl: item.baseImageUrl,
+        primary: 'kie',
+      });
+      // `generateGptImage2Edit` returns a Kie CDN URL on the Kie path
+      // (Atlas returns an R2-mirrored crop). Mirror to R2 ourselves so
+      // the stored URL doesn't depend on Kie's CDN retention.
+      const mirroredUrl = await mirrorImageToR2(dispatched.url, 'zenn-canvas-reveal');
+      tickCostUsd += dispatched.costUsd;
+
+      const targetRow = doc.rows[item.rowIndex] as ZennPipelineRow | undefined;
+      const targetLayer = targetRow?.zenn_canvas_reveal_layers?.[item.layerIndex];
+      if (targetLayer) {
+        targetLayer.image_url = mirroredUrl;
+      }
+      canvasRevealSucceeded += 1;
+      logger.info('[zenn-v1 canvas-reveal]', {
+        pipeline_video_id: video.id,
+        row_index: item.rowIndex,
+        layer_index: item.layerIndex,
+        vendor_used: dispatched.vendorUsed,
+        fallback_used: dispatched.fallbackUsed,
+        cost_usd: dispatched.costUsd,
+        duration_ms: Date.now() - t0,
+        prompt_chars: editPrompt.length,
+        source: 'generated',
+      });
+    } catch (err) {
+      canvasRevealFailed += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn('[zenn-v1 canvas-reveal] failed', {
+        pipeline_video_id: video.id,
+        row_index: item.rowIndex,
+        layer_index: item.layerIndex,
+        error: message.slice(0, 240),
+        duration_ms: Date.now() - t0,
+      });
+    }
+  }
+
   // 8) Persist the updated doc back into the artefact metadata.
   //    Mirrors the persistence pattern in
   //    `generate-production-doc-images.ts:1421-1431` exactly.
@@ -549,11 +742,14 @@ export async function handleGenerateZennV1Images(
   );
 
   // 9) stillRemaining: any character_ids the LLM emitted that still
-  //    aren't in the bank means another tick is needed. World
-  //    palette fill is synchronous so it either succeeded this tick
-  //    or there was nothing to do; it never triggers a re-tick.
-  const remainingPlan = planCharacterBankWork(doc);
-  const stillRemaining = remainingPlan.length > 0;
+  //    aren't in the bank, OR any canvas_reveal layer with a prompt
+  //    but no image_url, means another tick is needed. World palette
+  //    fill is synchronous so it either succeeded this tick or there
+  //    was nothing to do; it never triggers a re-tick.
+  const remainingCharacterPlan = planCharacterBankWork(doc);
+  const remainingCanvasRevealPlan = planCanvasRevealWork(doc);
+  const stillRemaining =
+    remainingCharacterPlan.length > 0 || remainingCanvasRevealPlan.length > 0;
 
   // 10) End-of-tick telemetry. Mirrors the structured-fields shape
   //     of the paint_explainer_v1 stage so dashboards can roll up
@@ -567,6 +763,11 @@ export async function handleGenerateZennV1Images(
     characters_failed: charactersFailed,
     characters_deferred: charactersDeferred,
     world_palette_filled: worldFilled,
+    canvas_reveal_plan_size: canvasRevealToGenerate.length,
+    canvas_reveal_attempted: canvasRevealAttempted,
+    canvas_reveal_succeeded: canvasRevealSucceeded,
+    canvas_reveal_failed: canvasRevealFailed,
+    canvas_reveal_deferred: canvasRevealDeferred,
     tick_cost_usd: tickCostUsd,
     cumulative_cost_usd: alreadySpentUsd + tickCostUsd,
     cap_remaining_usd: Math.max(0, capUsd - (alreadySpentUsd + tickCostUsd)),

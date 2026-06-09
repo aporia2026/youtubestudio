@@ -451,13 +451,19 @@ export interface VideoShot {
    *  or undefined ⇒ white background. */
   zennWorldOverlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;
 
-  /** Per-shot canvas-reveal layer set. Sibling-frame PNGs that fade
-   *  in over a held base. Populated by the zenn_v1 pipeline stage in
-   *  PR 4; PR 3 carries the field through but doesn't render it. */
+  /** Per-shot canvas-reveal layer set. Mirrors
+   *  `ProductionRow.zenn_canvas_reveal_layers`. The renderer mounts
+   *  one `<Sequence>` per layer with opacity interpolated over
+   *  `fade_in_ms` from `reveal_at_ms`. Entries without an
+   *  `image_url` (still pending pipeline generation) are skipped
+   *  silently. `fade_in_ms = 0` produces the canvas_layer_add
+   *  instant-appear semantics in plan §4.2. */
   zennCanvasRevealLayers?: Array<{
-    image_url: string;
+    prompt_hint?: string;
+    image_url?: string;
     reveal_at_ms: number;
-    duration_ms: number;
+    duration_ms?: number;
+    fade_in_ms?: number;
   }>;
 }
 

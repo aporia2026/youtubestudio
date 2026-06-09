@@ -582,14 +582,16 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
       />
     );
   }
-  // zenn_v1 Mode B routing — runs BEFORE the sceneType switch for the
-  // same additive-routing reason as paint_explainer_v1 above. Only
-  // Mode B ('scene') shots route through ZennScene; Mode A ('stick')
-  // shots fall through to the default static path because the Mode A
-  // look is baked by the AI image suffix. PR 4 will route Mode A
-  // through ZennScene as well once canvas_reveal beats land. See
-  // `_plans/2026-06-10-zenn-v1-style.md` §5.5.
-  if (config.styleId === 'zenn_v1' && shot.zennMode === 'scene') {
+  // zenn_v1 routing — runs BEFORE the sceneType switch for the same
+  // additive-routing reason as paint_explainer_v1 above. PR 3 only
+  // routed Mode B ('scene'); PR 4 widens to both modes so canvas_reveal
+  // layers render in Mode A too. The mode branch lives inside
+  // ZennScene: Mode B composes from the world palette + character
+  // bank, Mode A renders the AI-generated `shot.imageUrl` as the
+  // base. Both modes layer canvas_reveal siblings on top. Rows with
+  // no `zennMode` set fall through to the default sceneType switch.
+  // See `_plans/2026-06-10-zenn-v1-style.md` §4.2 / §5.5.
+  if (config.styleId === 'zenn_v1' && shot.zennMode) {
     return (
       <ZennScene
         {...props}

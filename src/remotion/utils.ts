@@ -928,16 +928,43 @@ export interface ProductionRow {
 
   /** Per-row canvas-reveal layer set. Each entry is a sibling-frame
    *  PNG (Kie i2i Edit from the base) that fades in at
-   *  `reveal_at_ms` over `duration_ms`. Used to evolve a held canvas
-   *  across a long Mode A shot instead of cutting. Populated by the
-   *  pipeline stage in PR 4; the renderer reads via
-   *  `<canvas_reveal>` (PR 4). Capped server-side at
-   *  `zenn_v1_settings.max_canvas_reveal_layers` (default 4) per row
-   *  to bound Kie Edit spend. */
+   *  `reveal_at_ms` over `fade_in_ms`, then stays visible for
+   *  `duration_ms`. The two beat kinds in plan §4.2 — `canvas_reveal`
+   *  (fade in) and `canvas_layer_add` (instant appear) — collapse
+   *  into one schema parameterized by `fade_in_ms`: omit (or 0) for
+   *  canvas_layer_add, set to ~250 ms for canvas_reveal.
+   *
+   *  Pipeline contract: the LLM emits entries with `prompt_hint` set
+   *  and `image_url` unset (a request for a new sibling layer). The
+   *  zenn_v1 image-gen stage walks unfilled entries and generates
+   *  one Kie i2i Edit per prompt_hint, writing the result back to
+   *  `image_url`. Entries with `image_url` already populated are
+   *  treated as cached and skipped (idempotent re-tick). Capped
+   *  server-side at `zenn_v1_settings.max_canvas_reveal_layers`
+   *  (default 4) per row to bound spend.
+   *
+   *  Renderer contract: only entries with a non-empty `image_url`
+   *  render; entries pending generation are skipped silently. */
   zenn_canvas_reveal_layers?: Array<{
-    image_url: string;
+    /** LLM input: what to draw onto the held base. Consumed by the
+     *  pipeline; not read by the renderer. Absent on layers that
+     *  were generated directly without going through the
+     *  prompt-to-PNG path (e.g. hand-curated). */
+    prompt_hint?: string;
+    /** Pipeline output: R2-mirrored sibling-frame PNG URL. The
+     *  renderer mounts an <Img> from this. Absent on layers that
+     *  are still pending generation. */
+    image_url?: string;
+    /** When the layer starts appearing, relative to row start (ms). */
     reveal_at_ms: number;
-    duration_ms: number;
+    /** How long the layer stays visible from `reveal_at_ms` (ms).
+     *  Optional — when absent the renderer treats the layer as
+     *  visible from `reveal_at_ms` until the end of the shot. */
+    duration_ms?: number;
+    /** Cross-fade window length in ms from `reveal_at_ms` to full
+     *  opacity. Set to 0 for canvas_layer_add (instant appear).
+     *  Absent / undefined defaults to 250 ms (canvas_reveal). */
+    fade_in_ms?: number;
   }>;
 
   // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────

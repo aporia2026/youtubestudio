@@ -33,10 +33,16 @@
  * component is composition glue.
  */
 import React from 'react';
-import { AbsoluteFill, Img } from 'remotion';
+import { AbsoluteFill, Img, Sequence, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 import { type LowerThirdVariant } from '../components/LowerThird';
 import { SceneTransition } from '../components/SceneTransition';
 import type { BrandKit, VideoConfig, VideoShot, ZennV1Settings } from '../types';
+import {
+  isRevealLayerRenderable,
+  resolveRevealWindow,
+  revealLayerOpacityAt,
+  type CanvasRevealLayerInput,
+} from '../canvas-reveal-math';
 
 // ─── canonical world palette defaults ───────────────────────────────
 //
@@ -205,23 +211,49 @@ export const ZennScene: React.FC<ZennSceneProps> = ({
   characterBank,
   world,
 }) => {
+  const isSceneMode = shot.zennMode === 'scene';
   const palette = resolveWorldPalette(shot.zennWorldOverlay, world);
   const layout = worldBandLayout(shot.zennWorldOverlay, palette);
   const characterUrl = resolveCharacterUrl(characterBank, shot.zennCharacterId, shot.zennPose);
+  const revealLayers = shot.zennCanvasRevealLayers ?? [];
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#FFFFFF', overflow: 'hidden' }}>
-      {/* Layer 1: world background bands */}
-      <WorldBackground layout={layout} />
+      {/* Layer 1: backdrop. Mode B paints CSS color bands from the
+          doc-level world palette. Mode A renders the AI-generated
+          base image (which already includes the stick-figure-on-
+          white canvas + grey ground baseline baked by the PR 1 ai
+          image suffix). */}
+      {isSceneMode ? (
+        <WorldBackground layout={layout} />
+      ) : shot.imageUrl ? (
+        <AbsoluteFill>
+          <Img
+            src={shot.imageUrl}
+            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+          />
+        </AbsoluteFill>
+      ) : (
+        <AbsoluteFill style={{ backgroundColor: '#FFFFFF' }} />
+      )}
 
       {/* Layer 2: static props (PR 5 — stub) */}
 
-      {/* Layer 3: character pose */}
-      {characterUrl ? (
+      {/* Layer 3: character pose (Mode B only — Mode A's character is
+          already baked into the AI image). */}
+      {isSceneMode && characterUrl ? (
         <CharacterLayer url={characterUrl} overlay={shot.zennWorldOverlay} />
       ) : null}
 
-      {/* Layer 4: canvas_reveal sibling layers (PR 4 — stub) */}
+      {/* Layer 4: canvas_reveal sibling layers. Each layer mounts in
+          its own <Sequence> at `reveal_at_ms` and fades in over
+          `fade_in_ms` (or appears instantly when fade_in_ms === 0,
+          producing canvas_layer_add semantics). Layers pending
+          pipeline generation (no image_url) are skipped silently. */}
+      <CanvasRevealLayers
+        layers={revealLayers}
+        shotDurationFrames={durationInFrames}
+      />
 
       {/* Layer 5: scene transition (cross-fade across shot boundaries).
           Matches BRollScene / MotionScene exactly so Mode B shots
@@ -275,6 +307,77 @@ const WorldBackground: React.FC<{ layout: ReturnType<typeof worldBandLayout> }> 
           height: `${layout.bottomHeightPct}%`,
           backgroundColor: layout.bottomColor,
         }}
+      />
+    </AbsoluteFill>
+  );
+};
+
+const CanvasRevealLayers: React.FC<{
+  layers: CanvasRevealLayerInput[];
+  shotDurationFrames: number;
+}> = ({ layers, shotDurationFrames }) => {
+  const { fps, durationInFrames } = useVideoConfig();
+  // Convert the shot's duration to ms once so the per-layer resolver
+  // can clamp every value into the shot window. useVideoConfig is the
+  // canonical source for fps inside a Remotion scene; passing the
+  // shot's durationInFrames in lets the resolver clamp without
+  // calling back into the composition.
+  const shotDurationMs = (shotDurationFrames / fps) * 1000;
+  // useVideoConfig().durationInFrames is the composition's total
+  // duration (every shot summed). Each <Sequence> inside this scene
+  // is already scoped to the shot's window by the parent SceneRouter,
+  // so we just need to clamp our layer windows against THIS shot's
+  // duration. Logging the composition total here would be misleading.
+  void durationInFrames;
+
+  return (
+    <AbsoluteFill>
+      {layers.map((layer, i) => {
+        if (!isRevealLayerRenderable(layer)) return null;
+        const { fromFrame, durationFrames, fadeFrames } = resolveRevealWindow(
+          layer,
+          shotDurationMs,
+          fps,
+        );
+        if (durationFrames <= 0) return null;
+        return (
+          <Sequence
+            key={`zenn-reveal-${i}`}
+            from={fromFrame}
+            durationInFrames={durationFrames}
+            name={`zenn-canvas-reveal-${i}`}
+          >
+            <RevealLayerImg url={layer.image_url} fadeFrames={fadeFrames} />
+          </Sequence>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
+
+const RevealLayerImg: React.FC<{ url: string; fadeFrames: number }> = ({
+  url,
+  fadeFrames,
+}) => {
+  const frame = useCurrentFrame();
+  // Linear ramp 0 → 1 over fadeFrames, then held at 1. fadeFrames === 0
+  // produces an instant appear (canvas_layer_add semantics in plan §4.2).
+  // We use `interpolate` directly here rather than calling
+  // `revealLayerOpacityAt(frame, fadeFrames)` so Remotion's serialization
+  // sees a frame-aware computation; the pure helper still exists for
+  // unit testing the math separately.
+  const opacity =
+    fadeFrames <= 0
+      ? 1
+      : interpolate(frame, [0, Math.max(1, fadeFrames)], [0, 1], {
+          extrapolateLeft: 'clamp',
+          extrapolateRight: 'clamp',
+        });
+  return (
+    <AbsoluteFill style={{ opacity }}>
+      <Img
+        src={url}
+        style={{ width: '100%', height: '100%', objectFit: 'contain' }}
       />
     </AbsoluteFill>
   );
