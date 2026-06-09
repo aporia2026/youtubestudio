@@ -77,6 +77,15 @@ interface MotionCollageRequestBody {
    *  passthrough for slots not in `panelIndices`. Length MUST equal
    *  cols × rows. */
   existingPanelUrls?: string[];
+  /** 2026-06-09 — per-row image-model pick from the inspector's
+   *  `ShotImageModelPicker`. The motion-collage pipeline uses this to
+   *  decide which vendor (Atlas vs Kie) generates panel 0 and which
+   *  Edit primary the chained panels 1..N use. Before this, panel 0
+   *  was hardcoded to Atlas regardless — when the Atlas account hit
+   *  zero balance, the whole feature broke. A t2i model id is expected
+   *  (matches what the picker writes); the server maps to the i2i
+   *  counterpart for the refs-aware path via `resolveI2iModelForRow`. */
+  model?: string;
 }
 
 export const POST = apiRoute.authed(async (session, req: NextRequest) => {
@@ -179,10 +188,10 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   }
 
   // Build the minimal row + doc shapes generateMotionCollage expects.
-  // The helper reads `shot_kind`, `motion_collage_grid`, and
-  // `motion_collage_panel_prompts` off the row, and `style_preset` +
-  // `doodle_explainer_2_motion_collage_settings` +
-  // `doodle_explainer_2_character_descriptions` off the doc.
+  // The helper reads `shot_kind`, `motion_collage_grid`,
+  // `motion_collage_panel_prompts`, and (2026-06-09) `image_model` off
+  // the row, and `style_preset` + `doodle_explainer_2_motion_collage_settings`
+  // + `doodle_explainer_2_character_descriptions` off the doc.
   const row: PipelineImageRow = {
     shot_kind: 'motion_collage',
     motion_collage_grid: { cols: grid.cols as number, rows: grid.rows as number },
@@ -213,6 +222,11 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
       ownerId: session.uid,
       panelIndices: isPartialRegen ? body.panelIndices : undefined,
       existingPanelUrls: isPartialRegen ? body.existingPanelUrls : undefined,
+      // 2026-06-09 — per-row image-model pick from the inspector. The
+      // helper resolves this through `resolveI2iModelForRow` for the
+      // i2i path (refs present) or uses it directly for t2i, and picks
+      // Atlas vs Kie based on the resolved spec's provider.
+      pickedModel: body.model,
     });
 
     if (!result.panelUrls || result.panelUrls.length === 0) {

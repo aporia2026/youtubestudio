@@ -24,8 +24,8 @@ import type { ProductionDoc, RowOverlayRenderState } from '@/remotion/utils';
 import { computeAutoShiftYPct } from '@/remotion/utils';
 import type { ThumbnailTransitionConfig, VideoShot, VideoThumbnail } from '@/remotion/types';
 import { BROLL_MODELS } from '@/lib/broll-types';
-import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS, getImageModelSpec } from '@/lib/image-models';
 import { useLocalStudioEnabled } from '@/lib/local-studio-enabled';
+import { ShotImageModelPicker } from './inspector/ShotImageModelPicker';
 import { ShotLayoutControls } from '@/components/editor/inspector/ShotLayoutControls';
 import {
   InspectorVariantsPanel,
@@ -2620,66 +2620,8 @@ function ShotBrollModelPicker({
   );
 }
 
-// ─── Per-row image (still) model picker ────────────────────────────
-//
-// Mirrors ShotBrollModelPicker above but for the still-image side:
-// controls what /api/generate/production-doc/image gets called with
-// when the user clicks Regenerate. Resolution tier is row > doc >
-// server-side DEFAULT_IMAGE_MODEL (the route's fallback at
-// route.ts:327). Clearing writes `image_model: undefined` so the row
-// falls back to the doc-level default, which itself falls through to
-// the server default if undefined.
-function ShotImageModelPicker({
-  rowModelId,
-  docModelId,
-  onChange,
-}: {
-  rowModelId: string | undefined;
-  docModelId: string | undefined;
-  onChange: (next: string | undefined) => void;
-}): React.ReactElement {
-  const localStudioEnabled = useLocalStudioEnabled();
-  const models = useMemo(
-    () =>
-      IMAGE_MODELS.filter(
-        (m) => localStudioEnabled || m.provider !== 'comfyui-local',
-      ),
-    [localStudioEnabled],
-  );
-  // Resolve what "Default" means right now so the label is honest.
-  // Doc-level pick wins; otherwise the server's hardcoded default.
-  const fallbackId = docModelId ?? DEFAULT_IMAGE_MODEL;
-  const fallback = getImageModelSpec(fallbackId);
-  const defaultLabel = fallback
-    ? `Default — ${fallback.label}${docModelId ? ' (doc setting)' : ''}`
-    : 'Default';
-  return (
-    <div className="space-y-1">
-      <div
-        className="text-[11px] font-semibold"
-        style={{ color: 'var(--fg)' }}
-      >
-        Image model
-      </div>
-      <select
-        value={rowModelId ?? ''}
-        onChange={(e) => onChange(e.target.value || undefined)}
-        className="w-full text-xs rounded border px-2 py-1.5"
-        style={{
-          borderColor: 'var(--card-border)',
-          background: 'var(--bg)',
-          color: 'var(--fg)',
-        }}
-        aria-label="Image model for this shot's Regenerate"
-      >
-        <option value="">{defaultLabel}</option>
-        {models.map((m) => (
-          <option key={m.value} value={m.value}>
-            {m.label}
-            {m.hint ? ` — ${m.hint}` : ''}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
+// Per-row image (still) model picker lives at
+// `./inspector/ShotImageModelPicker.tsx` — lifted 2026-06-09 so the
+// motion-collage inspector branch (InspectorMotionCollagePanel) can
+// reuse it without duplicating the local-studio gate, default label
+// resolution, and styling. Imported at the top of this file.

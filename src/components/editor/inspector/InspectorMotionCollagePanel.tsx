@@ -37,6 +37,7 @@ import { queueImageGen, reportUpstream429 } from '@/lib/image-gen-throttle';
 import { MotionCollageRowEditor } from '@/components/production-doc/MotionCollageRowEditor';
 import { MotionCollageLightbox } from '@/components/editor/MotionCollageLightbox';
 import { MotionCollageThumb } from '@/components/editor/MotionCollageThumb';
+import { ShotImageModelPicker } from '@/components/editor/inspector/ShotImageModelPicker';
 import type { ProductionDoc } from '@/remotion/utils';
 
 interface InspectorMotionCollagePanelProps {
@@ -223,6 +224,12 @@ export function InspectorMotionCollagePanel({
             stylePreset: doc.style_preset,
             motionCollageSettings: doc.doodle_explainer_2_motion_collage_settings,
             characterDescriptions: doc.doodle_explainer_2_character_descriptions,
+            // 2026-06-09 — forward the row's image-model pick so the
+            // server can route panel 0 through the matching vendor
+            // (Atlas vs Kie). Before this the motion-collage path was
+            // hardcoded to Atlas regardless of the picker, which broke
+            // when the Atlas account hit zero balance.
+            model: row.image_model,
             ...(isPartial && {
               panelIndices,
               existingPanelUrls: panelUrls,
@@ -411,6 +418,24 @@ export function InspectorMotionCollagePanel({
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Per-row image-model picker — controls which vendor (Atlas vs
+          Kie) generates panel 0 and which Edit primary the chained
+          panels 1..N use. Lifted from ShotInspector 2026-06-09 so the
+          motion-collage branch has the same affordance the regular
+          shot branch has had since 2026-05-24. Without this the picker
+          was missing for motion_collage rows entirely. */}
+      <ShotImageModelPicker
+        rowModelId={row.image_model}
+        docModelId={doc.image_model_default}
+        onChange={(next) => {
+          console.info('[editor motion-collage row-image-model] changed', {
+            shotIndex,
+            from: row.image_model,
+            to: next,
+          });
+          onUpdateRow({ image_model: next });
+        }}
+      />
       {/* Generate / lightbox action row */}
       <div className="flex items-center gap-2 flex-wrap">
         <button

@@ -60,6 +60,14 @@ vi.mock('@/lib/gpt-image-2-edit', () => ({
     providerRequestId: 'mock-edit-pred',
   })),
 }));
+vi.mock('@/lib/kie-poll', () => ({
+  // 2026-06-09 — Kie panel 0 path. The pickedModel resolution test
+  // verifies both functions are called with the right Kie model id
+  // (`gpt-image-2-image-to-image` for i2i, `gpt-image-2-text-to-image`
+  // for t2i).
+  createKieTask: vi.fn(async () => 'mock-kie-task-id'),
+  pollKieResult: vi.fn(async () => 'mock-kie-output-url'),
+}));
 
 import {
   generateMotionCollage,
@@ -68,9 +76,12 @@ import {
 } from '@/lib/auto-pipeline/production-doc-image-gen';
 import { generateAtlasT2I } from '@/lib/atlas-cloud-images';
 import { mirrorImageToR2 } from '@/lib/image-gen-dispatch';
+import { createKieTask, pollKieResult } from '@/lib/kie-poll';
 
 const mockedAtlas = vi.mocked(generateAtlasT2I);
 const mockedMirror = vi.mocked(mirrorImageToR2);
+const mockedCreateKie = vi.mocked(createKieTask);
+const mockedPollKie = vi.mocked(pollKieResult);
 
 function validRow(overrides: Partial<PipelineImageRow> = {}): PipelineImageRow {
   return {
@@ -130,6 +141,76 @@ describe('generateMotionCollage — happy path (chained Atlas Edit, plan §E)', 
     expect(result.panelUrls).toHaveLength(9);
     // Always exactly ONE i2i call regardless of grid (panel 0 only).
     expect(mockedAtlas).toHaveBeenCalledTimes(1);
+  });
+
+  it("pickedModel = 'gpt-image-2-t2i' (Kie) routes panel 0 through Kie, NOT Atlas (regression: 2026-06-09 picker-was-ignored bug)", async () => {
+    // The user reported that even after picking "GPT Image 2 (Kie)" in
+    // the inspector, motion-collage generations still hit Atlas and
+    // failed with a 402 insufficient-balance error. Fix:
+    // `resolveI2iModelForRow` maps the t2i pick to its Kie i2i sibling
+    // and the route branches on the resolved vendor. This test pins
+    // both the vendor decision (Kie createKieTask gets the call, NOT
+    // Atlas generateAtlasT2I) AND the model id passed to createKieTask.
+    process.env.KIE_API_KEY = 'test-kie-key';
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({
+      row,
+      doc,
+      workspaceId: 'ws',
+      pickedModel: 'gpt-image-2-t2i',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.panelUrls).toHaveLength(4);
+    // Panel 0 goes through Kie's createKieTask + pollKieResult, NOT
+    // through Atlas's generateAtlasT2I. The test row has no refs (the
+    // loadStyleReferences mock returns []), so the t2i Kie branch
+    // runs — model id is `gpt-image-2-text-to-image`.
+    expect(mockedCreateKie).toHaveBeenCalledTimes(1);
+    expect(mockedCreateKie).toHaveBeenCalledWith(
+      'test-kie-key',
+      'gpt-image-2-text-to-image',
+      expect.objectContaining({
+        aspect_ratio: '16:9',
+        resolution: '1K',
+      }),
+    );
+    expect(mockedPollKie).toHaveBeenCalledTimes(1);
+    expect(mockedAtlas).not.toHaveBeenCalled();
+    delete process.env.KIE_API_KEY;
+  });
+
+  it("pickedModel = 'gpt-image-2-atlas-t2i' keeps panel 0 on Atlas (verifies Atlas pick is also honored, not just Kie)", async () => {
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({
+      row,
+      doc,
+      workspaceId: 'ws',
+      pickedModel: 'gpt-image-2-atlas-t2i',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
+    expect(mockedCreateKie).not.toHaveBeenCalled();
+  });
+
+  it('no pickedModel = backward-compatible default (Atlas, matches pre-2026-06-09 behavior)', async () => {
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBeUndefined();
+    // No pickedModel + no style.preferred_cloud_model in the mocked
+    // resolveStyle response → falls through to DEFAULT_CLOUD_I2I_MODEL
+    // (`gpt-image-2-atlas-i2i`) → Atlas vendor. So existing callers
+    // (auto-pipeline, scripts) keep their behavior unchanged.
+    expect(mockedAtlas).toHaveBeenCalledTimes(1);
+    expect(mockedCreateKie).not.toHaveBeenCalled();
   });
 
   it('panel 0 is mirrored to R2 so its URL is persistent (regression: commit d526ec70 left it as a raw ephemeral Atlas CDN URL)', async () => {

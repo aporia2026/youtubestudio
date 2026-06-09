@@ -27,9 +27,10 @@
 import { resolveStyle } from '../production-doc-styles';
 import { loadStyleReferences, mirrorPublicUrlRefToR2, type StyleReferenceImage } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
-import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec } from '../image-models-i2i';
+import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec, resolveI2iModelForRow } from '../image-models-i2i';
 import { generateAtlasT2I, generateAtlasI2I } from './../atlas-cloud-images';
 import { generateGptImage2Edit } from '../gpt-image-2-edit';
+import { createKieTask, pollKieResult } from '../kie-poll';
 import { getUserSettings } from '../user-settings';
 import { composeCollagePrompt } from '../collage-prompt';
 import { detectMalformedCollage } from '../collage-detect';
@@ -1467,6 +1468,13 @@ export async function generateMotionCollage(args: {
   /** Existing panel URLs (length must equal grid.cols × grid.rows).
    *  Required when `panelIndices` is set; ignored otherwise. */
   existingPanelUrls?: readonly string[];
+  /** 2026-06-09 — per-row image-model pick from the inspector's
+   *  `ShotImageModelPicker`. A t2i model id (e.g. `'gpt-image-2-t2i'`
+   *  for Kie). The helper resolves this through `resolveI2iModelForRow`
+   *  to pick Atlas vs Kie for panel 0. When undefined → falls back to
+   *  the style's `preferred_cloud_model` (existing Atlas-default
+   *  behavior). */
+  pickedModel?: string;
 }): Promise<PipelineMotionCollageResult> {
   const t0 = Date.now();
   const {
@@ -1477,6 +1485,7 @@ export async function generateMotionCollage(args: {
     panel0SourceUrl,
     panelIndices,
     existingPanelUrls,
+    pickedModel,
   } = args;
 
   // ─── 1. Env kill switch ─────────────────────────────────────────────
@@ -1696,11 +1705,18 @@ export async function generateMotionCollage(args: {
   // smoke-tested on the first motion_collage runs.
   // See `_plans/2026-05-31-doodle-explainer-2-motion-collage.md` §C.
   let styleSuffix: string | undefined;
+  // 2026-06-09 — lifted out so the panel-0 vendor decision (Atlas vs
+  // Kie) sees it after this block. Wins behind row.image_model (the
+  // inspector picker, plumbed in via `pickedModel`); falls back to
+  // DEFAULT_CLOUD_I2I_MODEL via `resolveI2iModelForRow` when neither
+  // is set.
+  let stylePreferredCloudModel: string | null | undefined;
   let refImageUrls: string[] = [];
   if (doc.style_preset?.trim()) {
     try {
       const style = await resolveStyle(doc.style_preset, workspaceId, ownerId);
       styleSuffix = style?.ai_image_suffix;
+      stylePreferredCloudModel = style?.preferred_cloud_model;
       if (style) {
         const refs = await loadStyleReferences(style.id, {
           excludeRejected: true,
@@ -1787,6 +1803,27 @@ export async function generateMotionCollage(args: {
   const refsAware = refImageUrls.length > 0;
   const cappedRefs = refsAware ? refImageUrls.slice(0, ATLAS_I2I_MAX_REFS) : [];
 
+  // ─── Vendor decision (Atlas vs Kie) ─────────────────────────────────
+  // 2026-06-09 — the inspector's `ShotImageModelPicker` writes the row's
+  // chosen t2i model id to `pickedModel`. `resolveI2iModelForRow` maps
+  // it to an i2i counterpart (e.g. `gpt-image-2-t2i` → `gpt-image-2-i2i`
+  // for the Kie pair, `gpt-image-2-atlas-t2i` → `gpt-image-2-atlas-i2i`
+  // for the Atlas pair), with fall-through to the style's preferred
+  // model and then DEFAULT_CLOUD_I2I_MODEL.
+  //
+  // The vendor is what actually decides which API gets called for panel 0
+  // and which Edit primary the chained panels 1..N use. Before this
+  // motion-collage was hardcoded to Atlas regardless of the picker — the
+  // bug that turned every motion-collage row red the day the Atlas
+  // account balance hit zero.
+  const resolvedI2i = resolveI2iModelForRow({
+    rowPickedModel: pickedModel,
+    stylePreferred: stylePreferredCloudModel,
+  });
+  const resolvedI2iSpec = getI2IModelSpec(resolvedI2i.i2iModel);
+  const panel0Vendor: 'atlas' | 'kie' =
+    resolvedI2iSpec?.provider === 'kie' ? 'kie' : 'atlas';
+
   logger.info('[motion-collage pipeline] start', {
     row_index: lookupRowIndex(row, doc),
     grid: `${grid.cols}x${grid.rows}`,
@@ -1794,6 +1831,10 @@ export async function generateMotionCollage(args: {
     mode: 'chained-edit',
     refs_aware: refsAware,
     refs_sent: cappedRefs.length,
+    panel_0_vendor: panel0Vendor,
+    picked_model: pickedModel ?? null,
+    resolved_i2i_model: resolvedI2i.i2iModel,
+    model_source: resolvedI2i.source,
   });
 
   // Compose panel 0's prompt with full style directives + sparseness
@@ -1850,30 +1891,31 @@ export async function generateMotionCollage(args: {
       userId: ownerId,
       workspaceId,
       route: 'auto-pipeline:generateMotionCollage#panel-0-base',
-      provider: 'atlas',
+      provider: panel0Vendor,
       providerModel: panel0FromCache
-        ? `openai/gpt-image-2/edit#motion-collage-base-cached-${grid.cols}x${grid.rows}`
+        ? `openai/gpt-image-2/edit#motion-collage-base-cached-${grid.cols}x${grid.rows}-${panel0Vendor}`
         : refsAware
-        ? `openai/gpt-image-2/i2i#motion-collage-base-${grid.cols}x${grid.rows}`
-        : `openai/gpt-image-2/t2i#motion-collage-base-${grid.cols}x${grid.rows}`,
+        ? `openai/gpt-image-2/i2i#motion-collage-base-${grid.cols}x${grid.rows}-${panel0Vendor}`
+        : `openai/gpt-image-2/t2i#motion-collage-base-${grid.cols}x${grid.rows}-${panel0Vendor}`,
     });
     let providerRequestId: string | null = null;
     try {
       let atlasUrl: string;
       let atlasPredictionId: string | null = null;
       if (panel0FromCache) {
-        // Atlas Edit on the cached base — same vendor, same downstream
-        // (crop + Recraft) path. The cache base IS the identity anchor,
-        // so we skip refs (Atlas Edit + refs is not the supported shape
-        // anyway — refs are an i2i-only feature).
+        // Edit on the cached base. `generateGptImage2Edit` handles both
+        // Atlas and Kie via the `primary` field, with automatic vendor
+        // fallback on failure (see `_plans/2026-05-29-gpt-image-2-edit-
+        // provider-fallback.md`). When the picker pointed at Kie, Edit
+        // primary is Kie; when at Atlas (or unset), Atlas.
         const edit = await generateGptImage2Edit({
           prompt: panel0Prompt,
           sourceImageUrl: panel0SourceUrl!,
-          primary: 'atlas',
+          primary: panel0Vendor,
         });
         atlasUrl = edit.url;
         atlasPredictionId = edit.providerRequestId;
-      } else if (refsAware) {
+      } else if (refsAware && panel0Vendor === 'atlas') {
         // Native 16:9 — Atlas's 2560×1440 is one of four supported sizes
         // (see `AtlasSize` in atlas-cloud-images.ts) and matches the
         // 1920×1080 canvas exactly with zero post-crop. Was previously
@@ -1890,7 +1932,27 @@ export async function generateMotionCollage(args: {
         });
         atlasUrl = atlasResult.url;
         atlasPredictionId = atlasResult.predictionId ?? null;
-      } else {
+      } else if (refsAware && panel0Vendor === 'kie') {
+        // Kie i2i via `gpt-image-2-image-to-image`. Native 16:9 at 1K
+        // (1024×576). Recraft upscale runs downstream (1024 < 2000 px
+        // threshold) so the final lands at ~4K, plenty for the 1080p
+        // renderer canvas. Added 2026-06-09 so the picker's "GPT Image
+        // 2 (Kie)" choice actually routes through Kie for motion-collage
+        // panel 0 (previously the choice was discarded — see
+        // `_plans/2026-06-09-motion-collage-panel-1-r2-mirror-and-smaller-deltas.md`).
+        const apiKey = process.env.KIE_API_KEY;
+        if (!apiKey) {
+          throw new Error('KIE_API_KEY is not configured');
+        }
+        const taskId = await createKieTask(apiKey, 'gpt-image-2-image-to-image', {
+          prompt: panel0Prompt,
+          input_urls: cappedRefs,
+          aspect_ratio: '16:9',
+          resolution: '1K',
+        });
+        atlasUrl = await pollKieResult(taskId, apiKey);
+        atlasPredictionId = taskId;
+      } else if (panel0Vendor === 'atlas') {
         const atlasResult = await generateAtlasT2I({
           prompt: panel0Prompt,
           size: '2560x1440',
@@ -1898,6 +1960,20 @@ export async function generateMotionCollage(args: {
         });
         atlasUrl = atlasResult.url;
         atlasPredictionId = atlasResult.predictionId ?? null;
+      } else {
+        // Kie t2i via `gpt-image-2-text-to-image`. Same shape as the i2i
+        // branch above but without input_urls.
+        const apiKey = process.env.KIE_API_KEY;
+        if (!apiKey) {
+          throw new Error('KIE_API_KEY is not configured');
+        }
+        const taskId = await createKieTask(apiKey, 'gpt-image-2-text-to-image', {
+          prompt: panel0Prompt,
+          aspect_ratio: '16:9',
+          resolution: '1K',
+        });
+        atlasUrl = await pollKieResult(taskId, apiKey);
+        atlasPredictionId = taskId;
       }
       providerRequestId = atlasPredictionId;
       // Native 16:9 source — no crop needed. But we DO need to persist
@@ -2117,7 +2193,12 @@ export async function generateMotionCollage(args: {
         // Anchored (non-chained) panels source from panel 0 directly,
         // so there's no SECOND input to pass — the source IS the anchor.
         extraImageUrls: hasCompositionAnchor ? [panel0AnchorUrl!] : [],
-        primary: 'atlas',
+        // 2026-06-09 — track the row's vendor pick through the chain so
+        // a Kie-picked row stays on Kie for every panel, and an Atlas-
+        // picked row stays on Atlas. `generateGptImage2Edit` already
+        // has automatic primary→fallback (Atlas→Kie or Kie→Atlas), so
+        // a transient outage doesn't break the whole row.
+        primary: panel0Vendor,
       });
       providerRequestId = edit.providerRequestId;
       const upscale = await upscaleViaRecraft(edit.url);
