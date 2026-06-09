@@ -22,7 +22,7 @@
  * focused on the three required choices.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { YOUTUBE_CATEGORIES, DEFAULT_YOUTUBE_CATEGORY_ID } from '@/lib/youtube-categories';
 import { TimezoneSelect } from './TimezoneSelect';
@@ -76,13 +76,24 @@ export function Step2BatchSetup({
 
   const patch = (p: Partial<ShortsBatchDefaults>) => onChange({ ...defaults, ...p });
 
+  // Stale-closure-safe refs so the mount-only seed effect below can
+  // read the LATEST defaults + onChange when the GET resolves. Without
+  // these, a slow network would cause the seed (which spreads
+  // `...defaults`) to revert any field the user edited mid-flight —
+  // voiceId, madeForKids, language, anything. (Bug B2 from the
+  // post-session QA review.)
+  const defaultsRef = useRef(defaults);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { defaultsRef.current = defaults; }, [defaults]);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+
   // Load the user's per-account image-model default on mount and seed
   // `defaults.baseT2iModelId` if the batch doesn't have an explicit
   // pick yet. Keeps the batch's recorded choice concrete (no implicit
   // "use my account default" semantics for the orchestrator to handle
   // later) while still respecting the per-user preference up front.
   useEffect(() => {
-    if (defaults.baseT2iModelId) return; // user already picked, don't overwrite
+    if (defaultsRef.current.baseT2iModelId) return; // user already picked
     let cancelled = false;
     (async () => {
       try {
@@ -91,19 +102,22 @@ export function Step2BatchSetup({
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;
+        // Re-check at fire time — the user may have picked a model
+        // while the fetch was in flight.
+        if (defaultsRef.current.baseT2iModelId) return;
         const id = typeof data.shorts_base_t2i_model_id === 'string'
           ? data.shorts_base_t2i_model_id
           : DEFAULT_BASE_T2I_MODEL_ID;
-        // Only seed if the parent hasn't set anything in the meantime.
-        onChange({ ...defaults, baseT2iModelId: id });
+        // Patch ONLY the single field via the latest defaults snapshot
+        // so other edits the user made mid-flight aren't reverted.
+        onChangeRef.current({ ...defaultsRef.current, baseT2iModelId: id });
       } catch {
         // Network error — fall through; the picker still works,
         // it'll show DEFAULT_BASE_T2I_MODEL_ID as the visible default.
       }
     })();
     return () => { cancelled = true; };
-    // Intentionally only on mount — re-running on every defaults change
-    // would loop with the onChange call inside.
+    // Mount-only by design; the refs above keep us reading fresh state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

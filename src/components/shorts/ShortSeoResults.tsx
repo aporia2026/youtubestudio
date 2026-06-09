@@ -9,6 +9,7 @@
 
 import { toast } from 'sonner';
 import type { ShortSeoResult } from '@/lib/shorts-types';
+import { combinedYoutubeTagsLength } from '@/lib/shorts-seo';
 
 function scorePill(score: number): { color: string; bg: string } {
   if (score >= 70) return { color: '#86efac', bg: 'rgba(34,197,94,0.18)' };
@@ -76,7 +77,7 @@ export function ShortSeoResults({ result }: { result: ShortSeoResult }) {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--text-muted)' }}>
               <span>
-                {result.tags.reduce((sum, t) => sum + t.length, 0)} / 500 chars used
+                {combinedYoutubeTagsLength(result.tags)} / 500 chars used (incl. separators + quotes)
               </span>
               <button
                 type="button"

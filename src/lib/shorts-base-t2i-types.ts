@@ -32,7 +32,6 @@ export type ShortsBaseT2iModelId =
   | 'kie-nano-banana-2'
   | 'kie-flux-2-pro'
   | 'kie-flux-2-flex'
-  | 'kie-grok-imagine'
   | 'kie-ideogram-v3-quality'
   | 'kie-ideogram-v3-turbo'
   | 'kie-qwen-image'
@@ -103,15 +102,14 @@ export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze(
     modelSlug: 'flux-2/flex-text-to-image',
     hint: 'Cheaper sibling of Flux 2 Pro — same family, balanced cost/quality.',
   },
-  // ─── xAI Grok Imagine ──────────────────────────────────────────────────
-  {
-    id: 'kie-grok-imagine',
-    label: 'Grok Imagine',
-    vendor: 'kie',
-    costUsd: 0.04,
-    modelSlug: 'grok-imagine/text-to-image',
-    hint: 'xAI Grok Imagine — broad style range, fast.',
-  },
+  // ─── Grok Imagine deliberately NOT in the registry (2026-06-10 QA) ────
+  // docs.kie.ai shows `grok-imagine/image-to-image` and
+  // `grok-imagine/text-to-video` but NO text-to-image endpoint. The
+  // production-doc registry's `grok-imagine/text-to-image` slug appears
+  // to be undocumented or deprecated — sending it 422s with
+  // "model not found", which the retry classifier won't retry and the
+  // user sees as a vague error string with no path forward. Removed
+  // until Kie publishes a Grok T2I endpoint we can verify.
   // ─── Ideogram v3 (two render-speed tiers, same model slug) ─────────────
   {
     id: 'kie-ideogram-v3-quality',

@@ -127,25 +127,36 @@ export function Step3Progress({ batchId, onDone }: Props) {
   );
 
   /** Re-enqueue the short's asset generation with a different base
-   *  T2I model. Useful when the default (Atlas GPT Image 2) is
-   *  slow / erroring and the user wants to try Nano Banana or Flux
-   *  instead. POSTs to the existing /generate-style-assets endpoint
-   *  with the model override; the endpoint resets generation_progress
-   *  to 'queued' for the picked model. */
+   *  T2I model. Useful when the current model is slow/erroring and
+   *  the user wants to try a different one. POSTs to the existing
+   *  /generate-style-assets endpoint with the model override; the
+   *  endpoint resets generation_progress to 'queued' for the picked
+   *  model.
+   *
+   *  Per QA finding B3: preserve the short's existing style_id when
+   *  re-enqueueing (was hardcoded to `doodle_explainer_2_short`, which
+   *  would silently switch a Paint short back to Doodle). Falls back
+   *  to the doodle default only when the row has no style yet. */
   const retryAssetsWithModel = useCallback(
-    async (shortId: string, modelId: ShortsBaseT2iModelId) => {
+    async (shortId: string, modelId: ShortsBaseT2iModelId, currentStyleId: string | null) => {
       try {
         const res = await fetch(`/api/shorts/${shortId}/generate-style-assets`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            style_id: 'doodle_explainer_2_short',
+            style_id: currentStyleId ?? 'doodle_explainer_2_short',
             shorts_base_t2i_model_id: modelId,
           }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error(body.error || `HTTP ${res.status}`);
+          const rawMsg: string = body.error || `HTTP ${res.status}`;
+          // Surface the most common 422 (script too short) with an
+          // actionable hint instead of raw error text.
+          if (res.status === 422 && /short_script|length|too short|30 chars/i.test(rawMsg)) {
+            throw new Error(`Script is too short for asset generation (needs at least 30 chars). Re-run extract first.`);
+          }
+          throw new Error(rawMsg);
         }
         toast.success(`Re-queued with ${modelId}`);
       } catch (err) {
@@ -396,7 +407,7 @@ function ShortProgressRow({
   nowMs: number;
   onCancel: (shortId: string) => void;
   onRetry: (shortId: string) => void;
-  onRetryAssets: (shortId: string, modelId: ShortsBaseT2iModelId) => void;
+  onRetryAssets: (shortId: string, modelId: ShortsBaseT2iModelId, currentStyleId: string | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const stages = deriveStages(short);
@@ -438,7 +449,7 @@ function ShortProgressRow({
               (short.generation_progress?.job?.base_t2i_model_id as ShortsBaseT2iModelId | undefined)
               ?? DEFAULT_BASE_T2I_MODEL_ID
             }
-            onPick={(modelId) => onRetryAssets(short.id, modelId)}
+            onPick={(modelId) => onRetryAssets(short.id, modelId, short.style_id)}
           />
         )}
         {isError && (

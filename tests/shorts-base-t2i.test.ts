@@ -39,19 +39,21 @@ beforeEach(() => {
 });
 
 describe('registry', () => {
-  it('exposes the 10 cloud T2I models grouped by family', () => {
+  it('exposes the 9 cloud T2I models grouped by family', () => {
     // Order matters for the picker UX: GPT Image 2 (Atlas + Kie),
-    // Nano Banana 2, Flux 2 family (Pro then Flex), Grok Imagine,
-    // Ideogram v3 (Quality then Turbo), Qwen, Seedream. Expanded
-    // 2026-06-10 per §8 of the bulk-shorts robustness plan.
-    expect(BASE_T2I_MODELS).toHaveLength(10);
+    // Nano Banana 2, Flux 2 family (Pro then Flex), Ideogram v3
+    // (Quality then Turbo), Qwen, Seedream. Expanded 2026-06-10
+    // per §8 of the bulk-shorts robustness plan. Grok Imagine was
+    // included briefly but removed in QA review (no documented Kie
+    // T2I endpoint → guaranteed 422). See shorts-base-t2i-types.ts
+    // for the rationale comment.
+    expect(BASE_T2I_MODELS).toHaveLength(9);
     expect(BASE_T2I_MODELS.map((m) => m.id)).toEqual([
       'atlas-gpt-image-2',
       'kie-gpt-image-2',
       'kie-nano-banana-2',
       'kie-flux-2-pro',
       'kie-flux-2-flex',
-      'kie-grok-imagine',
       'kie-ideogram-v3-quality',
       'kie-ideogram-v3-turbo',
       'kie-qwen-image',
@@ -208,26 +210,6 @@ describe('generateShortsBaseT2I — Kie branches', () => {
     );
     expect(result.modelId).toBe('kie-flux-2-flex');
     expect(result.costUsd).toBe(0.025);
-  });
-
-  it('routes Grok Imagine with prompt-only input (no aspect field — crop is the safety net)', async () => {
-    mockedCreateKie.mockResolvedValue('task-grok');
-    mockedPollKie.mockResolvedValue('https://r2.test/grok.png');
-    const result = await generateShortsBaseT2I({
-      prompt: 'A character',
-      modelId: 'kie-grok-imagine',
-    });
-    expect(mockedCreateKie).toHaveBeenCalledWith(
-      'test-kie-key',
-      'grok-imagine/text-to-image',
-      // No aspect_ratio / image_size — the Kie docs page for this
-      // exact T2I endpoint didn't document a portrait field. The crop
-      // pass below recovers regardless of what aspect Grok returns.
-      { prompt: 'A character' },
-    );
-    expect(mockedCrop).toHaveBeenCalledWith('https://r2.test/grok.png', expect.any(String), 9, 16);
-    expect(result.url).toBe('https://r2.test/grok.png#cropped-9x16');
-    expect(result.modelId).toBe('kie-grok-imagine');
   });
 
   it('routes Ideogram v3 Quality with image_size portrait_16_9 + rendering_speed QUALITY', async () => {

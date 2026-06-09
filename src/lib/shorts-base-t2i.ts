@@ -10,7 +10,6 @@
  *   - OpenAI GPT Image 2 (atlas-gpt-image-2, kie-gpt-image-2)
  *   - Google Gemini 3.1 Flash Image (kie-nano-banana-2)
  *   - Black Forest Labs Flux 2 (kie-flux-2-pro, kie-flux-2-flex)
- *   - xAI Grok Imagine (kie-grok-imagine)
  *   - Ideogram v3 (kie-ideogram-v3-quality, kie-ideogram-v3-turbo)
  *   - Alibaba Qwen Image (kie-qwen-image)
  *   - ByteDance Seedream v4 (kie-seedream-v4)
@@ -179,16 +178,6 @@ export async function generateShortsBaseT2I(
       // share the same input shape (only modelSlug differs).
       input.aspect_ratio = '9:16';
       input.resolution = '1K';
-      break;
-    case 'kie-grok-imagine':
-      // Grok Imagine T2I. The Kie docs page for this exact endpoint
-      // wasn't surfaced in the 2026-06-10 verification pass — the only
-      // documented Grok endpoints were `image-to-image` and
-      // `text-to-video`. The slug `grok-imagine/text-to-image` is
-      // carried over from the production-doc registry where it has
-      // been running. If Kie returns a non-portrait aspect, the crop
-      // pass below trims it to exact 9:16. Send only the prompt to
-      // avoid 422-ing on undocumented fields.
       break;
     case 'kie-ideogram-v3-quality':
     case 'kie-ideogram-v3-turbo':

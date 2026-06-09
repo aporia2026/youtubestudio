@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildNativeShortSeoPrompt,
   buildShortSeoPrompt,
+  combinedYoutubeTagsLength,
   normaliseYoutubeTags,
   parseShortSeoResult,
 } from '@/lib/shorts-seo';
@@ -174,6 +175,46 @@ describe('normaliseYoutubeTags', () => {
     expect(normaliseYoutubeTags(null)).toEqual([]);
     expect(normaliseYoutubeTags('not an array')).toEqual([]);
     expect(normaliseYoutubeTags(42)).toEqual([]);
+  });
+
+  // QA finding B6: the 500-char combined-length budget. Without this
+  // pass, the normaliser produced sets that passed our local checks
+  // but failed at YouTube upload time with confusing errors.
+  it('drops tags from the end until the combined-length budget (500 chars) fits', () => {
+    // 25 tags × 30 chars each = 750 raw chars, plus separators + quotes
+    // for multi-word tags pushes well over 500.
+    const tags = Array.from({ length: 25 }, (_, i) => `multi word tag ${i.toString().padStart(2, '0')}`);
+    const out = normaliseYoutubeTags(tags);
+    expect(combinedYoutubeTagsLength(out)).toBeLessThanOrEqual(500);
+    // The tail-trim preserves the highest-priority tags (LLM orders
+    // by relevance).
+    expect(out[0]).toBe('multi word tag 00');
+  });
+
+  it('does not over-trim when the input already fits the budget', () => {
+    const tags = ['short', 'tag', 'list'];
+    expect(normaliseYoutubeTags(tags)).toEqual(['short', 'tag', 'list']);
+  });
+});
+
+describe('combinedYoutubeTagsLength', () => {
+  it('returns 0 for an empty array', () => {
+    expect(combinedYoutubeTagsLength([])).toBe(0);
+  });
+  it('returns the tag length for a single single-word tag', () => {
+    expect(combinedYoutubeTagsLength(['abc'])).toBe(3);
+  });
+  it('adds 2 chars for wrapping quotes on a multi-word tag', () => {
+    // "abc def" = 7 chars + 2 quotes = 9.
+    expect(combinedYoutubeTagsLength(['abc def'])).toBe(9);
+  });
+  it('adds 2 chars (", ") per separator between tags', () => {
+    // "a" + ", " + "b" = 1 + 2 + 1 = 4.
+    expect(combinedYoutubeTagsLength(['a', 'b'])).toBe(4);
+  });
+  it('combines per-tag, quote, and separator costs correctly', () => {
+    // "a" + ", " + "b c" (3 chars + 2 quotes) + ", " + "d" = 1 + 2 + 5 + 2 + 1 = 11.
+    expect(combinedYoutubeTagsLength(['a', 'b c', 'd'])).toBe(11);
   });
 });
 
