@@ -503,6 +503,7 @@ interface ProductionRow {
   // against this shape and the auto-pipeline reads the canonical one.
   // See `_plans/2026-06-10-zenn-v1-style.md`.
   zenn_mode?: 'stick' | 'scene';
+  zenn_mode_reason?: string;
   zenn_character_id?: string;
   zenn_pose?: string;
   zenn_world_overlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;

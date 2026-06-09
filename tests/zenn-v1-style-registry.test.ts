@@ -91,4 +91,47 @@ describe('zenn_v1 registry entry', () => {
     // the budget.
     expect(rules).toContain('12');
   });
+
+  // ─── PR 5 additions ────────────────────────────────────────────────
+  //
+  // PR 5 widens the mixing_rules to teach the LLM the actual
+  // canvas_reveal layer shape (PR 4 had no concrete example) and the
+  // mode-pick reason field used for diagnostics. These tests pin the
+  // load-bearing field names so a future copy edit can't silently
+  // drop them.
+
+  it('teaches the canvas_reveal layer field names from the PR 4 schema', () => {
+    const rules = entry?.mixing_rules ?? '';
+    // The four field names the LLM must emit on each layer entry.
+    // Without these in the prompt, the LLM will guess the shape and
+    // produce malformed entries that the pipeline silently drops.
+    expect(rules).toContain('prompt_hint');
+    expect(rules).toContain('reveal_at_ms');
+    expect(rules).toContain('duration_ms');
+    expect(rules).toContain('fade_in_ms');
+    // The collapsed canvas_layer_add semantics (fade_in_ms = 0)
+    // must surface explicitly — without this the LLM never picks
+    // it and we lose the snappy "thing appears" beat.
+    expect(rules).toContain('canvas_layer_add');
+  });
+
+  it('teaches the zenn_mode_reason diagnostic field', () => {
+    const rules = entry?.mixing_rules ?? '';
+    expect(rules).toContain('zenn_mode_reason');
+    // The reason field is purely diagnostic; the mixing_rules must
+    // be explicit that the renderer + pipeline ignore it, otherwise
+    // future copy edits might wire it to actual behavior and break
+    // the contract.
+    expect(rules.toLowerCase()).toContain('diagnostic');
+  });
+
+  it('still ships at least three concrete CONCRETE EXAMPLE blocks', () => {
+    // Concrete examples are how the LLM actually copies the schema
+    // shape. PR 5 adds the canvas_reveal example so all three modes
+    // (Mode A static, Mode B scene world, Mode A canvas_reveal) have
+    // a worked example for the LLM to copy from.
+    const rules = entry?.mixing_rules ?? '';
+    const matches = rules.match(/CONCRETE EXAMPLE/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(3);
+  });
 });

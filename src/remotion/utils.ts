@@ -898,6 +898,14 @@ export interface ProductionRow {
    *  Set by the LLM during doc generation. */
   zenn_mode?: 'stick' | 'scene';
 
+  /** One-sentence diagnostic explanation of why the LLM picked the
+   *  mode it did on this row. Purely advisory — neither the renderer
+   *  nor the pipeline acts on it. Lets the user grep a generated doc
+   *  for mode misclassifications when a render looks off (the LLM's
+   *  reasoning surfaces on the row alongside the resulting `zenn_mode`).
+   *  PR 5 of `_plans/2026-06-10-zenn-v1-style.md`. */
+  zenn_mode_reason?: string;
+
   /** Stable identifier for a recurring character in the zenn_v1
    *  character bank. Two rows that share `zenn_character_id` reuse
    *  the same generated base + pose set from
@@ -2846,6 +2854,37 @@ export function productionDocToVideoConfig(
       // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });
+
+  // zenn_v1 mode-pick observability per `_plans/2026-06-10-zenn-v1-style.md` §7.
+  // Logged once per productionDocToVideoConfig call so the user can grep
+  // render-time console output (browser preview) or Lambda logs (server
+  // render) for what mode the LLM picked on which rows. Capped at 20
+  // detailed entries to keep the log line scannable on a 200-row doc;
+  // the count totals at the head are always accurate. Only fires when
+  // the doc actually resolves to zenn_v1 — non-zenn docs stay silent.
+  if (resolveEffectiveStyleSlug(doc, opts.effectiveStyleSlug) === 'zenn_v1') {
+    const modePicks: Array<{ rowIndex: number; mode: 'stick' | 'scene'; reason?: string }> = [];
+    let stickCount = 0;
+    let sceneCount = 0;
+    for (let i = 0; i < doc.rows.length; i++) {
+      const mode = doc.rows[i].zenn_mode;
+      if (mode !== 'stick' && mode !== 'scene') continue;
+      modePicks.push({
+        rowIndex: i,
+        mode,
+        reason: doc.rows[i].zenn_mode_reason,
+      });
+      if (mode === 'stick') stickCount += 1;
+      else sceneCount += 1;
+    }
+    console.info('[zenn-v1 mode-pick]', {
+      total_rows: doc.rows.length,
+      rows_with_mode: modePicks.length,
+      stick_count: stickCount,
+      scene_count: sceneCount,
+      sample: modePicks.slice(0, 20),
+    });
+  }
 
   // Voiceover gain knobs — read straight off the doc. The mapper just
   // copies + clamps; the actual gain math runs inside the Remotion
