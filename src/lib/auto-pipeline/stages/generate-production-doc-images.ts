@@ -832,6 +832,66 @@ export async function handleGenerateProductionDocImages(
         // sparse / dense state of the row.
         const mergedPanelUrls = mc.panelUrls;
         doc.rows[item.index].motion_collage_panel_urls = mergedPanelUrls;
+        // 2026-06-10 caveat fix — clear any prior chunk-failure
+        // breadcrumbs now that this chunk made progress. Without this,
+        // a row that hits a transient failure on tick 1 (attempts=1,
+        // last_error set) and succeeds on tick 2 would still carry the
+        // stale error through the partition's circuit breaker. The
+        // breaker is supposed to gate persistent failures, not penalize
+        // recovery.
+        delete doc.rows[item.index].attempts;
+        delete doc.rows[item.index].last_error;
+        // 2026-06-10 caveat fix — cache write-back fires AS SOON AS
+        // panel 0 is freshly generated, not only on full-row completion.
+        // Without this, a 9-panel row that takes 3 ticks left the
+        // character cache empty for tick 1 + tick 2, so a SIBLING row
+        // with the same character_id processed in tick 2 would
+        // re-generate its own panel 0 (cache miss) instead of anchoring
+        // on the now-already-rendered URL. Visual drift between
+        // siblings. The check is idempotent — the `if (!cache[cid]?.base_url)`
+        // guard inside skips a write when another row already seeded
+        // the slot.
+        const panel0FreshlyGenerated = chunk.includes(0) && typeof mergedPanelUrls[0] === 'string' && mergedPanelUrls[0].length > 0;
+        if (isDoodleExplainer2 && cacheKind === 'none' && panel0FreshlyGenerated) {
+          const cid = row.character_id?.trim();
+          const sid = row.scene_id?.trim();
+          if (cid) {
+            const charCache = doc.doodle_explainer_2_character_cache ?? {};
+            if (!charCache[cid]?.base_url) {
+              charCache[cid] = {
+                base_url: mergedPanelUrls[0],
+                first_seen_row_index: item.index,
+              };
+              doc.doodle_explainer_2_character_cache = charCache;
+              charCacheMisses += 1;
+              logger.info('[motion-collage pipeline] character-cache miss-and-store', {
+                pipeline_video_id: video.id,
+                row_index: item.index,
+                character_id: cid,
+              });
+            }
+          }
+          if (sid) {
+            const sceneCache = doc.doodle_explainer_2_scene_cache ?? {};
+            if (!sceneCache[sid]?.base_url) {
+              sceneCache[sid] = {
+                base_url: mergedPanelUrls[0],
+                first_seen_row_index: item.index,
+              };
+              doc.doodle_explainer_2_scene_cache = sceneCache;
+              sceneCacheMisses += 1;
+              logger.info('[motion-collage pipeline] scene-cache miss-and-store', {
+                pipeline_video_id: video.id,
+                row_index: item.index,
+                scene_id: sid,
+              });
+            }
+          }
+        } else if (isDoodleExplainer2 && cacheKind === 'character') {
+          charCacheHits += 1;
+        } else if (isDoodleExplainer2 && cacheKind === 'scene') {
+          sceneCacheHits += 1;
+        }
         const stillMissing = findMissingPanelIndices(mergedPanelUrls, N);
         if (stillMissing.length === 0) {
           // Row complete — write the final sentinels so partition
@@ -839,56 +899,6 @@ export async function handleGenerateProductionDocImages(
           // panel 0 as the row thumbnail.
           doc.rows[item.index].motion_collage_image_url = mc.collageImageUrl;
           doc.rows[item.index].image_url = mergedPanelUrls[0];
-          // Cache write-back: when this row introduced a recurring
-          // character / scene (had character_id or scene_id with NO
-          // pre-existing cache entry), seed the cache from panel 0 so
-          // subsequent rows using the same slug can hit the cache and
-          // anchor on the same identity. Matches the regular dispatcher's
-          // miss-and-store pattern. Only runs on row completion to
-          // avoid mid-chunk cache pollution; if a future row in this
-          // same tick wants the cache entry but it hasn't been written
-          // yet, it'll re-generate panel 0 itself (one extra i2i, not
-          // a correctness issue).
-          if (isDoodleExplainer2 && cacheKind === 'none') {
-            const cid = row.character_id?.trim();
-            const sid = row.scene_id?.trim();
-            if (cid) {
-              const charCache = doc.doodle_explainer_2_character_cache ?? {};
-              if (!charCache[cid]?.base_url) {
-                charCache[cid] = {
-                  base_url: mergedPanelUrls[0],
-                  first_seen_row_index: item.index,
-                };
-                doc.doodle_explainer_2_character_cache = charCache;
-                charCacheMisses += 1;
-                logger.info('[motion-collage pipeline] character-cache miss-and-store', {
-                  pipeline_video_id: video.id,
-                  row_index: item.index,
-                  character_id: cid,
-                });
-              }
-            }
-            if (sid) {
-              const sceneCache = doc.doodle_explainer_2_scene_cache ?? {};
-              if (!sceneCache[sid]?.base_url) {
-                sceneCache[sid] = {
-                  base_url: mergedPanelUrls[0],
-                  first_seen_row_index: item.index,
-                };
-                doc.doodle_explainer_2_scene_cache = sceneCache;
-                sceneCacheMisses += 1;
-                logger.info('[motion-collage pipeline] scene-cache miss-and-store', {
-                  pipeline_video_id: video.id,
-                  row_index: item.index,
-                  scene_id: sid,
-                });
-              }
-            }
-          } else if (isDoodleExplainer2 && cacheKind === 'character') {
-            charCacheHits += 1;
-          } else if (isDoodleExplainer2 && cacheKind === 'scene') {
-            sceneCacheHits += 1;
-          }
           motionCollageSucceeded += 1;
           succeeded += 1;
           logger.info('[motion-collage pipeline] row complete', {
@@ -912,11 +922,28 @@ export async function handleGenerateProductionDocImages(
           });
         }
       } else {
+        // 2026-06-10 caveat fix — write attempts + last_error on chunk
+        // failure so the partition's circuit breaker (line 222) can
+        // gate a row whose chunks keep failing for the same reason.
+        // Previously motion-collage chunks logged the failure but
+        // didn't write the breadcrumbs, so a row with a deterministic
+        // failure (e.g. content policy on a panel prompt) would retry
+        // forever, eating one chunk's worth of cost each tick.
+        const classified = classifyImageGenError(mc.error ?? 'unknown_failure');
+        const priorAttempts = typeof row.attempts === 'number' ? row.attempts : 0;
+        doc.rows[item.index].attempts = priorAttempts + 1;
+        doc.rows[item.index].last_error = {
+          class: classified.class,
+          message: classified.message,
+          at: new Date().toISOString(),
+        };
         motionCollageFailed += 1;
         failed += 1;
         logger.warn('[motion-collage pipeline] chunk failed', {
           pipeline_video_id: video.id,
           row_index: item.index,
+          attempts: priorAttempts + 1,
+          error_class: classified.class,
           chunk_indices: chunk,
           error: mc.error,
           duration_ms: mc.durationMs,
