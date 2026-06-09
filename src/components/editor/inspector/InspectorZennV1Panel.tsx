@@ -34,15 +34,16 @@ type ProductionRow = ProductionDoc['rows'][number];
 
 interface InspectorZennV1PanelProps {
   row: ProductionRow;
-  /** Surfaced in error toasts and logs; ShotInspector already binds
-   *  the row index into `onUpdateRow`, so this is purely diagnostic. */
+  /** Surfaced in observability when a Character ID edit fires.
+   *  ShotInspector already binds the row index into `onUpdateRow`,
+   *  so this prop is only used for the diagnostic log line. */
   shotIndex: number;
   onUpdateRow: (patch: Partial<ProductionRow>) => void;
 }
 
 export function InspectorZennV1Panel({
   row,
-  shotIndex: _shotIndex,
+  shotIndex,
   onUpdateRow,
 }: InspectorZennV1PanelProps) {
   // Read the three fields with stable empty-string defaults so the
@@ -57,6 +58,17 @@ export function InspectorZennV1Panel({
   // ignore. The user can still change the mode first and then
   // re-enable the picker.
   const isStickMode = mode === 'stick';
+
+  // Small observability helper. Logs every per-row zenn_v1 edit so
+  // the user can grep the inspector console for "did I really mean
+  // to flip row 27 to stick mode?" when reviewing a doc. Cheap.
+  const logEdit = (field: string, next: unknown) => {
+    console.info('[zenn-v1 inspector-edit]', {
+      row_index: shotIndex,
+      field,
+      next,
+    });
+  };
 
   return (
     <div
@@ -93,6 +105,7 @@ export function InspectorZennV1Panel({
               // mode reason — the LLM's stale reason would mislead
               // future readers of the doc once the mode is unset.
               if (next === '') patch.zenn_mode_reason = undefined;
+              logEdit('zenn_mode', patch.zenn_mode);
               onUpdateRow(patch);
             }}
             className="input-field text-xs"

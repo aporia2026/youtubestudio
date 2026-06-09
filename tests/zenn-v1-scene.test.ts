@@ -209,4 +209,50 @@ describe('resolveCharacterUrl', () => {
     };
     expect(resolveCharacterUrl(brokenBank, 'hero', undefined)).toBeUndefined();
   });
+
+  // ─── QA fix 2026-06-10: case-variant slugs share a bank entry ─────
+  //
+  // The pipeline writes bank entries under the NORMALIZED slug
+  // (`Knight` → `knight`). The renderer's lookup must do the matching
+  // transform on read so a row with `zenn_character_id: 'Knight'`
+  // and a row with `zenn_character_id: 'knight'` both find the same
+  // entry. Without these tests the regression would silently drop
+  // the character layer on the mismatched-case row.
+
+  it('resolves a case-variant slug to the normalized bank entry', () => {
+    const normalizedBank = {
+      // Bank is keyed by the normalized slug post-QA-fix.
+      'curly-haired-hunter': {
+        base_url: 'https://r2.example/hunter.jpg',
+        first_seen_row_index: 0,
+      },
+    };
+    // Row emits the LLM's verbatim casing — different from the bank
+    // key — but the lookup still resolves.
+    expect(
+      resolveCharacterUrl(normalizedBank, 'Curly-Haired Hunter', undefined),
+    ).toBe('https://r2.example/hunter.jpg');
+    expect(
+      resolveCharacterUrl(normalizedBank, 'CURLY_HAIRED_HUNTER', undefined),
+    ).toBe('https://r2.example/hunter.jpg');
+    expect(
+      resolveCharacterUrl(normalizedBank, 'curly haired hunter', undefined),
+    ).toBe('https://r2.example/hunter.jpg');
+  });
+
+  it('falls back to a raw-keyed bank entry (back-compat with pre-fix banks)', () => {
+    // A doc generated before the QA fix may have a bank keyed by
+    // the LLM's verbatim slug instead of the normalized form. The
+    // renderer falls back to a raw lookup so existing docs keep
+    // rendering correctly.
+    const rawKeyedBank = {
+      Knight: {
+        base_url: 'https://r2.example/knight.jpg',
+        first_seen_row_index: 0,
+      },
+    };
+    expect(resolveCharacterUrl(rawKeyedBank, 'Knight', undefined)).toBe(
+      'https://r2.example/knight.jpg',
+    );
+  });
 });

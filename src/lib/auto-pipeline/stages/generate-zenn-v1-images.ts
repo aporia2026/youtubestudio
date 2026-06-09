@@ -54,6 +54,7 @@ import { sql } from '@vercel/postgres';
 import { logger } from '../../logger';
 import { generateGptImage2Edit } from '../../gpt-image-2-edit';
 import { mirrorImageToR2 } from '../../image-gen-dispatch';
+import { normalizeZennCharacterId as normalize } from '../../../remotion/zenn-character-id';
 import type { StageHandlerContext, StageOutcome } from '../types';
 import {
   generateBaseImage,
@@ -220,17 +221,14 @@ const WORLD_PALETTE_DEFAULTS: Record<
   },
 };
 
-/** Normalize a `zenn_character_id` slug for near-duplicate detection.
- *  Lowercase + replace any non-alphanumeric run with a single hyphen +
- *  trim leading / trailing hyphens. Two slugs that normalize to the
- *  same value are treated as the SAME character. The first
- *  normalized-equivalent wins; later rows silently use the existing
- *  bank entry. Plan §6 security mitigation. */
+/** Re-export the shared normalizer so existing callers keep working
+ *  without an import-path change. The canonical implementation lives
+ *  in `src/remotion/zenn-character-id.ts` because the renderer also
+ *  needs it for resolveCharacterUrl lookups. QA fix 2026-06-10:
+ *  prior version kept the helper here only, which forced the
+ *  renderer to do raw-key lookups and miss case variants. */
 export function normalizeZennCharacterId(raw: string): string {
-  return raw
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  return normalize(raw);
 }
 
 /** Build the canonical character-bank prompt for a given character.
@@ -523,21 +521,20 @@ export async function handleGenerateZennV1Images(
     return { kind: 'advance', nextStage: 'generating_thumbnail', costUsd: 0 };
   }
 
-  // 5) Cost cap pre-check. Counts every character + canvas_reveal
-  //    layer we'd attempt THIS tick, plus already-spent dollars
-  //    carried over from the prior image-gen stage's running total.
-  //    World palette fill is free.
-  const characterTickPlanSize = Math.min(
-    charactersToGenerate.length,
-    MAX_ZENN_CHARACTER_PER_TICK,
-  );
-  const canvasRevealTickPlanSize = Math.min(
-    canvasRevealToGenerate.length,
-    MAX_ZENN_CANVAS_REVEAL_PER_TICK,
-  );
+  // 5) Cost cap pre-check. Counts the FULL remaining work across
+  //    every future tick, plus already-spent dollars carried over
+  //    from the prior image-gen stage's running total. World palette
+  //    fill is free.
+  //
+  //    QA fix 2026-06-10: prior PR used per-tick estimates here
+  //    (`Math.min(work.length, MAX_PER_TICK)`), which meant a doc
+  //    with 30 characters at 3/tick had a pre-check of $0.15 instead
+  //    of $1.50, and a runaway LLM could blow the budget across many
+  //    ticks without ever tripping the cap. Mirrors the full-remaining
+  //    calculation in `generate-production-doc-images.ts:278-280`.
   const remainingCostUsd =
-    characterTickPlanSize * COST_PER_CHARACTER_BANK_ENTRY +
-    canvasRevealTickPlanSize * COST_PER_CANVAS_REVEAL_LAYER;
+    charactersToGenerate.length * COST_PER_CHARACTER_BANK_ENTRY +
+    canvasRevealToGenerate.length * COST_PER_CANVAS_REVEAL_LAYER;
   const alreadySpentUsd = parsePriorStageSpend(metadata);
   const capUsd = readCostCap();
   if (alreadySpentUsd + remainingCostUsd > capUsd) {
@@ -591,12 +588,15 @@ export async function handleGenerateZennV1Images(
     }
 
     // Look up the doc-level appearance description for this slug.
-    // The descriptions map is keyed by the SAME slug the row emits
-    // — when the LLM is doing its job, both fields use the
-    // canonical id verbatim and the lookup hits. We don't try to
-    // normalize keys here (the description map is the LLM's
-    // authoritative shape, not a derived one).
-    const descriptionFromBible = doc.zenn_v1_character_descriptions?.[entry.canonicalId];
+    // The descriptions map is LLM-emitted and might use a
+    // case-variant slug ("Knight" in descriptions vs "knight" in
+    // rows). Try the raw canonicalId first (the common case where
+    // the LLM is consistent), then fall back to the normalized
+    // form. QA fix 2026-06-10.
+    const descriptions = doc.zenn_v1_character_descriptions;
+    const descriptionFromBible =
+      descriptions?.[entry.canonicalId] ??
+      descriptions?.[normalize(entry.canonicalId)];
     const bankPrompt = buildCharacterBankPrompt(
       entry.canonicalId,
       entry.appearanceHint,
@@ -618,7 +618,13 @@ export async function handleGenerateZennV1Images(
     tickCostUsd += result.costUsd;
 
     if (result.imageUrl) {
-      bank[entry.canonicalId] = {
+      // Key the bank by the NORMALIZED slug, not the raw
+      // canonicalId. Two rows with case-variant slugs ("Knight"
+      // and "knight") share the same bank entry. The renderer
+      // re-normalizes on lookup so both rows resolve correctly.
+      // QA fix 2026-06-10.
+      const bankKey = normalize(entry.canonicalId);
+      bank[bankKey] = {
         base_url: result.imageUrl,
         first_seen_row_index: entry.firstSeenRowIndex,
       };
@@ -626,6 +632,7 @@ export async function handleGenerateZennV1Images(
       logger.info('[zenn-v1 character-bank]', {
         pipeline_video_id: video.id,
         character_id: entry.canonicalId,
+        bank_key: bankKey,
         first_seen_row_index: entry.firstSeenRowIndex,
         model_used: result.modelUsed,
         cost_usd: result.costUsd,

@@ -40,10 +40,10 @@ import type { BrandKit, VideoConfig, VideoShot, ZennV1Settings } from '../types'
 import {
   isRevealLayerRenderable,
   resolveRevealWindow,
-  revealLayerOpacityAt,
   type CanvasRevealLayerInput,
 } from '../canvas-reveal-math';
 import { highlighterRgba, parseZennLabel } from '../zenn-label-parse';
+import { normalizeZennCharacterId } from '../zenn-character-id';
 
 // ─── canonical world palette defaults ───────────────────────────────
 //
@@ -165,6 +165,12 @@ export function worldBandLayout(
  *  (the renderer renders no character layer in that case — Mode B
  *  without a character is a pure backdrop shot).
  *
+ *  Lookup is normalized via `normalizeZennCharacterId` so case-
+ *  variant slugs ("Knight" vs "knight") resolve to the same bank
+ *  entry. The pipeline writes bank entries under the normalized
+ *  key (QA fix 2026-06-10), so this side does the matching
+ *  transform on read.
+ *
  *  Exported for testing. */
 export function resolveCharacterUrl(
   bank: VideoConfig['zennV1CharacterBank'],
@@ -172,7 +178,12 @@ export function resolveCharacterUrl(
   pose: string | undefined,
 ): string | undefined {
   if (!characterId || !bank) return undefined;
-  const entry = bank[characterId];
+  const normalized = normalizeZennCharacterId(characterId);
+  if (!normalized) return undefined;
+  // Try the normalized key first (the post-QA-fix write contract).
+  // Fall back to the raw key for back-compat with bank entries
+  // written by earlier code that keyed by canonicalId.
+  const entry = bank[normalized] ?? bank[characterId];
   if (!entry) return undefined;
   if (pose && entry.poses?.[pose]) return entry.poses[pose];
   return entry.base_url || undefined;
