@@ -1,7 +1,23 @@
 # Motion-collage: server-side async bulk regen
 
 Date: 2026-06-09
-Status: Phase 1 + Phase 2 + caveat fixes + Phase 3 (editor polling) shipped. Follow-up (restore 3×3 default) pending production verification.
+Status: COMPLETE. Phases 1–3 + caveat fixes + 3×3 default restoration all shipped 2026-06-09 → 2026-06-10.
+
+Ship log:
+  - 0c8e19a3 — Phase 1: server-side async bulk regen + auto-pipeline kick.
+  - c921046a — Phase 2: per-collage chunked progress (vendor-aware chunk
+    sizes, chain-aware validator loosening, sparse panel-URLs as
+    resumable state).
+  - 4fa5e72d — Caveat fixes: early character/scene cache write on
+    panel 0; attempts + last_error writeback on chunk failure so the
+    partition circuit-breaker can gate persistent failures.
+  - 7a489476 — Phase 3: editor polling via a slim
+    /motion-collage/progress endpoint; 8-second interval, predicate-
+    memoized so the polling auto-starts when a row enters in-progress
+    state and auto-stops when every row completes.
+  - 6283149b — Follow-up: convert-button default flipped 2×2 → 3×3
+    + canonical doc-gen example updated. The 03ac5b42 stopgap is
+    now obsolete.
 
 ## Resolution of the prereq questions
 
