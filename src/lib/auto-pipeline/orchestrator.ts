@@ -27,6 +27,7 @@ import { handleQaRetry } from './stages/qa-retry';
 import { handleNarrationComplete } from './stages/narration-complete';
 import { handleGenerateProductionDoc } from './stages/generate-production-doc';
 import { handleGenerateProductionDocImages } from './stages/generate-production-doc-images';
+import { handleGenerateZennV1Images } from './stages/generate-zenn-v1-images';
 import { handleGenerateThumbnail } from './stages/generate-thumbnail';
 import { handleAssignToEditor } from './stages/assign-to-editor';
 import { handleGenerateSeo } from './stages/generate-seo';
@@ -66,6 +67,7 @@ const STAGE_HANDLERS: Record<string, StageHandler | undefined> = {
   narration_complete: handleNarrationComplete,
   generating_production_doc: handleGenerateProductionDoc,
   generating_production_doc_images: handleGenerateProductionDocImages,
+  generating_zenn_v1_images: handleGenerateZennV1Images,
   generating_thumbnail: handleGenerateThumbnail,
   assigning_to_editor: handleAssignToEditor,
   generating_seo: handleGenerateSeo,

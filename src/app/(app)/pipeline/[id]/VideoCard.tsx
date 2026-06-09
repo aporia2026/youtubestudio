@@ -53,6 +53,8 @@ const STAGE_LABEL: Record<string, string> = {
   narration_overdue: 'Narration overdue',
   narration_complete: 'Narration complete',
   generating_production_doc: 'Generating shot list',
+  generating_production_doc_images: 'Generating shot images',
+  generating_zenn_v1_images: 'Generating Zenn character bank',
   generating_thumbnail: 'Generating thumbnail',
   assigning_to_editor: 'Assigning to editor',
   generating_seo: 'Generating SEO metadata',
@@ -62,6 +64,8 @@ const STAGE_LABEL: Record<string, string> = {
   qa_failed_after_max_retries: 'QA failed (max retries)',
   narration_abandoned: 'Narration abandoned',
   production_doc_failed: 'Shot list failed',
+  production_doc_images_failed: 'Shot images failed',
+  zenn_v1_images_failed: 'Zenn character bank failed',
   thumbnail_failed: 'Thumbnail failed',
   editor_assignment_failed: 'Editor assignment failed',
   seo_failed: 'SEO step failed',
@@ -91,6 +95,10 @@ const STAGE_EXPLANATION: Record<string, string> = {
     'Narration audio has been uploaded. The orchestrator is updating downstream metadata before kicking off the production doc.',
   generating_production_doc:
     'The orchestrator is generating the shot-by-shot production doc (B-roll prompts, on-screen text, timing) from the script. This is the longest stage — typically 2-5 minutes — because it makes per-row LLM calls.',
+  generating_production_doc_images:
+    'The orchestrator is generating an image for each shot in the production doc. Runs server-side so the editor opens with images already populated. Chunked across ticks — large docs may take several minutes.',
+  generating_zenn_v1_images:
+    'The orchestrator is generating the Zenn V1 character bank (one canonical PNG per recurring character) plus the world palette. Runs only for zenn_v1 docs, after every per-shot image is done. Capped at 3 fresh characters per tick.',
   generating_thumbnail:
     'The orchestrator is generating thumbnail candidates by calling an image model. Typically takes 30s-2min depending on provider.',
   assigning_to_editor:
@@ -106,6 +114,8 @@ const TERMINAL: ReadonlySet<string> = new Set([
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
+  'production_doc_images_failed',
+  'zenn_v1_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',
@@ -119,6 +129,8 @@ const FAILED: ReadonlySet<string> = new Set([
   'qa_failed_after_max_retries',
   'narration_abandoned',
   'production_doc_failed',
+  'production_doc_images_failed',
+  'zenn_v1_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',

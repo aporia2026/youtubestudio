@@ -40,6 +40,15 @@ export const PIPELINE_STAGES = [
   // image_url, then advances to `generating_thumbnail`. See
   // `_plans/2026-05-27-doodle-explainer-2-foundation.md` (Stage 4).
   'generating_production_doc_images',
+  // PR 2 of `_plans/2026-06-10-zenn-v1-style.md`. Runs ONLY for
+  // zenn_v1 docs, AFTER the generic per-row image stage has populated
+  // every row's `image_url`. Generates the zenn-specific assets the
+  // Mode B renderer needs: the canonical character bank (one PNG per
+  // unique `zenn_character_id`) and the doc-level world palette
+  // (sky / ground / wall hex colors filled from the overlays used).
+  // Non-zenn docs skip this stage entirely — the prior stage advances
+  // straight to `generating_thumbnail` for them.
+  'generating_zenn_v1_images',
   'generating_thumbnail',
   'assigning_to_editor',
   'generating_seo',
@@ -55,6 +64,7 @@ export const PIPELINE_STAGES = [
   'narration_abandoned',
   'production_doc_failed',
   'production_doc_images_failed',
+  'zenn_v1_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',
@@ -74,6 +84,7 @@ export const ACTIVE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>(
   'narration_complete',
   'generating_production_doc',
   'generating_production_doc_images',
+  'generating_zenn_v1_images',
   'generating_thumbnail',
   'assigning_to_editor',
   'generating_seo',
@@ -95,6 +106,7 @@ export const TERMINAL_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage
   'narration_abandoned',
   'production_doc_failed',
   'production_doc_images_failed',
+  'zenn_v1_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',
@@ -111,6 +123,7 @@ export const FAILURE_STAGES: ReadonlySet<PipelineStage> = new Set<PipelineStage>
   'narration_abandoned',
   'production_doc_failed',
   'production_doc_images_failed',
+  'zenn_v1_images_failed',
   'thumbnail_failed',
   'editor_assignment_failed',
   'seo_failed',

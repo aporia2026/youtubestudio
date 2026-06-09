@@ -255,12 +255,22 @@ export async function handleGenerateProductionDocImages(
   }
 
   // 3) Nothing to do — advance straight to the next stage.
+  //    zenn_v1 docs hand off to the zenn-specific image stage which
+  //    generates the character bank + world palette the Mode B
+  //    renderer reads. Every other style goes directly to thumbnail.
+  //    See `_plans/2026-06-10-zenn-v1-style.md` §5.3.
   if (baseIndicesToGen.length === 0 && variantIndicesToGen.length === 0) {
+    const isZennV1Doc = doc.style_preset === 'zenn_v1';
     logger.info('auto-pipeline: production-doc-images all done', {
       pipeline_video_id: video.id,
       total_rows: doc.rows.length,
+      hands_off_to: isZennV1Doc ? 'generating_zenn_v1_images' : 'generating_thumbnail',
     });
-    return { kind: 'advance', nextStage: 'generating_thumbnail', costUsd: 0 };
+    return {
+      kind: 'advance',
+      nextStage: isZennV1Doc ? 'generating_zenn_v1_images' : 'generating_thumbnail',
+      costUsd: 0,
+    };
   }
 
   // 4) Cost cap pre-check — refuse to start if the FULL remaining
@@ -1542,9 +1552,15 @@ export async function handleGenerateProductionDocImages(
     motion_collage_deferred: motionCollageDeferred,
   });
 
+  // zenn_v1 docs hand off to the zenn-specific image stage when all
+  // per-row generation is done — that stage produces the character
+  // bank + world palette the Mode B renderer needs. Every other
+  // style goes directly to thumbnail. See plan §5.3.
+  const isZennV1Doc = doc.style_preset === 'zenn_v1';
+  const doneNextStage = isZennV1Doc ? 'generating_zenn_v1_images' : 'generating_thumbnail';
   return {
     kind: 'advance',
-    nextStage: stillRemaining ? 'generating_production_doc_images' : 'generating_thumbnail',
+    nextStage: stillRemaining ? 'generating_production_doc_images' : doneNextStage,
     costUsd: tickCostUsd,
   };
 }
