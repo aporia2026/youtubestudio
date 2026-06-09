@@ -638,19 +638,27 @@ export async function processBatchTick(args: {
   try {
     outcomes = await Promise.all(claimed.map((s) => advanceShort(s, batch, sessionCookie)));
   } finally {
+    // Release leases in parallel — one statement per short because
+    // @vercel/postgres's tagged template doesn't accept array
+    // parameters for ANY(...). Cost is ~3 round-trips at MAX_PER_TICK
+    // = 3, which is fine for the end-of-tick cleanup path.
     if (claimed.length > 0) {
-      await sql`
-        UPDATE shorts
-           SET generation_claimed_at = NULL,
-               generation_claimed_by_tick = NULL
-         WHERE id = ANY(${claimed.map((s) => s.id)}::uuid[])
-           AND workspace_id = ${workspaceId}::uuid
-      `.catch((err) => {
-        console.error('[shorts-batch claim-release-failed]', {
-          short_ids: claimed.map((s) => s.id),
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await Promise.all(
+        claimed.map((s) =>
+          sql`
+            UPDATE shorts
+               SET generation_claimed_at = NULL,
+                   generation_claimed_by_tick = NULL
+             WHERE id = ${s.id}::uuid
+               AND workspace_id = ${workspaceId}::uuid
+          `.catch((err) => {
+            console.error('[shorts-batch claim-release-failed]', {
+              short_id: s.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }),
+        ),
+      );
     }
   }
 

@@ -9,7 +9,7 @@
 
 import { toast } from 'sonner';
 import type { ShortSeoResult } from '@/lib/shorts-types';
-import { combinedYoutubeTagsLength } from '@/lib/shorts-seo';
+import { combinedYoutubeTagsLength } from '@/lib/shorts-seo-tags';
 
 function scorePill(score: number): { color: string; bg: string } {
   if (score >= 70) return { color: '#86efac', bg: 'rgba(34,197,94,0.18)' };
