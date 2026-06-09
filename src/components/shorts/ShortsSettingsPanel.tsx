@@ -18,7 +18,7 @@
  * directly under its label. No nested tooltips, no help icons.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
   SHORTS_SETTINGS_DEFAULTS,
@@ -59,7 +59,15 @@ export function ShortsSettingsPanel() {
     };
   }, []);
 
+  // Per QA finding H6: concurrent-edit race. Two quick toggles fire
+  // two POSTs; responses can land out of order; the second response's
+  // setSettings(data.settings) could overwrite the third response's
+  // optimistic merge. Track a monotonically-increasing save id and
+  // only apply server responses that match the latest in-flight id;
+  // stale responses are dropped (their state is already obsolete).
+  const latestSaveIdRef = useRef(0);
   const save = useCallback(async (patch: Partial<ShortsWorkspaceSettings>) => {
+    const saveId = ++latestSaveIdRef.current;
     setSaving(true);
     // Optimistic merge so the UI reflects the change while the request
     // is in flight. On failure we re-fetch.
@@ -72,15 +80,24 @@ export function ShortsSettingsPanel() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setSettings(data.settings);
+      // Drop the response if a newer save has been started — its
+      // optimistic state already supersedes whatever this stale server
+      // response would tell us.
+      if (saveId === latestSaveIdRef.current) {
+        setSettings(data.settings);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to save');
-      // Refetch on failure
+      // Refetch on failure, but ONLY apply if no newer save raced.
       // eslint-disable-next-line no-restricted-syntax -- GET, rollback after failure
       const res = await fetch('/api/shorts/settings').catch(() => null);
-      if (res?.ok) setSettings((await res.json()).settings);
+      if (res?.ok && saveId === latestSaveIdRef.current) {
+        setSettings((await res.json()).settings);
+      }
     } finally {
-      setSaving(false);
+      // Only clear `saving` for the latest save — earlier ones racing
+      // to false would prematurely re-enable controls.
+      if (saveId === latestSaveIdRef.current) setSaving(false);
     }
   }, []);
 

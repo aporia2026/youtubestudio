@@ -75,9 +75,25 @@ export function nextStageFor(short: ShortRow): BatchStage {
   if (phase === 'queued' || phase === 'planning' || phase === 'base' || phase === 'variant') {
     return 'awaiting_render';
   }
-  // Cron has cleared its progress (finalizeDone). Now require at least
-  // one rendered-into-style_assets variant to exist before we hand off
-  // to the Lambda renderer — a bare base_url is not a renderable Short.
+  // Cron has cleared its progress (finalizeDone). Per QA H2, styles
+  // without a variant-bearing asset block (minimal_gradient_v1 and any
+  // future text-only / gradient-only styles) need to skip the
+  // variants-present gate or they'd deadlock in 'awaiting_render'
+  // forever. The minimal style writes `style_assets = {}` synchronously
+  // and is renderable as-is. Treat any non-frame-bearing style as
+  // "render-ready" the moment SEO is done. The known frame-bearing
+  // styles list is the source of truth; everything else falls through.
+  const styleId = short.style_id;
+  const FRAME_BEARING_STYLES = new Set(['doodle_explainer_2_short', 'paint_explainer_v1_short']);
+  if (styleId !== null && !FRAME_BEARING_STYLES.has(styleId)) {
+    // Non-frame styles (e.g. minimal_gradient_v1): no variants to
+    // wait for; the renderer composes from script + voiceover alone.
+    return 'trigger_render';
+  }
+  // Frame-bearing styles (or unset style_id, which means the
+  // orchestrator hasn't enqueued yet and will default to doodle):
+  // require at least one variant before triggering render — a bare
+  // base_url is not a renderable Short.
   const doodleVariants = short.style_assets?.doodle?.variants?.length ?? 0;
   const paintVariants = short.style_assets?.paint?.variants?.length ?? 0;
   if (doodleVariants > 0 || paintVariants > 0) return 'trigger_render';
