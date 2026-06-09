@@ -1094,9 +1094,14 @@ function RetryAssetsPicker({
   onPick,
 }: {
   currentModelId: ShortsBaseT2iModelId;
-  onPick: (modelId: ShortsBaseT2iModelId) => void;
+  onPick: (modelId: ShortsBaseT2iModelId) => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
+  // Per QA finding M11: track in-flight state so double-clicks don't
+  // fire two simultaneous re-enqueue POSTs (which race on the asset
+  // cron's single-flight drain and produce a misleading "second toast
+  // wins" UX).
+  const [picking, setPicking] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -1115,6 +1120,17 @@ function RetryAssetsPicker({
     };
   }, [open]);
 
+  const handlePick = async (modelId: ShortsBaseT2iModelId) => {
+    if (picking) return;
+    setPicking(true);
+    setOpen(false);
+    try {
+      await onPick(modelId);
+    } finally {
+      setPicking(false);
+    }
+  };
+
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
@@ -1123,10 +1139,11 @@ function RetryAssetsPicker({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)]"
+        disabled={picking}
+        className="rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-white/[0.05] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
         title="Retry assets with a different image model"
       >
-        Try other model ▾
+        {picking ? 'Re-queueing…' : 'Try other model ▾'}
       </button>
       {open && (
         <div className="absolute right-0 z-20 mt-1 w-72 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl">
@@ -1141,13 +1158,12 @@ function RetryAssetsPicker({
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setOpen(false);
-                  onPick(m.id);
+                  void handlePick(m.id);
                 }}
-                disabled={isCurrent}
+                disabled={isCurrent || picking}
                 className={[
                   'block w-full px-3 py-2 text-left text-xs transition-colors',
-                  isCurrent
+                  isCurrent || picking
                     ? 'cursor-not-allowed bg-white/[0.04] text-[var(--text-muted)]'
                     : 'text-[var(--text-primary)] hover:bg-white/[0.05]',
                 ].join(' ')}

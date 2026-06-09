@@ -166,7 +166,13 @@ export function resolveBaseT2iModelId(raw: unknown): ShortsBaseT2iModelId {
 }
 
 export function getBaseT2iModelSpec(id: ShortsBaseT2iModelId): ShortsBaseT2iModelSpec {
-  // Non-null because the type union and BASE_T2I_MODELS are kept in
-  // lockstep at module load.
-  return BASE_T2I_MODELS.find((m) => m.id === id)!;
+  const spec = BASE_T2I_MODELS.find((m) => m.id === id);
+  if (!spec) {
+    // Per QA finding M10: the previous `!` non-null assertion produced
+    // a vague "Cannot read properties of undefined" if a future refactor
+    // ever passed a raw string here without `resolveBaseT2iModelId`
+    // first. Explicit throw gives a greppable error message.
+    throw new Error(`Unknown base T2I model id: "${id}". Use resolveBaseT2iModelId() to sanitise input first.`);
+  }
+  return spec;
 }

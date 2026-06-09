@@ -142,7 +142,14 @@ export function Step2BatchSetup({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           channelId,
+          // Per QA finding M3: spread the user's defaults FIRST so the
+          // explicit ??-fallbacks below have the final word. Previously
+          // `...defaults` was at the end and re-applied `undefined`
+          // values that JSON.stringify drops — the net result happened
+          // to be correct by accident, but it was fragile (a future
+          // tweak that stops dropping undefined would corrupt it).
           defaults: {
+            ...defaults,
             language: defaults.language ?? 'en',
             categoryId: defaults.categoryId ?? DEFAULT_YOUTUBE_CATEGORY_ID,
             defaultPrivacy: defaults.defaultPrivacy ?? 'public',
@@ -151,7 +158,6 @@ export function Step2BatchSetup({
             paidPromotion: defaults.paidPromotion ?? false,
             scheduleCadence: defaults.scheduleCadence ?? 'manual',
             timezone: defaults.timezone,
-            ...defaults,
           },
           ideaInputs,
         }),

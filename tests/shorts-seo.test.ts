@@ -195,6 +195,18 @@ describe('normaliseYoutubeTags', () => {
     const tags = ['short', 'tag', 'list'];
     expect(normaliseYoutubeTags(tags)).toEqual(['short', 'tag', 'list']);
   });
+
+  // QA finding M6: strip YouTube-rejected characters so a "tag1 → tag2"
+  // or smart-quoted entry from the LLM doesn't fail upload later.
+  it('strips YouTube-rejected chars (< > « » control chars)', () => {
+    expect(normaliseYoutubeTags(['<tag>', 'a«b»c', 'with\x01control']))
+      .toEqual(['tag', 'abc', 'withcontrol']);
+  });
+
+  it('drops tags that become empty after stripping rejected chars', () => {
+    expect(normaliseYoutubeTags(['<<<', '\x01\x02', 'real']))
+      .toEqual(['real']);
+  });
 });
 
 describe('combinedYoutubeTagsLength', () => {

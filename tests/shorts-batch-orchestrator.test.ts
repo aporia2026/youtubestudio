@@ -237,6 +237,60 @@ describe('nextStageFor', () => {
         },
       })).toBe('awaiting_render');
     });
+
+    // QA finding M1: matrix coverage holes the original Bug A
+    // regression suite missed.
+    it('stays awaiting_render with phase=undefined + empty variants (post-finalize edge case)', () => {
+      // After finalizeDone the cron sets generation_progress = '{}',
+      // but a malformed row with no variants must NOT trigger render.
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: {},
+        style_assets: { doodle: { base_url: 'https://r2/base.png', variants: [] } },
+      })).toBe('awaiting_render');
+    });
+
+    it("returns 'terminal' when phase=error even if variants exist", () => {
+      // isShortTerminal short-circuits before the variant gate even
+      // runs. The check ensures the orchestrator never re-fires
+      // render on a row that errored after assets were generated.
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: { phase: 'error', error_message: 'something blew up' },
+        style_assets: {
+          doodle: {
+            base_url: 'https://r2/base.png',
+            variants: [{ url: 'https://r2/v1.png', caption_chunk_start_index: 0 }],
+          },
+        },
+      })).toBe('terminal');
+    });
+
+    it('treats non-frame-bearing styles (e.g. minimal_gradient_v1) as render-ready post-SEO (H2)', () => {
+      // QA H2: minimal_gradient_v1 writes style_assets = {} synchronously
+      // and has no variants to wait for. Old gate left it stuck in
+      // awaiting_render forever.
+      expect(nextStageFor({
+        ...seoReady,
+        style_id: 'minimal_gradient_v1',
+        generation_progress: {},
+        style_assets: {},
+      })).toBe('trigger_render');
+    });
+
+    it("paint-styled short with variants triggers render", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        style_id: 'paint_explainer_v1_short',
+        generation_progress: {},
+        style_assets: {
+          paint: {
+            base_url: 'https://r2/p-base.png',
+            variants: [{ url: 'https://r2/p-v1.png', caption_chunk_start_index: 0 }],
+          },
+        },
+      })).toBe('trigger_render');
+    });
   });
 });
 
