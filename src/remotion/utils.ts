@@ -2806,6 +2806,16 @@ export function productionDocToVideoConfig(
       // configured them instead of falling back to a square-ish guess.
       // PR 1 of `_plans/2026-06-02-editor-motion-collage-support.md`.
       motionCollageGrid: row.motion_collage_grid,
+      // zenn_v1 (2026-06-10) — per-shot renderer routing for the
+      // `<ZennScene>` Mode B compositor. All five fields absent on
+      // every non-zenn_v1 row. Doc-level character bank + world live
+      // on VideoConfig (see below) because they're shared across
+      // rows. See `_plans/2026-06-10-zenn-v1-style.md` §5.5.
+      zennMode: row.zenn_mode,
+      zennCharacterId: row.zenn_character_id,
+      zennPose: row.zenn_pose,
+      zennWorldOverlay: row.zenn_world_overlay,
+      zennCanvasRevealLayers: row.zenn_canvas_reveal_layers,
       // `edited_at` deliberately NOT threaded — see comment in VideoShot.
     };
   });
@@ -2899,6 +2909,23 @@ export function productionDocToVideoConfig(
       doc.zenn_v1_settings
         ? resolveZennV1Settings(doc)
         : undefined,
+    // Doc-level character bank — the canonical PNG (and optional
+    // pose siblings) per recurring `zenn_character_id`. `<ZennScene>`
+    // resolves the per-shot character layer URL by looking up
+    // `shot.zennCharacterId` here. Forwarded only when populated so a
+    // non-zenn_v1 doc stays undefined. Empty bank ({}) forwards as
+    // undefined too — the renderer treats undefined and empty
+    // identically (no character layer rendered).
+    zennV1CharacterBank:
+      doc.zenn_v1_character_bank && Object.keys(doc.zenn_v1_character_bank).length > 0
+        ? doc.zenn_v1_character_bank
+        : undefined,
+    // Doc-level world definition (palette hex colors + recurring
+    // props). `<ZennScene>` paints Mode B color bands from these
+    // hex values. Forwarded when any field is set; renderer falls
+    // back to the canonical defaults from `WORLD_PALETTE_DEFAULTS`
+    // (in `generate-zenn-v1-images.ts`) when undefined or sparse.
+    zennV1World: doc.zenn_v1_world,
   };
 
   if (!opts.alignment) return config;

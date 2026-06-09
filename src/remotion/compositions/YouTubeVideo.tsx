@@ -14,6 +14,7 @@ import { OutroScene } from '../scenes/OutroScene';
 import { ThumbnailZoomScene } from '../scenes/ThumbnailZoomScene';
 import { MotionScene } from '../scenes/MotionScene';
 import { MotionCollageScene } from '../scenes/MotionCollageScene';
+import { ZennScene } from '../scenes/ZennScene';
 import { SectionTitleStripe, clampSectionStripeFraction } from '../components/SectionTitleStripe';
 import { resolveSceneFade } from '../fade-resolution';
 import { RealImageOverlay } from '../components/RealImageOverlay';
@@ -578,6 +579,26 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
         lowerThirdVariant={lowerThirdVariant}
         paintSettings={config.paintExplainerV1Settings}
         propCache={config.paintExplainerV1PropCache}
+      />
+    );
+  }
+  // zenn_v1 Mode B routing — runs BEFORE the sceneType switch for the
+  // same additive-routing reason as paint_explainer_v1 above. Only
+  // Mode B ('scene') shots route through ZennScene; Mode A ('stick')
+  // shots fall through to the default static path because the Mode A
+  // look is baked by the AI image suffix. PR 4 will route Mode A
+  // through ZennScene as well once canvas_reveal beats land. See
+  // `_plans/2026-06-10-zenn-v1-style.md` §5.5.
+  if (config.styleId === 'zenn_v1' && shot.zennMode === 'scene') {
+    return (
+      <ZennScene
+        {...props}
+        shotIndex={shotIndex}
+        suppressLowerThird={shot.suppressLowerThird ?? suppressLowerThirds}
+        lowerThirdVariant={lowerThirdVariant}
+        zennSettings={config.zennV1Settings}
+        characterBank={config.zennV1CharacterBank}
+        world={config.zennV1World}
       />
     );
   }

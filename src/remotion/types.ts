@@ -420,6 +420,45 @@ export interface VideoShot {
    *  Absent when shotKind is not 'motion_collage'. See PR 1 of
    *  `_plans/2026-06-02-editor-motion-collage-support.md`. */
   motionCollageGrid?: { cols: number; rows: number };
+
+  // ─── zenn_v1 (2026-06-10) ─────────────────────────────────────────
+  //
+  // Renderer-side mirror of ProductionRow's zenn_* fields. Plumbed
+  // through `productionDocToVideoConfig` so SceneRouter can route to
+  // `<ZennScene>` when `config.styleId === 'zenn_v1'` AND
+  // `zennMode === 'scene'` (Mode B). Mode A passes through to the
+  // default static path because the Mode A look is baked by the AI
+  // image suffix; PR 4 will add Mode A canvas_reveal rendering.
+  // See `_plans/2026-06-10-zenn-v1-style.md` §5.5.
+
+  /** Which Zenn visual mode this shot renders in. `'scene'` mounts
+   *  the Mode B compositor (world bg + character from bank). `'stick'`
+   *  falls through to the default static path. */
+  zennMode?: 'stick' | 'scene';
+
+  /** Stable identifier for a recurring character in
+   *  `VideoConfig.zennV1CharacterBank`. Mode B looks up the base PNG
+   *  by this key. Undefined ⇒ no character layer rendered. */
+  zennCharacterId?: string;
+
+  /** Pose key to render. `<ZennScene>` reads
+   *  `bank[id].poses?.[zennPose] ?? bank[id].base_url`. Unknown pose
+   *  falls back to the canonical base. Undefined ⇒ base. */
+  zennPose?: string;
+
+  /** Mode B world background overlay. Drives the band layout the
+   *  Mode B compositor paints from `VideoConfig.zennV1World`. `null`
+   *  or undefined ⇒ white background. */
+  zennWorldOverlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;
+
+  /** Per-shot canvas-reveal layer set. Sibling-frame PNGs that fade
+   *  in over a held base. Populated by the zenn_v1 pipeline stage in
+   *  PR 4; PR 3 carries the field through but doesn't render it. */
+  zennCanvasRevealLayers?: Array<{
+    image_url: string;
+    reveal_at_ms: number;
+    duration_ms: number;
+  }>;
 }
 
 // ─── paint_explainer_v1 settings ────────────────────────────────────
@@ -575,6 +614,38 @@ export interface VideoConfig {
    *  re-resolve defaults at frame time. Undefined on non-zenn_v1
    *  docs. See `_plans/2026-06-10-zenn-v1-style.md` §8. */
   zennV1Settings?: Required<ZennV1Settings>;
+  /** zenn_v1 character bank — `zenn_character_id` slug → canonical
+   *  base PNG plus optional pose siblings. `<ZennScene>` resolves
+   *  the per-shot character layer URL via
+   *  `bank[shot.zennCharacterId]?.poses?.[shot.zennPose] ??
+   *  bank[shot.zennCharacterId]?.base_url`. Populated by
+   *  `productionDocToVideoConfig` from
+   *  `doc.zenn_v1_character_bank`. Undefined on non-zenn_v1 docs and
+   *  on zenn_v1 docs where the bank hasn't been generated yet
+   *  (renderer falls back to the per-shot `imageUrl`). */
+  zennV1CharacterBank?: Record<string, {
+    base_url: string;
+    palette?: {
+      skin?: string;
+      hair?: string;
+      clothes?: string;
+      accent?: string;
+    };
+    poses?: Record<string, string>;
+    first_seen_row_index: number;
+  }>;
+  /** zenn_v1 world definition — palette hex colors the Mode B
+   *  compositor paints as CSS color bands, plus the optional
+   *  recurring-props bank. Populated by `productionDocToVideoConfig`
+   *  from `doc.zenn_v1_world`. Undefined on non-zenn_v1 docs and on
+   *  zenn_v1 docs whose pipeline stage hasn't run yet (renderer
+   *  falls back to the canonical defaults). */
+  zennV1World?: {
+    sky_color_hex?: string;
+    ground_color_hex?: string;
+    wall_color_hex?: string;
+    recurring_props?: Array<{ name: string; image_url: string }>;
+  };
   /** Composition width in pixels */
   width: number;
   /** Composition height in pixels */
