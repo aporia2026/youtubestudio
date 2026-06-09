@@ -141,17 +141,107 @@ New log namespaces:
 - Malformed JSON / unknown schema version / missing doc → null.
 - Quota exceeded → ok=false reason='quota' (no throw).
 
-## Layer B — render loop hunt (deferred)
+## Layer B — render loop hunt (FIXED 2026-06-09)
 
-I've ruled out the obvious suspects. The next steps require live
-runtime evidence the user can capture:
+### Root cause
 
-1. With the dev React build installed, the full unminified message
-   will name the exact component + setState call.
-2. The user can paste the stack trace from the error boundary.
+The loop's culprit was `@xzdarcy/react-timeline-editor`, the
+`react-virtualized`-backed timeline library that `CapCutVideoLane`
+mounts inside `TimelineV2`. The library's `<Timeline>` component runs
+this effect (see `node_modules/@xzdarcy/react-timeline-editor/dist/index.es.js`
+around line 9307):
 
-Until then, Layer A keeps work safe. Layer B fix lands as a separate
-commit.
+```js
+lr(() => {
+  Te(Yl(c, { scale: S })), j(c);   // j === useState setter
+}, [c, R, z, S]);                    // c === editorData
+```
+
+When the `c` (editorData) dep is a **new reference** on every parent
+render, the effect fires per render, calls `j(c)` (setState), which
+re-renders. The new render flushes another `editorData` reference
+down (because `CapCutVideoLane`'s `useMemo` rebuilds on every
+upstream dep ref change), which fires the effect again. Internally,
+the library wraps Grid / MultiGrid / CollectionView from
+`react-virtualized` — class components with ~14 `forceUpdate()` call
+sites, each of which may re-enter the cycle. At 60+ ticks/sec,
+React's max-update guard trips and throws #185.
+
+### Trigger
+
+`TransformOverlay`'s corner-drag (image resize) dispatches a
+**transient** `PATCH_ROW` per pointermove with the new
+`image_x_pct` / `image_y_pct` / `image_scale_pct` / `image_rotation_deg`
+values. Transient skips the dirty flag but still updates `state.doc`,
+which makes `videoConfig` rebuild (new `shots[]` reference), which
+makes `CapCutVideoLane`'s `editorData` rebuild (new reference) —
+even though none of the timeline-visible fields actually changed.
+That's the new reference the library sees, and the loop starts.
+
+The team's earlier mitigations (hoisting `style` / `onChange` to
+module scope, ref-routing `playheadMs` / `selection`) were
+**necessary but not sufficient**: they stabilized the leaf props
+but left `editorData` itself rebuilding every tick. The
+`buildEditorData` `useMemo` had `[config.shots, rowImages,
+rowTransitions, rowTrims]` as deps — and EVERY one of those got a
+new reference on every transient PATCH_ROW.
+
+### Fix
+
+A content-keyed cache for `editorData` in
+`src/components/editor/timeline-v2/CapCutVideoLane.tsx`:
+
+1. New pure helper `buildEditorDataSignature(shots, rowImages,
+   rowTransitions, rowTrims)` returns a primitive string covering
+   ONLY the fields the lane actually renders:
+   `startMs`, `durationMs`, `shotKind`, `visualType`, `sceneType`,
+   `videoUrl` presence (for the hasBroll flag), `rowImages[i]`,
+   `rowTransitions[i]`, `rowTrims[i].trimStartMs/trimEndMs`.
+2. Image-transform fields (`imageXPct`, `imageYPct`,
+   `imageScalePct`, `imageRotationDeg`) are **deliberately
+   excluded**. The timeline lane never reads them; including them
+   would defeat the whole purpose.
+3. `editorData` is computed via a `useRef`-backed cache keyed by the
+   signature. Cache hit ⇒ return the same `LibRow[]` reference;
+   cache miss ⇒ rebuild and update the cache.
+
+Effect chain after the fix:
+
+- TransformOverlay drag → transient PATCH_ROW → state.doc changes →
+  videoConfig rebuilds → CapCutVideoLane re-renders → signature
+  computed from primitive fields **is identical** → cached editorData
+  reference returned → LibTimeline's `[c, R, z, S]` deps unchanged →
+  effect does NOT fire → no setState → no forceUpdate cascade → no
+  crash. ✓
+
+### Observability
+
+- `[capcut-video-lane editor-data] rebuild` logs ONLY on actual
+  signature changes (timing / image assignment / trim / transition
+  / shot kind moves). Silent during image-transform drags — the case
+  this cache exists to absorb.
+
+### Tests
+
+`tests/capcut-video-lane-adapter.test.ts` — 13 new cases covering:
+- Stable across re-built input references with identical content.
+- **Stable across imageXPct / imageYPct / imageScalePct /
+  imageRotationDeg changes** (the load-bearing case).
+- Changes on insert / delete / duration shift / startMs shift /
+  shotKind / visualType / image URL swap / transition flip / trim
+  change / videoUrl toggle.
+- Defensive: undefined trim/transition maps equivalent to empty
+  objects; sparse `rowImages` is stable across re-renders.
+
+### What this DOESN'T fix
+
+- The 800ms autosave debounce window still loses **transient** drag
+  values on a crash — Layer A's localStorage draft only mirrors
+  `isDirty: true` state, and transient PATCH_ROW deliberately skips
+  the dirty flag. With Layer B preventing the crash in the first
+  place, that gap stops mattering for the reported failure mode.
+  If a different crash class shows up later, we'd need to mirror
+  transient state too (cost: ~60 writes/sec during drags).
 
 ## Out of scope
 

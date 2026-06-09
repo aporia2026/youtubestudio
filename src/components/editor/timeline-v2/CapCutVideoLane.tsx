@@ -243,6 +243,69 @@ function buildEditorData(
   return [{ id: 'video', actions }];
 }
 
+/** Content signature for the set of inputs `buildEditorData` consumes.
+ *  Identical signatures ⇒ structurally identical output ⇒ safe to return
+ *  the cached `editorData` reference. Different signatures ⇒ rebuild.
+ *
+ *  Critical: this signature includes ONLY the shot fields that the
+ *  timeline lane actually renders or that the library's internal
+ *  layout manager depends on (timing, identity, thumbnail, trim,
+ *  transition, B-roll-ness). It deliberately excludes the Canva-style
+ *  free-transform fields — `imageXPct`, `imageYPct`, `imageScalePct`,
+ *  `imageRotationDeg` — which `TransformOverlay` dispatches via a
+ *  transient `PATCH_ROW` on every pointermove (~60×/sec). Including
+ *  them would defeat the entire purpose of this cache: the timeline
+ *  doesn't show image-transform state, but its `editorData` would
+ *  rebuild on every drag tick and the `@xzdarcy/react-timeline-editor`
+ *  library's `useEffect` at `dist/index.es.js:9307-9309` (deps
+ *  `[editorData, minScaleCount, maxScaleCount, scale]`) would call
+ *  `setState` per tick, which cascades into `react-virtualized`'s
+ *  ~14 `forceUpdate()` call sites and triggers React error #185
+ *  ("Maximum update depth exceeded"). See
+ *  `_plans/2026-06-08-editor-crash-recovery.md` for the full chain.
+ *
+ *  Exported for unit tests in `tests/capcut-video-lane-adapter.test.ts`. */
+export function buildEditorDataSignature(
+  shots: readonly VideoShot[],
+  rowImages: Record<number, string>,
+  rowTransitions: Record<number, 'cross-fade' | null | undefined> | undefined,
+  rowTrims: Record<number, { trimStartMs?: number; trimEndMs?: number }> | undefined,
+): string {
+  // Single concatenated string keeps the comparison O(n) and the
+  // build itself ~3× faster than constructing nested arrays/objects.
+  // Delimiters are `|` between fields and `;` between shots — both
+  // characters are not used by any of the source values (URLs are
+  // percent-encoded; shotKind / visualType / sceneType are short
+  // identifiers; transitions are `'cross-fade'` or empty).
+  let sig = String(shots.length);
+  for (let i = 0; i < shots.length; i++) {
+    const shot = shots[i]!;
+    const trim = rowTrims?.[i];
+    sig +=
+      ';' +
+      shot.startMs +
+      '|' +
+      shot.durationMs +
+      '|' +
+      (shot.shotKind ?? '') +
+      '|' +
+      (shot.visualType ?? '') +
+      '|' +
+      shot.sceneType +
+      '|' +
+      (shot.videoUrl ? '1' : '0') +
+      '|' +
+      (rowImages[i] ?? '') +
+      '|' +
+      (rowTransitions?.[i] ?? '') +
+      '|' +
+      (typeof trim?.trimStartMs === 'number' ? trim.trimStartMs : '') +
+      '/' +
+      (typeof trim?.trimEndMs === 'number' ? trim.trimEndMs : '');
+  }
+  return sig;
+}
+
 /** Map a drop position (ms, absolute) to the target row index after
  *  drag-reorder. Walks `shots[]` skipping the dragged shot, then picks
  *  the seam closest to `dropMs`. Tie-breaks left so the user's intent
@@ -308,10 +371,41 @@ export function CapCutVideoLane({
 
   const timelineRef = useRef<TimelineState>(null);
 
-  const editorData = useMemo(
-    () => buildEditorData(config.shots, rowImages, rowTransitions, rowTrims),
-    [config.shots, rowImages, rowTransitions, rowTrims],
-  );
+  // Signature-keyed cache for `editorData`. Returns the SAME reference
+  // when the upstream content is structurally unchanged — even though
+  // `config.shots`, `rowImages`, `rowTrims`, and `rowTransitions` may
+  // each be a NEW reference per parent render (the editor's reducer
+  // produces fresh arrays/objects on every `PATCH_ROW`, including the
+  // transient ones a `TransformOverlay` corner-drag fires per
+  // pointermove). Without this cache, the new `editorData` reference
+  // triggers `@xzdarcy/react-timeline-editor`'s internal effect →
+  // setState → render → `react-virtualized` forceUpdate cascade →
+  // React error #185 ("Maximum update depth exceeded"). See the
+  // `buildEditorDataSignature` doc comment for the full failure chain.
+  const editorDataCacheRef = useRef<{ sig: string; value: LibRow[] } | null>(null);
+  const editorData = useMemo(() => {
+    const sig = buildEditorDataSignature(config.shots, rowImages, rowTransitions, rowTrims);
+    const cached = editorDataCacheRef.current;
+    if (cached && cached.sig === sig) {
+      // Cache hit. Silent on purpose — during a TransformOverlay drag
+      // this branch fires ~60×/sec and any per-tick log would flood
+      // the console.
+      return cached.value;
+    }
+    const value = buildEditorData(config.shots, rowImages, rowTransitions, rowTrims);
+    if (typeof console !== 'undefined' && console.info) {
+      // Log only on actual rebuild — informative when timing /
+      // assignments / trims / transitions change, silent during the
+      // image-transform drags that this cache exists to absorb.
+      console.info('[capcut-video-lane editor-data] rebuild', {
+        shotCount: config.shots.length,
+        prevSig: cached?.sig ? cached.sig.slice(0, 80) + '…' : null,
+        nextSig: sig.slice(0, 80) + '…',
+      });
+    }
+    editorDataCacheRef.current = { sig, value };
+    return value;
+  }, [config.shots, rowImages, rowTransitions, rowTrims]);
 
   // Hold a ref to the shots array so the library's event closures (which
   // the library captures once per render) can read the freshest value
