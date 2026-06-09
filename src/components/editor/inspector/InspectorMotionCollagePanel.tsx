@@ -231,12 +231,20 @@ export function InspectorMotionCollagePanel({
             stylePreset: doc.style_preset,
             motionCollageSettings: doc.doodle_explainer_2_motion_collage_settings,
             characterDescriptions: doc.doodle_explainer_2_character_descriptions,
-            // 2026-06-09 — forward the row's image-model pick so the
-            // server can route panel 0 through the matching vendor
-            // (Atlas vs Kie). Before this the motion-collage path was
-            // hardcoded to Atlas regardless of the picker, which broke
-            // when the Atlas account hit zero balance.
-            model: row.image_model,
+            // 2026-06-09 — forward the effective image-model pick (row
+            // override OR doc-level default) so the server can route
+            // panel 0 through the matching vendor (Atlas vs Kie). The
+            // single-shot Regenerate path uses the same row > doc tier
+            // (EditorClient.tsx regenerateShot, line ~1290), so the
+            // motion-collage flow has to match — otherwise picking the
+            // doc default in the inspector ("Default — GPT Image 2
+            // (Kie) (doc setting)") silently sends body.model = undefined,
+            // the server falls through to style.preferred_cloud_model
+            // (Atlas for doodle), and a 402 from Atlas still kills the
+            // row even though the user explicitly chose Kie as their
+            // doc default. Server-side fallback to style.preferred only
+            // fires when BOTH layers are unset.
+            model: row.image_model || doc.image_model_default,
             ...(isPartial && {
               panelIndices,
               existingPanelUrls: panelUrls,
