@@ -23,7 +23,8 @@ export const GET = apiRoute.authed(async (session) => {
   return NextResponse.json({
     shorts_base_t2i_model_id: settings.shorts_base_t2i_model_id ?? null,
     /** Registry surfaced inline so the UI's dropdown can render without
-     *  a second fetch. The set is small (4 entries) and changes rarely. */
+     *  a second fetch. The set is bounded (9 entries as of 2026-06-10
+     *  after Grok Imagine removal in QA review) and changes rarely. */
     models: BASE_T2I_MODELS.map((m) => ({
       id: m.id,
       label: m.label,

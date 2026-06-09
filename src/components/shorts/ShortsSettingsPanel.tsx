@@ -456,7 +456,7 @@ function BaseT2iDefaultPanel() {
                     {m.label}
                   </span>
                   <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                    ${m.costUsd.toFixed(4)}/image{active ? ' · current' : ''}
+                    ${m.costUsd.toFixed(3)}/image{active ? ' · current' : ''}
                   </span>
                 </div>
                 <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>

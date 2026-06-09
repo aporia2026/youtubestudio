@@ -748,7 +748,10 @@ function VoiceoverInspector({ short }: { short: ShortRow }) {
   }
   return (
     <div className="space-y-2">
-      <audio controls preload="metadata" src={short.voiceover_audio_url} className="w-full" />
+      {/* Per QA L7: preload="none" so expanding all rows on a 50-short
+          batch doesn't fetch 50 audio file headers from R2. The user
+          clicking play triggers metadata + audio loading on demand. */}
+      <audio controls preload="none" src={short.voiceover_audio_url} className="w-full" />
       <div className="flex items-center justify-between text-[10px] text-[var(--text-muted)]">
         <span>
           {short.voiceover_duration_seconds
@@ -1188,6 +1191,7 @@ function RetryAssetsPicker({
 function formatTime(iso: string): string {
   try {
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
     return d.toLocaleTimeString(undefined, {
       hour: '2-digit',
       minute: '2-digit',
@@ -1195,6 +1199,9 @@ function formatTime(iso: string): string {
       hour12: false,
     });
   } catch {
-    return iso.slice(11, 19);
+    // Per QA L8: previous fallback returned `iso.slice(11, 19)` which
+    // only made sense for ISO 8601 timestamps. For garbage input it
+    // emitted a misleading substring. Empty placeholder is honest.
+    return '—';
   }
 }

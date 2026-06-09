@@ -31,10 +31,14 @@ export const TABS: readonly TabDef[] = Object.freeze([
 ]);
 
 /** Parse a `window.location.hash` string into a valid TabKey, falling
- *  back to 'script' for anything unknown or empty. */
+ *  back to 'script' for anything unknown or empty. Membership check
+ *  is case-insensitive on BOTH sides (per QA L10): today every
+ *  TAB_KEYS entry is lowercase, but a future capitalised addition
+ *  would silently never match without the lowercase comparison. */
 export function parseTabHash(hash: string): TabKey {
   const stripped = hash.replace(/^#/, '').toLowerCase();
-  return (TAB_KEYS as readonly string[]).includes(stripped) ? (stripped as TabKey) : 'script';
+  const match = (TAB_KEYS as readonly string[]).find((k) => k.toLowerCase() === stripped);
+  return (match ?? 'script') as TabKey;
 }
 
 /** Per-tab status badge — yellow (pending), green (ready), red (error),

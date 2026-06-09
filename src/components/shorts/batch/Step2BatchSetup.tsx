@@ -347,7 +347,7 @@ export function Step2BatchSetup({
                 >
                   {BASE_T2I_MODELS.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.label} — ${m.costUsd.toFixed(4)}/image · {m.hint}
+                      {m.label} — ${m.costUsd.toFixed(3)}/image · {m.hint}
                     </option>
                   ))}
                 </select>

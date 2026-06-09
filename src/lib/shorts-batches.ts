@@ -181,10 +181,16 @@ export function expandDescriptionTemplate(
   template: string,
   vars: { title: string; hook: string; payoff: string },
 ): string {
-  return template
-    .replaceAll('{{title}}', vars.title)
-    .replaceAll('{{hook}}', vars.hook)
-    .replaceAll('{{payoff}}', vars.payoff);
+  // Per QA L3: accept any-case placeholder names. LLM rewrites of the
+  // template often capitalise ({{Title}}, {{HOOK}}). Previously these
+  // were silently left as literal text in the published description.
+  return template.replace(
+    /\{\{\s*(title|hook|payoff)\s*\}\}/gi,
+    (_match, name) => {
+      const key = (name as string).toLowerCase() as keyof typeof vars;
+      return vars[key] ?? '';
+    },
+  );
 }
 
 /** Pure: dedupe primitive array preserving first-occurrence order.

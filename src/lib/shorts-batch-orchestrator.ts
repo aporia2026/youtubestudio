@@ -217,7 +217,12 @@ async function runVoiceoverStage(short: ShortRow, batch: ShortsBatchRow): Promis
   try {
     const voiceId = batch.defaults.voiceId;
     if (!voiceId) {
-      throw new Error('Batch defaults are missing voiceId — set a default voice on the batch before generating.');
+      // Per QA L2: the prior message told the user to "set a default
+      // voice on the batch before generating" — but by the time the
+      // orchestrator runs, the batch is in 'generating' status and
+      // `updateBatchDefaults` is guarded against that status, so the
+      // user literally can't act on the message.
+      throw new Error('Voice id was missing when the batch started generating. Cancel the batch and recreate it with a voice picked in step 2.');
     }
 
     await retryTransient(

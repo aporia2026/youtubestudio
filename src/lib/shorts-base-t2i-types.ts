@@ -57,8 +57,12 @@ export interface ShortsBaseT2iModelSpec {
 
 /** Registry order matters for picker UX: cheapest cost-tier first,
  *  with sibling models grouped (Atlas next to Kie GPT-2, Ideogram
- *  Quality next to Turbo). */
-export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze([
+ *  Quality next to Turbo).
+ *
+ *  Deep-frozen at module load (per QA L1) — the prior shallow
+ *  `Object.freeze` only locked the array slot, leaving each model
+ *  spec's fields mutable. Deep freeze makes the safety net real. */
+const _BASE_T2I_MODELS_RAW: ShortsBaseT2iModelSpec[] = ([
   // ─── OpenAI GPT Image 2 (two vendor routes — same underlying model) ────
   {
     id: 'atlas-gpt-image-2',
@@ -79,11 +83,13 @@ export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze(
   // ─── Google Gemini 3.1 Flash Image ─────────────────────────────────────
   {
     id: 'kie-nano-banana-2',
-    label: 'Nano Banana 2',
+    // Per QA N1: surface the underlying provider in the label so the
+    // picker doesn't make the user read the hint to know what this is.
+    label: 'Nano Banana 2 (Google Gemini 3.1 Flash Image)',
     vendor: 'kie',
     costUsd: 0.04,
     modelSlug: 'nano-banana-2',
-    hint: 'Google Gemini 3.1 Flash Image — fast, distinct visual style.',
+    hint: 'Fast, distinct visual style. Native 9:16.',
   },
   // ─── Black Forest Labs Flux 2 family ───────────────────────────────────
   {
@@ -146,6 +152,13 @@ export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze(
     hint: 'ByteDance Seedream v4 — distinct illustration / poster aesthetic.',
   },
 ]);
+
+/** Deep-frozen view of the registry — both the array and every entry's
+ *  fields are immutable. The cast to `readonly` reflects the runtime
+ *  guarantee at the type level. */
+export const BASE_T2I_MODELS: readonly Readonly<ShortsBaseT2iModelSpec>[] = Object.freeze(
+  _BASE_T2I_MODELS_RAW.map((m) => Object.freeze({ ...m })),
+);
 
 /** Default base T2I model for the shorts asset pipeline. User-confirmed
  *  on 2026-06-09 to switch away from `atlas-gpt-image-2` (5.6× cheaper
