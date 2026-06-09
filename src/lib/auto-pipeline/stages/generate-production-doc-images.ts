@@ -59,6 +59,11 @@ import { extractCharacterAnchors } from '../../anchor-vision-pass';
 import { generatePropImage } from '../../prop-generation';
 import { resolveStyle } from '../../production-doc-styles';
 import { loadStyleReferences, mirrorPublicUrlRefToR2 } from '../../production-doc-styles-refs';
+import {
+  findMissingPanelIndices,
+  pickMotionCollageChunkSize,
+  resolveI2iModelForRow,
+} from '../../image-models-i2i';
 import { getDownloadUrlForBucket } from '../../r2';
 import {
   classifyImageGenError,
@@ -529,6 +534,12 @@ export async function handleGenerateProductionDocImages(
   let motionCollageThisTick = 0;
   let motionCollageSucceeded = 0;
   let motionCollageFailed = 0;
+  // 2026-06-09 Phase 2 — counts rows that made progress this tick but
+  // still have missing panels. Distinct from succeeded (row fully done)
+  // and failed (chunk threw). Surfaced in the tick summary so the
+  // operator can tell "9-panel collage being processed across N ticks"
+  // from "stuck" without grepping per-row logs.
+  let motionCollagePartial = 0;
   let motionCollageDeferred = 0;
 
   // ─── Collage chunks first ──────────────────────────────────────────
@@ -685,84 +696,228 @@ export async function handleGenerateProductionDocImages(
         }
       }
 
-      const mc = await generateMotionCollage({
-        row,
-        doc,
-        workspaceId: video.workspace_id,
-        panel0SourceUrl,
-        // 2026-06-09 — feed the row's per-shot override OR the doc's
-        // image_model_default so the auto-pipeline picks the same
-        // vendor (Atlas vs Kie) the editor would. Without this,
-        // server-driven motion-collage rows always hit Atlas even
-        // when the user's doc default is Kie — a 402 from Atlas
-        // would then silently fail every motion-collage row in the
-        // batch despite the user having flipped the doc default.
-        pickedModel: row.image_model_override || doc.image_model_default,
-      });
-      tickCostUsd += mc.costUsd;
-      if (mc.panelUrls && mc.panelUrls.length > 0) {
-        // Write back: collage + slices + sentinel image_url so the
-        // partition step skips this row on subsequent ticks (idempotent
-        // re-entry). Mirror panel 0 into image_url so any UI surface
-        // that reads .image_url (saliency, hover thumbs, …) shows the
-        // first frame instead of a blank.
-        doc.rows[item.index].motion_collage_image_url = mc.collageImageUrl;
-        doc.rows[item.index].motion_collage_panel_urls = mc.panelUrls;
-        doc.rows[item.index].image_url = mc.panelUrls[0];
-        // Cache write-back: when this row introduced a recurring
-        // character / scene (had character_id or scene_id with NO
-        // pre-existing cache entry), seed the cache from panel 0 so
-        // subsequent rows using the same slug can hit the cache and
-        // anchor on the same identity. Matches the regular dispatcher's
-        // miss-and-store pattern.
-        if (isDoodleExplainer2 && cacheKind === 'none') {
-          const cid = row.character_id?.trim();
-          const sid = row.scene_id?.trim();
-          if (cid) {
-            const charCache = doc.doodle_explainer_2_character_cache ?? {};
-            if (!charCache[cid]?.base_url) {
-              charCache[cid] = {
-                base_url: mc.panelUrls[0],
-                first_seen_row_index: item.index,
-              };
-              doc.doodle_explainer_2_character_cache = charCache;
-              charCacheMisses += 1;
-              logger.info('[motion-collage pipeline] character-cache miss-and-store', {
-                pipeline_video_id: video.id,
-                row_index: item.index,
-                character_id: cid,
-              });
-            }
-          }
-          if (sid) {
-            const sceneCache = doc.doodle_explainer_2_scene_cache ?? {};
-            if (!sceneCache[sid]?.base_url) {
-              sceneCache[sid] = {
-                base_url: mc.panelUrls[0],
-                first_seen_row_index: item.index,
-              };
-              doc.doodle_explainer_2_scene_cache = sceneCache;
-              sceneCacheMisses += 1;
-              logger.info('[motion-collage pipeline] scene-cache miss-and-store', {
-                pipeline_video_id: video.id,
-                row_index: item.index,
-                scene_id: sid,
-              });
-            }
-          }
-        } else if (isDoodleExplainer2 && cacheKind === 'character') {
-          charCacheHits += 1;
-        } else if (isDoodleExplainer2 && cacheKind === 'scene') {
-          sceneCacheHits += 1;
+      // ─── Chunked progress (Phase 2 of 2026-06-09-motion-collage-async-bulk-regen.md) ──
+      // A motion-collage row's per-call duration (~150 s for 4 Atlas
+      // panels, ~660 s for 9 Kie panels) can exceed a single tick's
+      // 255 s budget. Splitting the work across multiple ticks via the
+      // existing `panelIndices` + `existingPanelUrls` partial-regen
+      // machinery lets large grids on slow vendors complete reliably.
+      //
+      //   Atlas: 4 panels/chunk (~150 s)
+      //   Kie:   3 panels/chunk (~210 s)
+      //
+      // Each tick:
+      //   - Compute missing panels from the row's sparse
+      //     `motion_collage_panel_urls`.
+      //   - If empty → row already complete; promote `image_url` so
+      //     partition skips it (defensive recovery from corrupted state).
+      //   - Otherwise → take the first `chunkSize` missing indices,
+      //     pad the existing-URLs array to N, call generateMotionCollage
+      //     with the partial-regen contract.
+      //   - On success: merge URLs back; if all N panels are now
+      //     populated, set `image_url` + `motion_collage_image_url` so
+      //     the next tick's partition skips this row.
+      //   - On failure: leave existing URLs intact; next tick retries
+      //     the same chunk.
+      const grid = row.motion_collage_grid;
+      const N = grid && Number.isInteger(grid.cols) && Number.isInteger(grid.rows)
+        ? grid.cols * grid.rows
+        : 0;
+      if (N === 0) {
+        logger.warn('[motion-collage tick] no grid; row skipped', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+        });
+        motionCollageFailed += 1;
+        failed += 1;
+        continue;
+      }
+      const existingPanelUrls = (row.motion_collage_panel_urls ?? []) as string[];
+      const missingIndices = findMissingPanelIndices(existingPanelUrls, N);
+      if (missingIndices.length === 0) {
+        // Defensive recovery: every panel is filled but image_url was
+        // somehow still empty (corrupted state, or a manual clear that
+        // missed image_url). Promote so the partition skips this row.
+        doc.rows[item.index].motion_collage_panel_urls = existingPanelUrls;
+        doc.rows[item.index].image_url = existingPanelUrls[0];
+        if (!doc.rows[item.index].motion_collage_image_url) {
+          doc.rows[item.index].motion_collage_image_url = existingPanelUrls[0];
         }
         motionCollageSucceeded += 1;
         succeeded += 1;
+        logger.info('[motion-collage tick] row already complete; promoted', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          total_panels: N,
+        });
+        continue;
+      }
+      // Resolve the vendor so chunk size matches it. The style preset
+      // lookup here is independent of generateMotionCollage's own
+      // internal resolution — both must agree to keep telemetry honest.
+      // Failure here is non-fatal (resolveI2iModelForRow falls through
+      // to the default chunk size).
+      const pickedModelForRow = row.image_model_override || doc.image_model_default;
+      let stylePref: string | undefined;
+      const styleSlug = doc.style_preset?.trim();
+      if (styleSlug) {
+        try {
+          const style = await resolveStyle(styleSlug, video.workspace_id);
+          stylePref = style?.preferred_cloud_model ?? undefined;
+        } catch (err) {
+          logger.warn('[motion-collage tick] style lookup failed; using default chunk size', {
+            pipeline_video_id: video.id,
+            row_index: item.index,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      const resolvedI2i = resolveI2iModelForRow({
+        rowPickedModel: pickedModelForRow,
+        stylePreferred: stylePref,
+      });
+      const chunkSize = pickMotionCollageChunkSize(resolvedI2i.i2iModel);
+      const chunk = missingIndices.slice(0, chunkSize);
+      // Decide path: full-generation (all panels missing AND chunk
+      // covers the whole grid) vs. partial-regen (some panels exist
+      // from prior ticks OR chunk is a subset of N).
+      const isFullCover =
+        existingPanelUrls.every((u) => !u || u.length === 0)
+        && chunk.length === N;
+      logger.info('[motion-collage tick]', {
+        pipeline_video_id: video.id,
+        row_index: item.index,
+        total_panels: N,
+        existing_panels: N - missingIndices.length,
+        missing_panels: missingIndices.length,
+        chunk_size: chunk.length,
+        chunk_indices: chunk,
+        resolved_i2i_model: resolvedI2i.i2iModel,
+        model_source: resolvedI2i.source,
+        path: isFullCover ? 'full-cover' : 'partial-regen',
+      });
+      // The partial-regen path needs a full-length existingPanelUrls
+      // array. Pad with empty strings for missing slots — the chain-
+      // aware validator in generateMotionCollage (Phase 2 R2) accepts
+      // empties for slots that aren't a chain dependency of the
+      // current regen set.
+      const paddedExisting: string[] = Array.from(
+        { length: N },
+        (_, i) => existingPanelUrls[i] ?? '',
+      );
+      const mc = isFullCover
+        ? await generateMotionCollage({
+            row,
+            doc,
+            workspaceId: video.workspace_id,
+            panel0SourceUrl,
+            pickedModel: pickedModelForRow,
+          })
+        : await generateMotionCollage({
+            row,
+            doc,
+            workspaceId: video.workspace_id,
+            panel0SourceUrl,
+            pickedModel: pickedModelForRow,
+            panelIndices: chunk,
+            existingPanelUrls: paddedExisting,
+          });
+      tickCostUsd += mc.costUsd;
+      if (mc.panelUrls && mc.panelUrls.length > 0) {
+        // Merge: `mc.panelUrls` is full-length-N. For the partial-regen
+        // path, non-regen slots come through as passthroughs of
+        // paddedExisting (so the merge is a no-op for them); regen slots
+        // carry the new URLs. For the full-cover path every slot is
+        // freshly generated. Either way, the returned array IS the new
+        // sparse / dense state of the row.
+        const mergedPanelUrls = mc.panelUrls;
+        doc.rows[item.index].motion_collage_panel_urls = mergedPanelUrls;
+        const stillMissing = findMissingPanelIndices(mergedPanelUrls, N);
+        if (stillMissing.length === 0) {
+          // Row complete — write the final sentinels so partition
+          // skips this row next tick + downstream UI surfaces show
+          // panel 0 as the row thumbnail.
+          doc.rows[item.index].motion_collage_image_url = mc.collageImageUrl;
+          doc.rows[item.index].image_url = mergedPanelUrls[0];
+          // Cache write-back: when this row introduced a recurring
+          // character / scene (had character_id or scene_id with NO
+          // pre-existing cache entry), seed the cache from panel 0 so
+          // subsequent rows using the same slug can hit the cache and
+          // anchor on the same identity. Matches the regular dispatcher's
+          // miss-and-store pattern. Only runs on row completion to
+          // avoid mid-chunk cache pollution; if a future row in this
+          // same tick wants the cache entry but it hasn't been written
+          // yet, it'll re-generate panel 0 itself (one extra i2i, not
+          // a correctness issue).
+          if (isDoodleExplainer2 && cacheKind === 'none') {
+            const cid = row.character_id?.trim();
+            const sid = row.scene_id?.trim();
+            if (cid) {
+              const charCache = doc.doodle_explainer_2_character_cache ?? {};
+              if (!charCache[cid]?.base_url) {
+                charCache[cid] = {
+                  base_url: mergedPanelUrls[0],
+                  first_seen_row_index: item.index,
+                };
+                doc.doodle_explainer_2_character_cache = charCache;
+                charCacheMisses += 1;
+                logger.info('[motion-collage pipeline] character-cache miss-and-store', {
+                  pipeline_video_id: video.id,
+                  row_index: item.index,
+                  character_id: cid,
+                });
+              }
+            }
+            if (sid) {
+              const sceneCache = doc.doodle_explainer_2_scene_cache ?? {};
+              if (!sceneCache[sid]?.base_url) {
+                sceneCache[sid] = {
+                  base_url: mergedPanelUrls[0],
+                  first_seen_row_index: item.index,
+                };
+                doc.doodle_explainer_2_scene_cache = sceneCache;
+                sceneCacheMisses += 1;
+                logger.info('[motion-collage pipeline] scene-cache miss-and-store', {
+                  pipeline_video_id: video.id,
+                  row_index: item.index,
+                  scene_id: sid,
+                });
+              }
+            }
+          } else if (isDoodleExplainer2 && cacheKind === 'character') {
+            charCacheHits += 1;
+          } else if (isDoodleExplainer2 && cacheKind === 'scene') {
+            sceneCacheHits += 1;
+          }
+          motionCollageSucceeded += 1;
+          succeeded += 1;
+          logger.info('[motion-collage pipeline] row complete', {
+            pipeline_video_id: video.id,
+            row_index: item.index,
+            total_panels: N,
+          });
+        } else {
+          // Chunk succeeded but the row still has missing panels.
+          // Don't count it as success or failure yet — next tick will
+          // pick up the remaining panels via the same partition logic
+          // (image_url stays empty until completion).
+          motionCollagePartial += 1;
+          logger.info('[motion-collage pipeline] row partial — will resume next tick', {
+            pipeline_video_id: video.id,
+            row_index: item.index,
+            total_panels: N,
+            completed_panels: N - stillMissing.length,
+            remaining_panels: stillMissing.length,
+            remaining_indices: stillMissing,
+          });
+        }
       } else {
         motionCollageFailed += 1;
         failed += 1;
-        logger.warn('[motion-collage pipeline] row failed', {
+        logger.warn('[motion-collage pipeline] chunk failed', {
           pipeline_video_id: video.id,
           row_index: item.index,
+          chunk_indices: chunk,
           error: mc.error,
           duration_ms: mc.durationMs,
         });
@@ -1355,6 +1510,7 @@ export async function handleGenerateProductionDocImages(
     // `succeeded / attempted`.
     motion_collage_attempted: motionCollageThisTick,
     motion_collage_succeeded: motionCollageSucceeded,
+    motion_collage_partial: motionCollagePartial,
     motion_collage_failed: motionCollageFailed,
     motion_collage_deferred: motionCollageDeferred,
   });

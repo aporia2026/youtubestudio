@@ -27,7 +27,12 @@
 import { resolveStyle } from '../production-doc-styles';
 import { loadStyleReferences, mirrorPublicUrlRefToR2, type StyleReferenceImage } from '../production-doc-styles-refs';
 import { generateImageWithRefs, ReferenceRejectedError } from '../image-gen-i2i';
-import { DEFAULT_CLOUD_I2I_MODEL, getI2IModelSpec, resolveI2iModelForRow } from '../image-models-i2i';
+import {
+  DEFAULT_CLOUD_I2I_MODEL,
+  getI2IModelSpec,
+  requiredExistingPanelSlots,
+  resolveI2iModelForRow,
+} from '../image-models-i2i';
 import { generateAtlasT2I, generateAtlasI2I } from './../atlas-cloud-images';
 import { generateGptImage2Edit } from '../gpt-image-2-edit';
 import { createKieTask, pollKieResult } from '../kie-poll';
@@ -1673,13 +1678,29 @@ export async function generateMotionCollage(args: {
         error: 'validation_failed:existing_panel_urls_missing_or_wrong_length',
       };
     }
-    // Every NON-regenerated slot needs a usable URL — otherwise the
-    // chain math breaks ("regen panel 3" reads existingPanelUrls[2]
-    // as the chain input, so [2] must be a real URL). HTTPS scheme
-    // gate matches the project's other URL boundaries (rule 13:
-    // never trust the client; cf. `isSafeAssetUrl` in payload.ts).
-    for (let i = 0; i < N; i++) {
-      if (partialIndexSet.has(i)) continue;
+    // Chain-aware existing-URL validation. Only the slots that the
+    // current regen set ACTUALLY reads as chain inputs need to carry a
+    // valid URL — every other non-regen slot is allowed to be empty.
+    //
+    // 2026-06-09 R2: this used to require EVERY non-regen slot to have
+    // a valid URL. That blocked chunked progress for Phase 2
+    // (`_plans/2026-06-09-motion-collage-async-bulk-regen.md`): a fresh
+    // row whose first chunk = [0,1,2,3] left slots [4..N-1] empty,
+    // which the old validator rejected even though the chunk's chain
+    // doesn't read those slots. The relaxed check uses
+    // `requiredExistingPanelSlots` from `image-models-i2i.ts` to
+    // compute the exact slot dependency set from the chain semantics.
+    //
+    // HTTPS scheme gate stays. Rule 13: never trust client input —
+    // we still reject garbage URLs even when the slot would otherwise
+    // be unused, so an attacker can't smuggle a URL into the pipeline
+    // for an unused slot and then exploit it through some later code
+    // path that happens to read the field.
+    const requiredSlots = requiredExistingPanelSlots(
+      Array.from(partialIndexSet),
+      MOTION_COLLAGE_MAX_CHAIN_DEPTH,
+    );
+    for (const i of requiredSlots) {
       const url = existingPanelUrls[i];
       if (
         typeof url !== 'string' ||
@@ -1689,6 +1710,41 @@ export async function generateMotionCollage(args: {
         logger.warn('[motion-collage pipeline] partial-regen validation failed', {
           reason: 'existing_panel_url_unsafe',
           panel_index: i,
+          required_for_chain: true,
+        });
+        return {
+          costUsd: 0,
+          durationMs: Date.now() - t0,
+          error: `validation_failed:existing_panel_url_unsafe:${i}`,
+        };
+      }
+    }
+    // For non-required non-regen slots: still reject if the caller sent
+    // something OTHER than an empty string OR a valid URL. Keeps the
+    // "garbage in, error out" posture without forcing every slot to be
+    // populated.
+    for (let i = 0; i < N; i++) {
+      if (partialIndexSet.has(i)) continue;
+      if (requiredSlots.includes(i)) continue;
+      const url = existingPanelUrls[i];
+      if (typeof url !== 'string') {
+        logger.warn('[motion-collage pipeline] partial-regen validation failed', {
+          reason: 'existing_panel_url_unsafe',
+          panel_index: i,
+          required_for_chain: false,
+        });
+        return {
+          costUsd: 0,
+          durationMs: Date.now() - t0,
+          error: `validation_failed:existing_panel_url_unsafe:${i}`,
+        };
+      }
+      if (url.length === 0) continue;
+      if (!(/^https:\/\//i.test(url) || url.startsWith('/'))) {
+        logger.warn('[motion-collage pipeline] partial-regen validation failed', {
+          reason: 'existing_panel_url_unsafe',
+          panel_index: i,
+          required_for_chain: false,
         });
         return {
           costUsd: 0,

@@ -367,6 +367,114 @@ export function resolveI2iModelForRow(args: {
   return { i2iModel: DEFAULT_CLOUD_I2I_MODEL, source: 'default' };
 }
 
+// ─── Phase 2 of 2026-06-09-motion-collage-async-bulk-regen.md ──────
+//
+// Per-collage chunked progress: the auto-pipeline tick has a 255 s wall-
+// clock budget (TICK_DEADLINE_BUDGET_MS in generate-production-doc-images.ts).
+// A 9-panel collage on Kie exceeds that budget in one shot (~660 s).
+// The helpers below split a motion-collage row's work across multiple
+// ticks by chunking panel generation: each tick processes N panels,
+// persists the URLs sparsely on the row, and the next tick picks up
+// the remaining panels.
+//
+// The chunking machinery reuses the existing `panelIndices` +
+// `existingPanelUrls` partial-regen support inside `generateMotionCollage`.
+// See production-doc-image-gen.ts for the chain semantics that drive
+// `requiredExistingPanelSlots` below.
+
+/** Per-tick panel-count cap for a single motion-collage row. Vendor-
+ *  aware because Kie's GPT Image 2 i2i call latency is ~75 s vs.
+ *  Atlas's ~40 s for the same operation.
+ *
+ *  Calibration target: stay below 220 s per row so the tick can
+ *  process at least one other row in its 255 s budget without bailing.
+ *
+ *  Atlas (4 panels): ~30 s (i2i) + 3 × ~40 s (edits) = ~150 s.
+ *  Kie   (3 panels): ~60 s (i2i) + 2 × ~75 s (edits) = ~210 s.
+ *
+ *  Unknown / undefined model id → falls through to Atlas chunk size
+ *  (safe default that matches `DEFAULT_CLOUD_I2I_MODEL`). */
+export function pickMotionCollageChunkSize(modelValue: string | undefined): number {
+  if (!modelValue) return 4;
+  const spec = I2I_MODELS.find((m) => m.value === modelValue);
+  if (!spec) return 4;
+  if (spec.provider === 'kie') return 3;
+  return 4;
+}
+
+/** Maximum chain depth before motion-collage panels fan out from
+ *  panel 0 instead of chaining off the previous panel. Mirrors the
+ *  `MOTION_COLLAGE_MAX_CHAIN_DEPTH` constant in production-doc-image-gen.ts.
+ *  Re-exported here so the chunk-validation helper below can compute
+ *  the right dependency set without importing the auto-pipeline
+ *  module (which would create a circular dependency at the type
+ *  level). Both constants MUST stay in sync. */
+export const MOTION_COLLAGE_MAX_CHAIN_DEPTH = 4;
+
+/** Compute which non-regen panel slots must carry a valid URL when a
+ *  partial-regen call processes the given regen set.
+ *
+ *  Chain semantics (from production-doc-image-gen.ts):
+ *   - Panel 0 is the base. No dependency on any other slot.
+ *   - Panel K where 0 < K < MAX_CHAIN_DEPTH: chained Edit on the
+ *     PREVIOUS panel (K-1). When K >= 2, also reads panel 0 as the
+ *     composition anchor (dual-input).
+ *   - Panel K where K >= MAX_CHAIN_DEPTH: fan-out from panel 0
+ *     (anchored-to-panel-0 strategy, NO previous-panel dependency).
+ *
+ *  So for each panel K in the regen set, the dependencies are:
+ *   - K === 0          → no requirement
+ *   - 0 < K < depth    → require K-1 (chain source) + (if K >= 2) 0
+ *   - K >= depth       → require 0 (composition anchor)
+ *
+ *  Slots that are themselves in the regen set are removed from the
+ *  required set (they'll be generated in this same run).
+ *
+ *  Returns a sorted array of slot indices that MUST be present and
+ *  valid in `existingPanelUrls` when the partial-regen path runs.
+ *  The caller (the partial-regen validator) checks only these slots,
+ *  not every non-regen slot. */
+export function requiredExistingPanelSlots(
+  regenIndices: readonly number[],
+  maxChainDepth: number = MOTION_COLLAGE_MAX_CHAIN_DEPTH,
+): number[] {
+  const regen = new Set(regenIndices);
+  const required = new Set<number>();
+  for (const k of regen) {
+    if (k === 0) continue;
+    if (k < maxChainDepth) {
+      required.add(k - 1);
+      if (k >= 2) required.add(0);
+    } else {
+      required.add(0);
+    }
+  }
+  for (const k of regen) required.delete(k);
+  return Array.from(required).sort((a, b) => a - b);
+}
+
+/** Find panel slots in [0, totalN) that don't yet have a persisted
+ *  URL. Treats `undefined`, `null`, empty string, and whitespace-only
+ *  strings as "missing" — anything else is considered persisted.
+ *
+ *  Used by the auto-pipeline stage handler to decide which panels
+ *  still need work on the current tick. The complement of the
+ *  returned array is the "already done" set; the next chunk is
+ *  the first `chunkSize` entries of the returned array. */
+export function findMissingPanelIndices(
+  existingUrls: readonly (string | undefined | null)[] | undefined,
+  totalN: number,
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < totalN; i++) {
+    const url = existingUrls?.[i];
+    if (typeof url !== 'string' || url.trim().length === 0) {
+      out.push(i);
+    }
+  }
+  return out;
+}
+
 /** Type guard for cloud-Kie i2i specs. Narrows the optional fields
  *  `kieModel` and `refsField` to non-undefined so the dispatcher can
  *  call into the Kie path without `!` non-null assertions. Catches

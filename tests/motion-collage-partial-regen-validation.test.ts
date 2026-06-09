@@ -118,16 +118,38 @@ describe('generateMotionCollage partial-regen validation', () => {
     expect(result.error).toMatch(/validation_failed:existing_panel_urls_missing_or_wrong_length/);
   });
 
-  it('rejects unsafe javascript: URL in a non-regen slot', async () => {
+  it('rejects unsafe javascript: URL in a REQUIRED non-regen slot (chain dependency)', async () => {
+    // 2026-06-09 R2 (Phase 2): the validator was loosened to accept
+    // empty strings in slots that aren't a chain dependency of the
+    // current regen set. The HTTPS / scheme gate still fires for slots
+    // that ARE required — panel 2's chain source is panel 1, so panel
+    // 1's URL must pass the safety check.
     const row = minimalRow();
     const result = await generateMotionCollage({
       row,
       doc: minimalDoc(row),
       workspaceId: 'test-ws',
-      panelIndices: [0], // regen panel 0; panels 1-3 must be safe URLs
+      panelIndices: [2], // regen panel 2 — needs slot 1 as chain source + slot 0 as anchor
       existingPanelUrls: [
-        'https://example.com/p0.png', // index 0 — regen'd, content doesn't matter
-        'javascript:alert(1)',         // index 1 — passthrough, unsafe → reject
+        'https://example.com/p0.png', // index 0 — REQUIRED anchor
+        'javascript:alert(1)',         // index 1 — REQUIRED chain source, unsafe → reject
+        'https://example.com/p2.png', // index 2 — regen'd, content doesn't matter
+        'https://example.com/p3.png',
+      ],
+    });
+    expect(result.error).toMatch(/validation_failed:existing_panel_url_unsafe:1/);
+  });
+
+  it('rejects empty-string URL in a REQUIRED non-regen slot', async () => {
+    const row = minimalRow();
+    const result = await generateMotionCollage({
+      row,
+      doc: minimalDoc(row),
+      workspaceId: 'test-ws',
+      panelIndices: [2], // regen panel 2 — slot 1 (chain source) MUST be populated
+      existingPanelUrls: [
+        'https://example.com/p0.png',
+        '',
         'https://example.com/p2.png',
         'https://example.com/p3.png',
       ],
@@ -135,7 +157,16 @@ describe('generateMotionCollage partial-regen validation', () => {
     expect(result.error).toMatch(/validation_failed:existing_panel_url_unsafe:1/);
   });
 
-  it('rejects empty-string URL in a non-regen slot', async () => {
+  // Phase 2 acceptance cases (validator no longer rejects empty
+  // strings in non-required slots) are covered end-to-end in
+  // tests/motion-collage-validation.test.ts where the downstream
+  // generation is mocked. This file only covers the rejection paths
+  // that fail at the validation gate.
+
+  it('rejects garbage (non-string) in a non-required slot — still validates the type', async () => {
+    // Phase 2 relaxes the "every slot must have a URL" rule but still
+    // requires that whatever is passed is a string. Smuggling a number
+    // or object into an unused slot still fails — defense in depth.
     const row = minimalRow();
     const result = await generateMotionCollage({
       row,
@@ -144,7 +175,8 @@ describe('generateMotionCollage partial-regen validation', () => {
       panelIndices: [0],
       existingPanelUrls: [
         'https://example.com/p0.png',
-        '',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        123 as any, // non-string in a non-required slot
         'https://example.com/p2.png',
         'https://example.com/p3.png',
       ],

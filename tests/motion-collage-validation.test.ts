@@ -243,6 +243,94 @@ describe('generateMotionCollage — happy path (chained Atlas Edit, plan §E)', 
     // mirrored URL flows into the upscale call.)
     expect(result.panelUrls![0]).toMatch(/^mock-mirrored-r2-url/);
   });
+
+  // ─── Phase 2 of 2026-06-09-motion-collage-async-bulk-regen.md ──
+  // The validator was loosened to accept empty strings in non-required
+  // non-regen slots so the auto-pipeline can run the first chunk on a
+  // fresh row (where every panel URL is still empty) AND subsequent
+  // chunks (where only the chain dependencies are required to be
+  // populated). The pure helpers are covered in
+  // motion-collage-chunked-progress.test.ts; these tests pin the
+  // end-to-end integration with the partial-regen pipeline.
+
+  it("Phase 2: partial-regen with all-empty existingPanelUrls + chunk = [0..N-1] succeeds (first-chunk-on-a-fresh-row case)", async () => {
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({
+      row,
+      doc,
+      workspaceId: 'ws',
+      panelIndices: [0, 1, 2, 3],
+      existingPanelUrls: ['', '', '', ''],
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.panelUrls).toHaveLength(4);
+  });
+
+  it("Phase 2: partial-regen with chunk = [0,1,2] on a 9-panel row leaves slots 3..8 empty and still succeeds", async () => {
+    // Fresh 9-panel row, first Kie chunk (size 3). The old validator
+    // rejected this scenario because slots 3..8 were empty.
+    const row = validRow({
+      motion_collage_grid: { cols: 3, rows: 3 },
+      motion_collage_panel_prompts: Array.from({ length: 9 }, (_, i) => `Frame ${i + 1}`),
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({
+      row,
+      doc,
+      workspaceId: 'ws',
+      panelIndices: [0, 1, 2],
+      existingPanelUrls: ['', '', '', '', '', '', '', '', ''],
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.panelUrls).toHaveLength(9);
+    // Slots [0,1,2] are freshly generated; slots [3..8] passthrough
+    // the empty string. The merge in the stage handler treats those
+    // as "still missing" and the row stays in the pipeline for the
+    // next tick.
+    for (let i = 0; i < 3; i++) {
+      expect(typeof result.panelUrls![i]).toBe('string');
+      expect(result.panelUrls![i].length).toBeGreaterThan(0);
+    }
+    for (let i = 3; i < 9; i++) {
+      expect(result.panelUrls![i]).toBe('');
+    }
+  });
+
+  it("Phase 2: partial-regen with chunk = [3,4,5] on a partially-filled 9-panel row reads slot 2 + slot 0 as chain dependencies", async () => {
+    const row = validRow({
+      motion_collage_grid: { cols: 3, rows: 3 },
+      motion_collage_panel_prompts: Array.from({ length: 9 }, (_, i) => `Frame ${i + 1}`),
+    });
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({
+      row,
+      doc,
+      workspaceId: 'ws',
+      panelIndices: [3, 4, 5],
+      existingPanelUrls: [
+        'https://example.com/u0.png', // required: anchor for all panels >= 2
+        '',                            // NOT required for chunk [3,4,5]
+        'https://example.com/u2.png', // required: chain source for panel 3
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ],
+    });
+
+    expect(result.error).toBeUndefined();
+    // No new Atlas i2i / Kie call for panel 0 — it's a passthrough.
+    expect(mockedAtlas).not.toHaveBeenCalled();
+    expect(mockedCreateKie).not.toHaveBeenCalled();
+  });
 });
 
 describe('generateMotionCollage — kill switch + settings gates', () => {

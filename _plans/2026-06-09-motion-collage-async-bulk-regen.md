@@ -1,7 +1,7 @@
 # Motion-collage: server-side async bulk regen
 
 Date: 2026-06-09
-Status: Phase 1 shipped. Phase 2 (per-collage chunked progress) still pending.
+Status: Phase 1 + Phase 2 shipped. Follow-up (restore 3×3 default) pending production verification of Phase 2.
 
 ## Resolution of the prereq questions
 
