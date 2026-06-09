@@ -699,6 +699,30 @@ export async function processBatchTick(args: {
   const advanced = outcomes.filter((o) => o.ok).length;
   const failed = outcomes.filter((o) => !o.ok).length;
 
+  // Poll Lambda for any shorts that have a render in flight.
+  // ────────────────────────────────────────────────────────────────────
+  // Background: `runTriggerRenderStage` fires `POST /api/render/short`
+  // which kicks off Remotion Lambda then returns. Lambda renders
+  // independently; the route writes `progress: 0.03` to render_jobs
+  // and exits. The ONLY thing that subsequently updates render_jobs
+  // is `GET /api/render/short?id=<renderId>` — which is normally fired
+  // by the per-short editor page's polling.
+  //
+  // The bulk-batch view doesn't open per-short editors, so Lambda
+  // would silently finish and nothing would update the row. Users
+  // saw "Working on Render…" forever even when Lambda was done.
+  //
+  // Fix: each tick polls Lambda for every in-flight render in the
+  // batch and updates render_jobs + shorts.rendered_video_url when
+  // Lambda reports done. Runs after stage advancement so a render
+  // that just got triggered isn't double-polled wastefully.
+  await pollInFlightRenders(batchId, workspaceId).catch((err) => {
+    console.error('[shorts-batch render-poll-failed]', {
+      batch_id: batchId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
   // Re-fetch to see the post-tick state — totals + done check.
   const after = await getBatchWithShorts(batchId, workspaceId);
   let done = false;
@@ -716,4 +740,99 @@ export async function processBatchTick(args: {
     done,
     duration_ms: Date.now() - t0,
   };
+}
+
+/** Poll Lambda for every in-flight render in this batch + update the
+ *  DB. Used by `processBatchTick` to bridge the polling gap between
+ *  the orchestrator-driven kickoff and the per-short editor's poll. */
+async function pollInFlightRenders(batchId: string, workspaceId: string): Promise<void> {
+  // Find shorts in `phase: rendering` that have a Lambda-backed
+  // render_job. The `DISTINCT ON (short_id)` keeps the latest job
+  // per short — older retries are intentionally ignored.
+  const { rows: jobs } = await sql<{
+    job_id: string;
+    short_id: string;
+    lambda_render_id: string;
+    lambda_bucket: string;
+  }>`
+    SELECT DISTINCT ON (rj.short_id)
+           rj.id AS job_id,
+           rj.short_id,
+           rj.lambda_render_id,
+           rj.lambda_bucket
+      FROM render_jobs rj
+      JOIN shorts s ON s.id::text = rj.short_id
+     WHERE s.batch_id = ${batchId}::uuid
+       AND s.workspace_id = ${workspaceId}::uuid
+       AND rj.status NOT IN ('done', 'error')
+       AND rj.lambda_render_id IS NOT NULL
+       AND rj.lambda_bucket IS NOT NULL
+     ORDER BY rj.short_id, rj.started_at DESC
+  `;
+  if (jobs.length === 0) return;
+
+  // Lazy-import the Lambda helper so the orchestrator's transitive
+  // dep graph stays narrow for non-render code paths.
+  const { pollLambdaProgress } = await import('./remotion-lambda');
+
+  // Poll in parallel — these are cheap Lambda invocations (~$0.000002
+  // each). Bounded by the batch's number of in-flight renders so the
+  // wall-clock impact on the tick is small.
+  await Promise.all(jobs.map(async (job) => {
+    try {
+      const snap = await pollLambdaProgress({
+        lambdaRenderId: job.lambda_render_id,
+        bucketName: job.lambda_bucket,
+      });
+      if (snap.fatalError) {
+        await sql`
+          UPDATE render_jobs
+             SET status = 'error', error = ${snap.fatalError},
+                 finished_at = ${Date.now()}, progress = ${snap.overallProgress}
+           WHERE id = ${job.job_id}
+        `;
+        // Also flip the orchestrator's phase to 'error' so
+        // isShortTerminal returns true and the row stops cycling.
+        await sql`
+          UPDATE shorts
+             SET generation_progress = jsonb_set(
+                   COALESCE(generation_progress, '{}'::jsonb),
+                   '{phase}', '"error"'::jsonb
+                 ) || jsonb_build_object(
+                   'label', 'Render failed',
+                   'error_message', ${snap.fatalError.slice(0, 500)},
+                   'updated_at', ${new Date().toISOString()}::text
+                 ),
+                 updated_at = NOW()
+           WHERE id = ${job.short_id}::uuid AND workspace_id = ${workspaceId}::uuid
+        `;
+        console.warn('[shorts-batch render-poll]', { short_id: job.short_id, status: 'error', fatal: snap.fatalError.slice(0, 200) });
+      } else if (snap.done && snap.outputFile) {
+        await sql`
+          UPDATE render_jobs
+             SET status = 'done', progress = 1,
+                 output_url = ${snap.outputFile}, finished_at = ${Date.now()}
+           WHERE id = ${job.job_id}
+        `;
+        await sql`
+          UPDATE shorts
+             SET rendered_video_url = ${snap.outputFile},
+                 generation_progress = '{}'::jsonb,
+                 updated_at = NOW()
+           WHERE id = ${job.short_id}::uuid AND workspace_id = ${workspaceId}::uuid
+        `;
+        console.info('[shorts-batch render-poll]', { short_id: job.short_id, status: 'done' });
+      } else {
+        // Still rendering — refresh the progress field so the UI
+        // (or a later poll) sees movement.
+        await sql`UPDATE render_jobs SET progress = ${snap.overallProgress} WHERE id = ${job.job_id}`;
+      }
+    } catch (err) {
+      console.warn('[shorts-batch render-poll-failed]', {
+        short_id: job.short_id,
+        job_id: job.job_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }));
 }
