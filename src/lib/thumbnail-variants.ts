@@ -61,11 +61,20 @@ export interface VariantBearingPayload {
  * Returns the image URL the consumer should display / download / feed
  * into the schedule + post flow. Resolution order:
  *
- *   1. `variants[selectedVariantIndex].imageUrl` (the user's pick)
- *   2. The first non-empty `variants[].imageUrl` (fallback when the
- *      selected variant's gen failed but a sibling succeeded)
+ *   1. `variants[selectedVariantIndex].imageUrl` IF non-empty (the user's
+ *      pick when its generation succeeded)
+ *   2. The first non-empty `variants[].imageUrl` (defensive fallback when
+ *      the selected variant's gen failed but a sibling succeeded — keeps
+ *      downstream "Copy URL / Download / schedule post" working instead of
+ *      handing them an empty string)
  *   3. Legacy `imageUrl` (entries saved before the variants migration)
  *   4. Empty string (nothing usable — caller decides what to render)
+ *
+ * Note: step 1 is a non-empty check, not a "selected variant strictly".
+ * If the selected variant has `imageUrl === ''` we DO fall through to
+ * step 2 — this is intentional defence against the user picking a slot
+ * whose gen failed, but means consumers can't assume "URL came from
+ * exactly variants[selectedVariantIndex]".
  *
  * Intentionally non-throwing — the downstream schedule/post pipeline
  * must not crash on a malformed or partially-failed entry.
@@ -103,6 +112,29 @@ export function buildVariant(input: {
     costEstimateUsd: input.costEstimateUsd,
     completedAt: Date.now(),
   };
+}
+
+/**
+ * Stable per-generation fingerprint used by the page's save effects to
+ * decide "same generation, different variant pick (patch existing entry)"
+ * vs. "fresh generate (save new entry)". Picks the first NON-EMPTY
+ * variant URL so a failed variants[0] doesn't collapse two distinct
+ * generations into the same empty-string fingerprint — a real bug in the
+ * naive `variants?.[0]?.imageUrl ?? imageUrl` approach because `?.imageUrl`
+ * returns `''` for failed variants which is non-nullish, so the `??`
+ * fallback never fires.
+ *
+ * Falls back to legacy `imageUrl` for old single-image entries (pre-
+ * variants migration). Returns empty string when nothing usable exists.
+ */
+export function variantsFingerprint(payload: VariantBearingPayload | null | undefined): string {
+  if (!payload) return '';
+  const { variants, imageUrl } = payload;
+  if (variants && variants.length > 0) {
+    const firstGood = variants.find(v => v.imageUrl);
+    if (firstGood) return firstGood.imageUrl;
+  }
+  return imageUrl ?? '';
 }
 
 /**

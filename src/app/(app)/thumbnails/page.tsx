@@ -28,6 +28,7 @@ import {
   MAX_VARIANT_COUNT,
   MIN_VARIANT_COUNT,
   getSelectedVariantUrl,
+  variantsFingerprint,
 } from '@/lib/thumbnail-variants';
 
 interface TextOverlaySettings {
@@ -1169,14 +1170,55 @@ function ThumbnailsPage() {
     }
   }
 
-  // Persist a Topic Card Grid result to history once per unique image. The
-  // payload mirrors `TopicCardGridHistoryPayload` so a restore can later
-  // re-render Step 2 without re-asking the user for any input. We don't
-  // restore from this entry in Phase 1 UI (that's a follow-up); the entry
-  // exists so the user has a permanent record in the history sidebar.
+  // Persist a Topic Card Grid result to history.
+  //
+  // Phase 3 (2026-06-09) — when the result carries variants[], the
+  // `variantsFingerprint` (first non-empty variant URL) is the stable
+  // generation key. A variant pick changes formatResult.imageUrl +
+  // selectedVariantIndex but NOT the fingerprint, so we patch the
+  // existing entry instead of creating a duplicate row.
+  //
+  // Why `variantsFingerprint` and not `variants[0].imageUrl`: a failed
+  // variant 0 has imageUrl === '' which is non-nullish; the naive
+  // pattern `variants[0]?.imageUrl ?? imageUrl` would collapse all
+  // variant-0-failed generations into the same empty-string fingerprint
+  // — silently merging distinct entries.
   useEffect(() => {
     if (!formatResult) return;
-    if (savedFormatImageUrl === formatResult.imageUrl) return;
+    const fingerprint = variantsFingerprint(formatResult);
+    if (!fingerprint) return;
+    const buildPayload = (): TopicCardGridHistoryPayload => ({
+      gridRows: formatResult.gridRows,
+      gridCols: formatResult.gridCols,
+      gridMode: formatResult.gridMode,
+      mode: formatResult.mode,
+      cards: formatResult.cards.map((c) => ({
+        index: c.index,
+        label: c.label,
+        icon_concept: c.icon_concept,
+        accent_color: c.accent_color,
+      })),
+      globalPalette: formatResult.palette,
+      imageUrl: formatResult.imageUrl,
+      variants: formatResult.variants,
+      selectedVariantIndex: formatResult.selectedVariantIndex,
+      regions: formatResult.regions,
+      referenceImageUrl: formatResult.referenceImageUrl,
+      formatImageModel: formatResult.formatImageModel,
+      outputWidth: formatResult.outputWidth,
+      outputHeight: formatResult.outputHeight,
+    });
+
+    if (savedFormatImageUrl === fingerprint) {
+      // Same generation, different variant pick — patch the entry.
+      if (historyEntryId) {
+        void updateThumbnailEntry(historyEntryId, { formatPayload: buildPayload() })
+          .then(() => { setHistoryItems(getThumbnailHistoryCached()); })
+          .catch(() => { /* non-fatal */ });
+      }
+      return;
+    }
+
     const safeTitle = title.trim() || 'Topic Card Grid';
     const safeNiche = niche || 'Unspecified';
     void saveThumbnailEntry({
@@ -1192,40 +1234,58 @@ function ThumbnailsPage() {
       videoTitle: scheduleItem?.title?.trim() || safeTitle,
       scheduleItemId: scheduleItemId || undefined,
       format: 'topic-card-grid',
-      formatPayload: {
-        gridRows: formatResult.gridRows,
-        gridCols: formatResult.gridCols,
-        gridMode: formatResult.gridMode,
-        mode: formatResult.mode,
-        cards: formatResult.cards.map((c) => ({
-          index: c.index,
-          label: c.label,
-          icon_concept: c.icon_concept,
-          accent_color: c.accent_color,
-        })),
-        globalPalette: formatResult.palette,
-        imageUrl: formatResult.imageUrl,
-        regions: formatResult.regions,
-        referenceImageUrl: formatResult.referenceImageUrl,
-        formatImageModel: formatResult.formatImageModel,
-        outputWidth: formatResult.outputWidth,
-        outputHeight: formatResult.outputHeight,
-      },
+      formatPayload: buildPayload(),
     })
       .then((saved) => {
-        setSavedFormatImageUrl(formatResult.imageUrl);
+        setSavedFormatImageUrl(fingerprint);
         setHistoryEntryId(saved.id);
         setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
       })
       .catch(() => {
         // Non-fatal; user still has the image on screen.
       });
-  }, [formatResult, savedFormatImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+  }, [formatResult, savedFormatImageUrl, historyEntryId, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
   // Same persistence pattern for N Levels Explained results.
+  // Variants-aware fingerprint + patch-on-variant-pick semantics — see
+  // the TCG effect above for the full rationale.
   useEffect(() => {
     if (!nLevelsResult) return;
-    if (savedNLevelsImageUrl === nLevelsResult.imageUrl) return;
+    const fingerprint = variantsFingerprint(nLevelsResult);
+    if (!fingerprint) return;
+    const buildPayload = (): NLevelsHistoryPayload => ({
+      count: nLevelsResult.count,
+      mode: nLevelsResult.mode,
+      levels: nLevelsResult.levels.map((l) => ({
+        level: l.level,
+        label: l.label,
+        illustration_concept: l.illustration_concept,
+        accent_color: l.accent_color,
+        accent_color_locked: l.accent_color_locked,
+      })),
+      showBottomTitle: nLevelsResult.showBottomTitle,
+      showLevelLabels: nLevelsResult.showLevelLabels,
+      titleTopic: nLevelsResult.titleTopic,
+      titleTagline: nLevelsResult.titleTagline,
+      imageUrl: nLevelsResult.imageUrl,
+      variants: nLevelsResult.variants,
+      selectedVariantIndex: nLevelsResult.selectedVariantIndex,
+      regions: nLevelsResult.regions,
+      referenceImageUrl: nLevelsResult.referenceImageUrl,
+      formatImageModel: nLevelsResult.formatImageModel,
+      outputWidth: nLevelsResult.outputWidth,
+      outputHeight: nLevelsResult.outputHeight,
+    });
+
+    if (savedNLevelsImageUrl === fingerprint) {
+      if (historyEntryId) {
+        void updateThumbnailEntry(historyEntryId, { formatPayload: buildPayload() })
+          .then(() => { setHistoryItems(getThumbnailHistoryCached()); })
+          .catch(() => { /* non-fatal */ });
+      }
+      return;
+    }
+
     const safeTitle = title.trim() || 'N Levels Explained';
     const safeNiche = niche || 'Unspecified';
     void saveThumbnailEntry({
@@ -1241,44 +1301,25 @@ function ThumbnailsPage() {
       videoTitle: scheduleItem?.title?.trim() || safeTitle,
       scheduleItemId: scheduleItemId || undefined,
       format: 'n-levels',
-      formatPayload: {
-        count: nLevelsResult.count,
-        mode: nLevelsResult.mode,
-        levels: nLevelsResult.levels.map((l) => ({
-          level: l.level,
-          label: l.label,
-          illustration_concept: l.illustration_concept,
-          accent_color: l.accent_color,
-          accent_color_locked: l.accent_color_locked,
-        })),
-        showBottomTitle: nLevelsResult.showBottomTitle,
-        showLevelLabels: nLevelsResult.showLevelLabels,
-        titleTopic: nLevelsResult.titleTopic,
-        titleTagline: nLevelsResult.titleTagline,
-        imageUrl: nLevelsResult.imageUrl,
-        regions: nLevelsResult.regions,
-        referenceImageUrl: nLevelsResult.referenceImageUrl,
-        formatImageModel: nLevelsResult.formatImageModel,
-        outputWidth: nLevelsResult.outputWidth,
-        outputHeight: nLevelsResult.outputHeight,
-      },
+      formatPayload: buildPayload(),
     })
       .then((saved) => {
-        setSavedNLevelsImageUrl(nLevelsResult.imageUrl);
+        setSavedNLevelsImageUrl(fingerprint);
         setHistoryEntryId(saved.id);
         setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
       })
       .catch(() => {
         /* non-fatal */
       });
-  }, [nLevelsResult, savedNLevelsImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+  }, [nLevelsResult, savedNLevelsImageUrl, historyEntryId, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
   // Same persistence pattern for Flex Icon Grid results. Deterministic
   // render so there's no AI cost, but the user still expects history
   // (rule 16 — UX expectations are consistent across formats).
   useEffect(() => {
     if (!flexIconGridResult) return;
-    const fingerprint = flexIconGridResult.variants?.[0]?.imageUrl ?? flexIconGridResult.imageUrl;
+    const fingerprint = variantsFingerprint(flexIconGridResult);
+    if (!fingerprint) return;
     const buildPayload = () => ({
       imageUrl: flexIconGridResult.imageUrl,
       variants: flexIconGridResult.variants,
@@ -1335,10 +1376,10 @@ function ThumbnailsPage() {
   useEffect(() => {
     if (!doodleExplainerResult) return;
     if (doodleExplainerResult.variants.length === 0) return;
-    // Fingerprint = variants[0].imageUrl. Stable across variant picks,
-    // so picking a different variant patches the entry via
-    // updateThumbnailEntry instead of duplicating it.
-    const fingerprint = doodleExplainerResult.variants[0]?.imageUrl;
+    // Variants-aware fingerprint = first non-empty variant URL.
+    // Stable across variant picks, doesn't collide on variant-0
+    // failure (see TCG effect for the full rationale).
+    const fingerprint = variantsFingerprint(doodleExplainerResult);
     if (!fingerprint) return;
     const buildPayload = (): DoodleExplainerHistoryPayload => ({
       hookText: doodleExplainerResult.hookText,
@@ -2486,7 +2527,7 @@ function ThumbnailsPage() {
             });
             setNLevelsResult(null);
             setFlexIconGridResult(null);
-            setSavedFormatImageUrl(fp.variants?.[0]?.imageUrl ?? fp.imageUrl);
+            setSavedFormatImageUrl(variantsFingerprint(fp));
             setSavedNLevelsImageUrl(null);
             setSavedFlexIconGridImageUrl(null);
             setSavedDoodleSelectedUrl(null);
@@ -2525,7 +2566,7 @@ function ThumbnailsPage() {
               outputHeight: fp.outputHeight,
             });
             setFormatResult(null);
-            setSavedNLevelsImageUrl(fp.variants?.[0]?.imageUrl ?? fp.imageUrl);
+            setSavedNLevelsImageUrl(variantsFingerprint(fp));
             setSavedFormatImageUrl(null);
             setSavedFlexIconGridImageUrl(null);
             setSavedDoodleSelectedUrl(null);
@@ -2551,7 +2592,7 @@ function ThumbnailsPage() {
             });
             setFormatResult(null);
             setNLevelsResult(null);
-            setSavedFlexIconGridImageUrl(fp.variants?.[0]?.imageUrl ?? fp.imageUrl);
+            setSavedFlexIconGridImageUrl(variantsFingerprint(fp));
             setSavedFormatImageUrl(null);
             setSavedNLevelsImageUrl(null);
             setSavedDoodleSelectedUrl(null);
@@ -2587,10 +2628,11 @@ function ThumbnailsPage() {
               variants: fp.variants,
               selectedVariantIndex: fp.selectedVariantIndex,
             });
-            // Fingerprint = variants[0].imageUrl (matches the save
-            // effect's keying). Survives variant picks without
-            // re-creating the entry.
-            setSavedDoodleSelectedUrl(fp.variants[0]?.imageUrl ?? null);
+            // Variants-aware fingerprint (matches the save effect's
+            // keying). Survives variant picks without re-creating the
+            // entry. Falls back to fp.imageUrl for old single-image
+            // entries (none exist for doodle today, but defensive).
+            setSavedDoodleSelectedUrl(variantsFingerprint(fp) || null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});

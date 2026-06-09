@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  fanOutFormatImageRoute,
   perturbPalette,
   rotateHexHue,
 } from '@/lib/thumbnail-variants-client';
@@ -111,5 +112,160 @@ describe('perturbPalette', () => {
   it('is deterministic — same input + index produces identical output', () => {
     expect(perturbPalette(base, 1)).toEqual(perturbPalette(base, 1));
     expect(perturbPalette(base, 2)).toEqual(perturbPalette(base, 2));
+  });
+});
+
+describe('fanOutFormatImageRoute — defensive callback handling', () => {
+  // The fan-out helper accepts an optional bodyPerVariant callback.
+  // If the callback throws OR returns a non-serializable value (BigInt,
+  // circular ref), a naive implementation would crash the whole
+  // fan-out before any request fires. We expect graceful degradation:
+  // the offending variant comes back with imageUrl='' (failed slot),
+  // the siblings still complete normally.
+
+  const originalFetch = global.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      // Echo the body's marker back as imageUrl so the test can assert
+      // which variant fired which body.
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      const url = `https://fake/${body.marker ?? 'default'}.png`;
+      return new Response(JSON.stringify({ imageUrl: url }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as unknown as ReturnType<typeof vi.fn>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as any).fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (global as any).fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it('fans out N parallel calls when no callback is provided', async () => {
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+    });
+    expect(out.variants).toHaveLength(3);
+    expect(out.failedCount).toBe(0);
+    expect(out.firstSuccess).toEqual({ imageUrl: 'https://fake/base.png' });
+    expect(out.variants.every(v => v.imageUrl === 'https://fake/base.png')).toBe(true);
+  });
+
+  it('uses bodyPerVariant for each call', async () => {
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+      bodyPerVariant: (idx) => ({ marker: `variant-${idx}` }),
+    });
+    expect(out.variants.map(v => v.imageUrl)).toEqual([
+      'https://fake/variant-0.png',
+      'https://fake/variant-1.png',
+      'https://fake/variant-2.png',
+    ]);
+  });
+
+  it('handles a throwing bodyPerVariant for one variant without killing siblings', async () => {
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+      bodyPerVariant: (idx) => {
+        if (idx === 1) throw new Error('boom!');
+        return { marker: `variant-${idx}` };
+      },
+    });
+    expect(out.variants).toHaveLength(3);
+    expect(out.failedCount).toBe(1);
+    expect(out.variants[0].imageUrl).toBe('https://fake/variant-0.png');
+    expect(out.variants[1].imageUrl).toBe(''); // failed
+    expect(out.variants[2].imageUrl).toBe('https://fake/variant-2.png');
+  });
+
+  it('handles a bodyPerVariant returning a non-serializable value (BigInt) without killing siblings', async () => {
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+      // BigInt isn't JSON-serializable. Returning one should fail just
+      // that variant, not the whole fan-out.
+      bodyPerVariant: (idx) => {
+        if (idx === 2) return { value: BigInt(42) };
+        return { marker: `variant-${idx}` };
+      },
+    });
+    expect(out.failedCount).toBe(1);
+    expect(out.variants[2].imageUrl).toBe('');
+    expect(out.variants[0].imageUrl).toBe('https://fake/variant-0.png');
+    expect(out.variants[1].imageUrl).toBe('https://fake/variant-1.png');
+  });
+
+  it('handles a bodyPerVariant returning a circular reference without killing siblings', async () => {
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+      bodyPerVariant: (idx) => {
+        if (idx === 0) {
+          const obj: Record<string, unknown> = {};
+          obj.self = obj; // circular
+          return obj;
+        }
+        return { marker: `variant-${idx}` };
+      },
+    });
+    expect(out.failedCount).toBe(1);
+    expect(out.variants[0].imageUrl).toBe('');
+    expect(out.variants[1].imageUrl).toBe('https://fake/variant-1.png');
+    expect(out.variants[2].imageUrl).toBe('https://fake/variant-2.png');
+  });
+
+  it('returns failedCount === variantCount when all fail', async () => {
+    fetchMock.mockImplementation(async () => new Response('{"error":"down"}', { status: 503 }));
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+    });
+    expect(out.failedCount).toBe(3);
+    expect(out.firstSuccess).toBeNull();
+    expect(out.variants.every(v => v.imageUrl === '')).toBe(true);
+  });
+
+  it('returns first SUCCESS even when later variants happen to settle first', async () => {
+    // Simulate variant 0 being slowest: variant 2 returns instantly,
+    // variant 0 takes a tick. firstSuccess should still be the first-by-
+    // index successful response, NOT the first-by-time. The current
+    // implementation uses `results.find` which is index-order — verify.
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      const idx = body.idx ?? 0;
+      if (idx === 0) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      return new Response(JSON.stringify({ imageUrl: `https://fake/idx-${idx}.png` }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const out = await fanOutFormatImageRoute<{ imageUrl: string }>({
+      routeUrl: '/api/test',
+      body: { marker: 'base' },
+      variantCount: 3,
+      bodyPerVariant: (idx) => ({ idx }),
+    });
+    // firstSuccess should be the variant at index 0 (first by index),
+    // not variant 2 which settled first. Important because the panel
+    // uses firstSuccess to populate fields like `regions` and `layout`
+    // that should match a canonical variant, not whichever was fastest.
+    expect(out.firstSuccess?.imageUrl).toBe('https://fake/idx-0.png');
   });
 });

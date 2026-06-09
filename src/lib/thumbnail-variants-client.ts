@@ -200,19 +200,34 @@ export async function fanOutFormatImageRoute<TResponse extends { imageUrl: strin
   });
   const startedAt = Date.now();
 
-  const calls = Array.from({ length: variantCount }, (_, idx) =>
-    fetch(routeUrl, {
+  const calls = Array.from({ length: variantCount }, (_, idx) => {
+    // Resolve the per-variant body once and defensively — a thrown
+    // callback or a non-serializable return value would otherwise
+    // crash the whole fan-out before any request fires. Treat
+    // resolution failure as a per-variant failure (empty url) so
+    // sibling variants still get their chance.
+    let resolvedBody: unknown;
+    try {
+      resolvedBody = bodyPerVariant ? bodyPerVariant(idx) : body;
+      // JSON.stringify catches circular refs / BigInt up-front so the
+      // failure mode is "this variant fails" not "all variants fail".
+      JSON.stringify(resolvedBody);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      return Promise.reject(new Error(`bodyPerVariant(${idx}) failed: ${reason}`));
+    }
+    return fetch(routeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(bodyPerVariant ? bodyPerVariant(idx) : body),
+      body: JSON.stringify(resolvedBody),
     }).then(async r => {
       if (!r.ok) {
         const text = await r.text().catch(() => '');
         throw new Error(`HTTP ${r.status}: ${text.slice(0, 200)}`);
       }
       return r.json() as Promise<TResponse>;
-    }),
-  );
+    });
+  });
 
   const results = await Promise.allSettled(calls);
   const variants: ThumbnailVariant[] = results.map((r, idx) => buildVariant({
