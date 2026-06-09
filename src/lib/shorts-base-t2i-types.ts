@@ -7,9 +7,20 @@
  * bundle.
  *
  * Plan: _plans/2026-06-08-shorts-bulk-batch-youtube-upload.md.
+ *       _plans/2026-06-09-bulk-shorts-robustness-and-inspector.md (§8 picker expansion).
  *
  * Mirrors the existing `shorts-types.ts` ↔ `shorts.ts` and
  * `shorts-batch-stages.ts` ↔ `shorts-batch-orchestrator.ts` splits.
+ *
+ * Cropping policy: every model's output flows through
+ * `cropToAspectAndUpload(_, _, 9, 16)` in the dispatcher regardless of
+ * what aspect the model natively produced. That's the safety net that
+ * lets us add a model without per-model portrait-enum verification —
+ * worst case the source is square or landscape and the crop discards
+ * the side panels; we still end up with exact 9:16. Marker
+ * `nativePortrait: true` is documentation only — the crop runs either
+ * way (no-op when source is already 9:16). See dispatcher in
+ * `shorts-base-t2i.ts`.
  */
 
 /** Every base T2I model the picker can target. Keep this union in
@@ -19,7 +30,13 @@ export type ShortsBaseT2iModelId =
   | 'atlas-gpt-image-2'
   | 'kie-gpt-image-2'
   | 'kie-nano-banana-2'
-  | 'kie-flux-2-pro';
+  | 'kie-flux-2-pro'
+  | 'kie-flux-2-flex'
+  | 'kie-grok-imagine'
+  | 'kie-ideogram-v3-quality'
+  | 'kie-ideogram-v3-turbo'
+  | 'kie-qwen-image'
+  | 'kie-seedream-v4';
 
 export interface ShortsBaseT2iModelSpec {
   id: ShortsBaseT2iModelId;
@@ -28,7 +45,10 @@ export interface ShortsBaseT2iModelSpec {
   /** Vendor identifier ('atlas' | 'kie'). */
   vendor: 'atlas' | 'kie';
   /** Flat per-call cost USD. Tracked locally because Kie's invoice
-   *  arrives async; this is the audit-row estimate the caller logs. */
+   *  arrives async; this is the audit-row estimate the caller logs.
+   *  See `_plans/2026-06-09-bulk-shorts-robustness-and-inspector.md`
+   *  §8 — costs marked ~ are best-effort from Kie pricing pages and
+   *  may need correction once invoices land. */
   costUsd: number;
   /** Underlying model id Kie / Atlas expects on the wire. */
   modelSlug: string;
@@ -36,14 +56,18 @@ export interface ShortsBaseT2iModelSpec {
   hint: string;
 }
 
+/** Registry order matters for picker UX: cheapest cost-tier first,
+ *  with sibling models grouped (Atlas next to Kie GPT-2, Ideogram
+ *  Quality next to Turbo). */
 export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze([
+  // ─── OpenAI GPT Image 2 (two vendor routes — same underlying model) ────
   {
     id: 'atlas-gpt-image-2',
     label: 'Atlas GPT Image 2',
     vendor: 'atlas',
     costUsd: 0.009,
     modelSlug: 'openai/gpt-image-2/text-to-image',
-    hint: 'Cost-optimal default. Same OpenAI model as Kie GPT-2 but cheaper.',
+    hint: 'Cost-optimal route. Same OpenAI model as Kie GPT-2 but cheaper.',
   },
   {
     id: 'kie-gpt-image-2',
@@ -51,23 +75,77 @@ export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze(
     vendor: 'kie',
     costUsd: 0.05,
     modelSlug: 'gpt-image-2-text-to-image',
-    hint: 'Sibling of Atlas above (same OpenAI model, different vendor). 5× cost; kept for vendor parity.',
+    hint: 'Sibling of Atlas above (same OpenAI model, Kie gateway). 5× cost; current default for vendor reliability.',
   },
+  // ─── Google Gemini 3.1 Flash Image ─────────────────────────────────────
   {
     id: 'kie-nano-banana-2',
     label: 'Nano Banana 2',
     vendor: 'kie',
     costUsd: 0.04,
     modelSlug: 'nano-banana-2',
-    hint: 'Google Gemini 3.1 Flash Image — different visual style than GPT Image 2.',
+    hint: 'Google Gemini 3.1 Flash Image — fast, distinct visual style.',
   },
+  // ─── Black Forest Labs Flux 2 family ───────────────────────────────────
   {
     id: 'kie-flux-2-pro',
     label: 'Flux 2 Pro',
     vendor: 'kie',
     costUsd: 0.05,
     modelSlug: 'flux-2/pro-text-to-image',
-    hint: 'Black Forest Labs Flux 2 — different model family, typically richer composition.',
+    hint: 'Flux 2 Pro — typically richer composition + lighting.',
+  },
+  {
+    id: 'kie-flux-2-flex',
+    label: 'Flux 2 Flex',
+    vendor: 'kie',
+    costUsd: 0.025,
+    modelSlug: 'flux-2/flex-text-to-image',
+    hint: 'Cheaper sibling of Flux 2 Pro — same family, balanced cost/quality.',
+  },
+  // ─── xAI Grok Imagine ──────────────────────────────────────────────────
+  {
+    id: 'kie-grok-imagine',
+    label: 'Grok Imagine',
+    vendor: 'kie',
+    costUsd: 0.04,
+    modelSlug: 'grok-imagine/text-to-image',
+    hint: 'xAI Grok Imagine — broad style range, fast.',
+  },
+  // ─── Ideogram v3 (two render-speed tiers, same model slug) ─────────────
+  {
+    id: 'kie-ideogram-v3-quality',
+    label: 'Ideogram v3 Quality',
+    vendor: 'kie',
+    costUsd: 0.05,
+    modelSlug: 'ideogram/v3-text-to-image',
+    hint: 'Ideogram v3 Quality — best-in-class legible in-image text rendering.',
+  },
+  {
+    id: 'kie-ideogram-v3-turbo',
+    label: 'Ideogram v3 Turbo',
+    vendor: 'kie',
+    costUsd: 0.0175,
+    modelSlug: 'ideogram/v3-text-to-image',
+    hint: 'Cheaper Ideogram v3 tier — fast, still strong text rendering.',
+  },
+  // ─── Alibaba Qwen Image ────────────────────────────────────────────────
+  {
+    id: 'kie-qwen-image',
+    label: 'Qwen Image',
+    vendor: 'kie',
+    costUsd: 0.03,
+    modelSlug: 'qwen/text-to-image',
+    hint: 'Alibaba Qwen — strong typography + multilingual prompts.',
+  },
+  // ─── ByteDance Seedream v4 ─────────────────────────────────────────────
+  {
+    id: 'kie-seedream-v4',
+    label: 'Seedream v4',
+    vendor: 'kie',
+    costUsd: 0.03,
+    modelSlug: 'bytedance/seedream-v4-text-to-image',
+    hint: 'ByteDance Seedream v4 — distinct illustration / poster aesthetic.',
   },
 ]);
 

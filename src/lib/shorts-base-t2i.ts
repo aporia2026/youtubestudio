@@ -1,31 +1,35 @@
 /**
  * Vendor-agnostic base-frame text-to-image dispatcher for Shorts.
  *
- * Phase 15.15 — gives the user real model variety for the BASE frame
- * (the foundation that every variant is edited off). Routes to one of
- * four portrait-9:16-capable models:
+ * Originally Phase 15.15 (4 portrait-verified models). Expanded
+ * 2026-06-10 to ten cloud T2I models per the picker-expansion ask in
+ * `_plans/2026-06-09-bulk-shorts-robustness-and-inspector.md` §8. The
+ * full list now lives in `BASE_T2I_MODELS` (see
+ * `shorts-base-t2i-types.ts`) — broadly grouped:
  *
- *   - atlas-gpt-image-2 — Atlas Cloud's OpenAI GPT Image 2. ~$0.009/image.
- *                         Native 1024×1536 (2:3) portrait. Cost-optimal default.
- *   - kie-gpt-image-2   — Kie's GPT Image 2 (same OpenAI model, different
- *                         vendor). ~$0.05/image. Native 9:16. Kept for
- *                         parity with the variant vendor toggle so a
- *                         power user can pin the whole pipeline to Kie.
- *   - kie-nano-banana-2 — Kie's Gemini 3.1 Flash Image. ~$0.04/image.
- *                         Native 9:16. Different model — different
- *                         visual style than GPT Image 2.
- *   - kie-flux-2-pro    — Kie's Flux 2 Pro. ~$0.05/image. Native 9:16.
- *                         Different model — typically richer composition.
+ *   - OpenAI GPT Image 2 (atlas-gpt-image-2, kie-gpt-image-2)
+ *   - Google Gemini 3.1 Flash Image (kie-nano-banana-2)
+ *   - Black Forest Labs Flux 2 (kie-flux-2-pro, kie-flux-2-flex)
+ *   - xAI Grok Imagine (kie-grok-imagine)
+ *   - Ideogram v3 (kie-ideogram-v3-quality, kie-ideogram-v3-turbo)
+ *   - Alibaba Qwen Image (kie-qwen-image)
+ *   - ByteDance Seedream v4 (kie-seedream-v4)
  *
- * Ideogram v3 is deliberately NOT in the registry: its kie.ai docs
- * page was auth-walled during the 2026-06-03 verification pass and we
- * couldn't confirm the `image_size` enum carries a portrait value.
- * Rule 1 (verify, don't guess) says don't ship the option.
+ * Aspect handling: every output is funnelled through
+ * `cropToAspectAndUpload(_, _, 9, 16)` regardless of vendor or
+ * native size. Each Kie branch tries to ask the model for portrait
+ * up front (`aspect_ratio: '9:16'` or `image_size: 'portrait_16_9'`),
+ * but if a model rejects the value, returns a different aspect, or
+ * the docs are wrong, the crop pass produces exact 9:16 output. The
+ * earlier "don't ship unverified portrait support" caveat is now
+ * obsolete — the crop is the safety net.
  *
  * Failure posture: throws plain Error with the vendor message
  * preserved. No automatic vendor fallback — the user-picked model is
  * the user's choice; surfacing the failure is honest and lets them
- * pick another model on retry.
+ * pick another model on retry. The shorts-batch orchestrator's
+ * retry-on-transient layer (see `shorts-batch-retry.ts`) handles
+ * 5xx blips for both Atlas and Kie branches uniformly.
  *
  * Observability (rule 14): every call emits namespaced
  * `[shorts base-t2i]` lines covering dispatcher entry, model branch,
@@ -48,6 +52,15 @@ import { createKieTask, pollKieResult } from './kie-poll';
  *  its own key so storage metrics can show how often the crop path runs
  *  vs. the Kie native-9:16 path. */
 const ATLAS_BASE_CROP_PREFIX = 'shorts-base-atlas-crop';
+
+/** R2 prefix for the 9:16-cropped Kie T2I intermediate. Every Kie
+ *  branch flows its output through cropToAspectAndUpload so we end up
+ *  with exact 9:16 even when the model produced 1:1 / square / 16:9
+ *  (e.g. Ideogram's `image_size` enum doesn't carry a documented
+ *  portrait variant for every tier; rather than fail when the docs
+ *  drift, we always crop). When the source already matches 9:16 the
+ *  crop is a near no-op (re-encode + re-upload). */
+const KIE_BASE_CROP_PREFIX = 'shorts-base-kie-crop';
 
 // The model registry + types + resolver live in `./shorts-base-t2i-types.ts`
 // so client components (the batch RetryAssetsPicker, the editor's
@@ -146,33 +159,86 @@ export async function generateShortsBaseT2I(
   }
 
   const input: Record<string, unknown> = { prompt: opts.prompt };
-  if (spec.id === 'kie-gpt-image-2') {
-    // GPT Image 2 (Kie route). Accepts 9:16 / 2:3 / etc. We pin 9:16
-    // to match the renderer's portrait composition.
-    input.aspect_ratio = '9:16';
-    input.resolution = '1K';
-  } else if (spec.id === 'kie-nano-banana-2') {
-    // Nano Banana 2: aspect_ratio + optional resolution; we pin both
-    // explicitly so a default change on Kie's end doesn't drift us.
-    input.aspect_ratio = '9:16';
-    input.resolution = '1K';
-    input.output_format = 'png';
-  } else if (spec.id === 'kie-flux-2-pro') {
-    // Flux 2 Pro requires the resolution param per the docs.kie.ai
-    // 2026-06-03 verification pass.
-    input.aspect_ratio = '9:16';
-    input.resolution = '1K';
+  switch (spec.id) {
+    case 'kie-gpt-image-2':
+      // GPT Image 2 (Kie route). Accepts 9:16 / 2:3 / etc. We pin 9:16
+      // to match the renderer's portrait composition.
+      input.aspect_ratio = '9:16';
+      input.resolution = '1K';
+      break;
+    case 'kie-nano-banana-2':
+      // Nano Banana 2: aspect_ratio + optional resolution; we pin both
+      // explicitly so a default change on Kie's end doesn't drift us.
+      input.aspect_ratio = '9:16';
+      input.resolution = '1K';
+      input.output_format = 'png';
+      break;
+    case 'kie-flux-2-pro':
+    case 'kie-flux-2-flex':
+      // Flux 2 family: aspect_ratio + resolution. Both Pro and Flex
+      // share the same input shape (only modelSlug differs).
+      input.aspect_ratio = '9:16';
+      input.resolution = '1K';
+      break;
+    case 'kie-grok-imagine':
+      // Grok Imagine T2I. The Kie docs page for this exact endpoint
+      // wasn't surfaced in the 2026-06-10 verification pass — the only
+      // documented Grok endpoints were `image-to-image` and
+      // `text-to-video`. The slug `grok-imagine/text-to-image` is
+      // carried over from the production-doc registry where it has
+      // been running. If Kie returns a non-portrait aspect, the crop
+      // pass below trims it to exact 9:16. Send only the prompt to
+      // avoid 422-ing on undocumented fields.
+      break;
+    case 'kie-ideogram-v3-quality':
+    case 'kie-ideogram-v3-turbo':
+      // Ideogram v3 — single model slug, tier carried in
+      // `rendering_speed`. `portrait_16_9` is documented as a valid
+      // `image_size` enum value (alongside square, square_hd,
+      // portrait_4_3, landscape_4_3, landscape_16_9). The crop pass
+      // is a no-op when source is already 9:16; safety net if the
+      // enum string is ever rejected.
+      input.image_size = 'portrait_16_9';
+      input.rendering_speed = spec.id === 'kie-ideogram-v3-turbo' ? 'TURBO' : 'QUALITY';
+      input.style = 'AUTO';
+      input.expand_prompt = true;
+      break;
+    case 'kie-qwen-image':
+      // Qwen image_size enum follows the `<orientation>_<a_b>`
+      // convention; `portrait_16_9` is the symmetric counterpart of
+      // the documented `landscape_16_9`. If the enum is rejected, the
+      // crop pass salvages whatever Kie returned.
+      input.image_size = 'portrait_16_9';
+      input.output_format = 'png';
+      input.enable_safety_checker = false;
+      break;
+    case 'kie-seedream-v4':
+      // Seedream v4 T2I. Uses image_size + image_resolution per the
+      // 2026-06-10 docs.kie.ai pass. Docs example shows `square_hd`;
+      // the portrait variant follows the same naming convention.
+      input.image_size = 'portrait_16_9';
+      input.image_resolution = '1K';
+      input.max_images = 1;
+      input.nsfw_checker = false;
+      break;
   }
 
   const taskId = await createKieTask(apiKey, spec.modelSlug, input);
-  const url = await pollKieResult(taskId, apiKey);
+  const rawUrl = await pollKieResult(taskId, apiKey);
+  const generationMs = Date.now() - t0;
+  // Always crop to exact 9:16 — see KIE_BASE_CROP_PREFIX comment for
+  // the rationale. No-op when source is already 9:16.
+  const url = await cropToAspectAndUpload(rawUrl, KIE_BASE_CROP_PREFIX, 9, 16);
   const durationMs = Date.now() - t0;
   logger.info('[shorts base-t2i] kie done', {
     modelId: spec.id,
     modelSlug: spec.modelSlug,
     taskId,
+    generationMs,
+    cropMs: durationMs - generationMs,
     durationMs,
     costUsd: spec.costUsd,
+    cropped_to_aspect: '9:16',
   });
   return {
     url,
