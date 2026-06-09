@@ -61,6 +61,16 @@ export interface ShortSeoResult {
   titles: GradedSuggestion[];
   descriptions: GradedSuggestion[];
   hashtag_sets: GradedHashtagSet[];
+  /** YouTube video TAGS — the invisible metadata field on every
+   *  upload, distinct from in-description hashtags. Tags drive
+   *  YouTube's search index (~500 char total budget, ~30 tags max,
+   *  multi-word phrases encouraged like "smishing scam" or
+   *  "USPS text scam"). Hashtags by contrast are visible above the
+   *  title on Shorts and work as single-word category markers.
+   *  Stored WITHOUT '#' (no transform needed for YouTube's upload
+   *  API). Optional for back-compat — rows persisted before this
+   *  field landed get `[]` from the parser. */
+  tags?: string[];
   notes: string;
 }
 

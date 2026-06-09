@@ -102,10 +102,15 @@ Return this EXACT JSON shape:
   "hashtag_sets": [
     { "tags": ["Shorts", "<tag>", "<tag>"], "score": <0-100>, "rationale": "<one line>" }
   ],
+  "tags": ["<10-15 YouTube discovery tags, multi-word phrases ok, no '#' prefix>"],
   "notes": "<one or two sentences of overall SEO advice for this Short>"
 }
 
-Generate 4 distinct title options (different angles: curiosity, how/why, number/list, bold claim), 3 description options, and 2 hashtag sets. Return ONLY valid JSON.`,
+**Notes on the two tag fields:**
+- \`hashtag_sets\` are visible in the description (3-5 single-word topic markers, e.g. "smishing", "cybersecurity").
+- \`tags\` are the YouTube UPLOAD metadata field — invisible to viewers, used by search indexing. Generate 10-15 specific multi-word phrases here (e.g. "smishing scam text", "fake USPS delivery text", "package delivery phishing", "USPS scam 2026"). Total tag string budget ~500 chars. NEVER include '#'. NEVER include "Shorts".
+
+Generate 4 distinct title options (different angles: curiosity, how/why, number/list, bold claim), 3 description options, 2 hashtag sets, and one tags array. Return ONLY valid JSON.`,
   };
 }
 
@@ -168,10 +173,16 @@ You are given a Short SCRIPT we GENERATED — not a user-pasted Short. The video
 - One short line of context + hashtags. Do not write paragraphs.
 - No chapters — they don't render in the vertical feed.
 
-**HASHTAGS:**
+**HASHTAGS (visible, in description):**
 - 3 to 5 hashtags max. More than 5 = diminishing returns; more than 15 = YouTube ignores them all.
 - DO NOT include "Shorts" — see title rule.
 - Mix one broad niche tag with 2-4 specific topic tags. Store each WITHOUT the leading '#'. No spaces inside a tag.
+
+**YOUTUBE TAGS (invisible metadata, search indexing):**
+- This is the dedicated 'tags' field on every YouTube upload — different surface than hashtags. Invisible to viewers; only the algorithm reads them.
+- Generate 10-15 specific multi-word search phrases (e.g. "smishing scam text", "fake USPS delivery text", "package delivery phishing"). Single keywords are weaker than phrase tags here.
+- Total combined character budget ~500 chars across all tags. Cap each tag at ~30 chars. NEVER include '#'. NEVER include "Shorts".
+- Cover variants the audience would actually type into search: question form ("what is smishing"), branded form ("USPS text scam"), pain-point form ("phone won't update").
 
 ## GROUND CLAIMS IN REALITY:
 Do not invent statistics, fake dates, or quoted experts. A vivid true line beats a fake specific.
@@ -198,12 +209,13 @@ Return this EXACT JSON shape:
     { "text": "<description ≤150 chars including hashtags at end, no chapters, no #Shorts>", "score": <0-100>, "rationale": "<one line>" }
   ],
   "hashtag_sets": [
-    { "tags": ["<3-5 tags, NO 'Shorts'>"], "score": <0-100>, "rationale": "<one line>" }
+    { "tags": ["<3-5 visible hashtags, NO 'Shorts'>"], "score": <0-100>, "rationale": "<one line>" }
   ],
+  "tags": ["<10-15 invisible YouTube TAGS: multi-word phrases, no '#', no 'Shorts'>"],
   "notes": "<one or two sentences of overall SEO advice>"
 }
 
-Generate 4 distinct title options (curiosity / bold claim / number / how-why), 3 description options, and 2 hashtag sets. Return ONLY valid JSON.`,
+Generate 4 distinct title options (curiosity / bold claim / number / how-why), 3 description options, 2 hashtag sets, and one tags array. Return ONLY valid JSON.`,
   };
 }
 
@@ -227,6 +239,31 @@ function toGradedSuggestions(raw: unknown): GradedSuggestion[] {
       };
     })
     .filter((s) => s.text.length > 0);
+}
+
+/** Normalise the YouTube TAGS array. Pure — exported for testing.
+ *  Strips '#' if the LLM ignored the prompt, drops blanks, dedupes
+ *  case-insensitive (YouTube treats "USPS scam" and "usps scam" as
+ *  the same tag), caps each tag at 100 chars (YouTube's hard limit
+ *  per-tag), and caps the whole array at 30 tags (well under the
+ *  500-char total budget). Allows internal whitespace (multi-word
+ *  phrases are the whole point of tags vs hashtags). */
+export function normaliseYoutubeTags(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const cleaned = item.trim().replace(/^#+/, '').replace(/\s+/g, ' ').slice(0, 100);
+    if (!cleaned) continue;
+    if (cleaned.toLowerCase() === 'shorts') continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+    if (out.length >= 30) break;
+  }
+  return out;
 }
 
 function toHashtagSets(raw: unknown): GradedHashtagSet[] {
@@ -276,6 +313,7 @@ export function parseShortSeoResult(raw: string): ShortSeoResult {
     titles,
     descriptions: toGradedSuggestions(obj.descriptions),
     hashtag_sets: toHashtagSets(obj.hashtag_sets),
+    tags: normaliseYoutubeTags(obj.tags),
     notes: typeof obj.notes === 'string' ? obj.notes.trim() : '',
   };
 }

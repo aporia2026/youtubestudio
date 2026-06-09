@@ -141,11 +141,15 @@ export function seedYoutubeMetadataFromBatch(args: {
     description = seo.descriptions[0].text;
   }
 
-  // Tags: top SEO grade hashtag set, merged with the batch's
-  // user-supplied tag pool (deduped, batch pool first). Hashtags
-  // are stored without leading '#' in seo_result; YouTube tags don't
-  // use '#' either, so no transform needed.
-  const seoTags = seo?.hashtag_sets?.[0]?.tags ?? [];
+  // YouTube TAGS metadata: prefer the SEO-generated dedicated `tags`
+  // array (multi-word phrases optimised for search indexing) over the
+  // hashtags (single-word category markers). Falls back to hashtags
+  // for rows persisted before the `tags` field landed. Always merged
+  // with the batch's user-supplied tag pool — batch pool first so
+  // explicit human picks win duplicate resolution.
+  const seoTags = seo?.tags && seo.tags.length > 0
+    ? seo.tags
+    : (seo?.hashtag_sets?.[0]?.tags ?? []);
   const merged = dedupeKeepOrder([...(defaults.tagsPool ?? []), ...seoTags]);
 
   return {

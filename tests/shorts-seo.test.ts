@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildNativeShortSeoPrompt,
   buildShortSeoPrompt,
+  normaliseYoutubeTags,
   parseShortSeoResult,
 } from '@/lib/shorts-seo';
 
@@ -102,6 +103,77 @@ describe('parseShortSeoResult', () => {
   it('throws when there are no usable title options', () => {
     expect(() => parseShortSeoResult(JSON.stringify({ titles: [] }))).toThrow(/no usable title/i);
     expect(() => parseShortSeoResult('not json at all')).toThrow(/parse/i);
+  });
+
+  // YouTube TAGS (the upload metadata field) — separate from hashtag_sets,
+  // landed 2026-06-10. Optional in the schema; absent ⇒ [] so legacy
+  // rows keep parsing.
+  describe('YouTube tags field', () => {
+    it('parses a tags array of multi-word phrases', () => {
+      const raw = JSON.stringify({
+        titles: [{ text: 'k', score: 50 }],
+        tags: ['smishing scam text', 'fake USPS delivery', 'package phishing'],
+      });
+      const r = parseShortSeoResult(raw);
+      expect(r.tags).toEqual(['smishing scam text', 'fake USPS delivery', 'package phishing']);
+    });
+
+    it('returns [] when the tags field is missing (legacy rows)', () => {
+      const raw = JSON.stringify({ titles: [{ text: 'k', score: 50 }] });
+      const r = parseShortSeoResult(raw);
+      expect(r.tags).toEqual([]);
+    });
+
+    it('returns [] for malformed types instead of throwing', () => {
+      const raw = JSON.stringify({
+        titles: [{ text: 'k', score: 50 }],
+        tags: 'not an array',
+      });
+      expect(parseShortSeoResult(raw).tags).toEqual([]);
+    });
+  });
+});
+
+describe('normaliseYoutubeTags', () => {
+  it('strips leading # if the LLM ignored the prompt', () => {
+    expect(normaliseYoutubeTags(['#smishing', '##USPS'])).toEqual(['smishing', 'USPS']);
+  });
+
+  it('keeps multi-word phrases (unlike hashtag normalisation)', () => {
+    expect(normaliseYoutubeTags(['smishing scam', 'fake USPS text']))
+      .toEqual(['smishing scam', 'fake USPS text']);
+  });
+
+  it('drops blanks, drops non-strings, drops "Shorts"', () => {
+    expect(normaliseYoutubeTags(['', '   ', null, 42, 'Shorts', 'shorts', 'real']))
+      .toEqual(['real']);
+  });
+
+  it('dedupes case-insensitively keeping the first form seen', () => {
+    expect(normaliseYoutubeTags(['USPS scam', 'usps scam', 'USPS Scam']))
+      .toEqual(['USPS scam']);
+  });
+
+  it('caps the array at 30 tags', () => {
+    const many = Array.from({ length: 50 }, (_, i) => `tag${i}`);
+    expect(normaliseYoutubeTags(many)).toHaveLength(30);
+  });
+
+  it('caps each tag at 100 chars (YouTube per-tag hard limit)', () => {
+    const huge = 'a'.repeat(250);
+    expect(normaliseYoutubeTags([huge])[0]).toHaveLength(100);
+  });
+
+  it('collapses internal whitespace to single spaces', () => {
+    expect(normaliseYoutubeTags(['  smishing    scam   text  ']))
+      .toEqual(['smishing scam text']);
+  });
+
+  it('returns [] for non-array input', () => {
+    expect(normaliseYoutubeTags(undefined)).toEqual([]);
+    expect(normaliseYoutubeTags(null)).toEqual([]);
+    expect(normaliseYoutubeTags('not an array')).toEqual([]);
+    expect(normaliseYoutubeTags(42)).toEqual([]);
   });
 });
 

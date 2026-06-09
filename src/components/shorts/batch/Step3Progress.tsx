@@ -757,7 +757,9 @@ function SeoInspector({ seo }: { seo: ShortSeoResult | null }) {
       )}
       {topHashtags && topHashtags.tags.length > 0 && (
         <div>
-          <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Hashtags</div>
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            Hashtags <span className="opacity-60">(visible in description)</span>
+          </div>
           <div className="flex flex-wrap gap-1">
             {topHashtags.tags.map((tag) => (
               <span
@@ -765,6 +767,23 @@ function SeoInspector({ seo }: { seo: ShortSeoResult | null }) {
                 className="rounded-full border border-[var(--border)] bg-white/[0.04] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)]"
               >
                 #{tag}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {seo.tags && seo.tags.length > 0 && (
+        <div>
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
+            YouTube tags <span className="opacity-60">(invisible metadata · {seo.tags.length} of 30)</span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {seo.tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full border border-[var(--accent-purple-bright)]/30 bg-[var(--accent-purple)]/10 px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)]"
+              >
+                {tag}
               </span>
             ))}
           </div>

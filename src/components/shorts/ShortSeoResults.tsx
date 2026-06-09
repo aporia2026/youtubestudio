@@ -45,7 +45,7 @@ export function ShortSeoResults({ result }: { result: ShortSeoResult }) {
         ))}
       </Section>
 
-      <Section title="Hashtag sets">
+      <Section title="Hashtag sets (visible in description)">
         {result.hashtag_sets.map((h, i) => {
           const tagText = h.tags.map((t) => `#${t}`).join(' ');
           return (
@@ -53,6 +53,50 @@ export function ShortSeoResults({ result }: { result: ShortSeoResult }) {
           );
         })}
       </Section>
+
+      {result.tags && result.tags.length > 0 && (
+        <Section title={`YouTube tags (invisible metadata · ${result.tags.length} of 30)`}>
+          <div style={{ padding: 12, borderRadius: 10, background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.25)' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {result.tags.map((t) => (
+                <span
+                  key={t}
+                  style={{
+                    fontSize: 12,
+                    padding: '3px 9px',
+                    borderRadius: 999,
+                    background: 'rgba(124,58,237,0.16)',
+                    color: 'var(--text-secondary, rgba(255,255,255,0.85))',
+                    border: '1px solid rgba(124,58,237,0.35)',
+                  }}
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, color: 'var(--text-muted)' }}>
+              <span>
+                {result.tags.reduce((sum, t) => sum + t.length, 0)} / 500 chars used
+              </span>
+              <button
+                type="button"
+                onClick={() => copy((result.tags ?? []).join(', '))}
+                style={{
+                  fontSize: 11,
+                  padding: '3px 10px',
+                  borderRadius: 6,
+                  background: 'transparent',
+                  color: 'var(--text-secondary, rgba(255,255,255,0.7))',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  cursor: 'pointer',
+                }}
+              >
+                Copy comma-list
+              </button>
+            </div>
+          </div>
+        </Section>
+      )}
 
       {result.notes && (
         <div style={{ marginTop: 14, padding: 12, borderRadius: 10, background: 'rgba(124,58,237,0.06)', fontSize: 13, color: 'var(--text-secondary, rgba(255,255,255,0.8))' }}>
