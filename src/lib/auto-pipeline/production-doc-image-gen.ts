@@ -40,7 +40,7 @@ import {
   composePerPanelPrompt,
 } from '../motion-collage-prompt';
 import { generateMouthRemovedBase } from '../atlas-mouth-removal';
-import { cropTo16x9AndUpload } from '../image-gen-dispatch';
+import { cropTo16x9AndUpload, mirrorImageToR2 } from '../image-gen-dispatch';
 import { upscaleViaRecraft } from '../upscale';
 import {
   getDownloadUrlForBucket,
@@ -1900,10 +1900,36 @@ export async function generateMotionCollage(args: {
         atlasPredictionId = atlasResult.predictionId ?? null;
       }
       providerRequestId = atlasPredictionId;
-      // Native 16:9 source — no crop needed. (Cache-hit Edit also
-      // returns 16:9 since its source IS panel 0, which is now 16:9
-      // natively. Both branches collapse to a no-op here.)
-      const croppedUrl = atlasUrl;
+      // Native 16:9 source — no crop needed. But we DO need to persist
+      // the bytes to R2: Atlas CDN URLs are ephemeral and the upscale
+      // step's "skip if > 2000px long edge" guard means it would
+      // otherwise return the raw Atlas URL unchanged, which expires
+      // hours later and turns panel 1 into a broken image in the
+      // editor (the lightbox's `<img alt>` falls back to "Panel 1 of N"
+      // text, the symptom the user reported 2026-06-09). The
+      // `panel0FromCache` branch already persists via
+      // generateGptImage2Edit → cropToAspectAndUpload, so it short-
+      // circuits the mirror here. See plan:
+      // _plans/2026-06-09-motion-collage-panel-1-r2-mirror-and-smaller-deltas.md
+      let mirroredUrl: string;
+      if (panel0FromCache) {
+        // Edit's `atlasUrl` is already a persistent R2 URL — skip the
+        // redundant mirror so we don't pay for an extra fetch + upload.
+        mirroredUrl = atlasUrl;
+        logger.info('[motion-collage panel-0-mirror] skip cache-edit-already-r2', {
+          row_index: lookupRowIndex(row, doc),
+        });
+      } else {
+        const mirrorStart = Date.now();
+        mirroredUrl = await mirrorImageToR2(atlasUrl, 'prodoc-images-motion-collage-panel-0');
+        logger.info('[motion-collage panel-0-mirror] done', {
+          row_index: lookupRowIndex(row, doc),
+          src_url_preview: atlasUrl.slice(0, 80),
+          r2_url_preview: mirroredUrl.slice(0, 80),
+          ms: Date.now() - mirrorStart,
+        });
+      }
+      const croppedUrl = mirroredUrl;
       const upscale = await upscaleViaRecraft(croppedUrl);
       const panelDurationMs = Date.now() - panelStart;
       const panelCostUsd = 0.0135;

@@ -126,6 +126,52 @@ describe('buildPanelFillPrompt', () => {
       expect(system).toMatch(/LARGER and more prominent/);
     });
   });
+
+  // ─── MOTION DELTA (2026-06-09 fix) ────────────────────────────────
+  // Second-biggest motion_collage failure mode: the LLM evenly divides
+  // a motion across panels ("at start" → "1/3 way" → "2/3 way" → "at
+  // end") which forces the image model to re-imagine composition every
+  // step. The new MOTION DELTA section pushes for tiny per-step changes
+  // even if the final panel doesn't fully complete the action.
+  describe('motion-delta size guidance', () => {
+    it('includes the MOTION DELTA section calling out tiny per-step changes', () => {
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 3,
+        rows: 3,
+      });
+      expect(system).toMatch(/MOTION DELTA/);
+      expect(system).toMatch(/SMALL increment|small increment|TINY/);
+    });
+
+    it('shows the anti-pattern (evenly-divided big deltas) and the good pattern (tiny body-mechanics deltas)', () => {
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 2,
+        rows: 2,
+      });
+      // Anti-pattern marker — the canonical "1/3 across" → "2/3 across"
+      // failure mode, named so a future reader can grep the prompt
+      // copy against the test.
+      expect(system).toMatch(/ANTI-PATTERN/);
+      expect(system).toMatch(/1\/3 across/);
+      // Good pattern uses body-mechanics granularity (foot lifting,
+      // foot landing) rather than fractional progress.
+      expect(system).toMatch(/GOOD PATTERN/);
+      expect(system).toMatch(/foot/i);
+    });
+
+    it('tells the model it is acceptable for the final panel to NOT fully complete the action', () => {
+      // The key permission that lets the model write tiny deltas
+      // without feeling like it's failing the brief.
+      const { system } = buildPanelFillPrompt({
+        scriptText: 'beat',
+        cols: 2,
+        rows: 2,
+      });
+      expect(system).toMatch(/almost complete|ALMOST complete/i);
+    });
+  });
 });
 
 describe('parsePanelFillResponse', () => {

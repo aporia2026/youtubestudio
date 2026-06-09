@@ -21,6 +21,11 @@ vi.mock('@/lib/atlas-cloud-images', () => ({
 }));
 vi.mock('@/lib/image-gen-dispatch', () => ({
   cropTo16x9AndUpload: vi.fn(async () => 'mock-cropped'),
+  // 2026-06-09 — panel 0 now mirrors the raw Atlas URL to R2 so it
+  // survives past Atlas's CDN retention window. Distinct return value
+  // so the happy-path assertion can verify panel 0's URL flowed
+  // through the mirror, not the raw Atlas URL.
+  mirrorImageToR2: vi.fn(async () => 'mock-mirrored-r2-url'),
 }));
 vi.mock('@/lib/upscale', () => ({
   // Each panel gets its own upscale call now (plan §D, per-panel
@@ -62,8 +67,10 @@ import {
   type PipelineImageRow,
 } from '@/lib/auto-pipeline/production-doc-image-gen';
 import { generateAtlasT2I } from '@/lib/atlas-cloud-images';
+import { mirrorImageToR2 } from '@/lib/image-gen-dispatch';
 
 const mockedAtlas = vi.mocked(generateAtlasT2I);
+const mockedMirror = vi.mocked(mirrorImageToR2);
 
 function validRow(overrides: Partial<PipelineImageRow> = {}): PipelineImageRow {
   return {
@@ -123,6 +130,37 @@ describe('generateMotionCollage — happy path (chained Atlas Edit, plan §E)', 
     expect(result.panelUrls).toHaveLength(9);
     // Always exactly ONE i2i call regardless of grid (panel 0 only).
     expect(mockedAtlas).toHaveBeenCalledTimes(1);
+  });
+
+  it('panel 0 is mirrored to R2 so its URL is persistent (regression: commit d526ec70 left it as a raw ephemeral Atlas CDN URL)', async () => {
+    // The user reported "Panel 1 is always broken in every motion
+    // collage" — the lightbox showed the browser's `<img alt>` text
+    // fallback because panel 0's URL had gone 404. Root cause: the
+    // 2026-06-08 native-16:9 commit removed the crop step but the crop
+    // step was ALSO the R2-persistence step. Fix: panel 0 explicitly
+    // mirrors the Atlas URL to R2 before storing it.
+    const row = validRow();
+    const doc = docWithRow(row);
+
+    const result = await generateMotionCollage({ row, doc, workspaceId: 'ws' });
+
+    expect(result.error).toBeUndefined();
+    // Exactly ONE mirror call (panel 0 only — panels 1..N go through
+    // generateGptImage2Edit which has its own R2 persistence).
+    expect(mockedMirror).toHaveBeenCalledTimes(1);
+    // The first arg is the raw Atlas URL; the second is the R2 prefix
+    // dedicated to motion-collage panel-0 (so R2 metrics + lifecycle
+    // rules can distinguish this code path).
+    expect(mockedMirror).toHaveBeenCalledWith(
+      expect.any(String),
+      'prodoc-images-motion-collage-panel-0',
+    );
+    // Panel 0's stored URL chain: mirrored R2 URL → upscale.
+    // (In prod, upscale skips at >2000px and returns the R2 URL
+    // unchanged; the test's upscale mock always appends a suffix, so
+    // we assert the mirror URL is the upscale's INPUT — i.e. the
+    // mirrored URL flows into the upscale call.)
+    expect(result.panelUrls![0]).toMatch(/^mock-mirrored-r2-url/);
   });
 });
 

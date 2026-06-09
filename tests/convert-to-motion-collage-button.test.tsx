@@ -167,7 +167,11 @@ describe('ConvertToMotionCollageButton — grid picker', () => {
     expect(html).toContain('4×4');
   });
 
-  it('defaults to 2×2 selected and surfaces the panel count on the button', () => {
+  it('defaults to 3×3 selected and surfaces the panel count on the button', () => {
+    // 2026-06-09: default bumped 2×2 → 3×3. With only 4 panels the LLM
+    // had to pick huge per-panel deltas which the image model
+    // couldn't reproduce without breaking composition. 9 panels lets
+    // the MOTION DELTA rule actually breathe.
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow()}
@@ -177,8 +181,8 @@ describe('ConvertToMotionCollageButton — grid picker', () => {
       />,
     );
     // CTA includes the selected grid + total panel count.
-    expect(html).toContain('Convert to motion collage (2×2)');
-    expect(html).toContain('Auto-fills 4 panel prompts');
+    expect(html).toContain('Convert to motion collage (3×3)');
+    expect(html).toContain('Auto-fills 9 panel prompts');
   });
 
   it('renders the "change grid after conversion" hint', () => {

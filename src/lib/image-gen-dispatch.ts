@@ -301,6 +301,49 @@ export async function cropTo16x9AndUpload(srcUrl: string, r2KeyPrefix: string): 
   return cropToAspectAndUpload(srcUrl, r2KeyPrefix, 16, 9);
 }
 
+/**
+ * Persist a vendor-CDN image to R2 with no crop. Use when the source is
+ * already at the target aspect (e.g. Atlas's native 2560×1440 16:9 size)
+ * but the caller still needs a URL that survives past the vendor CDN's
+ * retention window — Atlas / Kie CDN URLs expire after a few hours.
+ *
+ * Same R2 conventions as `cropToAspectAndUpload`: re-encodes to JPEG via
+ * sharp (matches the rest of the pipeline so downstream sharp consumers
+ * see one consistent format), uploads under `{r2KeyPrefix}/{ts}-{suffix}.jpg`,
+ * returns the R2 public download URL. Throws on fetch / sharp / upload
+ * failure so the caller's outer try/catch surfaces it.
+ *
+ * Why a separate helper instead of reusing `cropToAspectAndUpload` with
+ * the source's own aspect: makes the intent ("persist, don't reshape")
+ * obvious at the call site, gives this code path its own log namespace,
+ * and avoids the floating-point aspect equality check that would
+ * otherwise live inside the crop helper. One purpose per function.
+ */
+export async function mirrorImageToR2(srcUrl: string, r2KeyPrefix: string): Promise<string> {
+  const t0 = Date.now();
+  const res = await fetch(srcUrl);
+  if (!res.ok) {
+    throw new Error(`[image-dispatch mirror] fetch failed: HTTP ${res.status}`);
+  }
+  const srcBuf = Buffer.from(await res.arrayBuffer());
+  const meta = await sharp(srcBuf).metadata();
+  if (typeof meta.width !== 'number' || typeof meta.height !== 'number') {
+    throw new Error('[image-dispatch mirror] sharp metadata missing width/height');
+  }
+  const jpegBuf = await sharp(srcBuf).jpeg({ quality: 92 }).toBuffer();
+  const bucket = getImagesBucket();
+  const r2Key = `${r2KeyPrefix}/${Date.now()}-${randomSuffix()}.jpg`;
+  await uploadToBucket(bucket, r2Key, jpegBuf, 'image/jpeg');
+  const mirroredUrl = await getDownloadUrlForBucket(bucket, r2Key, process.env.R2_IMAGES_PUBLIC_URL);
+  logger.info('[image-dispatch] mirror', {
+    source_w: meta.width,
+    source_h: meta.height,
+    bytes_out: jpegBuf.length,
+    ms: Date.now() - t0,
+  });
+  return mirroredUrl;
+}
+
 /** 8-char alnum suffix matching the existing R2 key convention in the
  *  production-doc image route. */
 function randomSuffix(): string {

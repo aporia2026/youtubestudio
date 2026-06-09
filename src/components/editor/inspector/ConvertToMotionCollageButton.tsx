@@ -48,7 +48,7 @@ interface ConvertToMotionCollageButtonProps {
 
 /** Grid presets — identical to the post-convert MotionCollageRowEditor's
  *  picker. Capped at 16 cells (= MAX_COLLAGE_CELLS). Ordered smallest
- *  first so the default 2×2 sits at the top of the row. */
+ *  first so the picker reads left-to-right small → big. */
 const GRID_PRESETS: ReadonlyArray<{ cols: number; rows: number; label: string }> = [
   { cols: 2, rows: 2, label: '2×2' },
   { cols: 3, rows: 2, label: '3×2' },
@@ -58,7 +58,14 @@ const GRID_PRESETS: ReadonlyArray<{ cols: number; rows: number; label: string }>
   { cols: 4, rows: 4, label: '4×4' },
 ];
 
-const DEFAULT_GRID = GRID_PRESETS[0];
+// 3×3 (9 panels) over 2×2 (4 panels). Default decided 2026-06-09 after
+// user feedback that 2×2 forces the LLM into huge per-panel deltas
+// ("at start" → "1/3 across" → "2/3 across" → "at end") which the image
+// model cannot reproduce without re-imagining composition every panel.
+// 9 panels lets the per-panel-fill prompt's MOTION DELTA rule actually
+// breathe — tiny per-step changes still cover the full motion arc.
+// Cost: 2.25× the per-row image-gen vs. 2×2; user accepted the tradeoff.
+const DEFAULT_GRID = GRID_PRESETS[3];
 
 export function ConvertToMotionCollageButton({
   row,
