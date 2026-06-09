@@ -180,6 +180,11 @@ export async function fanOutFormatImageRoute<TResponse extends { imageUrl: strin
   variantCount: number;
   /** Optional concept labels per variant — surfaced in the picker. */
   conceptLabels?: string[];
+  /** Optional per-variant body override. Receives the variant index
+   *  (0..variantCount-1) and returns the body for that call. When
+   *  omitted, every call uses `body` verbatim. Used by the TCG / NL
+   *  panels to perturb the palette per variant (palette axis variance). */
+  bodyPerVariant?: (index: number) => unknown;
 }): Promise<{
   variants: ThumbnailVariant[];
   failedCount: number;
@@ -187,15 +192,19 @@ export async function fanOutFormatImageRoute<TResponse extends { imageUrl: strin
    *  beyond imageUrl (regions, layout, etc.). */
   firstSuccess: TResponse | null;
 }> {
-  const { routeUrl, body, variantCount, conceptLabels } = input;
-  console.info('[thumb-format-variants fan-out] start', { routeUrl, variantCount });
+  const { routeUrl, body, variantCount, conceptLabels, bodyPerVariant } = input;
+  console.info('[thumb-format-variants fan-out] start', {
+    routeUrl,
+    variantCount,
+    perVariantBody: !!bodyPerVariant,
+  });
   const startedAt = Date.now();
 
-  const calls = Array.from({ length: variantCount }, () =>
+  const calls = Array.from({ length: variantCount }, (_, idx) =>
     fetch(routeUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(bodyPerVariant ? bodyPerVariant(idx) : body),
     }).then(async r => {
       if (!r.ok) {
         const text = await r.text().catch(() => '');
@@ -223,4 +232,90 @@ export async function fanOutFormatImageRoute<TResponse extends { imageUrl: strin
   });
 
   return { variants, failedCount, firstSuccess };
+}
+
+/**
+ * Produces a deterministic perturbation of a 3-color palette based on
+ * variant index. Used by the TCG / N-Levels fan-out so each variant
+ * goes to the image model with a structurally different palette.
+ *
+ *   - index 0: original palette (no change)
+ *   - index 1: swap primary_accent ↔ secondary_accent
+ *   - index 2: rotate every color's HSL hue by 180° (complement)
+ *
+ * Deterministic so re-running the same generate produces the same
+ * palette set — useful when debugging "why did variant 2 look like
+ * that" via the saved promptUsed field.
+ */
+export function perturbPalette(
+  base: { background: string; primary_accent: string; secondary_accent: string },
+  index: number,
+): { background: string; primary_accent: string; secondary_accent: string } {
+  switch (index) {
+    case 0:
+      return base;
+    case 1:
+      return {
+        background: base.background,
+        primary_accent: base.secondary_accent,
+        secondary_accent: base.primary_accent,
+      };
+    case 2:
+      return {
+        background: rotateHexHue(base.background, 180),
+        primary_accent: rotateHexHue(base.primary_accent, 180),
+        secondary_accent: rotateHexHue(base.secondary_accent, 180),
+      };
+    default:
+      // VariantCount is clamped to [1,3] elsewhere; defensive fallback.
+      return base;
+  }
+}
+
+/**
+ * Rotates a hex color's HSL hue by `degrees`. Returns the lowercased
+ * hex (#rrggbb). Falls back to the input unchanged when the hex can't
+ * be parsed — defensive against legacy entries with malformed palette
+ * strings.
+ */
+export function rotateHexHue(hex: string, degrees: number): string {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!match) return hex;
+  const n = parseInt(match[1], 16);
+  const r = (n >> 16) & 0xff;
+  const g = (n >> 8) & 0xff;
+  const b = n & 0xff;
+  const { h, s, l } = rgbToHsl(r, g, b);
+  const nextH = ((h + degrees) % 360 + 360) % 360;
+  const { r: nr, g: ng, b: nb } = hslToRgb(nextH, s, l);
+  return `#${[nr, ng, nb].map(v => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  let h = 0, s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+    else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+    else h = ((rn - gn) / d + 4) * 60;
+  }
+  return { h, s, l };
+}
+
+function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: number } {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let rp = 0, gp = 0, bp = 0;
+  if (h < 60) { rp = c; gp = x; bp = 0; }
+  else if (h < 120) { rp = x; gp = c; bp = 0; }
+  else if (h < 180) { rp = 0; gp = c; bp = x; }
+  else if (h < 240) { rp = 0; gp = x; bp = c; }
+  else if (h < 300) { rp = x; gp = 0; bp = c; }
+  else { rp = c; gp = 0; bp = x; }
+  return { r: (rp + m) * 255, g: (gp + m) * 255, b: (bp + m) * 255 };
 }

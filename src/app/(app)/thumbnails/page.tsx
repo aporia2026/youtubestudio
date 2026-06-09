@@ -12,13 +12,13 @@ import { ModelSelector } from '@/components/ui/ModelSelector';
 import { getFeatureDefaultModelId } from '@/lib/ai-models';
 import { HistoryPanel } from '@/components/ui/HistoryPanel';
 import { DraftsBanner } from '@/components/ui/DraftsBanner';
-import { getThumbnailHistory, getThumbnailHistoryCached, saveThumbnailEntry, updateThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry } from '@/lib/history';
+import { getThumbnailHistory, getThumbnailHistoryCached, saveThumbnailEntry, updateThumbnailEntry, deleteThumbnailEntry, clearThumbnailHistory, type ThumbnailHistoryEntry, type TopicCardGridHistoryPayload, type NLevelsHistoryPayload, type DoodleExplainerHistoryPayload } from '@/lib/history';
 import { saveDraft, deleteDraft, setActiveDraftId, getActiveDraft, type WorkflowDraft, type ThumbnailsDraftState } from '@/lib/drafts';
 import { downloadHref } from '@/lib/download-file';
 import { TopicCardGridPanel, type FormatGenerationResult, type TopicCardGridDraftState } from '@/components/thumbnails/TopicCardGridPanel';
 import { NLevelsPanel, type NLevelsGenerationResult, type NLevelsDraftState } from '@/components/thumbnails/NLevelsPanel';
 import { FlexIconGridPanel, type FlexIconGridGenerationResult, type FlexIconGridDraftState } from '@/components/thumbnails/FlexIconGridPanel';
-import { DoodleExplainerPanel, type DoodleExplainerGenerationResult } from '@/components/thumbnails/DoodleExplainerPanel';
+import { DoodleExplainerPanel, type DoodleExplainerGenerationResult, type DoodleExplainerDraftState } from '@/components/thumbnails/DoodleExplainerPanel';
 import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 import { fanOutImageVariants, regenerateSingleVariant } from '@/lib/thumbnail-variants-client';
 import {
@@ -323,6 +323,8 @@ function ThumbnailsPage() {
   const [savedDoodleSelectedUrl, setSavedDoodleSelectedUrl] = useState<string | null>(null);
   const [flexIconGridDraftSnapshot, setFlexIconGridDraftSnapshot] = useState<FlexIconGridDraftState | null>(null);
   const [hydratedFlexIconGridState, setHydratedFlexIconGridState] = useState<FlexIconGridDraftState | null>(null);
+  const [doodleExplainerDraftSnapshot, setDoodleExplainerDraftSnapshot] = useState<DoodleExplainerDraftState | null>(null);
+  const [hydratedDoodleExplainerState, setHydratedDoodleExplainerState] = useState<DoodleExplainerDraftState | null>(null);
   const [nLevelsResult, setNLevelsResult] = useState<NLevelsGenerationResult | null>(null);
   // Titles the user "picked" from the script textarea (select text → click
   // "Add as title"). When the picked count matches the grid/level count,
@@ -395,6 +397,48 @@ function ThumbnailsPage() {
   useEffect(() => {
     try { localStorage.setItem('thumb_variant_count', String(variantCount)); } catch { /* ignore */ }
   }, [variantCount]);
+
+  // Phase 4 (2026-06-10) — server-backed variant settings. On mount,
+  // fetch the user's saved preferences from
+  // /api/user/settings/thumbnail-variants. Server wins over the
+  // localStorage cache (cross-device users get the most-recent choice).
+  // Subsequent changes to variantsEnabled / variantCount PUT to the
+  // server in the background — fire-and-forget so a slow network
+  // doesn't block the UI.
+  const variantSettingsHydratedRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/user/settings/thumbnail-variants');
+        if (!res.ok) return;
+        const data = await res.json() as {
+          variantCount: number;
+          variantsEnabled: boolean;
+          isExplicit: { variantCount: boolean; variantsEnabled: boolean };
+        };
+        if (cancelled) return;
+        if (data.isExplicit.variantsEnabled) setVariantsEnabled(data.variantsEnabled);
+        if (data.isExplicit.variantCount) setVariantCount(clampVariantCount(data.variantCount));
+      } catch {
+        /* offline / not logged in — keep localStorage defaults */
+      } finally {
+        variantSettingsHydratedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  // Background sync: PUT the changes after hydration completes so the
+  // initial server-load doesn't immediately PUT-back the values it just
+  // pulled.
+  useEffect(() => {
+    if (!variantSettingsHydratedRef.current) return;
+    void fetch('/api/user/settings/thumbnail-variants', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variantsEnabled, variantCount }),
+    }).catch(() => { /* non-fatal */ });
+  }, [variantsEnabled, variantCount]);
   const [generatedImageVariants, setGeneratedImageVariants] = useState<Record<number, ThumbnailVariant[]>>({});
   const [generatedImageSelectedVariantIndex, setGeneratedImageSelectedVariantIndex] = useState<Record<number, number>>({});
   /** Tracks which variant slot is currently being regenerated, keyed by
@@ -592,6 +636,7 @@ function ThumbnailsPage() {
           nLevels: nLevelsDraftSnapshot || undefined,
           topicCardGrid: topicCardGridDraftSnapshot || undefined,
           flexIconGrid: flexIconGridDraftSnapshot || undefined,
+          doodleExplainer: doodleExplainerDraftSnapshot || undefined,
         };
         const draft = saveDraft({
           id: draftId || undefined,
@@ -690,11 +735,13 @@ function ThumbnailsPage() {
     setNLevelsDraftSnapshot(null);
     setTopicCardGridDraftSnapshot(null);
     setFlexIconGridDraftSnapshot(null);
+    setDoodleExplainerDraftSnapshot(null);
     setFlexIconGridResult(null);
     setDoodleExplainerResult(null);
     setHydratedNLevelsState(null);
     setHydratedTopicCardGridState(null);
     setHydratedFlexIconGridState(null);
+    setHydratedDoodleExplainerState(null);
     setTextOverlay(DEFAULT_TEXT_OVERLAY);
     setSaveStatus('idle');
     setLastSavedAt(null);
@@ -1231,7 +1278,27 @@ function ThumbnailsPage() {
   // (rule 16 — UX expectations are consistent across formats).
   useEffect(() => {
     if (!flexIconGridResult) return;
-    if (savedFlexIconGridImageUrl === flexIconGridResult.imageUrl) return;
+    const fingerprint = flexIconGridResult.variants?.[0]?.imageUrl ?? flexIconGridResult.imageUrl;
+    const buildPayload = () => ({
+      imageUrl: flexIconGridResult.imageUrl,
+      variants: flexIconGridResult.variants,
+      selectedVariantIndex: flexIconGridResult.selectedVariantIndex,
+      config: flexIconGridResult.config,
+      regions: flexIconGridResult.regions,
+      outputWidth: flexIconGridResult.outputWidth,
+      outputHeight: flexIconGridResult.outputHeight,
+    });
+
+    if (savedFlexIconGridImageUrl === fingerprint) {
+      // Variant pick — patch.
+      if (historyEntryId) {
+        void updateThumbnailEntry(historyEntryId, { formatPayload: buildPayload() })
+          .then(() => { setHistoryItems(getThumbnailHistoryCached()); })
+          .catch(() => { /* non-fatal */ });
+      }
+      return;
+    }
+
     const safeTitle = title.trim() || 'Flex Icon Grid';
     const safeNiche = niche || 'Unspecified';
     void saveThumbnailEntry({
@@ -1247,23 +1314,17 @@ function ThumbnailsPage() {
       videoTitle: scheduleItem?.title?.trim() || safeTitle,
       scheduleItemId: scheduleItemId || undefined,
       format: 'flex-icon-grid',
-      formatPayload: {
-        imageUrl: flexIconGridResult.imageUrl,
-        config: flexIconGridResult.config,
-        regions: flexIconGridResult.regions,
-        outputWidth: flexIconGridResult.outputWidth,
-        outputHeight: flexIconGridResult.outputHeight,
-      },
+      formatPayload: buildPayload(),
     })
       .then((saved) => {
-        setSavedFlexIconGridImageUrl(flexIconGridResult.imageUrl);
+        setSavedFlexIconGridImageUrl(fingerprint);
         setHistoryEntryId(saved.id);
         setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
       })
       .catch(() => {
         /* non-fatal */
       });
-  }, [flexIconGridResult, savedFlexIconGridImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+  }, [flexIconGridResult, savedFlexIconGridImageUrl, historyEntryId, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
   // Doodle Explainer persistence (2026-06-09). Mirrors the flex-icon /
   // n-levels pattern, keyed on the SELECTED variant's URL so picking a
@@ -1273,9 +1334,35 @@ function ThumbnailsPage() {
   // patch the existing historyEntryId.
   useEffect(() => {
     if (!doodleExplainerResult) return;
-    const sel = doodleExplainerResult.variants[doodleExplainerResult.selectedVariantIndex]?.imageUrl;
-    if (!sel) return; // user picked an empty/failed variant; don't save until they pick a real one
-    if (savedDoodleSelectedUrl === sel) return;
+    if (doodleExplainerResult.variants.length === 0) return;
+    // Fingerprint = variants[0].imageUrl. Stable across variant picks,
+    // so picking a different variant patches the entry via
+    // updateThumbnailEntry instead of duplicating it.
+    const fingerprint = doodleExplainerResult.variants[0]?.imageUrl;
+    if (!fingerprint) return;
+    const buildPayload = (): DoodleExplainerHistoryPayload => ({
+      hookText: doodleExplainerResult.hookText,
+      characterExpression: doodleExplainerResult.characterExpression,
+      backgroundScene: doodleExplainerResult.backgroundScene,
+      customBackground: doodleExplainerResult.customBackground,
+      styleId: doodleExplainerResult.styleId,
+      imageModel: doodleExplainerResult.imageModel,
+      variants: doodleExplainerResult.variants,
+      selectedVariantIndex: doodleExplainerResult.selectedVariantIndex,
+    });
+
+    if (savedDoodleSelectedUrl === fingerprint) {
+      // Same generation, different variant pick — patch the entry.
+      if (historyEntryId) {
+        void updateThumbnailEntry(historyEntryId, { formatPayload: buildPayload() })
+          .then(() => {
+            setHistoryItems(getThumbnailHistoryCached());
+          })
+          .catch(() => { /* non-fatal */ });
+      }
+      return;
+    }
+
     const safeTitle = title.trim() || 'Doodle Explainer';
     const safeNiche = niche || 'Unspecified';
     void saveThumbnailEntry({
@@ -1291,26 +1378,17 @@ function ThumbnailsPage() {
       videoTitle: scheduleItem?.title?.trim() || safeTitle,
       scheduleItemId: scheduleItemId || undefined,
       format: 'doodle-explainer',
-      formatPayload: {
-        hookText: doodleExplainerResult.hookText,
-        characterExpression: doodleExplainerResult.characterExpression,
-        backgroundScene: doodleExplainerResult.backgroundScene,
-        customBackground: doodleExplainerResult.customBackground,
-        styleId: doodleExplainerResult.styleId,
-        imageModel: doodleExplainerResult.imageModel,
-        variants: doodleExplainerResult.variants,
-        selectedVariantIndex: doodleExplainerResult.selectedVariantIndex,
-      },
+      formatPayload: buildPayload(),
     })
       .then((saved) => {
-        setSavedDoodleSelectedUrl(sel);
+        setSavedDoodleSelectedUrl(fingerprint);
         setHistoryEntryId(saved.id);
         setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
       })
       .catch(() => {
         /* non-fatal */
       });
-  }, [doodleExplainerResult, savedDoodleSelectedUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+  }, [doodleExplainerResult, savedDoodleSelectedUrl, historyEntryId, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
   function resumeDraft(draft: WorkflowDraft) {
     // Make the resumed draft the active one so the auto-save effect writes
@@ -1341,6 +1419,7 @@ function ThumbnailsPage() {
       setHydratedNLevelsState((t.nLevels && typeof t.nLevels === 'object') ? (t.nLevels as NLevelsDraftState) : null);
       setHydratedTopicCardGridState((t.topicCardGrid && typeof t.topicCardGrid === 'object') ? (t.topicCardGrid as TopicCardGridDraftState) : null);
       setHydratedFlexIconGridState((t.flexIconGrid && typeof t.flexIconGrid === 'object') ? (t.flexIconGrid as FlexIconGridDraftState) : null);
+      setHydratedDoodleExplainerState((t.doodleExplainer && typeof t.doodleExplainer === 'object') ? (t.doodleExplainer as DoodleExplainerDraftState) : null);
     }
     setSaveStatus('restored');
     setTimeout(() => setSaveStatus('saved'), 2000);
@@ -1579,27 +1658,32 @@ function ThumbnailsPage() {
                   <span className="font-medium">Generate {variantsEnabled ? variantCount : 1} variant{variantsEnabled && variantCount > 1 ? 's' : ''} to pick from</span>
                 </label>
                 {variantsEnabled && (
-                  <div className="flex items-center gap-1.5 pl-6">
-                    {Array.from({ length: MAX_VARIANT_COUNT - MIN_VARIANT_COUNT + 1 }, (_, i) => MIN_VARIANT_COUNT + i).map(n => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => setVariantCount(n)}
-                        className="text-[11px] px-2 py-0.5 rounded transition-all"
-                        style={{
-                          background: variantCount === n ? '#FBC02D' : 'transparent',
-                          color: variantCount === n ? '#000' : 'var(--text-secondary)',
-                          border: variantCount === n ? '1px solid #FBC02D' : '1px solid var(--border)',
-                          fontWeight: variantCount === n ? 600 : 400,
-                        }}
-                      >
-                        {n}
-                      </button>
-                    ))}
-                    <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
-                      {variantCount}× image cost per generate
-                    </span>
-                  </div>
+                  <>
+                    <div className="flex items-center gap-1.5 pl-6">
+                      {Array.from({ length: MAX_VARIANT_COUNT - MIN_VARIANT_COUNT + 1 }, (_, i) => MIN_VARIANT_COUNT + i).map(n => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setVariantCount(n)}
+                          className="text-[11px] px-2 py-0.5 rounded transition-all"
+                          style={{
+                            background: variantCount === n ? '#FBC02D' : 'transparent',
+                            color: variantCount === n ? '#000' : 'var(--text-secondary)',
+                            border: variantCount === n ? '1px solid #FBC02D' : '1px solid var(--border)',
+                            fontWeight: variantCount === n ? 600 : 400,
+                          }}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                      <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
+                        ≈ ${(variantCount * 0.05).toFixed(2)} / generate
+                      </span>
+                    </div>
+                    <p className="text-[10px] pl-6" style={{ color: 'var(--text-muted)' }}>
+                      Cost estimate assumes Kie GPT Image 2 (~$0.05/image). Atlas GPT Image 2 is ~$0.009/image (5× cheaper). Free models: Baidu ERNIE.
+                    </p>
+                  </>
                 )}
               </div>
             </div>
@@ -2044,6 +2128,7 @@ function ThumbnailsPage() {
               restoredResult={flexIconGridResult}
               onDraftStateChange={setFlexIconGridDraftSnapshot}
               restoredDraftState={hydratedFlexIconGridState}
+              variantCount={variantsEnabled ? variantCount : 1}
             />
           )}
           {format === 'doodle-explainer' && (
@@ -2057,6 +2142,8 @@ function ThumbnailsPage() {
                 description={description}
                 onResultChange={setDoodleExplainerResult}
                 restoredResult={doodleExplainerResult}
+                onDraftStateChange={setDoodleExplainerDraftSnapshot}
+                restoredDraftState={hydratedDoodleExplainerState}
               />
             </div>
           )}
@@ -2379,6 +2466,12 @@ function ThumbnailsPage() {
             setRefPreviewUrl(fp.referenceImageUrl || '');
             setFormatResult({
               imageUrl: fp.imageUrl,
+              // Restore variant state (Phase 3) so the picker comes back
+              // on entries saved with the fan-out flow. Old entries leave
+              // these undefined → picker stays unmounted → single-image
+              // display. Fingerprint mirrors what the save effect uses.
+              variants: fp.variants,
+              selectedVariantIndex: fp.selectedVariantIndex,
               regions: fp.regions,
               cards: fp.cards,
               palette: fp.globalPalette,
@@ -2393,7 +2486,7 @@ function ThumbnailsPage() {
             });
             setNLevelsResult(null);
             setFlexIconGridResult(null);
-            setSavedFormatImageUrl(fp.imageUrl);
+            setSavedFormatImageUrl(fp.variants?.[0]?.imageUrl ?? fp.imageUrl);
             setSavedNLevelsImageUrl(null);
             setSavedFlexIconGridImageUrl(null);
             setSavedDoodleSelectedUrl(null);
@@ -2413,6 +2506,9 @@ function ThumbnailsPage() {
             setRefPreviewUrl(fp.referenceImageUrl || '');
             setNLevelsResult({
               imageUrl: fp.imageUrl,
+              // Restore variant state (Phase 3). See TCG restore above.
+              variants: fp.variants,
+              selectedVariantIndex: fp.selectedVariantIndex,
               regions: fp.regions,
               levels: fp.levels,
               count: fp.count,
@@ -2429,7 +2525,7 @@ function ThumbnailsPage() {
               outputHeight: fp.outputHeight,
             });
             setFormatResult(null);
-            setSavedNLevelsImageUrl(fp.imageUrl);
+            setSavedNLevelsImageUrl(fp.variants?.[0]?.imageUrl ?? fp.imageUrl);
             setSavedFormatImageUrl(null);
             setSavedFlexIconGridImageUrl(null);
             setSavedDoodleSelectedUrl(null);
@@ -2446,6 +2542,8 @@ function ThumbnailsPage() {
             setFormat('flex-icon-grid');
             setFlexIconGridResult({
               imageUrl: fp.imageUrl,
+              variants: fp.variants,
+              selectedVariantIndex: fp.selectedVariantIndex,
               regions: fp.regions,
               config: fp.config as FlexIconGridGenerationResult['config'],
               outputWidth: fp.outputWidth,
@@ -2453,7 +2551,7 @@ function ThumbnailsPage() {
             });
             setFormatResult(null);
             setNLevelsResult(null);
-            setSavedFlexIconGridImageUrl(fp.imageUrl);
+            setSavedFlexIconGridImageUrl(fp.variants?.[0]?.imageUrl ?? fp.imageUrl);
             setSavedFormatImageUrl(null);
             setSavedNLevelsImageUrl(null);
             setSavedDoodleSelectedUrl(null);
@@ -2489,8 +2587,10 @@ function ThumbnailsPage() {
               variants: fp.variants,
               selectedVariantIndex: fp.selectedVariantIndex,
             });
-            const selectedUrl = fp.variants[fp.selectedVariantIndex]?.imageUrl;
-            setSavedDoodleSelectedUrl(selectedUrl ?? null);
+            // Fingerprint = variants[0].imageUrl (matches the save
+            // effect's keying). Survives variant picks without
+            // re-creating the entry.
+            setSavedDoodleSelectedUrl(fp.variants[0]?.imageUrl ?? null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});

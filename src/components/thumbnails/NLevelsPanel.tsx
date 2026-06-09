@@ -53,7 +53,7 @@ import {
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import type { ThumbnailRegion } from '@/remotion/types';
 import type { ThumbnailVariant } from '@/lib/thumbnail-variants';
-import { fanOutFormatImageRoute } from '@/lib/thumbnail-variants-client';
+import { fanOutFormatImageRoute, rotateHexHue } from '@/lib/thumbnail-variants-client';
 import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
@@ -1478,10 +1478,27 @@ export function NLevelsPanel({
       const wantVariants = variantCount > 1;
 
       if (wantVariants) {
+        // Per-variant body: shift every level's accent_color hue by a
+        // variant-specific offset. Delivers palette-axis variance
+        // (Q3 spec). Composition axis comes from image-model variance.
+        // Label axis stays identical (would require a Phase 5
+        // LLM-route refactor).
+        const hueShifts = [0, 90, 200]; // 0 = original, 90 = shift, 200 = opposite-ish
         const fanOut = await fanOutFormatImageRoute<ImageRouteResponse>({
           routeUrl: '/api/thumbnails/format/n-levels/image',
           body: requestBody,
           variantCount,
+          bodyPerVariant: (idx) => {
+            const shift = hueShifts[idx] ?? 0;
+            if (shift === 0) return requestBody;
+            return {
+              ...requestBody,
+              levels: requestBody.levels.map((lvl) => ({
+                ...lvl,
+                accent_color: lvl.accent_color ? rotateHexHue(lvl.accent_color, shift) : lvl.accent_color,
+              })),
+            };
+          },
         });
         if (!fanOut.firstSuccess || fanOut.failedCount === variantCount) {
           throw new Error(`All ${variantCount} variants failed`);

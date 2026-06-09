@@ -66,7 +66,7 @@ import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
 import type { ThumbnailVariant } from '@/lib/thumbnail-variants';
-import { fanOutFormatImageRoute } from '@/lib/thumbnail-variants-client';
+import { fanOutFormatImageRoute, perturbPalette } from '@/lib/thumbnail-variants-client';
 import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 import {
   DEFAULT_FONT_ID,
@@ -2425,10 +2425,19 @@ export function TopicCardGridPanel({
       const wantVariants = variantCount > 1;
 
       if (wantVariants) {
+        // Per-variant body: same cards/uploads, but a perturbed
+        // globalPalette per index. Delivers the "palette axis" of the
+        // user's Q3 variants spec without a 3x LLM cost. Composition
+        // axis comes from image-model variance. Label axis stays
+        // identical (would require a Phase 5 LLM-route refactor).
         const fanOut = await fanOutFormatImageRoute<ImageRouteResponse>({
           routeUrl: '/api/thumbnails/format/topic-card-grid/image',
           body: requestBody,
           variantCount,
+          bodyPerVariant: (idx) => ({
+            ...requestBody,
+            globalPalette: perturbPalette(requestBody.globalPalette, idx),
+          }),
         });
         if (!fanOut.firstSuccess || fanOut.failedCount === variantCount) {
           throw new Error(`All ${variantCount} variants failed`);

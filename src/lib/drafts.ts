@@ -89,6 +89,11 @@ export interface ThumbnailsDraftState {
    *  Untyped here for the same reason the sibling buckets are — the
    *  panel owns the strict shape and validates on hydrate. */
   flexIconGrid?: unknown;
+  /** Mid-flight Doodle Explainer editor state (`DoodleExplainerDraftState`).
+   *  Carries the hook input, expression, scene picks so a draft resume
+   *  from another page restores the panel's form fields. Untyped here
+   *  for the same isolation reason; the panel validates on hydrate. */
+  doodleExplainer?: unknown;
 }
 
 const DRAFTS_KEY = 'workflow_drafts';

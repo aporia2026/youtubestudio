@@ -76,6 +76,19 @@ const IMAGE_MODELS = [
   { value: 'ideogram-v3-turbo-t2i', label: 'Ideogram v3 Turbo' },
 ];
 
+/** Mid-edit form snapshot persisted into the workflow draft system,
+ *  alongside the sibling formats' draft buckets. Lets a resume-from-
+ *  drafts flow restore the panel's form inputs without re-typing.
+ *  Phase 4 of the variants rollout (2026-06-10). */
+export interface DoodleExplainerDraftState {
+  hookText?: string;
+  characterExpression?: string;
+  backgroundScene?: string;
+  customBackground?: string;
+  imageModel?: string;
+  variantCount?: number;
+}
+
 interface Props {
   /** LLM model id used for the concepts step. Reuses the page's `modelId`
    *  selector so the user picks one model for all panels. */
@@ -92,6 +105,13 @@ interface Props {
   onResultChange: (result: DoodleExplainerGenerationResult | null) => void;
   /** When set, the panel restores its state from a prior history entry. */
   restoredResult?: DoodleExplainerGenerationResult | null;
+  /** Fires whenever the panel's form state changes — fed into the
+   *  workflow draft system so a refresh / draft resume restores the
+   *  in-progress inputs. */
+  onDraftStateChange?: (state: DoodleExplainerDraftState) => void;
+  /** One-shot hydration payload from the workflow draft. Restores form
+   *  inputs on mount. */
+  restoredDraftState?: DoodleExplainerDraftState | null;
 }
 
 export function DoodleExplainerPanel({
@@ -102,6 +122,8 @@ export function DoodleExplainerPanel({
   description,
   onResultChange,
   restoredResult,
+  onDraftStateChange,
+  restoredDraftState,
 }: Props) {
   const style = useMemo<ThumbnailStyle>(() => {
     const resolved = resolveThumbnailStyle(DEFAULT_THUMBNAIL_STYLE_ID);
@@ -139,6 +161,36 @@ export function DoodleExplainerPanel({
   useEffect(() => { persist('doodle_custom_background', customBackground); }, [customBackground]);
   useEffect(() => { persist('doodle_image_model', imageModel); }, [imageModel]);
   useEffect(() => { persist('doodle_variant_count', String(variantCount)); }, [variantCount]);
+
+  // Restore form state from the workflow draft on mount. Runs after the
+  // localStorage init above; draft values override when present so the
+  // resume-from-draft flow wins over cross-tab localStorage.
+  useEffect(() => {
+    if (!restoredDraftState) return;
+    if (typeof restoredDraftState.hookText === 'string') setHookText(restoredDraftState.hookText);
+    if (typeof restoredDraftState.characterExpression === 'string') setCharacterExpression(restoredDraftState.characterExpression);
+    if (typeof restoredDraftState.backgroundScene === 'string') setBackgroundScene(restoredDraftState.backgroundScene);
+    if (typeof restoredDraftState.customBackground === 'string') setCustomBackground(restoredDraftState.customBackground);
+    if (typeof restoredDraftState.imageModel === 'string') setImageModel(restoredDraftState.imageModel);
+    if (typeof restoredDraftState.variantCount === 'number') setVariantCount(clampVariantCount(restoredDraftState.variantCount));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot hydration; ignore subsequent changes
+  }, []);
+
+  // Emit draft-state changes upstream so the page can fold them into
+  // the workflow draft auto-save effect. Fires on every form-input
+  // change; debounce is handled by the parent's setTimeout-based
+  // saver.
+  useEffect(() => {
+    if (!onDraftStateChange) return;
+    onDraftStateChange({
+      hookText: hookText || undefined,
+      characterExpression: characterExpression || undefined,
+      backgroundScene: backgroundScene || undefined,
+      customBackground: customBackground || undefined,
+      imageModel: imageModel || undefined,
+      variantCount,
+    });
+  }, [hookText, characterExpression, backgroundScene, customBackground, imageModel, variantCount, onDraftStateChange]);
 
   // Generation + result state.
   const [generatingStep, setGeneratingStep] = useState<'idle' | 'concepts' | 'images'>('idle');

@@ -26,6 +26,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
+import type { ThumbnailVariant } from '@/lib/thumbnail-variants';
+import { fanOutFormatImageRoute, rotateHexHue } from '@/lib/thumbnail-variants-client';
+import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 import {
   ASPECT_RATIO_PRESETS,
   DEFAULT_SHADOW,
@@ -96,6 +99,13 @@ export interface FlexIconGridGenerationResult {
    *  panel surfaces them as a "font no longer available" banner so
    *  the user knows to re-upload (Phase 4.7 caveat fix). */
   fontWarnings?: string[];
+  /** Phase 3 (2026-06-10) — N-variant fan-out output. Each variant is
+   *  a re-render of the config with rotated cell + background hues.
+   *  When present, the renderer surfaces a VariantPicker and
+   *  `imageUrl` mirrors the currently-selected variant's url. */
+  variants?: ThumbnailVariant[];
+  /** Index into `variants` of the user's pick. */
+  selectedVariantIndex?: number;
 }
 
 export interface FlexIconGridDraftState {
@@ -334,6 +344,10 @@ interface Props {
   restoredResult?: FlexIconGridGenerationResult | null;
   onDraftStateChange?: (state: FlexIconGridDraftState) => void;
   restoredDraftState?: FlexIconGridDraftState | null;
+  /** Phase 3 (2026-06-10) — when ≥2, runRender fans out N parallel
+   *  renders, each with a hue-rotated copy of the cells + background.
+   *  Defaults to 1 for backwards compat. */
+  variantCount?: number;
 }
 
 export function FlexIconGridPanel({
@@ -341,6 +355,7 @@ export function FlexIconGridPanel({
   restoredResult,
   onDraftStateChange,
   restoredDraftState,
+  variantCount = 1,
 }: Props) {
   // ── State ────────────────────────────────────────────────────────────────
 
@@ -1108,10 +1123,48 @@ export function FlexIconGridPanel({
 
   async function runRender() {
     setBusy(true);
+    const wantVariants = variantCount > 1;
     console.info('[flex-icon-grid panel] render request', {
       rows: config.rows, cols: config.cols, cell_count: config.cells.length,
+      variantCount: wantVariants ? variantCount : 1,
     });
     try {
+      if (wantVariants) {
+        // Deterministic render — variants come from rotating the
+        // background hue + every cell.bgColor by a per-variant offset.
+        // Same icons, same layout, different palette. The user picks
+        // the palette they like best.
+        const hueShifts = [0, 90, 200];
+        const fanOut = await fanOutFormatImageRoute<FlexIconGridGenerationResult>({
+          routeUrl: '/api/thumbnails/format/flex-icon-grid/render',
+          body: { config },
+          variantCount,
+          bodyPerVariant: (idx) => {
+            const shift = hueShifts[idx] ?? 0;
+            if (shift === 0) return { config };
+            return { config: rotateConfigPaletteHue(config, shift) };
+          },
+        });
+        if (!fanOut.firstSuccess || fanOut.failedCount === variantCount) {
+          throw new Error(`All ${variantCount} variant renders failed`);
+        }
+        const firstGood = fanOut.variants.findIndex(v => v.imageUrl);
+        const selectedVariantIndex = firstGood >= 0 ? firstGood : 0;
+        const merged: FlexIconGridGenerationResult = {
+          ...fanOut.firstSuccess,
+          imageUrl: fanOut.variants[selectedVariantIndex].imageUrl,
+          variants: fanOut.variants,
+          selectedVariantIndex,
+        };
+        setResult(merged);
+        onResultChange(merged);
+        if (fanOut.failedCount > 0) {
+          toast.warning(`${variantCount - fanOut.failedCount} of ${variantCount} variants rendered.`);
+        } else {
+          toast.success(`${variantCount} palette variants rendered — pick one.`);
+        }
+        return;
+      }
       // eslint-disable-next-line no-restricted-syntax -- render RPC: awaits and uses response
       const res = await fetch('/api/thumbnails/format/flex-icon-grid/render', {
         method: 'POST',
@@ -1136,6 +1189,35 @@ export function FlexIconGridPanel({
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Rotates the hue of every color in a FlexIconGridConfig — top-level
+   * background plus each cell's Phase-1 `backgroundColor` shorthand and
+   * Phase-2 rich `background.color` when present. Used by the variant
+   * fan-out so each variant gets a structurally different palette
+   * without altering icons / layout / typography.
+   */
+  function rotateConfigPaletteHue(cfg: FlexIconGridConfig, degrees: number): FlexIconGridConfig {
+    const bg = cfg.background;
+    const rotatedBg = bg && typeof (bg as { color?: unknown }).color === 'string'
+      ? { ...(bg as Record<string, unknown>), color: rotateHexHue((bg as { color: string }).color, degrees) } as typeof bg
+      : bg;
+    return {
+      ...cfg,
+      background: rotatedBg,
+      cells: cfg.cells.map((c) => {
+        const cellBg = c.background;
+        const rotatedCellBg = cellBg && typeof (cellBg as { color?: unknown }).color === 'string'
+          ? { ...(cellBg as Record<string, unknown>), color: rotateHexHue((cellBg as { color: string }).color, degrees) } as typeof cellBg
+          : cellBg;
+        return {
+          ...c,
+          backgroundColor: c.backgroundColor ? rotateHexHue(c.backgroundColor, degrees) : c.backgroundColor,
+          background: rotatedCellBg,
+        };
+      }),
+    };
   }
 
   // ── UI ───────────────────────────────────────────────────────────────────
@@ -6564,6 +6646,27 @@ export function FlexIconGridPanel({
                 Affected cells fell back to the default font. The font URL may have expired or the
                 upload may have been deleted. Re-upload to fix.
               </div>
+            </div>
+          )}
+          {result.variants && result.variants.length > 1 && (
+            <div style={{ marginBottom: 12 }}>
+              <VariantPicker
+                variants={result.variants}
+                selectedIndex={result.selectedVariantIndex ?? 0}
+                onSelect={(idx) => {
+                  const v = result.variants?.[idx];
+                  if (!v?.imageUrl) return;
+                  const next: FlexIconGridGenerationResult = {
+                    ...result,
+                    imageUrl: v.imageUrl,
+                    selectedVariantIndex: idx,
+                  };
+                  setResult(next);
+                  onResultChange(next);
+                }}
+                heading="Pick your palette"
+                subheading="Same icons + layout, rotated hues."
+              />
             </div>
           )}
           <img

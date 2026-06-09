@@ -349,9 +349,9 @@ export interface NLevelsHistoryPayload {
  *  shape on hydrate via `parseConfig`. */
 export interface FlexIconGridHistoryPayload {
   imageUrl: string;
-  /** 3-variant array, populated by the fan-out image route as of
-   *  2026-06-09. See `TopicCardGridHistoryPayload.variants` for the
-   *  legacy / new-write resolution rules. */
+  /** Phase 3 (2026-06-10) — N-variant fan-out output. Same shape as the
+   *  TCG / N-Levels payload; variants represent re-renders of the
+   *  config with rotated cell + background hues. */
   variants?: ThumbnailVariant[];
   /** Index into `variants` of the user's picked thumbnail. */
   selectedVariantIndex?: number;
