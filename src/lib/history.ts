@@ -1301,6 +1301,26 @@ export async function saveThumbnailEntry(
   return saveToServer(THUMBNAIL, entry);
 }
 
+/**
+ * Patches an existing thumbnail history entry.
+ *
+ * **Important — `formatPayload` is shallow-replaced, not deep-merged.**
+ * The patch path does `{ ...existing, ...patch }` at the top level, which
+ * means `patch.formatPayload` (if present) **completely replaces** the
+ * stored formatPayload. Sending `{ formatPayload: { selectedVariantIndex: 2 } }`
+ * would wipe `cards`, `palette`, `imageUrl`, etc.
+ *
+ * Callers updating formatPayload MUST send the FULL payload. The
+ * thumbnails page does this via per-format `buildPayload()` factories
+ * that reconstruct the entire payload from live in-memory result state
+ * before patching — see the TCG / N-Levels / FlexIcon / Doodle save
+ * effects in `src/app/(app)/thumbnails/page.tsx`. Don't add a partial-
+ * patch caller without first converting it to the buildPayload pattern.
+ *
+ * Why shallow: deep-merging discriminated-union shapes (the per-format
+ * payloads diverge structurally) is error-prone; shallow lets the
+ * caller take ownership of the merge.
+ */
 export async function updateThumbnailEntry(
   id: string,
   patch: Partial<ThumbnailHistoryEntry>,

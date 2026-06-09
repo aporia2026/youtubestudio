@@ -297,7 +297,7 @@ export function validateDoodleInput(raw: unknown): ValidateInputResult {
 
 function stripControl(s: string): string {
    
-  return s.replace(/[ -]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  return s.replace(/[\x00-\x1F\x7F]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 
 function looksLikeInjection(s: string): boolean {

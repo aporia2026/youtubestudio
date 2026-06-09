@@ -146,8 +146,17 @@ export const MAX_VARIANT_COUNT = 3;
 export const DEFAULT_VARIANT_COUNT = 3;
 export const MIN_VARIANT_COUNT = 1;
 
-/** Clamp helper used by route + settings + page. */
+/**
+ * Clamps a variant count to [MIN, MAX], returning DEFAULT for
+ * undefined / null / non-finite (NaN, ±Infinity) input. Explicit
+ * null/undefined check first so the behavior is obvious: the type
+ * signature accepts `number | undefined | null`, and each branch
+ * here describes how it's handled. Used by the route layer (defence
+ * in depth against a malformed POST body) and by the page (clamping
+ * persisted localStorage values during hydration).
+ */
 export function clampVariantCount(n: number | undefined | null): number {
+  if (n === null || n === undefined) return DEFAULT_VARIANT_COUNT;
   if (typeof n !== 'number' || !Number.isFinite(n)) return DEFAULT_VARIANT_COUNT;
   return Math.max(MIN_VARIANT_COUNT, Math.min(MAX_VARIANT_COUNT, Math.floor(n)));
 }

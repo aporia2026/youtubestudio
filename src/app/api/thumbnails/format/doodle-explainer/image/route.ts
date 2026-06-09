@@ -221,16 +221,49 @@ export async function POST(req: NextRequest) {
     const apiKey = requireKieKey();
 
     // Fan out — N parallel Kie tasks, each with its own intent row.
+    //
+    // Intent leak audit (2026-06-10): the structure below is
+    // intentionally split into TWO tries so reviewers can see exactly
+    // when an id enters / leaves the cleanup set:
+    //
+    //   1. recordIntent → if it throws BEFORE returning an id, no id
+    //      exists, nothing to clean up. We surface a per-variant
+    //      rejection so the caller sees a failed slot rather than a
+    //      whole-route 500. If the DB row was created but the response
+    //      dropped, that row becomes an orphaned `in_progress` — that
+    //      class of leak is handled by the maintenance job, not this
+    //      route (same trade-off every other recordIntent call site
+    //      makes; not specific to this route).
+    //   2. body of work (Kie call) → markDelivered/markFailed on
+    //      every exit path. pendingIntentIds.delete keeps the outer
+    //      catch's "fail-anything-left-pending" loop minimal.
+    //
+    // The outer catch only fires on a code path that escapes
+    // Promise.allSettled (which never rejects). It iterates whatever
+    // is left in pendingIntentIds and markFailed's them so no intent
+    // gets stuck `in_progress` from a synchronous-error escape.
     const results = await Promise.allSettled(
       prompts.map(async (prompt, idx) => {
-        const intent = await recordIntent({
-          userId,
-          workspaceId,
-          route: '/api/thumbnails/format/doodle-explainer/image',
-          provider: 'kie',
-          providerModel: config.model,
-          slot: 'thumbnail',
-        });
+        let intent: { id: string };
+        try {
+          intent = await recordIntent({
+            userId,
+            workspaceId,
+            route: '/api/thumbnails/format/doodle-explainer/image',
+            provider: 'kie',
+            providerModel: config.model,
+            slot: 'thumbnail',
+          });
+        } catch (err) {
+          // No id returned → nothing to add to pendingIntentIds, nothing
+          // to markFailed (we don't have a row reference). Surface as
+          // a per-variant rejection.
+          const reason = err instanceof Error ? err.message : String(err);
+          throw new Error(`recordIntent failed for variant ${idx + 1}: ${reason}`);
+        }
+        // Id is held; add it to the cleanup set immediately so the outer
+        // catch's "fail anything still pending" loop can find it if a
+        // synchronous error escapes below.
         pendingIntentIds.add(intent.id);
 
         try {
