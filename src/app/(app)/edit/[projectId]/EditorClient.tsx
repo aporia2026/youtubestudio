@@ -5102,6 +5102,20 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
               brollModelId={userBrollModelId}
               docBrollModelId={state.doc.broll_model_id}
               docImageModelDefault={state.doc.image_model_default}
+              onSetDocImageModelDefault={(modelId) => {
+                console.info('[editor doc-image-model] promote from inspector picker', {
+                  shotIndex: state.selection,
+                  from: state.doc.image_model_default ?? null,
+                  to: modelId,
+                });
+                apply({
+                  type: 'PATCH_DOC',
+                  patch: { image_model_default: modelId },
+                });
+                toast.success(
+                  `Doc default image model set. Every shot's Regenerate uses this unless overridden.`,
+                );
+              }}
               onUpdateScript={(text) =>
                 apply({
                   type: 'SET_ROW_SCRIPT',

@@ -52,6 +52,12 @@ interface InspectorMotionCollagePanelProps {
   /** Patch the row. Used for every mutation: grid changes, panel-prompt
    *  edits, post-generate URL writes, revert. */
   onUpdateRow: (patch: Partial<ProductionDoc['rows'][number]>) => void;
+  /** 2026-06-09 — promote the picker's chosen image model to the
+   *  doc-level default. Forwarded to `ShotImageModelPicker`'s
+   *  `onSaveAsDefault`. Wired by EditorClient to a PATCH_DOC
+   *  `image_model_default` apply. Optional — when omitted the "Save
+   *  as default for this doc" button stays hidden. */
+  onSetDocImageModelDefault?: (modelId: string) => void;
 }
 
 /** Local UI state for a single in-flight generation. */
@@ -66,6 +72,7 @@ export function InspectorMotionCollagePanel({
   shotIndex,
   doc,
   onUpdateRow,
+  onSetDocImageModelDefault,
 }: InspectorMotionCollagePanelProps): React.ReactElement {
   const [genStatus, setGenStatus] = useState<GenStatus>({ kind: 'idle' });
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -435,6 +442,18 @@ export function InspectorMotionCollagePanel({
           });
           onUpdateRow({ image_model: next });
         }}
+        onSaveAsDefault={
+          onSetDocImageModelDefault
+            ? (modelId) => {
+                console.info('[editor motion-collage row-image-model] promote to doc default', {
+                  shotIndex,
+                  modelId,
+                  previousDocDefault: doc.image_model_default ?? null,
+                });
+                onSetDocImageModelDefault(modelId);
+              }
+            : undefined
+        }
       />
       {/* Generate / lightbox action row */}
       <div className="flex items-center gap-2 flex-wrap">

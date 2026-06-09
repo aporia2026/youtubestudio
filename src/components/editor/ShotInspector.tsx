@@ -138,6 +138,14 @@ interface ShotInspectorProps {
    *  Dispatches PATCH_ROW so each edit lands on the undo stack and
    *  auto-save picks it up. */
   onUpdateRow?: (patch: Partial<ProductionDoc['rows'][number]>) => void;
+  /** 2026-06-09 — promote the row's image-model pick to the doc-level
+   *  default. Fed into the per-row `ShotImageModelPicker`'s
+   *  `onSaveAsDefault` so the user can change the doc-wide default
+   *  from inside the inspector without hunting for the doc-defaults
+   *  sidebar panel. The EditorClient parent wires this to a
+   *  `PATCH_DOC { image_model_default: modelId }` apply. Optional —
+   *  when omitted the button is hidden. */
+  onSetDocImageModelDefault?: (modelId: string) => void;
   // ─── Phase 5.2 overlay-port — props for the overlay control surface ──
   /** The row's current overlay state (URL + status). When absent or
    *  not `done`, the overlay section in the inspector hides its
@@ -378,6 +386,7 @@ export function ShotInspector({
   brollModelId,
   docBrollModelId,
   docImageModelDefault,
+  onSetDocImageModelDefault,
   onUpdateScript,
   onUpdateRow,
   overlayState,
@@ -724,6 +733,7 @@ export function ShotInspector({
               shotIndex={shotIndex}
               doc={doc}
               onUpdateRow={onUpdateRow}
+              onSetDocImageModelDefault={onSetDocImageModelDefault}
             />
           </div>
         )}
@@ -913,6 +923,18 @@ export function ShotInspector({
                   });
                   onUpdateRow({ image_model: next });
                 }}
+                onSaveAsDefault={
+                  onSetDocImageModelDefault
+                    ? (modelId) => {
+                        console.info('[editor row-image-model] promote to doc default', {
+                          shotIndex,
+                          modelId,
+                          previousDocDefault: docImageModelDefault ?? null,
+                        });
+                        onSetDocImageModelDefault(modelId);
+                      }
+                    : undefined
+                }
               />
             )}
 
