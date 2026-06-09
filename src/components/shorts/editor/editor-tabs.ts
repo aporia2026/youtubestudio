@@ -12,7 +12,7 @@ import { getStyleAssetStatus } from '@/lib/shorts-asset-status';
 /** Whitelist of tab keys. Anything outside this set falls back to Script
  *  per the URL-hash parser — keeps hostile `#javascript:…` etc. out of
  *  the render loop. */
-export const TAB_KEYS = ['script', 'style', 'captions', 'voice', 'render', 'seo'] as const;
+export const TAB_KEYS = ['script', 'style', 'captions', 'voice', 'render', 'seo', 'qa'] as const;
 export type TabKey = (typeof TAB_KEYS)[number];
 
 export interface TabDef {
@@ -27,6 +27,7 @@ export const TABS: readonly TabDef[] = Object.freeze([
   { key: 'voice', label: 'Voice' },
   { key: 'render', label: 'Render' },
   { key: 'seo', label: 'SEO' },
+  { key: 'qa', label: 'QA' },
 ]);
 
 /** Parse a `window.location.hash` string into a valid TabKey, falling
@@ -52,6 +53,14 @@ export function badgeFor(tabKey: TabKey, row: ShortRow): TabBadge {
   }
   if (tabKey === 'voice' && row.voiceover_audio_url) return 'good';
   if (tabKey === 'render' && row.rendered_video_url) return 'good';
+  if (tabKey === 'qa' && row.qa_score !== null && row.qa_score !== undefined) {
+    // The composite threshold is a user-tunable Setting; the editor
+    // tabs file is pure (no DB / no settings load), so we use the
+    // documented default constant. If the user lowers the threshold
+    // via Settings the badge will lag by one re-run — acceptable.
+    const threshold = 80;
+    return row.qa_score >= threshold ? 'good' : 'error';
+  }
   return 'none';
 }
 
