@@ -155,3 +155,72 @@ async function callSingleImageRoute(input: {
   }
   return { imageUrl: json.imageUrl };
 }
+
+/**
+ * Fan out an existing format-image route (topic-card-grid, n-levels,
+ * flex-icon-grid) N times in parallel with the SAME request body.
+ *
+ * Phase 3 trade-off (2026-06-09): the LLM step still produces ONE
+ * card-list / level-list per generate. The N variants come from
+ * image-model variance on identical inputs — so the variants share
+ * labels + palette but differ on composition / line-quality / layout
+ * jitter. This is an honest partial fulfillment of the user's Q3 spec
+ * ("variants differ on label + palette + composition") in exchange for
+ * a much lighter Phase 3: no LLM-route refactor, no per-format schema
+ * change. A future Phase 5 can extend the LLM step to emit N distinct
+ * card-lists for full multi-axis variants.
+ *
+ * Returns the FIRST result alongside the variants array so the caller
+ * can keep its existing single-result code path (it just becomes
+ * variants[0]).
+ */
+export async function fanOutFormatImageRoute<TResponse extends { imageUrl: string }>(input: {
+  routeUrl: string;
+  body: unknown;
+  variantCount: number;
+  /** Optional concept labels per variant — surfaced in the picker. */
+  conceptLabels?: string[];
+}): Promise<{
+  variants: ThumbnailVariant[];
+  failedCount: number;
+  /** The first successful raw response, for callers that need fields
+   *  beyond imageUrl (regions, layout, etc.). */
+  firstSuccess: TResponse | null;
+}> {
+  const { routeUrl, body, variantCount, conceptLabels } = input;
+  console.info('[thumb-format-variants fan-out] start', { routeUrl, variantCount });
+  const startedAt = Date.now();
+
+  const calls = Array.from({ length: variantCount }, () =>
+    fetch(routeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(async r => {
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        throw new Error(`HTTP ${r.status}: ${text.slice(0, 200)}`);
+      }
+      return r.json() as Promise<TResponse>;
+    }),
+  );
+
+  const results = await Promise.allSettled(calls);
+  const variants: ThumbnailVariant[] = results.map((r, idx) => buildVariant({
+    index: idx,
+    imageUrl: r.status === 'fulfilled' ? r.value.imageUrl : '',
+    promptUsed: `(format route: ${routeUrl})`, // routes own the prompt internally
+    conceptLabel: conceptLabels?.[idx],
+  }));
+  const failedCount = variants.filter(v => !v.imageUrl).length;
+  const firstSuccess = (results.find(r => r.status === 'fulfilled') as PromiseFulfilledResult<TResponse> | undefined)?.value ?? null;
+
+  console.info('[thumb-format-variants fan-out] done', {
+    routeUrl,
+    variantCount,
+    failedCount,
+    durationMs: Date.now() - startedAt,
+  });
+
+  return { variants, failedCount, firstSuccess };
+}

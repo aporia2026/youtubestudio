@@ -65,6 +65,9 @@ import {
 import { toast } from 'sonner';
 import { downloadHref } from '@/lib/download-file';
 import type { ThumbnailRegion } from '@/remotion/types';
+import type { ThumbnailVariant } from '@/lib/thumbnail-variants';
+import { fanOutFormatImageRoute } from '@/lib/thumbnail-variants-client';
+import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 import {
   DEFAULT_FONT_ID,
   findFontById,
@@ -139,6 +142,14 @@ export interface FormatGenerationResult {
   /** Stroke pairing for overlap labels. Only meaningful when
    *  `labelPosition === 'overlap'`. Defaults to `'white-on-black'`. */
   overlapLabelStroke?: OverlapLabelStroke;
+  /** Phase 3 (2026-06-09) — 3-variant fan-out output. When present,
+   *  the renderer surfaces a VariantPicker and `imageUrl` mirrors the
+   *  currently-selected variant's url. Old entries leave this undefined
+   *  and render single-variant. */
+  variants?: ThumbnailVariant[];
+  /** Index into `variants` of the user's pick. Defaults to 0 when
+   *  variants are present but no explicit selection has been made. */
+  selectedVariantIndex?: number;
 }
 
 /**
@@ -1174,6 +1185,12 @@ interface Props {
    *  mount. Distinct from `restoredResult`, which restores a rendered
    *  history entry. */
   restoredDraftState?: TopicCardGridDraftState | null;
+  /** Phase 3 (2026-06-09) — when ≥2, runStep2 fans out N parallel
+   *  image-gen calls instead of one and the result carries a
+   *  `variants[]` array. The panel mounts a VariantPicker beneath the
+   *  rendered preview. Defaults to 1 (legacy single-image behaviour)
+   *  so older callers keep working unchanged. */
+  variantCount?: number;
 }
 
 export function TopicCardGridPanel({
@@ -1188,6 +1205,7 @@ export function TopicCardGridPanel({
   pickedLabels = [],
   onDraftStateChange,
   restoredDraftState,
+  variantCount = 1,
 }: Props) {
   // Grid configuration
   const [gridMode, setGridMode] = useState<'preset' | 'custom'>('preset');
@@ -2361,52 +2379,85 @@ export function TopicCardGridPanel({
     });
     setBusyStep('image');
     try {
-      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
-      const res = await fetch('/api/thumbnails/format/topic-card-grid/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageModelId,
-          generationMode,
-          cards: cardsToUse,
-          globalPalette: paletteToUse,
-          notesForImageModel: notesToUse,
-          gridRows,
-          gridCols,
-          referenceImageUrl: referenceImageUrl.trim(),
-          cardShape,
-          borderWeight,
-          labelPosition,
-          labelCase,
-          fillStyle,
-          overlapLabelStroke,
-          uploads: liveUploadsPayload.length > 0 ? liveUploadsPayload : undefined,
-          cutouts: liveCutoutsPayload.length > 0 ? liveCutoutsPayload : undefined,
-          brightness,
-          detail: detailLevel,
-          style,
-          styleFreeForm: style === 'free-form' ? styleFreeForm.trim() : undefined,
-          labelSize,
-          fontId,
-          postProcess: buildPostProcessRequestPayload(postProcess),
-          titleBar: buildTitleBarRequestPayload(titleBar),
-        }),
-      });
-      if (!res.ok) {
-        const data: { error?: string } = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Image generation failed (${res.status})`);
-      }
-      const data: {
+      // Phase 3 (2026-06-09) — when variantCount > 1, fan out N parallel
+      // image-gen calls with the SAME body. Variants come from image-model
+      // variance (same cards/labels/palette, different rendering). Single
+      // call path stays untouched for variantCount === 1.
+      const requestBody = {
+        imageModelId,
+        generationMode,
+        cards: cardsToUse,
+        globalPalette: paletteToUse,
+        notesForImageModel: notesToUse,
+        gridRows,
+        gridCols,
+        referenceImageUrl: referenceImageUrl.trim(),
+        cardShape,
+        borderWeight,
+        labelPosition,
+        labelCase,
+        fillStyle,
+        overlapLabelStroke,
+        uploads: liveUploadsPayload.length > 0 ? liveUploadsPayload : undefined,
+        cutouts: liveCutoutsPayload.length > 0 ? liveCutoutsPayload : undefined,
+        brightness,
+        detail: detailLevel,
+        style,
+        styleFreeForm: style === 'free-form' ? styleFreeForm.trim() : undefined,
+        labelSize,
+        fontId,
+        postProcess: buildPostProcessRequestPayload(postProcess),
+        titleBar: buildTitleBarRequestPayload(titleBar),
+      };
+
+      type ImageRouteResponse = {
         imageUrl: string;
         regions: ThumbnailRegion[];
         layout: { width: number; height: number };
         uploadsApplied?: number;
         generationMode?: 'one-shot' | 'per-card';
         perCard?: { succeeded: number; failed: number; total: number } | null;
-      } = await res.json();
+      };
+
+      let data: ImageRouteResponse;
+      let variants: ThumbnailVariant[] | undefined;
+      let selectedVariantIndex: number | undefined;
+      const wantVariants = variantCount > 1;
+
+      if (wantVariants) {
+        const fanOut = await fanOutFormatImageRoute<ImageRouteResponse>({
+          routeUrl: '/api/thumbnails/format/topic-card-grid/image',
+          body: requestBody,
+          variantCount,
+        });
+        if (!fanOut.firstSuccess || fanOut.failedCount === variantCount) {
+          throw new Error(`All ${variantCount} variants failed`);
+        }
+        data = fanOut.firstSuccess;
+        variants = fanOut.variants;
+        const firstGood = variants.findIndex(v => v.imageUrl);
+        selectedVariantIndex = firstGood >= 0 ? firstGood : 0;
+        if (fanOut.failedCount > 0) {
+          toast.warning(`${variantCount - fanOut.failedCount} of ${variantCount} variants generated.`);
+        }
+      } else {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
+        const res = await fetch('/api/thumbnails/format/topic-card-grid/image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+        if (!res.ok) {
+          const errData: { error?: string } = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Image generation failed (${res.status})`);
+        }
+        data = await res.json() as ImageRouteResponse;
+      }
+
       console.info('[thumbnails format-grid image] received', {
         imageUrl: data.imageUrl,
         regionsCount: data.regions.length,
+        variantsCount: variants?.length ?? 1,
         // Critical diagnostic: how many user uploads the server actually
         // composited onto the AI base. If we sent N uploads in the request
         // (uploadsCount above) and this comes back 0 — or lower than N —
@@ -2428,7 +2479,9 @@ export function TopicCardGridPanel({
         });
       }
       const generation: FormatGenerationResult = {
-        imageUrl: data.imageUrl,
+        imageUrl: variants ? (variants[selectedVariantIndex!]?.imageUrl ?? data.imageUrl) : data.imageUrl,
+        variants,
+        selectedVariantIndex,
         regions: data.regions,
         cards: cardsToUse,
         palette: paletteToUse,
@@ -4975,6 +5028,17 @@ export function TopicCardGridPanel({
             busy={busyStep === 'image'}
             previewImageUrl={previewImageUrl}
             previewLoading={previewLoading}
+            onSelectVariant={(idx) => {
+              const v = result.variants?.[idx];
+              if (!v?.imageUrl) return;
+              const next: FormatGenerationResult = {
+                ...result,
+                imageUrl: v.imageUrl,
+                selectedVariantIndex: idx,
+              };
+              setResult(next);
+              onResultChange(next);
+            }}
             postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
             titleBarRendererInput={
               titleBar.enabled
@@ -5467,6 +5531,10 @@ interface ResultProps {
    *  drift slightly from the browser. */
   postProcessPayload?: PostProcessConfig;
   titleBarRendererInput?: TitleBarRendererInput;
+  /** Phase 3 (2026-06-09) — VariantPicker selection callback. The
+   *  parent owns `setResult` + `onResultChange`; this preview sub-
+   *  component just emits which variant the user clicked. */
+  onSelectVariant?: (index: number) => void;
 }
 
 /** Preview zoom presets (per Flex Icon Grid convention). Custom values
@@ -5474,7 +5542,7 @@ interface ResultProps {
  *  reference points. */
 const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
 
-function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, onRegenerateImage, busy, previewImageUrl, previewLoading, postProcessPayload, titleBarRendererInput }: ResultProps) {
+function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, onRegenerateImage, busy, previewImageUrl, previewLoading, postProcessPayload, titleBarRendererInput, onSelectVariant }: ResultProps) {
   // `previewImageUrl` / `previewLoading` are retained for compat with the
   // Phase A server-preview path; the Phase B1 SVG renderer doesn't use
   // them for live display but a future "preview at server fidelity"
@@ -5549,6 +5617,21 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditCards, on
           style={{ accentColor: 'var(--accent-pink)' }}
         />
       </div>
+
+      {/* 3-variant picker (Phase 3, 2026-06-09) — only when the
+          fan-out produced multiple variants. The preview below renders
+          `result.imageUrl` which mirrors the currently-selected variant. */}
+      {result.variants && result.variants.length > 1 && onSelectVariant && (
+        <div className="mb-3">
+          <VariantPicker
+            variants={result.variants}
+            selectedIndex={result.selectedVariantIndex ?? 0}
+            onSelect={onSelectVariant}
+            heading="Pick your composite"
+            subheading="Click a thumbnail to mark it as the one you want."
+          />
+        </div>
+      )}
 
       {/* Scrollable viewport. The outer div has overflow:auto so values
           above 100% trigger horizontal (and vertical, on very tall

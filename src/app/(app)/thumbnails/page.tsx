@@ -1563,6 +1563,45 @@ function ThumbnailsPage() {
                   Hand-drawn doodle character + big bold yellow hook on a clean background (Paint Explainer YouTube genre). Generates 3 distinct concept variations — pick one. No reference image needed.
                 </p>
               )}
+              {/* Phase 3 (2026-06-09) — variants toggle hoisted out of
+                  the Image Generation section so users of every format
+                  can see + change it without expanding a sub-panel.
+                  The free-form Image Generation section still has its
+                  own copy of this control for backwards compat. */}
+              <div className="mt-2 space-y-1.5 p-2 rounded" style={{ background: 'rgba(251, 192, 45, 0.06)', border: '1px solid rgba(251, 192, 45, 0.18)' }}>
+                <label className="flex items-center gap-2 cursor-pointer text-xs" style={{ color: 'var(--text-primary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={variantsEnabled}
+                    onChange={e => setVariantsEnabled(e.target.checked)}
+                    style={{ accentColor: '#FBC02D' }}
+                  />
+                  <span className="font-medium">Generate {variantsEnabled ? variantCount : 1} variant{variantsEnabled && variantCount > 1 ? 's' : ''} to pick from</span>
+                </label>
+                {variantsEnabled && (
+                  <div className="flex items-center gap-1.5 pl-6">
+                    {Array.from({ length: MAX_VARIANT_COUNT - MIN_VARIANT_COUNT + 1 }, (_, i) => MIN_VARIANT_COUNT + i).map(n => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setVariantCount(n)}
+                        className="text-[11px] px-2 py-0.5 rounded transition-all"
+                        style={{
+                          background: variantCount === n ? '#FBC02D' : 'transparent',
+                          color: variantCount === n ? '#000' : 'var(--text-secondary)',
+                          border: variantCount === n ? '1px solid #FBC02D' : '1px solid var(--border)',
+                          fontWeight: variantCount === n ? 600 : 400,
+                        }}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                    <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
+                      {variantCount}× image cost per generate
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
 
             <ModelSelector
@@ -1973,6 +2012,7 @@ function ThumbnailsPage() {
               description={description}
               modelId={modelId}
               referenceImageUrl={referenceImageUrl}
+              variantCount={variantsEnabled ? variantCount : 1}
               onResultChange={setFormatResult}
               restoredResult={formatResult}
               pickedLabels={pickedLabels}
@@ -1989,6 +2029,7 @@ function ThumbnailsPage() {
               description={description}
               modelId={modelId}
               referenceImageUrl={referenceImageUrl}
+              variantCount={variantsEnabled ? variantCount : 1}
               onResultChange={setNLevelsResult}
               restoredResult={nLevelsResult}
               pickedLabels={pickedLabels}

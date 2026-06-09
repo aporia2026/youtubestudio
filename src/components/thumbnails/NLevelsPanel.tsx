@@ -52,6 +52,9 @@ import {
 } from '@/components/thumbnails/_FreeFormPreviewPanel';
 import type { PostProcessConfig } from '@/lib/thumbnail-formats/shared-overlay-pipeline';
 import type { ThumbnailRegion } from '@/remotion/types';
+import type { ThumbnailVariant } from '@/lib/thumbnail-variants';
+import { fanOutFormatImageRoute } from '@/lib/thumbnail-variants-client';
+import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 
 // ─── Types mirroring the API contract ───────────────────────────────────────
 
@@ -300,6 +303,12 @@ export interface NLevelsGenerationResult {
   referenceImageUrl?: string;
   outputWidth: number;
   outputHeight: number;
+  /** Phase 3 (2026-06-09) — 3-variant fan-out output. When present,
+   *  the renderer surfaces a VariantPicker and `imageUrl` mirrors the
+   *  currently-selected variant's url. */
+  variants?: ThumbnailVariant[];
+  /** Index into `variants` of the user's pick. */
+  selectedVariantIndex?: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -888,6 +897,10 @@ interface Props {
    *  mount. Distinct from `restoredResult`, which restores a rendered
    *  history entry. */
   restoredDraftState?: NLevelsDraftState | null;
+  /** Phase 3 (2026-06-09) — when ≥2, runStep2 fans out N parallel
+   *  image-gen calls instead of one and the result carries a
+   *  `variants[]` array. Defaults to 1 for backwards compat. */
+  variantCount?: number;
 }
 
 export function NLevelsPanel({
@@ -902,6 +915,7 @@ export function NLevelsPanel({
   pickedLabels = [],
   onDraftStateChange,
   restoredDraftState,
+  variantCount = 1,
 }: Props) {
   // Level count
   const [count, setCount] = useState(7);
@@ -1433,41 +1447,75 @@ export function NLevelsPanel({
     });
     setBusyStep('image');
     try {
-      // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
-      const res = await fetch('/api/thumbnails/format/n-levels/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageModelId,
-          levels: levelsToUse,
-          count,
-          showBottomTitle,
-          showLevelLabels,
-          titleTopic: topicToUse,
-          titleTagline: taglineToUse,
-          notesForImageModel: notesToUse,
-          referenceImageUrl: referenceImageUrl.trim(),
-          brightness,
-          detail: detailLevel,
-          postProcess: buildPostProcessRequestPayload(postProcess),
-          titleBar: buildTitleBarRequestPayload(titleBar),
-        }),
-      });
-      if (!res.ok) {
-        const data: { error?: string } = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Image generation failed (${res.status})`);
-      }
-      const data: {
+      // Phase 3 (2026-06-09) — when variantCount > 1, fan out N parallel
+      // image-gen calls with the SAME body. Variants come from image-model
+      // variance. variantCount === 1 keeps the legacy single-call path.
+      const requestBody = {
+        imageModelId,
+        levels: levelsToUse,
+        count,
+        showBottomTitle,
+        showLevelLabels,
+        titleTopic: topicToUse,
+        titleTagline: taglineToUse,
+        notesForImageModel: notesToUse,
+        referenceImageUrl: referenceImageUrl.trim(),
+        brightness,
+        detail: detailLevel,
+        postProcess: buildPostProcessRequestPayload(postProcess),
+        titleBar: buildTitleBarRequestPayload(titleBar),
+      };
+
+      type ImageRouteResponse = {
         imageUrl: string;
         regions: ThumbnailRegion[];
         layout: { width: number; height: number };
-      } = await res.json();
+      };
+
+      let data: ImageRouteResponse;
+      let variants: ThumbnailVariant[] | undefined;
+      let selectedVariantIndex: number | undefined;
+      const wantVariants = variantCount > 1;
+
+      if (wantVariants) {
+        const fanOut = await fanOutFormatImageRoute<ImageRouteResponse>({
+          routeUrl: '/api/thumbnails/format/n-levels/image',
+          body: requestBody,
+          variantCount,
+        });
+        if (!fanOut.firstSuccess || fanOut.failedCount === variantCount) {
+          throw new Error(`All ${variantCount} variants failed`);
+        }
+        data = fanOut.firstSuccess;
+        variants = fanOut.variants;
+        const firstGood = variants.findIndex(v => v.imageUrl);
+        selectedVariantIndex = firstGood >= 0 ? firstGood : 0;
+        if (fanOut.failedCount > 0) {
+          toast.warning(`${variantCount - fanOut.failedCount} of ${variantCount} variants generated.`);
+        }
+      } else {
+        // eslint-disable-next-line no-restricted-syntax -- awaited POST RPC - awaits and uses response
+        const res = await fetch('/api/thumbnails/format/n-levels/image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+        if (!res.ok) {
+          const errData: { error?: string } = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Image generation failed (${res.status})`);
+        }
+        data = await res.json() as ImageRouteResponse;
+      }
+
       console.info('[thumbnails format-n-levels image] received', {
         imageUrl: data.imageUrl,
         regionsCount: data.regions.length,
+        variantsCount: variants?.length ?? 1,
       });
       const generation: NLevelsGenerationResult = {
-        imageUrl: data.imageUrl,
+        imageUrl: variants ? (variants[selectedVariantIndex!]?.imageUrl ?? data.imageUrl) : data.imageUrl,
+        variants,
+        selectedVariantIndex,
         regions: data.regions,
         levels: levelsToUse,
         count,
@@ -1483,7 +1531,7 @@ export function NLevelsPanel({
       };
       setResult(generation);
       onResultChange(generation);
-      toast.success('Thumbnail generated!');
+      toast.success(variants ? `${(variants.filter(v => v.imageUrl).length)} variants generated — pick one.` : 'Thumbnail generated!');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Image generation failed.');
     } finally {
@@ -3461,6 +3509,17 @@ export function NLevelsPanel({
             busy={busyStep === 'image'}
             previewImageUrl={previewImageUrl}
             previewLoading={previewLoading}
+            onSelectVariant={(idx) => {
+              const v = result.variants?.[idx];
+              if (!v?.imageUrl) return;
+              const next: NLevelsGenerationResult = {
+                ...result,
+                imageUrl: v.imageUrl,
+                selectedVariantIndex: idx,
+              };
+              setResult(next);
+              onResultChange(next);
+            }}
             postProcessPayload={buildPostProcessRequestPayload(postProcess) ?? undefined}
             titleBarRendererInput={
               titleBar.enabled
@@ -3737,13 +3796,17 @@ interface ResultProps {
    *  no server roundtrip. */
   postProcessPayload?: PostProcessConfig;
   titleBarRendererInput?: TitleBarRendererInput;
+  /** Phase 3 (2026-06-09) — VariantPicker selection callback. The
+   *  parent owns `setResult` + `onResultChange`; the preview sub-
+   *  component just emits which variant the user clicked. */
+  onSelectVariant?: (index: number) => void;
 }
 
 /** Preview zoom presets (mirrors TopicCardGridPanel's PREVIEW_ZOOM_PRESETS
  *  and the Flex Icon Grid convention). */
 const PREVIEW_ZOOM_PRESETS = [0.5, 1, 1.5, 2, 3] as const;
 
-function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy, previewImageUrl, previewLoading, postProcessPayload, titleBarRendererInput }: ResultProps) {
+function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onRegenerateImage, busy, previewImageUrl, previewLoading, postProcessPayload, titleBarRendererInput, onSelectVariant }: ResultProps) {
   // Phase A fallback fields — retained for a future "preview at server
   // fidelity" button. The Phase B1 SVG renderer doesn't use them.
   void previewImageUrl;
@@ -3812,6 +3875,20 @@ function ResultState({ result, regionOverlayOn, onToggleOverlay, onEditList, onR
           style={{ accentColor: 'var(--accent-purple-bright)' }}
         />
       </div>
+
+      {/* 3-variant picker (Phase 3, 2026-06-09). Mounted above the
+          preview when the fan-out produced multiple variants. */}
+      {result.variants && result.variants.length > 1 && onSelectVariant && (
+        <div className="mb-3">
+          <VariantPicker
+            variants={result.variants}
+            selectedIndex={result.selectedVariantIndex ?? 0}
+            onSelect={onSelectVariant}
+            heading="Pick your composite"
+            subheading="Click a thumbnail to mark it as the one you want."
+          />
+        </div>
+      )}
 
       <div
         className="rounded-lg"
