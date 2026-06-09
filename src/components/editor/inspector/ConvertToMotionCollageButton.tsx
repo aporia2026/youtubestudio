@@ -58,14 +58,16 @@ const GRID_PRESETS: ReadonlyArray<{ cols: number; rows: number; label: string }>
   { cols: 4, rows: 4, label: '4×4' },
 ];
 
-// 3×3 (9 panels) over 2×2 (4 panels). Default decided 2026-06-09 after
-// user feedback that 2×2 forces the LLM into huge per-panel deltas
-// ("at start" → "1/3 across" → "2/3 across" → "at end") which the image
-// model cannot reproduce without re-imagining composition every panel.
-// 9 panels lets the per-panel-fill prompt's MOTION DELTA rule actually
-// breathe — tiny per-step changes still cover the full motion arc.
-// Cost: 2.25× the per-row image-gen vs. 2×2; user accepted the tradeoff.
-const DEFAULT_GRID = GRID_PRESETS[3];
+// 2026-06-09 R2 — back to 2×2 (4 panels). The 3×3 default I shipped
+// earlier produced beautiful smaller-delta panels but blew the 300 s
+// Vercel function budget when paired with Kie (~60 s panel 0 + 8 ×
+// ~75 s chained Edits ≈ 660 s) and even on Atlas was tight (~350 s).
+// Bulk regen 504'd every row silently — user walked away expecting
+// completion, came back hours later to no changes. 4 panels: ~150 s
+// on Atlas, ~285 s on Kie. Within budget on both vendors.
+// MOTION DELTA prompt rules still apply — they're vendor-independent
+// and produce better motion at any grid size.
+const DEFAULT_GRID = GRID_PRESETS[0];
 
 export function ConvertToMotionCollageButton({
   row,
