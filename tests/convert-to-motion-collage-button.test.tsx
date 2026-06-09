@@ -167,11 +167,12 @@ describe('ConvertToMotionCollageButton — grid picker', () => {
     expect(html).toContain('4×4');
   });
 
-  it('defaults to 2×2 selected and surfaces the panel count on the button', () => {
-    // 2026-06-09 R2: reverted 3×3 → 2×2 after the larger grid blew
-    // the 300 s Vercel function budget on Kie (9 panels chained ≈ 660 s)
-    // and the bulk-regen flow silently 504'd every row. 2×2 keeps
-    // single-row + bulk regen inside the budget on both vendors.
+  it('defaults to 3×3 selected and surfaces the panel count on the button', () => {
+    // 2026-06-10: restored to 3×3 after the async chunked-progress
+    // pipeline (Phases 1-3 of 2026-06-09-motion-collage-async-bulk-regen.md)
+    // removed the per-call duration ceiling that forced the temporary
+    // 03ac5b42 revert to 2×2. 9 panels lets the MOTION DELTA rules
+    // produce smoother per-step motion without composition drift.
     const html = renderToStaticMarkup(
       <ConvertToMotionCollageButton
         row={makeRow()}
@@ -181,8 +182,8 @@ describe('ConvertToMotionCollageButton — grid picker', () => {
       />,
     );
     // CTA includes the selected grid + total panel count.
-    expect(html).toContain('Convert to motion collage (2×2)');
-    expect(html).toContain('Auto-fills 4 panel prompts');
+    expect(html).toContain('Convert to motion collage (3×3)');
+    expect(html).toContain('Auto-fills 9 panel prompts');
   });
 
   it('renders the "change grid after conversion" hint', () => {

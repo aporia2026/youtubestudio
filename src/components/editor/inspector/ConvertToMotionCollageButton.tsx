@@ -58,16 +58,25 @@ const GRID_PRESETS: ReadonlyArray<{ cols: number; rows: number; label: string }>
   { cols: 4, rows: 4, label: '4×4' },
 ];
 
-// 2026-06-09 R2 — back to 2×2 (4 panels). The 3×3 default I shipped
-// earlier produced beautiful smaller-delta panels but blew the 300 s
-// Vercel function budget when paired with Kie (~60 s panel 0 + 8 ×
-// ~75 s chained Edits ≈ 660 s) and even on Atlas was tight (~350 s).
-// Bulk regen 504'd every row silently — user walked away expecting
-// completion, came back hours later to no changes. 4 panels: ~150 s
-// on Atlas, ~285 s on Kie. Within budget on both vendors.
-// MOTION DELTA prompt rules still apply — they're vendor-independent
-// and produce better motion at any grid size.
-const DEFAULT_GRID = GRID_PRESETS[0];
+// 2026-06-10 — back to 3×3 (9 panels). The earlier revert to 2×2
+// (commit 03ac5b42) was a stopgap because synchronous bulk generation
+// from the browser tab blew the 300 s function budget on Kie. The
+// async pipeline shipped in Phases 1–3 of
+// `_plans/2026-06-09-motion-collage-async-bulk-regen.md` removes that
+// constraint:
+//   - Bulk regen now enqueues server-side and returns in <1 s; the
+//     browser tab can close.
+//   - Per-collage chunked progress splits the work across multiple
+//     auto-pipeline ticks (3 Kie panels / tick × 3 ticks fits comfortably
+//     inside the 255 s per-tick budget for a full 9-panel row).
+//   - Editor polling surfaces panels as they land without a reload.
+// 9 panels lets the MOTION DELTA rules in `motion-collage-panel-fill.ts`
+// breathe — tiny per-step changes still cover the full motion arc,
+// which is what produced the better composition continuity 03ac5b42
+// had to give up.
+// Cost note: ~2.25× the per-row image-gen cost vs. 2×2; the per-call
+// cost cap on /bulk-regen ($10 default) protects against runaway spend.
+const DEFAULT_GRID = GRID_PRESETS[3];
 
 export function ConvertToMotionCollageButton({
   row,
