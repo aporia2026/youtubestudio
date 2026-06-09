@@ -310,7 +310,7 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
   try {
     const origin = new URL(req.url).origin;
     const cookieHeader = req.headers.get('cookie') ?? '';
-    // eslint-disable-next-line no-restricted-syntax -- internal fire-and-forget kick; <5 s response time
+     
     const kickRes = await fetch(`${origin}/api/auto-pipeline/tick`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', cookie: cookieHeader },

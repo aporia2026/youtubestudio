@@ -65,11 +65,11 @@ export function GeminiStylePanel({
 
   function handleSaveTemplate() {
     if (!stylePrompt.trim()) {
-      // eslint-disable-next-line no-alert
+       
       alert('Style instructions are empty — type something to save as a template.');
       return;
     }
-    // eslint-disable-next-line no-alert
+     
     const name = window.prompt(
       'Name this template (e.g. "Documentary narrator", "Excited promo"):',
       '',
@@ -81,7 +81,7 @@ export function GeminiStylePanel({
 
   function handleApplyTemplate(tpl: StyleTemplate) {
     if (stylePrompt.trim() && stylePrompt.trim() !== tpl.text.trim()) {
-      // eslint-disable-next-line no-alert
+       
       if (!window.confirm(`Replace current style instructions with "${tpl.name}"?`)) return;
     }
     onStylePromptChange(tpl.text);
@@ -89,7 +89,7 @@ export function GeminiStylePanel({
 
   function handleDeleteTemplate(tpl: StyleTemplate, e: React.MouseEvent) {
     e.stopPropagation();
-    // eslint-disable-next-line no-alert
+     
     if (!window.confirm(`Delete template "${tpl.name}"?`)) return;
     deleteTemplate(tpl.id);
     setTemplates(listTemplates());

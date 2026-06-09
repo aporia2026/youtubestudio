@@ -3458,7 +3458,7 @@ function ProductionDocPage() {
     }
     // project.payload is the trigger; projectRef carries the latest
     // patch fn so we don't need it in deps.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [historyEntryId, project.payload]);
 
   const logEndRef = useRef<HTMLDivElement>(null);

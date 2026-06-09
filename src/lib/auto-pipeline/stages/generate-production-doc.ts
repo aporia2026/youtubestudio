@@ -419,7 +419,16 @@ export async function handleGenerateProductionDoc(ctx: StageHandlerContext): Pro
       //    env var, same as the manual route. Rewrites each variant's
       //    vague auto-grouper output into a concrete edit instruction
       //    the GPT Image 2 Edit model can actually act on.
+      //
+      // `useRefinedVariantPrompt` is misleadingly named — it's a flag
+      // reader, not a React hook. ESLint's rules-of-hooks rule is
+      // pattern-matching the `use*` prefix. Renaming the export to
+      // `isRefinedVariantPromptEnabled` is the right long-term fix
+      // (touched by other call sites too); for now, suppress with
+      // rationale so CI stops flagging it.
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- pattern-matched the `use*` prefix; this is a feature-flag reader, not a React hook. TODO: rename the export to `isRefinedVariantPromptEnabled` in production-doc-flags.ts and update call sites.
       const { useRefinedVariantPrompt } = await import('../../production-doc-flags');
+      // eslint-disable-next-line react-hooks/rules-of-hooks -- see note above; flag reader, not a React hook.
       if (useRefinedVariantPrompt()) {
         const { refineVariantPromptsInDoc } = await import('../../variant-prompt-refiner');
         const refinement = await refineVariantPromptsInDoc({

@@ -63,6 +63,8 @@ export const SCOPED_TABLES = [
   'insight_digests',
   'media_assets',
   'messages',
+  // N-Levels thumbnail format — workspace-saved presets (migration TBD).
+  'n_levels_saved_presets',
   'narration_take_comments',
   'narrator_assignments',
   'narrator_comments',
@@ -85,6 +87,7 @@ export const SCOPED_TABLES = [
   'production_doc_notes',
   'production_doc_styles',
   'projects',
+  'pronunciation_flags',
   'provider_generations',
   'published_videos',
   'qa_sessions',
@@ -101,11 +104,14 @@ export const SCOPED_TABLES = [
   'series',
   'series_parts',
   'shorts',
+  'shorts_series',
   'style_reference_images',
   'style_test_renders',
   'team_hub_audit_log',
   'templates',
   'thumbnail_template_presets',
+  // Topic Card Grid thumbnail format — workspace-saved presets.
+  'topic_card_grid_saved_presets',
   // Feature-preset bundle tables (migration 0097).
   'script_presets',
   'qa_presets',

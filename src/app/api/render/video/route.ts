@@ -659,7 +659,7 @@ async function startRender(renderId: string, config: VideoConfig) {
     // the actual error message and download events in the Vercel
     // function log for the next render.
     const browserErrors: string[] = [];
-    let videoDownloads = 0;
+    const videoDownloads = 0;
     await renderMedia({
       composition,
       serveUrl: bundled,

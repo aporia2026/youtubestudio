@@ -56,6 +56,7 @@ export default function BatchError({
           >
             Try again
           </button>
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- error boundary fallback; hard-navigation is the safer recovery path when something has already crashed in the React tree. */}
           <a
             href="/shorts"
             className="rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"

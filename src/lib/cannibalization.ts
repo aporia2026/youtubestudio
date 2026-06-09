@@ -88,9 +88,10 @@ export function lexicalSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : inter / union;
 }
 
-export interface CandidateUpload extends CannibalSide {
-  // Inherits everything from CannibalSide.
-}
+/** Alias for `CannibalSide` carrying no extra members. Kept as a
+ *  distinct type name so the call sites read intentionally ("candidate
+ *  upload" not "cannibal side") even though structurally identical. */
+export type CandidateUpload = CannibalSide;
 
 /**
  * Find every cross-channel pair within the window. Two uploads pair only if:

@@ -206,7 +206,7 @@ export async function downloadVideo(
   for (const candidate of transcriptCandidates) {
     // readFileToBuffer returns null on missing — we don't need the
     // contents here, just whether the file exists.
-    // eslint-disable-next-line no-await-in-loop -- two-attempt fallback
+     
     const buf = await sandbox.readFileToBuffer({ path: candidate }).catch(() => null);
     if (buf !== null) {
       transcriptSandboxPath = candidate;

@@ -68,7 +68,7 @@ export function UseTemplateDropdown({ onJobStarted }: UseTemplateDropdownProps) 
     if (busy !== 'idle' || !selectedId) return;
     setBusy('starting');
     setError(null);
-    // eslint-disable-next-line no-console
+     
     console.info('[channel-clone templates ui]', { action: 'start-from-template', templateId: selectedId });
     try {
       const res = await fetch('/api/channel-clone/intake-upload', {

@@ -55,7 +55,7 @@ export function decodeAudioPeaks(url: string): Promise<DecodedPeaks> {
 }
 
 async function decode(url: string): Promise<DecodedPeaks> {
-  // eslint-disable-next-line no-restricted-syntax -- GET, read
+   
   const response = await fetch(url);
   if (!response.ok) throw new Error(`decodeAudioPeaks: HTTP ${response.status} for ${url}`);
   const arrayBuffer = await response.arrayBuffer();

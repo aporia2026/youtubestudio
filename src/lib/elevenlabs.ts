@@ -120,7 +120,7 @@ export async function generateVoiceover(
     if (/output_format|plan|tier|not_authorized|invalid/i.test(body)) {
       // Plan doesn't allow the requested format — retry with the
       // universal default. Log so a deploy admin can see the downgrade.
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[elevenlabs] output_format=${desiredFormat} rejected (likely plan limit); falling back to mp3_44100_128.`,
       );

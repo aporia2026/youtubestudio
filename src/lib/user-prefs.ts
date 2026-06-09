@@ -71,7 +71,7 @@ export function bootstrapUserPrefs(): Promise<void> {
       return;
     }
     try {
-      // eslint-disable-next-line no-restricted-syntax -- one-shot bootstrap read; never mutates server state, doesn't belong in the outbox.
+       
       const res = await fetch('/api/user-prefs', {
         credentials: 'same-origin',
       });
@@ -165,6 +165,6 @@ function storageKey(key: string): string {
 }
 
 function log(event: string, fields: Record<string, unknown>): void {
-  // eslint-disable-next-line no-console
+   
   console.info(`${LOG_NS} ${event}`, fields);
 }

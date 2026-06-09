@@ -106,7 +106,7 @@ const migration: Migration = {
           `Resolve manually (move takes to the winner or archive the loser) and re-run the migration.`,
         );
       }
-      // eslint-disable-next-line no-console -- migration-time observability
+       
       console.info(
         `[narrator dedup] project=${projectId} winner=${winner?.id ?? 'n/a'} ` +
           `removing=${losers.map((l) => l.id).join(',')}`,

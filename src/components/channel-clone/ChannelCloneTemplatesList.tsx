@@ -108,6 +108,7 @@ export function ChannelCloneTemplatesList() {
     return (
       <p className="rounded border border-neutral-800 bg-neutral-950 p-4 text-sm text-neutral-400">
         No saved templates yet. Complete an upload-intake run on{' '}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- help-text link inside an empty-state placeholder; prefetch overhead not worth it for a rarely-followed link. */}
         <a href="/channel-clone" className="text-blue-400 hover:underline">
           the channel-clone page
         </a>{' '}

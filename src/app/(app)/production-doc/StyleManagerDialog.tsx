@@ -206,7 +206,7 @@ export function StyleManagerDialog({ styles, onChanged, onClose }: Props) {
   // so a swap to a newly-created style after save still picks up
   // its row. eslint disabled because the rule can't see through the
   // ref-based read.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   useEffect(() => {
     if (editing === null) {
       setRefs([]);

@@ -106,7 +106,7 @@ export function AudioLane({
     };
     // Recreate when the source URL changes; ignore other deps to
     // avoid re-fetching the audio every zoom tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [voiceoverUrl, height]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {

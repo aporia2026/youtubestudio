@@ -145,7 +145,7 @@ export function ModelRetryPicker({
         value={value}
         onChange={(e) => {
           const next = e.target.value;
-          // eslint-disable-next-line no-console -- per CLAUDE.md rule 14
+           
           console.info('[channel-clone retry-picker]', {
             stage,
             originalModelId,

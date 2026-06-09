@@ -94,6 +94,22 @@ export const Stage: React.FC<StageProps> = ({ config, activeSection, takeover, o
     setHasInitialSeek(true);
   }, [activeSection]);
 
+  // Memoize the Player's `inputProps` wrapper so its identity is
+  // preserved across parent re-renders. The editor re-renders
+  // frequently (selection state, playhead seeks, notes dock, etc.);
+  // without the memo, each re-render hands the Player a fresh
+  // `{ config }` object and the composition re-renders even when
+  // nothing meaningful changed — which is enough to interrupt the
+  // voiceover audio playback (the <Audio pauseWhenBuffering> on each
+  // scene boundary loses ~250ms of progress to buffer refills). Same
+  // fix as VideoPlayer.tsx.
+  //
+  // MUST come before any early returns — react-hooks/rules-of-hooks
+  // requires every hook to be called in the same order on every
+  // render. Calling useMemo after a `return` on some renders and not
+  // others is a real bug, not a lint nit.
+  const playerInputProps = useMemo(() => ({ config }), [config]);
+
   if (takeover) {
     return (
       <div
@@ -129,17 +145,6 @@ export const Stage: React.FC<StageProps> = ({ config, activeSection, takeover, o
   const initialFrame = hasInitialSeek
     ? undefined
     : Math.min(sectionStartFrame(config, activeSection) ?? 0, Math.max(0, frames - 1));
-
-  // Memoize the wrapper so the Player's `inputProps` identity is
-  // preserved across parent re-renders. The editor re-renders frequently
-  // (selection state, playhead seeks, notes dock, etc.); without the
-  // memo, each re-render hands the Player a fresh `{ config }` object
-  // identity and the composition re-renders even when nothing
-  // meaningful changed — which is enough to interrupt the voiceover
-  // audio's playback (the <Audio pauseWhenBuffering> on each scene
-  // boundary loses ~250ms of progress to buffer refills). Same fix as
-  // VideoPlayer.tsx.
-  const playerInputProps = useMemo(() => ({ config }), [config]);
 
   return (
     <div

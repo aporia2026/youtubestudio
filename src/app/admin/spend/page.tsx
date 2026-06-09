@@ -68,7 +68,7 @@ export default function AdminSpendPage() {
     setLoading(true);
     setError(null);
     try {
-      // eslint-disable-next-line no-restricted-syntax -- admin read, not a mutation
+       
       const res = await fetch(
         `/api/admin/spend-orphans?since_days=${sinceDays}&status=${encodeURIComponent(statuses)}&limit=500`,
         { cache: 'no-store' },

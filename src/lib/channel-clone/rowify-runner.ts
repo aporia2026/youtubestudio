@@ -583,7 +583,7 @@ export function parseRowifyResponse(raw: string): ChannelCloneProductionRow[] {
 
     // Title Card consistency: synthesize from script_text if the
     // model emitted visual_type Title Card but left fields blank.
-    let finalScriptText = scriptText;
+    const finalScriptText = scriptText;
     let finalVisualDescription = visualDescription;
     let finalAiImagePrompt = aiImagePrompt;
     let finalOnScreenText = onScreenText;

@@ -34,6 +34,7 @@ export default function ChannelCloneTemplatesPage() {
         </p>
         <p className="text-xs text-neutral-500">
           To save a template: complete an upload-intake run on the{' '}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- in-app cross-feature link; Link prefetches the whole feature bundle, which is wasted bandwidth for a help-text link the user rarely follows. */}
           <a href="/channel-clone" className="text-blue-400 hover:underline">
             channel-clone page
           </a>

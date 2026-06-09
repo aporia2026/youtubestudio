@@ -151,7 +151,7 @@ async function sweepPrefix(
   const sample: string[] = [];
   let matched = 0;
   let orphanWithinGrace = 0;
-  let toDelete: R2Object[] = [];
+  const toDelete: R2Object[] = [];
   for (const obj of objects) {
     if (known.has(obj.key)) {
       matched++;

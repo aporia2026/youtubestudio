@@ -182,7 +182,7 @@ describe('actAsCollaborator — audit lifecycle', () => {
     responseQueue.push({ kind: 'rows', rows: [] });
 
     await expect(
-      // eslint-disable-next-line @typescript-eslint/no-throw-literal
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately testing the non-Error branch of the audit-error coercion.
       actAsCollaborator(baseCtx, async () => {
         throw 'string thrown';
       }),

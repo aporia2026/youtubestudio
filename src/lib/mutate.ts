@@ -679,6 +679,6 @@ function errMsg(err: unknown): string {
 function log(event: string, fields: Record<string, unknown>): void {
   // Server-style namespaced log line. Phase 1.5 (tactical
   // observability) hooks Sentry breadcrumbs onto these.
-  // eslint-disable-next-line no-console
+   
   console.info(`${LOG_NS} ${event}`, fields);
 }

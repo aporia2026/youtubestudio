@@ -853,7 +853,7 @@ function RetryWithModel({
   // mid-retry can be diagnosed from the console (rule 14 — observability).
   useEffect(() => {
     if (!stage) return;
-    // eslint-disable-next-line no-console
+     
     console.info('[channel-clone retry-picker]', {
       stage,
       originalModelId,
@@ -1437,6 +1437,7 @@ function HandoffView({
           <dt className="text-neutral-500">When</dt><dd>{new Date(handoff.handedOffAt).toLocaleString()}</dd>
         </dl>
         <p className="pt-1">
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- cross-feature pipeline-dashboard link; preferred as a hard nav so a freshly handed-off project gets a clean fetch instead of inheriting the channel-clone page's client state. */}
           <a href="/pipeline" className="text-blue-400 hover:underline">Open auto-pipeline dashboard →</a>
         </p>
       </div>

@@ -10,7 +10,7 @@ import * as analyzeRunner from '@/lib/channel-clone/analyze-runner';
 // through the module namespace.
 type Parser = (raw: string, modelId: string) => unknown;
 const parse: Parser =
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   (analyzeRunner as unknown as { parseAnalyzeResponse?: Parser }).parseAnalyzeResponse
     ?? ((raw: string, modelId: string) => {
       // Fall through: invoke runAnalyze indirectly is heavier than

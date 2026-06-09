@@ -55,7 +55,9 @@ describe('parseRowifyResponse — Title Card rows', () => {
     expect(out[0].ai_image_prompt).toBe('');
   });
 
-  it('still rejects ai_image rows with empty ai_image_prompt (carry-over)', () => {
+  it('keeps an ai_image row with empty ai_image_prompt (lenient parser keeps the row, image-gen surface handles the empty case)', () => {
+    // 2026-06-10: rowify parser was rewritten to be tolerant.
+    // Authoritative coverage in tests/channel-clone-rowify-tolerance.test.ts.
     const payload = {
       rows: [
         {
@@ -70,16 +72,25 @@ describe('parseRowifyResponse — Title Card rows', () => {
         },
       ],
     };
-    expect(() => parseRowifyResponse(JSON.stringify(payload))).toThrow(/ai_image_prompt/);
+    const out = parseRowifyResponse(JSON.stringify(payload));
+    expect(out).toHaveLength(1);
+    expect(out[0].visual_type).toBe('ai_image');
+    // Empty ai_image_prompt is filled from visual_description so the
+    // image-gen pipeline always has something to render.
+    expect(out[0].ai_image_prompt).toBe('A doodle figure waves.');
   });
 
-  it('rejects an unknown visual_type value', () => {
+  it('normalizes "TitleCard" (no space) to "Title Card" instead of rejecting it', () => {
+    // Models frequently emit visual_type variants without exact
+    // capitalisation / spacing. The normaliser strips non-letters and
+    // matches case-insensitively, so 'TitleCard' -> 'titlecard' ->
+    // canonical 'Title Card'.
     const payload = {
       rows: [
         {
           timecode: '0:00-0:04',
           script_text: 'Some text.',
-          visual_type: 'TitleCard', // no space — wrong
+          visual_type: 'TitleCard',
           visual_description: '',
           stock_search_terms: '',
           ai_image_prompt: '',
@@ -88,7 +99,9 @@ describe('parseRowifyResponse — Title Card rows', () => {
         },
       ],
     };
-    expect(() => parseRowifyResponse(JSON.stringify(payload))).toThrow(/visual_type/);
+    const out = parseRowifyResponse(JSON.stringify(payload));
+    expect(out).toHaveLength(1);
+    expect(out[0].visual_type).toBe('Title Card');
   });
 });
 

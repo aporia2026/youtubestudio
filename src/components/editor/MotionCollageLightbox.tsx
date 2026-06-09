@@ -314,7 +314,7 @@ export function MotionCollageLightbox({
               gap: 12,
             }}
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
+            { }
             {(() => {
               // Mirror the renderer's per-panel transform inside the
               // preview so the slider feedback matches what the

@@ -93,10 +93,18 @@ export const ROOT_TENANT_TABLES = [
   'retention_predictions',
   'saved_catalog_views',
   'shorts',
+  // Shorts series (recurring batch parent) — workspace-scoped at INSERT.
+  'shorts_series',
   'style_reference_images',
   'style_test_renders',
   'team_hub_audit_log',
   'thumbnail_template_presets',
+  // Thumbnail format saved-preset bundles. Topic Card Grid + N-Levels
+  // each get their own workspace-keyed presets table.
+  'topic_card_grid_saved_presets',
+  'n_levels_saved_presets',
+  // Pronunciation overrides — workspace-shared dictionary for narration.
+  'pronunciation_flags',
   // Feature-preset bundle tables (migration 0097).
   'script_presets',
   'qa_presets',

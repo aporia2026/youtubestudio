@@ -296,7 +296,7 @@ export function validateDoodleInput(raw: unknown): ValidateInputResult {
 }
 
 function stripControl(s: string): string {
-  // eslint-disable-next-line no-control-regex
+   
   return s.replace(/[ -]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 

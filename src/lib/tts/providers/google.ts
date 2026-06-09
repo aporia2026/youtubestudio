@@ -605,7 +605,7 @@ class GoogleSynthesizer implements Synthesizer {
       offset += n.pcm.byteLength;
     }
     const merged = buildWav({ ...wavFormat, pcm: combinedPcm });
-    const chunkMimeType: 'audio/wav' = 'audio/wav';
+    const chunkMimeType = 'audio/wav' as const;
 
     const durationSeconds = Math.max(1, totalCharCount / 15);
 

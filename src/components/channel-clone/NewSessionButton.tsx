@@ -57,10 +57,10 @@ export function NewSessionButton() {
       for (const k of keysToRemove) {
         window.localStorage.removeItem(k);
       }
-      // eslint-disable-next-line no-console
+       
       console.info('[channel-clone new-session]', { cleared: keysToRemove.length });
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.warn('[channel-clone new-session] failed', err);
     }
     // Hard reload so every persisted-state hook re-hydrates from

@@ -265,7 +265,7 @@ export default function RecoverLostImagesPage() {
     for (let i = 0; i < rows.length; i++) {
       if (rows[i]?.status === 'done') continue;
       if (rows[i]?.missingImages === 0 && rows[i]?.missingOverlays === 0 && rows[i]?.missingClips === 0) continue;
-      // eslint-disable-next-line no-await-in-loop
+       
       await recoverOne(i);
     }
     setRecoverAllRunning(false);

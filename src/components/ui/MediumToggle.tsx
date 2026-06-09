@@ -66,7 +66,7 @@ export function MediumToggle({ section, className, style }: MediumToggleProps) {
         url.set('medium', next);
       }
       const qs = url.toString();
-      // eslint-disable-next-line no-console -- structured observability per rule 14
+       
       console.info('[shorts medium toggle]', {
         section,
         from: active,

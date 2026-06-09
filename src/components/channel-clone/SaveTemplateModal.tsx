@@ -70,7 +70,7 @@ export function SaveTemplateModal({
       }
       setSaving(true);
       setError(null);
-      // eslint-disable-next-line no-console
+       
       console.info('[channel-clone templates ui]', { action: 'save-start', jobId, name, replaceExisting });
       try {
         const res = await fetch('/api/channel-clone/templates', {
@@ -90,7 +90,7 @@ export function SaveTemplateModal({
           setSaving(false);
           return;
         }
-        // eslint-disable-next-line no-console
+         
         console.info('[channel-clone templates ui]', { action: 'save-done', templateId: data.template.id });
         onSaved(data.template);
         onClose();

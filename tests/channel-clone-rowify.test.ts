@@ -59,29 +59,55 @@ describe('parseRowifyResponse', () => {
     expect(() => parseRowifyResponse('{}')).toThrow(/rows/);
   });
 
-  it('rejects an invalid timecode format', () => {
+  // 2026-06-10 — parseRowifyResponse was deliberately rewritten to be
+  // lenient: only `script_text` is load-bearing (drops the row when
+  // missing), every other field has a fallback (synthesized timecode,
+  // 'ai_image' default for unknown visual_type, empty strings for
+  // missing strings). Models routinely return slightly-off enum values
+  // or malformed timecodes, and earlier "throw on any drift" behavior
+  // produced false-failure rates the operator couldn't fix without
+  // re-prompting. The authoritative tolerance coverage lives in
+  // tests/channel-clone-rowify-tolerance.test.ts; these tests keep
+  // the named scenarios working under the new contract.
+
+  it('synthesizes a timecode when the format is invalid (no longer throws)', () => {
     const bad = JSON.parse(JSON.stringify(VALID_PAYLOAD));
     bad.rows[0].timecode = '0:00 - 0:04';
-    expect(() => parseRowifyResponse(JSON.stringify(bad))).toThrow(/timecode/);
+    const out = parseRowifyResponse(JSON.stringify(bad));
+    expect(out).toHaveLength(3);
+    // First row gets a synthesized timecode rooted at 0s with 3s
+    // duration. The exact format is `M:SS-M:SS`.
+    expect(out[0].timecode).toMatch(/^\d+:\d{2}-\d+:\d{2}$/);
   });
 
-  it('rejects an unknown visual_type', () => {
+  it('defaults an unknown visual_type to ai_image (no longer throws)', () => {
     const bad = JSON.parse(JSON.stringify(VALID_PAYLOAD));
     bad.rows[1].visual_type = 'video';
-    expect(() => parseRowifyResponse(JSON.stringify(bad))).toThrow(/visual_type/);
+    const out = parseRowifyResponse(JSON.stringify(bad));
+    expect(out).toHaveLength(3);
+    expect(out[1].visual_type).toBe('ai_image');
   });
 
-  it('rejects ai_image row with empty ai_image_prompt', () => {
+  it('keeps an ai_image row when ai_image_prompt is empty — fills from visual_description as fallback', () => {
     const bad = JSON.parse(JSON.stringify(VALID_PAYLOAD));
     bad.rows[2].ai_image_prompt = '';
-    expect(() => parseRowifyResponse(JSON.stringify(bad))).toThrow(/ai_image_prompt/);
+    const out = parseRowifyResponse(JSON.stringify(bad));
+    expect(out).toHaveLength(3);
+    // Empty prompt is backfilled from visual_description so the
+    // image-gen pipeline never sees an empty string.
+    expect(out[2].ai_image_prompt.length).toBeGreaterThan(0);
+    expect(out[2].ai_image_prompt).toBe(VALID_ROW.visual_description);
   });
 
-  it('rejects stock row with empty stock_search_terms', () => {
+  it('keeps a stock row when stock_search_terms is empty — fills from visual_description as fallback', () => {
     const bad = JSON.parse(JSON.stringify(VALID_PAYLOAD));
     bad.rows[0].visual_type = 'stock';
     bad.rows[0].stock_search_terms = '';
-    expect(() => parseRowifyResponse(JSON.stringify(bad))).toThrow(/stock_search_terms/);
+    const out = parseRowifyResponse(JSON.stringify(bad));
+    expect(out).toHaveLength(3);
+    expect(out[0].visual_type).toBe('stock');
+    expect(out[0].stock_search_terms.length).toBeGreaterThan(0);
+    expect(out[0].stock_search_terms).toBe(VALID_ROW.visual_description);
   });
 
   it('accepts a stock row when terms are present', () => {
@@ -92,10 +118,15 @@ describe('parseRowifyResponse', () => {
     expect(out[0].visual_type).toBe('stock');
   });
 
-  it('rejects a row missing required string fields', () => {
+  it('drops a row that is missing script_text (the only load-bearing field)', () => {
     const bad = JSON.parse(JSON.stringify(VALID_PAYLOAD));
     delete bad.rows[0].script_text;
-    expect(() => parseRowifyResponse(JSON.stringify(bad))).toThrow(/script_text/);
+    const out = parseRowifyResponse(JSON.stringify(bad));
+    // Row 0 is dropped (empty script_text), rows 1 and 2 survive.
+    expect(out).toHaveLength(2);
+    expect(out[0].script_text).toBe(VALID_ROW.script_text === bad.rows[1].script_text
+      ? VALID_ROW.script_text
+      : bad.rows[1].script_text);
   });
 });
 

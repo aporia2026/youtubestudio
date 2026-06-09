@@ -103,7 +103,7 @@ export function VoiceProfileCard({
       if (typeof window !== 'undefined') {
         window.sessionStorage.setItem(sessionKey, next ? '1' : '0');
       }
-      // eslint-disable-next-line no-console
+       
       console.info('[channel-clone voice-card]', { state: 'toggled', jobId, collapsed: next });
       return next;
     });
@@ -127,7 +127,7 @@ export function VoiceProfileCard({
       window.sessionStorage.setItem(skipKey, '1');
     }
     setSkipped(true);
-    // eslint-disable-next-line no-console
+     
     console.info('[channel-clone voice-card]', { state: 'skipped', jobId });
   }, [jobId, skipKey]);
 
@@ -242,11 +242,11 @@ function LoadedView({
       await navigator.clipboard.writeText(profile.voiceDesignPrompt);
       setCopyStatus('copied');
       setTimeout(() => setCopyStatus('idle'), 2000);
-      // eslint-disable-next-line no-console
+       
       console.info('[channel-clone voice-card]', { state: 'prompt-copied' });
     } catch (err) {
       setCopyStatus('failed');
-      // eslint-disable-next-line no-console
+       
       console.warn('[channel-clone voice-card]', { state: 'copy-failed', err });
     }
   }, [profile.voiceDesignPrompt]);
@@ -336,7 +336,7 @@ function CloneControls({
     }
     setBusy('cloning');
     setError(null);
-    // eslint-disable-next-line no-console
+     
     console.info('[channel-clone voice-card]', { state: 'clone-start', jobId, name });
     try {
       const res = await fetch('/api/channel-clone/voice/clone', {
@@ -347,11 +347,11 @@ function CloneControls({
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setError(data.error ?? `Clone failed (${res.status})`);
-        // eslint-disable-next-line no-console
+         
         console.warn('[channel-clone voice-card]', { state: 'clone-failed', status: res.status, error: data.error });
         return;
       }
-      // eslint-disable-next-line no-console
+       
       console.info('[channel-clone voice-card]', { state: 'clone-done', jobId });
       onChanged?.();
     } catch (err) {
@@ -368,7 +368,7 @@ function CloneControls({
     }
     setBusy('deleting');
     setError(null);
-    // eslint-disable-next-line no-console
+     
     console.info('[channel-clone voice-card]', { state: 'delete-start', jobId, voiceId: cloned.voiceId });
     try {
       const res = await fetch('/api/channel-clone/voice/delete', {
@@ -553,7 +553,7 @@ function PendingView({
     if (retrying) return;
     setRetrying(true);
     setRetryError(null);
-    // eslint-disable-next-line no-console
+     
     console.info('[channel-clone voice-card]', { state: 'profile-retry-start', jobId, modelId });
     try {
       const res = await fetch('/api/channel-clone/voice/profile', {

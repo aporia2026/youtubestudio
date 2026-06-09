@@ -94,7 +94,7 @@ async function main(): Promise<void> {
 
   await fs.writeFile(OUT_PATH, out);
   const meta = await sharp(out).metadata();
-  // eslint-disable-next-line no-console
+   
   console.log(
     `Wrote ${OUT_PATH} (${meta.width}×${meta.height}, ${out.byteLength} bytes) in ${ms}ms — ` +
       `${ROWS}×${COLS} grid, ${cards.length} uploads.`,
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
+   
   console.error(err);
   process.exit(1);
 });
