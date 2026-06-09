@@ -73,6 +73,7 @@ import { isShortTerminal, nextStageFor, allShortsAtTerminal } from './shorts-bat
 import type { BatchStage } from './shorts-batch-stages';
 import { retryTransient } from './shorts-batch-retry';
 import { DEFAULT_BASE_T2I_MODEL_ID, resolveBaseT2iModelId } from './shorts-base-t2i-types';
+import { getUserSettings } from './user-settings';
 
 /** Concurrency cap per tick. Three is enough to keep wall-clock
  *  decent (3 voiceover calls in parallel ≈ 30s instead of 90s) while
@@ -370,6 +371,34 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
   // the floor. `resolveBaseT2iModelId` narrows + sanitises any stale
   // model id stored on an old batch.
   const baseT2iModelId = resolveBaseT2iModelId(batch.defaults.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID);
+
+  // Variant editor (GPT Image 2 edit operation used for character
+  // continuity + mouth-removal): read the batch creator's per-user
+  // preference. Previously hardcoded to 'atlas' which silently
+  // burnt batches when the user's Atlas balance ran low. Falls back
+  // to 'atlas' (the cost-optimal default) when no user setting exists
+  // or the batch has no created_by (legacy rows).
+  let variantEditPrimary: 'atlas' | 'kie' = 'atlas';
+  if (batch.created_by) {
+    try {
+      const userSettings = await getUserSettings(batch.created_by);
+      if (userSettings.gpt_image_2_edit_primary === 'kie') {
+        variantEditPrimary = 'kie';
+      } else if (userSettings.gpt_image_2_edit_primary === 'atlas') {
+        variantEditPrimary = 'atlas';
+      }
+    } catch (err) {
+      // Settings lookup failure shouldn't fail enqueue — degrade
+      // gracefully to the historical default and log so we can
+      // diagnose if this starts firing in production.
+      console.warn('[shorts-batch enqueue user-settings-lookup-failed]', {
+        user_id: batch.created_by,
+        short_id: short.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const queued = {
     phase: 'queued' as const,
     label: 'Queued — Doodle assets will start shortly…',
@@ -379,7 +408,7 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
     job: {
       niche,
       base_t2i_model_id: baseT2iModelId,
-      variant_edit_primary: 'atlas' as const,
+      variant_edit_primary: variantEditPrimary,
       max_variants: Math.max(4, Math.min(10, Math.round(seconds / 6))),
     },
   };
