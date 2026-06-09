@@ -100,14 +100,20 @@ function doodleRow(overrides: Partial<ShortRow> = {}): ShortRow {
 // ───────────────────────── regenerateBaseFrame ─────────────────────────
 
 describe('regenerateBaseFrame', () => {
-  it('replaces base_url + base_prompt and leaves variants intact', async () => {
+  it('replaces base_url + base_prompt and leaves variants intact (Atlas branch)', async () => {
     mockedT2I.mockResolvedValue({
       url: 'https://r2.test/new-base.png',
       predictionId: 'pred-99',
       predictTimeMs: 12_345,
     });
     const row = doodleRow();
-    const result = await regenerateBaseFrame(row, { prompt: 'A character in a hat.' });
+    // Explicit modelId so this test exercises the Atlas branch
+    // regardless of which model is the current default (the default
+    // flipped from Atlas → Kie GPT Image 2 on 2026-06-09).
+    const result = await regenerateBaseFrame(row, {
+      prompt: 'A character in a hat.',
+      modelId: 'atlas-gpt-image-2',
+    });
 
     expect(mockedT2I).toHaveBeenCalledOnce();
     // Atlas's 2:3 output gets center-cropped to 9:16 by
@@ -116,8 +122,6 @@ describe('regenerateBaseFrame', () => {
     expect(result.style_assets.doodle?.base_url).toBe('https://r2.test/new-base.png#cropped');
     expect(result.style_assets.doodle?.base_prompt).toBe('A character in a hat.');
     expect(result.style_assets.doodle?.variants).toEqual(row.style_assets.doodle?.variants);
-    // Phase 15.15 — default base model is atlas-gpt-image-2 at $0.009
-    // (was $0.04 from the legacy ATLAS_T2I_COST_USD constant).
     expect(result.costUsd).toBe(0.009);
     expect(result.modelId).toBe('atlas-gpt-image-2');
     expect(result.vendorUsed).toBe('atlas');
@@ -135,7 +139,10 @@ describe('regenerateBaseFrame', () => {
         },
       },
     });
-    const result = await regenerateBaseFrame(row, { prompt: 'paint scene v2' });
+    const result = await regenerateBaseFrame(row, {
+      prompt: 'paint scene v2',
+      modelId: 'atlas-gpt-image-2',
+    });
     // 9:16 crop step appends '#cropped' via the test mock.
     expect(result.style_assets.paint?.base_url).toBe('https://r2.test/p.png#cropped');
     expect(result.style_assets.paint?.base_prompt).toBe('paint scene v2');
@@ -175,16 +182,12 @@ describe('regenerateBaseFrame', () => {
     expect(result.costUsd).toBe(0.009);
   });
 
-  it('falls back to default model when given an unknown id (defensive)', async () => {
-    mockedT2I.mockResolvedValue({
-      url: 'https://r2.test/atlas3.png',
-      predictionId: 'pred-101',
-    });
-    const row = doodleRow();
-    // @ts-expect-error — deliberately pass a string outside the union
-    const result = await regenerateBaseFrame(row, { prompt: 'A', modelId: 'made-up' });
-    expect(result.modelId).toBe('atlas-gpt-image-2');
-  });
+  // Defensive-fallback for unknown modelId is covered in
+  // `tests/shorts-base-t2i.test.ts` against the resolver directly —
+  // that test owns the assertion about WHICH model the default points
+  // at. Repeating it here would route through Kie's dispatcher (the
+  // current default) and require additional vendor mocks just to
+  // re-assert what the resolver test already covers.
 });
 
 // ───────────────────────── regenerateVariantFrame ──────────────────────

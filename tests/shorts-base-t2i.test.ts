@@ -49,11 +49,11 @@ describe('registry', () => {
     ]);
   });
 
-  it('default is the cost-optimal Atlas GPT-2 model', () => {
-    expect(DEFAULT_BASE_T2I_MODEL_ID).toBe('atlas-gpt-image-2');
+  it('default is Kie GPT Image 2 (user-confirmed 2026-06-09 over the cheaper Atlas route due to Atlas reliability issues)', () => {
+    expect(DEFAULT_BASE_T2I_MODEL_ID).toBe('kie-gpt-image-2');
     const spec = getBaseT2iModelSpec(DEFAULT_BASE_T2I_MODEL_ID);
-    expect(spec.vendor).toBe('atlas');
-    expect(spec.costUsd).toBe(0.009);
+    expect(spec.vendor).toBe('kie');
+    expect(spec.costUsd).toBe(0.05);
   });
 
   it('resolves arbitrary strings to a valid id (defensive)', () => {

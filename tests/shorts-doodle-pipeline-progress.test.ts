@@ -85,6 +85,7 @@ describe('generateDoodleAssets — onProgress contract', () => {
         { text: 'three', start_ms: 2000, end_ms: 3000 },
       ],
       maxVariants: 3,
+      baseT2iModelId: 'atlas-gpt-image-2',
       onProgress: (state) => {
         events.push(state);
       },
@@ -127,6 +128,7 @@ describe('generateDoodleAssets — onProgress contract', () => {
       niche: 'general',
       captions: [{ text: 'a', start_ms: 0, end_ms: 500 }],
       maxVariants: 1,
+      baseT2iModelId: 'atlas-gpt-image-2',
       onProgress: (state) => {
         events.push(state);
       },
@@ -161,6 +163,7 @@ describe('generateDoodleAssets — onProgress contract', () => {
         { text: 'b', start_ms: 500, end_ms: 1000 },
       ],
       maxVariants: 2,
+      baseT2iModelId: 'atlas-gpt-image-2',
       onProgress: async () => {
         throw new Error('DB write hiccup');
       },
@@ -191,6 +194,7 @@ describe('generateDoodleAssets — onProgress contract', () => {
       niche: 'general',
       captions: [{ text: 'a', start_ms: 0, end_ms: 500 }],
       maxVariants: 1,
+      baseT2iModelId: 'atlas-gpt-image-2',
     });
 
     expect(result.variants).toHaveLength(1);
@@ -252,6 +256,7 @@ describe('generateDoodleAssets — onProgress contract', () => {
         { text: 'b', start_ms: 500, end_ms: 1000 },
       ],
       maxVariants: 2,
+      baseT2iModelId: 'atlas-gpt-image-2',
       variantEditPrimary: 'kie',
     });
 

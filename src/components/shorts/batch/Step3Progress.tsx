@@ -19,9 +19,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { BASE_T2I_MODELS, type ShortsBaseT2iModelId } from '@/lib/shorts-base-t2i-types';
+import { BASE_T2I_MODELS, DEFAULT_BASE_T2I_MODEL_ID, type ShortsBaseT2iModelId } from '@/lib/shorts-base-t2i-types';
 import type { ShortsBatchWithShorts, BatchTickResult } from '@/lib/shorts-batches-types';
-import type { ShortRow, GenerationProgressState } from '@/lib/shorts-types';
+import type { ShortRow, GenerationProgressState, ShortSeoResult } from '@/lib/shorts-types';
 
 interface Props {
   batchId: string;
@@ -102,6 +102,25 @@ export function Step3Progress({ batchId, onDone }: Props) {
         toast.success('Short cancelled');
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Cancel failed');
+      }
+    },
+    [],
+  );
+
+  /** Re-queue a failed short. Clears generation_progress so the
+   *  orchestrator picks it back up on the next tick from whatever
+   *  stage it can derive from observable columns. */
+  const retryShort = useCallback(
+    async (shortId: string) => {
+      try {
+        const res = await fetch(`/api/shorts/${shortId}/retry`, { method: 'POST' });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        toast.success('Retry queued — the next tick will pick it up');
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Retry failed');
       }
     },
     [],
@@ -272,6 +291,7 @@ export function Step3Progress({ batchId, onDone }: Props) {
             short={s}
             nowMs={now}
             onCancel={cancelShort}
+            onRetry={retryShort}
             onRetryAssets={retryAssetsWithModel}
           />
         ))}
@@ -369,11 +389,13 @@ function ShortProgressRow({
   short,
   nowMs,
   onCancel,
+  onRetry,
   onRetryAssets,
 }: {
   short: ShortRow;
   nowMs: number;
   onCancel: (shortId: string) => void;
+  onRetry: (shortId: string) => void;
   onRetryAssets: (shortId: string, modelId: ShortsBaseT2iModelId) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -414,10 +436,23 @@ function ShortProgressRow({
           <RetryAssetsPicker
             currentModelId={
               (short.generation_progress?.job?.base_t2i_model_id as ShortsBaseT2iModelId | undefined)
-              ?? 'atlas-gpt-image-2'
+              ?? DEFAULT_BASE_T2I_MODEL_ID
             }
             onPick={(modelId) => onRetryAssets(short.id, modelId)}
           />
+        )}
+        {isError && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRetry(short.id);
+            }}
+            className="shrink-0 rounded-md border border-[var(--accent-purple-bright)] px-2 py-1 text-xs text-[var(--accent-purple-bright)] hover:bg-[var(--accent-purple)]/15"
+            title="Re-queue this short — the next tick picks it up from where it failed"
+          >
+            ↻ Retry
+          </button>
         )}
         {!isError && !isReady && (
           <button
@@ -451,7 +486,7 @@ function ShortProgressRow({
 
       {expanded && (
         <div className="border-t border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 text-xs">
-          <Log short={short} stages={stages} elapsedMs={elapsedMs} />
+          <RowInspector short={short} stages={stages} elapsedMs={elapsedMs} />
         </div>
       )}
     </div>
@@ -521,6 +556,294 @@ function formatElapsed(ms: number): string {
   if (m < 60) return `${m}m ${s % 60}s ago`;
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m ago`;
+}
+
+/** Expanded per-row content inspector. Renders, in order:
+ *  - a prominent error banner (if the short failed)
+ *  - one collapsible section per stage with the actual generated
+ *    artifact (script body, voiceover player, SEO output, asset
+ *    thumbnails, render video)
+ *  - the original textual log + asset-job phase detail at the bottom
+ *
+ *  Sections that have no data yet are skipped — when extract hasn't
+ *  finished there's nothing to show under Script, so we don't render
+ *  an empty card. */
+function RowInspector({
+  short,
+  stages,
+  elapsedMs,
+}: {
+  short: ShortRow;
+  stages: DerivedStage[];
+  elapsedMs: number;
+}) {
+  const gp = (short.generation_progress ?? {}) as GenerationProgressState;
+  const isError = gp.phase === 'error';
+
+  return (
+    <div className="space-y-3">
+      {isError && (
+        <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-red-300">
+            Generation error
+          </div>
+          <div className="whitespace-pre-wrap text-[12px] text-red-200">
+            {gp.error_message ?? gp.label ?? 'Unknown error'}
+          </div>
+          {gp.updated_at && (
+            <div className="mt-1 text-[10px] text-red-400/70">
+              {formatTime(gp.updated_at)}
+            </div>
+          )}
+        </div>
+      )}
+
+      <InspectorSection title="Script" defaultOpen={!short.short_script || isError}>
+        <ScriptInspector short={short} />
+      </InspectorSection>
+
+      <InspectorSection title="Voiceover" defaultOpen={false}>
+        <VoiceoverInspector short={short} />
+      </InspectorSection>
+
+      <InspectorSection title="SEO" defaultOpen={false}>
+        <SeoInspector seo={short.seo_result} />
+      </InspectorSection>
+
+      <InspectorSection title="Assets (frames)" defaultOpen={false}>
+        <AssetsInspector short={short} />
+      </InspectorSection>
+
+      <InspectorSection title="Render" defaultOpen={false}>
+        <RenderInspector short={short} />
+      </InspectorSection>
+
+      <div className="border-t border-[var(--border)] pt-3">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          Activity log
+        </div>
+        <Log short={short} stages={stages} elapsedMs={elapsedMs} />
+      </div>
+    </div>
+  );
+}
+
+/** Reusable collapsible <details> wrapper for inspector sections.
+ *  Uses native <details> so no extra state plumbing is needed and
+ *  the open/close survives re-renders driven by the 4s poll loop. */
+function InspectorSection({
+  title,
+  defaultOpen,
+  children,
+}: {
+  title: string;
+  defaultOpen: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details open={defaultOpen} className="group rounded-md border border-[var(--border)] bg-[var(--bg-card)]/60">
+      <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+        <span className="text-[var(--text-muted)] group-open:rotate-90 transition-transform" aria-hidden>▸</span>
+        <span>{title}</span>
+      </summary>
+      <div className="border-t border-[var(--border)] px-3 py-3">
+        {children}
+      </div>
+    </details>
+  );
+}
+
+function ScriptInspector({ short }: { short: ShortRow }) {
+  if (!short.short_script) {
+    return <p className="text-[var(--text-muted)]">No script yet.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {short.title && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Title</div>
+          <div className="text-[var(--text-primary)]">{short.title}</div>
+        </div>
+      )}
+      {short.hook && (
+        <div className="rounded-md border border-[var(--accent-purple-bright)]/40 bg-[var(--accent-purple)]/10 px-3 py-2">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-[var(--accent-purple-bright)]">Hook</div>
+          <div className="text-[var(--text-primary)]">{short.hook}</div>
+        </div>
+      )}
+      <div>
+        <div className="mb-1 flex items-baseline justify-between">
+          <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Script body</span>
+          <span className="text-[10px] text-[var(--text-muted)]">
+            {short.word_count ?? '?'} words
+            {short.estimated_duration_seconds ? ` · ~${short.estimated_duration_seconds}s` : ''}
+          </span>
+        </div>
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-[12px] leading-relaxed text-[var(--text-primary)]">
+          {short.short_script}
+        </pre>
+      </div>
+      {short.payoff && (
+        <div className="rounded-md border border-[var(--accent-green)]/40 bg-[var(--accent-green)]/10 px-3 py-2">
+          <div className="mb-0.5 text-[10px] uppercase tracking-wider text-[var(--accent-green)]">Payoff</div>
+          <div className="text-[var(--text-primary)]">{short.payoff}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VoiceoverInspector({ short }: { short: ShortRow }) {
+  if (!short.voiceover_audio_url) {
+    return <p className="text-[var(--text-muted)]">No voiceover yet.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      <audio controls preload="metadata" src={short.voiceover_audio_url} className="w-full" />
+      <div className="flex items-center justify-between text-[10px] text-[var(--text-muted)]">
+        <span>
+          {short.voiceover_duration_seconds
+            ? `${Math.round(short.voiceover_duration_seconds)}s actual`
+            : 'duration not measured'}
+          {short.voiceover_voice_id ? ` · voice ${short.voiceover_voice_id}` : ''}
+        </span>
+        <a
+          href={short.voiceover_audio_url}
+          target="_blank"
+          rel="noreferrer"
+          className="text-[var(--accent-purple-bright)] hover:underline"
+        >
+          Open ↗
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function SeoInspector({ seo }: { seo: ShortSeoResult | null }) {
+  if (!seo) {
+    return <p className="text-[var(--text-muted)]">No SEO output yet.</p>;
+  }
+  const topTitle = seo.titles?.[0];
+  const topDesc = seo.descriptions?.[0];
+  const topHashtags = seo.hashtag_sets?.[0];
+  return (
+    <div className="space-y-3">
+      {seo.primary_keyword && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Primary keyword</div>
+          <div className="text-[var(--text-primary)]">{seo.primary_keyword}</div>
+        </div>
+      )}
+      {topTitle && (
+        <div>
+          <div className="mb-0.5 flex items-baseline justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Top title</span>
+            <span className="text-[10px] text-[var(--text-muted)]">score {topTitle.score}</span>
+          </div>
+          <div className="text-[var(--text-primary)]">{topTitle.text}</div>
+        </div>
+      )}
+      {topDesc && (
+        <div>
+          <div className="mb-0.5 flex items-baseline justify-between">
+            <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Top description</span>
+            <span className="text-[10px] text-[var(--text-muted)]">score {topDesc.score}</span>
+          </div>
+          <pre className="whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2 text-[12px] text-[var(--text-primary)]">
+            {topDesc.text}
+          </pre>
+        </div>
+      )}
+      {topHashtags && topHashtags.tags.length > 0 && (
+        <div>
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Hashtags</div>
+          <div className="flex flex-wrap gap-1">
+            {topHashtags.tags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full border border-[var(--border)] bg-white/[0.04] px-2 py-0.5 text-[10.5px] text-[var(--text-secondary)]"
+              >
+                #{tag}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {seo.notes && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Notes</div>
+          <p className="text-[12px] text-[var(--text-secondary)]">{seo.notes}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetsInspector({ short }: { short: ShortRow }) {
+  const sa = short.style_assets ?? {};
+  const block = sa.doodle ?? sa.paint;
+  if (!block) {
+    return <p className="text-[var(--text-muted)]">No frames yet.</p>;
+  }
+  const frames: Array<{ url: string; label: string }> = [];
+  if (block.base_url) frames.push({ url: block.base_url, label: 'Base' });
+  for (let i = 0; i < (block.variants?.length ?? 0); i++) {
+    const v = block.variants[i];
+    if (v?.url) frames.push({ url: v.url, label: `Variant ${i + 1}` });
+  }
+  if (frames.length === 0) {
+    return <p className="text-[var(--text-muted)]">No frames yet.</p>;
+  }
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {frames.map((f) => (
+        <a
+          key={f.url}
+          href={f.url}
+          target="_blank"
+          rel="noreferrer"
+          className="group relative block overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]"
+          title={`${f.label} — click for full size`}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={f.url}
+            alt={f.label}
+            loading="lazy"
+            className="aspect-[9/16] w-full object-cover transition-transform group-hover:scale-[1.02]"
+          />
+          <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1.5 py-0.5 text-[9.5px] text-white">
+            {f.label}
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function RenderInspector({ short }: { short: ShortRow }) {
+  if (!short.rendered_video_url) {
+    return <p className="text-[var(--text-muted)]">Not rendered yet.</p>;
+  }
+  return (
+    <div className="space-y-2">
+      <video
+        controls
+        preload="metadata"
+        src={short.rendered_video_url}
+        className="aspect-[9/16] w-48 rounded-md bg-black"
+      />
+      <a
+        href={short.rendered_video_url}
+        target="_blank"
+        rel="noreferrer"
+        className="block text-[10px] text-[var(--accent-purple-bright)] hover:underline"
+      >
+        Open mp4 ↗
+      </a>
+    </div>
+  );
 }
 
 function Log({

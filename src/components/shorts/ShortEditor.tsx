@@ -23,6 +23,8 @@ import { toast } from 'sonner';
 import type { PlayerRef } from '@remotion/player';
 import { EditorShell } from '@/components/shorts/editor/EditorShell';
 import { AssetPreviewModal } from '@/components/shorts/editor/AssetPreviewModal';
+import { QaTabPanel } from '@/components/shorts/editor/QaTabPanel';
+import type { ShortsContentQaResult } from '@/lib/shorts-content-qa-types';
 import {
   computeRenderCtaState,
   parseTabHash,
@@ -36,6 +38,7 @@ import type {
   ShortRow,
 } from '@/lib/shorts-types';
 import { ShortStylePicker } from '@/components/shorts/ShortStylePicker';
+import { DEFAULT_BASE_T2I_MODEL_ID } from '@/lib/shorts-base-t2i-types';
 import { ShortSeoResults } from '@/components/shorts/ShortSeoResults';
 import { NicheFinderModelPicker } from '@/components/niche-finder/NicheFinderModelPicker';
 import { type ShortStyleId } from '@/lib/short-styles';
@@ -1057,6 +1060,30 @@ export function ShortEditor({ shortId }: { shortId: string }) {
         )}
       </EditorSection>
     ),
+    qa: (
+      <QaTabPanel
+        shortId={shortId}
+        row={row}
+        savePatch={savePatch}
+        onSwitchTab={setTab}
+        onQaCompleted={(qa: ShortsContentQaResult, modelId: string) => {
+          // Server has already persisted qa_result / qa_score / qa_run_at.
+          // Mirror the result into the in-memory row so the panel +
+          // tab badge reflect the new state without a refetch round-trip.
+          setRow((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  qa_result: qa,
+                  qa_score: qa.composite,
+                  qa_run_at: qa.meta.run_at,
+                  ai_model: prev.ai_model ?? modelId,
+                }
+              : prev,
+          );
+        }}
+      />
+    ),
   };
 
   return (
@@ -1772,7 +1799,7 @@ const VARIANT_VENDOR_LABELS: Record<VendorChoice, { label: string; cost: string;
  * on reload. Shown only for the image-based styles (minimal needs neither).
  */
 function ShortImageModelControls() {
-  const [baseModelId, setBaseModelId] = useState<string>('atlas-gpt-image-2');
+  const [baseModelId, setBaseModelId] = useState<string>(DEFAULT_BASE_T2I_MODEL_ID);
   const [baseModelOptions, setBaseModelOptions] = useState<BaseT2iModelOption[]>([]);
   const [baseModelSaving, setBaseModelSaving] = useState(false);
   const [vendor, setVendor] = useState<VendorChoice>('atlas');
@@ -1790,7 +1817,7 @@ function ShortImageModelControls() {
         if (Array.isArray(data.models)) setBaseModelOptions(data.models as BaseT2iModelOption[]);
         if (typeof data.shorts_base_t2i_model_id === 'string') setBaseModelId(data.shorts_base_t2i_model_id);
       } catch {
-        /* swallow — stay on the 'atlas-gpt-image-2' default */
+        /* swallow — stay on the DEFAULT_BASE_T2I_MODEL_ID default */
       }
     })();
     return () => { cancelled = true; };
@@ -1953,7 +1980,7 @@ function ShotsPanel({
   // Base T2I model — same UserSettings pattern as the variant vendor.
   // The available-models list ships with the GET response so the UI
   // dropdown doesn't need a second fetch.
-  const [baseModelId, setBaseModelId] = useState<string>('atlas-gpt-image-2');
+  const [baseModelId, setBaseModelId] = useState<string>(DEFAULT_BASE_T2I_MODEL_ID);
   const [baseModelOptions, setBaseModelOptions] = useState<BaseT2iModelOption[]>([]);
   const [baseModelSaving, setBaseModelSaving] = useState(false);
   useEffect(() => {
@@ -1972,7 +1999,7 @@ function ShotsPanel({
           setBaseModelId(data.shorts_base_t2i_model_id);
         }
       } catch {
-        /* swallow — stay on the 'atlas-gpt-image-2' default */
+        /* swallow — stay on the DEFAULT_BASE_T2I_MODEL_ID default */
       }
     })();
     return () => {

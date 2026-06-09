@@ -71,6 +71,8 @@ export {
 } from './shorts-batch-stages';
 import { isShortTerminal, nextStageFor, allShortsAtTerminal } from './shorts-batch-stages';
 import type { BatchStage } from './shorts-batch-stages';
+import { retryTransient } from './shorts-batch-retry';
+import { DEFAULT_BASE_T2I_MODEL_ID } from './shorts-base-t2i-types';
 
 /** Concurrency cap per tick. Three is enough to keep wall-clock
  *  decent (3 voiceover calls in parallel ≈ 30s instead of 90s) while
@@ -152,19 +154,28 @@ Write the FULL Short script that opens on the literal HOOK line, delivers the th
       targetSeconds,
     });
 
-    const raw = await generateText({
-      modelId,
-      systemPrompt: system,
-      prompt: user,
-      maxTokens: 4000,
-      temperature: 0.75,
-      spend: {
-        workspaceId: short.workspace_id,
-        projectId: short.project_id,
-        featureArea: 'shorts_batch_extract',
-        metadata: { batch_id: short.batch_id, target_seconds: targetSeconds, niche: idea.niche.slice(0, 60) },
+    const raw = await retryTransient(
+      () =>
+        generateText({
+          modelId,
+          systemPrompt: system,
+          prompt: user,
+          maxTokens: 4000,
+          temperature: 0.75,
+          spend: {
+            workspaceId: short.workspace_id,
+            projectId: short.project_id,
+            featureArea: 'shorts_batch_extract',
+            metadata: { batch_id: short.batch_id, target_seconds: targetSeconds, niche: idea.niche.slice(0, 60) },
+          },
+        }),
+      {
+        onRetry: ({ attempt, delayMs, failureClass, message }) =>
+          console.info('[shorts-batch retry]', {
+            stage: 'extract', short_id: short.id, attempt, delay_ms: delayMs, failure_class: failureClass, message,
+          }),
       },
-    });
+    );
 
     const parsed = parseExtractedShort(raw);
     const duration = estimateShortDurationSeconds(parsed.word_count);
@@ -202,11 +213,20 @@ async function runVoiceoverStage(short: ShortRow, batch: ShortsBatchRow): Promis
       throw new Error('Batch defaults are missing voiceId — set a default voice on the batch before generating.');
     }
 
-    await generateShortVoiceover({
-      shortId: short.id,
-      workspaceId: short.workspace_id,
-      voiceId,
-    });
+    await retryTransient(
+      () =>
+        generateShortVoiceover({
+          shortId: short.id,
+          workspaceId: short.workspace_id,
+          voiceId,
+        }),
+      {
+        onRetry: ({ attempt, delayMs, failureClass, message }) =>
+          console.info('[shorts-batch retry]', {
+            stage: 'voiceover', short_id: short.id, attempt, delay_ms: delayMs, failure_class: failureClass, message,
+          }),
+      },
+    );
 
     const ms = Date.now() - t0;
     console.info('[shorts-batch stage voiceover]', { short_id: short.id, batch_id: short.batch_id, duration_ms: ms, voice_id: voiceId });
@@ -236,19 +256,28 @@ async function runSeoStage(short: ShortRow, batch: ShortsBatchRow): Promise<Stag
       niche,
     });
 
-    const raw = await generateText({
-      modelId,
-      systemPrompt: system,
-      prompt: user,
-      maxTokens: 4000,
-      temperature: 0.7,
-      spend: {
-        workspaceId: short.workspace_id,
-        projectId: short.project_id,
-        featureArea: 'shorts_batch_seo',
-        metadata: { batch_id: short.batch_id, length_seconds: lengthSeconds },
+    const raw = await retryTransient(
+      () =>
+        generateText({
+          modelId,
+          systemPrompt: system,
+          prompt: user,
+          maxTokens: 4000,
+          temperature: 0.7,
+          spend: {
+            workspaceId: short.workspace_id,
+            projectId: short.project_id,
+            featureArea: 'shorts_batch_seo',
+            metadata: { batch_id: short.batch_id, length_seconds: lengthSeconds },
+          },
+        }),
+      {
+        onRetry: ({ attempt, delayMs, failureClass, message }) =>
+          console.info('[shorts-batch retry]', {
+            stage: 'seo', short_id: short.id, attempt, delay_ms: delayMs, failure_class: failureClass, message,
+          }),
       },
-    });
+    );
 
     const seo = parseShortSeoResult(raw);
 
@@ -331,7 +360,7 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
     updated_at: now,
     job: {
       niche,
-      base_t2i_model_id: 'atlas-gpt-image-2',
+      base_t2i_model_id: DEFAULT_BASE_T2I_MODEL_ID,
       variant_edit_primary: 'atlas' as const,
       max_variants: Math.max(4, Math.min(10, Math.round(seconds / 6))),
     },
@@ -442,19 +471,30 @@ async function runTriggerRenderStage(short: ShortRow, sessionCookie?: string): P
       || (process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`)
       || 'http://localhost:3000';
 
-    const res = await fetch(`${baseUrl}/api/render/short`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: `yt_studio_session=${sessionCookie}`,
+    await retryTransient(
+      async () => {
+        const res = await fetch(`${baseUrl}/api/render/short`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Cookie: `yt_studio_session=${sessionCookie}`,
+          },
+          body: JSON.stringify({ shortId: short.id }),
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => `HTTP ${res.status}`);
+          // Throw with the HTTP status baked into the message so the
+          // classifier picks up the 5xx vs 4xx split correctly.
+          throw new Error(`HTTP ${res.status}: ${(detail || '').slice(0, 200)}`);
+        }
       },
-      body: JSON.stringify({ shortId: short.id }),
-    });
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => `HTTP ${res.status}`);
-      throw new Error(detail.slice(0, 200) || `HTTP ${res.status}`);
-    }
+      {
+        onRetry: ({ attempt, delayMs, failureClass, message }) =>
+          console.info('[shorts-batch retry]', {
+            stage: 'trigger_render', short_id: short.id, attempt, delay_ms: delayMs, failure_class: failureClass, message,
+          }),
+      },
+    );
 
     const ms = Date.now() - t0;
     console.info('[shorts-batch stage trigger-render]', {

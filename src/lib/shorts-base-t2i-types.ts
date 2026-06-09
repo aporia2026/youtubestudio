@@ -71,7 +71,13 @@ export const BASE_T2I_MODELS: readonly ShortsBaseT2iModelSpec[] = Object.freeze(
   },
 ]);
 
-export const DEFAULT_BASE_T2I_MODEL_ID: ShortsBaseT2iModelId = 'atlas-gpt-image-2';
+/** Default base T2I model for the shorts asset pipeline. User-confirmed
+ *  on 2026-06-09 to switch away from `atlas-gpt-image-2` (5.6× cheaper
+ *  but Atlas has been unreliable — see motion-collage grid revert and
+ *  image-model forwarding fixes in recent commits) to `kie-gpt-image-2`
+ *  (same underlying OpenAI gpt-image-2 model, different vendor gateway).
+ *  See `_plans/2026-06-09-bulk-shorts-robustness-and-inspector.md` §7. */
+export const DEFAULT_BASE_T2I_MODEL_ID: ShortsBaseT2iModelId = 'kie-gpt-image-2';
 
 /** Defensive resolver — narrows an arbitrary string to a valid model
  *  id, falling back to the cost-optimal default on bad input. Pure;
