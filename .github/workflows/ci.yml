@@ -52,3 +52,38 @@ jobs:
           # Tests need an AUTH_SECRET to verify the JWT roundtrip; the value
           # below is a fixed test-only secret with no production meaning.
           AUTH_SECRET: ci-only-do-not-use-in-prod-${{ github.run_id }}-xxxxxxxxxxxxxx
+
+  # Full Next.js build. Catches issues that pure typecheck misses:
+  # Server Component constraints, route-handler signatures, App Router
+  # `params` shape changes, dynamic-vs-static rendering errors,
+  # client/server boundary leaks, and Turbopack-vs-webpack divergence.
+  #
+  # Added 2026-06-10 after three Vercel deployments errored on a missing
+  # import that this job would have caught locally. Vercel deployments
+  # fire on every push regardless of GitHub Actions outcome, so use a
+  # branch protection rule (Settings → Branches → require status checks)
+  # to make this an actual gate on PR merges.
+  #
+  # Env vars: Next.js doesn't connect to external services during a
+  # static `next build`, but the build DOES need any env vars referenced
+  # at module-import time (e.g. `process.env.X` inlined as a constant).
+  # The placeholders below are the minimum set needed for the build to
+  # parse + render every route; they're test-only stubs with no
+  # production meaning. Add more here as `next build` reports
+  # missing-variable errors.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+        env:
+          # Same fixed test-only secret as the `test` job. Required at
+          # build time because the JWT helper reads it from module scope.
+          AUTH_SECRET: ci-only-do-not-use-in-prod-${{ github.run_id }}-xxxxxxxxxxxxxx
+          # Suppresses Next.js telemetry pings during the build.
+          NEXT_TELEMETRY_DISABLED: '1'
