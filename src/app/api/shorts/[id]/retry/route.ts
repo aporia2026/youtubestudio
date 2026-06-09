@@ -3,6 +3,15 @@ import { sql } from '@/lib/db';
 import { apiRoute } from '@/lib/route-helpers';
 import { DEFAULT_BASE_T2I_MODEL_ID } from '@/lib/shorts-base-t2i-types';
 
+/** Per-QA-finding-B5 cooldown: when a short fails terminally and the
+ *  user immediately clicks Retry, don't allow another attempt for
+ *  RETRY_COOLDOWN_SECONDS. Without this, click-spam during a Kie
+ *  outage spikes API spend (each retry burns the orchestrator's full
+ *  3-attempt retry budget on the affected stage). The cooldown gives
+ *  upstream outages a chance to clear and signals to the user that
+ *  the system is debouncing on purpose. */
+const RETRY_COOLDOWN_SECONDS = 30;
+
 /**
  * POST /api/shorts/[id]/retry
  *
@@ -33,8 +42,8 @@ export const POST = apiRoute.authed(
   async (session, _req, ctx: { params: Promise<{ id: string }> }) => {
     const { id } = await ctx.params;
 
-    // Read enough of the row to decide recovery shape. JSONB array
-    // length is server-side so a huge variants array doesn't ship.
+    // Read enough of the row to decide recovery shape + check cooldown.
+    // JSONB array length is server-side so a huge variants array doesn't ship.
     const { rows } = await sql<{
       style_id: string | null;
       doodle_variants: number;
@@ -43,6 +52,8 @@ export const POST = apiRoute.authed(
       voiceover_url_present: boolean;
       seo_present: boolean;
       generation_progress: any;
+      updated_age_seconds: number;
+      current_phase: string | null;
     }>`
       SELECT style_id,
              COALESCE(jsonb_array_length(style_assets->'doodle'->'variants'), 0) AS doodle_variants,
@@ -50,7 +61,9 @@ export const POST = apiRoute.authed(
              short_script IS NOT NULL AS short_script_present,
              voiceover_audio_url IS NOT NULL AS voiceover_url_present,
              seo_result IS NOT NULL AS seo_present,
-             generation_progress
+             generation_progress,
+             EXTRACT(EPOCH FROM (NOW() - updated_at))::int AS updated_age_seconds,
+             generation_progress->>'phase' AS current_phase
         FROM shorts
        WHERE id = ${id}::uuid AND workspace_id = ${session.ws}::uuid
     `;
@@ -58,6 +71,32 @@ export const POST = apiRoute.authed(
       return NextResponse.json({ error: 'Short not found' }, { status: 404 });
     }
     const row = rows[0]!;
+
+    // Cooldown debouncer: if the row's last write was less than
+    // RETRY_COOLDOWN_SECONDS ago AND it's currently in an error
+    // state, refuse this retry. Prevents click-spam during an upstream
+    // outage from burning the orchestrator's 3-attempt retry budget
+    // over and over.
+    if (
+      row.current_phase === 'error'
+      && row.updated_age_seconds !== null
+      && row.updated_age_seconds < RETRY_COOLDOWN_SECONDS
+    ) {
+      const waitSeconds = RETRY_COOLDOWN_SECONDS - row.updated_age_seconds;
+      console.info('[shorts-batch retry-short]', {
+        short_id: id,
+        workspace_id: session.ws,
+        mode: 'cooldown',
+        wait_seconds: waitSeconds,
+      });
+      return NextResponse.json(
+        {
+          error: `Please wait ${waitSeconds}s before retrying — upstream may still be recovering.`,
+          retry_after_seconds: waitSeconds,
+        },
+        { status: 429 },
+      );
+    }
 
     // Recovery shape #1: stuck mid-asset-pipeline. The orchestrator's
     // `nextStageFor` gate (per Bug A fix) requires at least one

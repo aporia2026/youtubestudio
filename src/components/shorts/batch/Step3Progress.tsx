@@ -116,6 +116,12 @@ export function Step3Progress({ batchId, onDone }: Props) {
         const res = await fetch(`/api/shorts/${shortId}/retry`, { method: 'POST' });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
+          // 429 = cooldown debouncer per QA B5. Surface as info, not
+          // error — it's an expected guardrail, not a failure.
+          if (res.status === 429) {
+            toast.info(body.error || 'Please wait before retrying');
+            return;
+          }
           throw new Error(body.error || `HTTP ${res.status}`);
         }
         toast.success('Retry queued — the next tick will pick it up');
