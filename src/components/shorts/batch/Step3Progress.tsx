@@ -175,6 +175,10 @@ export function Step3Progress({ batchId, onDone }: Props) {
     return (await res.json()) as ShortsBatchWithShorts;
   }, [batchId]);
 
+  // Per QA M8: surface non-OK run-tick responses so a broken cron
+  // doesn't look like silence. `tickError` is rendered in the strip
+  // alongside the last-tick success line.
+  const [tickError, setTickError] = useState<string | null>(null);
   const runTick = useCallback(async () => {
     if (tickInFlightRef.current) return;
     tickInFlightRef.current = true;
@@ -183,7 +187,13 @@ export function Step3Progress({ batchId, onDone }: Props) {
       if (res.ok) {
         const result = (await res.json()) as BatchTickResult;
         setLastTick(result);
+        setTickError(null);
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setTickError(body.error || `HTTP ${res.status}`);
       }
+    } catch (err) {
+      setTickError(err instanceof Error ? err.message : 'Tick failed');
     } finally {
       tickInFlightRef.current = false;
     }
@@ -191,6 +201,16 @@ export function Step3Progress({ batchId, onDone }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+
+    // Per QA H8/M9: stop polling + ticking once the batch reaches a
+    // terminal state. Without this the loops kept firing forever
+    // pointlessly even after the user navigated.
+    const isTerminalStatus = (s: string) =>
+      s === 'review' || s === 'done' || s === 'failed';
+
+    // Per QA: also pause when the tab is hidden so a backgrounded tab
+    // doesn't DDoS the orchestrator during a long Kie outage.
+    const shouldRun = () => !cancelled && (typeof document === 'undefined' || !document.hidden);
 
     // Two independent loops:
     //   - fetchLoop runs every POLL_MS — cheap, refreshes the UI.
@@ -206,8 +226,13 @@ export function Step3Progress({ batchId, onDone }: Props) {
         const next = await fetchBundle();
         if (cancelled) return;
         setBundle(next);
-        if (next.batch.status === 'review' || next.batch.status === 'done') {
-          onDone();
+        if (isTerminalStatus(next.batch.status)) {
+          // Stop both loops; the cleanup clearIntervals will fire on
+          // unmount, but signal early-stop via the cancelled flag.
+          if (next.batch.status === 'review' || next.batch.status === 'done') {
+            onDone();
+          }
+          cancelled = true;
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Refresh failed');
@@ -218,9 +243,11 @@ export function Step3Progress({ batchId, onDone }: Props) {
     void runTick();
 
     const fetchId = setInterval(() => {
+      if (!shouldRun()) return;
       void refresh();
     }, POLL_MS);
     const tickId = setInterval(() => {
+      if (!shouldRun()) return;
       void runTick();
     }, POLL_MS);
 
@@ -291,6 +318,11 @@ export function Step3Progress({ batchId, onDone }: Props) {
           <p className="mt-3 text-xs text-[var(--text-muted)]">
             Last orchestrator tick: claimed {lastTick.claimed}, advanced{' '}
             {lastTick.advanced}, failed {lastTick.failed} ({lastTick.duration_ms}ms)
+          </p>
+        )}
+        {tickError && (
+          <p className="mt-1 text-xs text-red-300">
+            Tick error: {tickError} <span className="text-[var(--text-muted)]">(will retry on the next poll)</span>
           </p>
         )}
       </div>
@@ -818,8 +850,12 @@ function AssetsInspector({ short }: { short: ShortRow }) {
   }
   const frames: Array<{ url: string; label: string }> = [];
   if (block.base_url) frames.push({ url: block.base_url, label: 'Base' });
-  for (let i = 0; i < (block.variants?.length ?? 0); i++) {
-    const v = block.variants[i];
+  // Defensive iteration per QA H9: legacy / mid-flight rows can have
+  // `variants` missing or set to a non-array. The type says required,
+  // but the DB carries JSONB so trust nothing at the value boundary.
+  const variants = Array.isArray(block.variants) ? block.variants : [];
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i];
     if (v?.url) frames.push({ url: v.url, label: `Variant ${i + 1}` });
   }
   if (frames.length === 0) {

@@ -147,10 +147,17 @@ export function seedYoutubeMetadataFromBatch(args: {
   // for rows persisted before the `tags` field landed. Always merged
   // with the batch's user-supplied tag pool — batch pool first so
   // explicit human picks win duplicate resolution.
+  //
+  // Per QA finding H7: dedup must be case + whitespace insensitive.
+  // `tagsPool` may carry "USPS scam" (space + caps), SEO tags
+  // could have "usps scam" (different case), and the hashtags
+  // fallback strips whitespace producing "USPSscam". Without
+  // normalised dedup all three coexist, wasting the 500-char budget
+  // on near-identical tags.
   const seoTags = seo?.tags && seo.tags.length > 0
     ? seo.tags
     : (seo?.hashtag_sets?.[0]?.tags ?? []);
-  const merged = dedupeKeepOrder([...(defaults.tagsPool ?? []), ...seoTags]);
+  const merged = dedupeNormalisedStrings([...(defaults.tagsPool ?? []), ...seoTags]);
 
   return {
     title,
@@ -180,9 +187,11 @@ export function expandDescriptionTemplate(
     .replaceAll('{{payoff}}', vars.payoff);
 }
 
-/** Pure: dedupe array preserving first-occurrence order. Avoids the
- *  Set-then-spread idiom because we want stable ordering across runs. */
-function dedupeKeepOrder<T>(arr: readonly T[]): T[] {
+/** Pure: dedupe primitive array preserving first-occurrence order.
+ *  Constrained to primitives (per QA H10) because Set<T> uses
+ *  reference equality for objects — the old `<T>` generic silently
+ *  failed for non-primitives. */
+function dedupeKeepOrder<T extends string | number | boolean>(arr: readonly T[]): T[] {
   const seen = new Set<T>();
   const out: T[] = [];
   for (const item of arr) {
@@ -190,6 +199,23 @@ function dedupeKeepOrder<T>(arr: readonly T[]): T[] {
       seen.add(item);
       out.push(item);
     }
+  }
+  return out;
+}
+
+/** Case + whitespace insensitive string dedup, preserving the first
+ *  occurrence's casing. YouTube treats "USPS scam" and "usps scam" as
+ *  the same tag; this collapses them. Per QA H7. */
+function dedupeNormalisedStrings(arr: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of arr) {
+    const norm = raw.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!norm) continue;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    // Push the trimmed-and-collapsed FORM but keep the user's casing.
+    out.push(raw.trim().replace(/\s+/g, ' '));
   }
   return out;
 }
