@@ -73,6 +73,7 @@ import { MotionCollageRowEditor } from '@/components/production-doc/MotionCollag
 import type {
   DoodleExplainer2MotionCollageSettings,
   PaintExplainerV1Settings,
+  ZennV1Settings,
 } from '@/remotion/utils';
 import { OstModeControl, type OstMode } from '@/components/production-doc/OstModeControl';
 import { StyleSheetPanel } from '@/components/production-doc/StyleSheetPanel';
@@ -496,6 +497,20 @@ interface ProductionRow {
     y_pct?: number;
     scale_pct?: number;
   } | null>;
+  // ─── zenn_v1 (2026-06-10) ──────────────────────────────────────────
+  // Mirrors the canonical ProductionRow fields in src/remotion/utils.ts.
+  // Both interfaces MUST stay in sync — page.tsx renders editor UI
+  // against this shape and the auto-pipeline reads the canonical one.
+  // See `_plans/2026-06-10-zenn-v1-style.md`.
+  zenn_mode?: 'stick' | 'scene';
+  zenn_character_id?: string;
+  zenn_pose?: string;
+  zenn_world_overlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;
+  zenn_canvas_reveal_layers?: Array<{
+    image_url: string;
+    reveal_at_ms: number;
+    duration_ms: number;
+  }>;
 }
 
 interface ProductionDoc {
@@ -654,6 +669,28 @@ interface ProductionDoc {
    *  render consistently. Mirrors the canonical field on the
    *  remotion-side ProductionDoc. */
   doodle_explainer_2_character_descriptions?: Record<string, string>;
+  /** zenn_v1 (2026-06-10) — per-doc settings + character bank + world.
+   *  Mirrors the canonical fields on the remotion-side ProductionDoc;
+   *  the two interfaces MUST stay in sync. See plan §8 / §5.2. */
+  zenn_v1_settings?: ZennV1Settings;
+  zenn_v1_character_bank?: Record<string, {
+    base_url: string;
+    palette?: {
+      skin?: string;
+      hair?: string;
+      clothes?: string;
+      accent?: string;
+    };
+    poses?: Record<string, string>;
+    first_seen_row_index: number;
+  }>;
+  zenn_v1_world?: {
+    sky_color_hex?: string;
+    ground_color_hex?: string;
+    wall_color_hex?: string;
+    recurring_props?: Array<{ name: string; image_url: string }>;
+  };
+  zenn_v1_prop_cache?: Record<string, string>;
 }
 
 interface RowImageState {

@@ -83,6 +83,46 @@ describe('resolveEffectiveStyleSlug', () => {
     expect(resolveEffectiveStyleSlug(doc)).toBe('doodle_explainer_2');
   });
 
+  // ─── zenn_v1 (2026-06-10) ──────────────────────────────────────────
+  // Same inference shape as paint_explainer_v1: a saved-style derived
+  // from zenn_v1 puts a UUID in `style_preset` but leaves the
+  // zenn_v1-specific fields populated; the resolver has to map back.
+
+  it('infers zenn_v1 from zenn_v1_settings', () => {
+    const doc: ProductionDoc = {
+      ...baseDoc(),
+      zenn_v1_settings: { default_mode: 'scene' },
+      style_preset: '550e8400-e29b-41d4-a716-446655440003',
+    };
+    expect(resolveEffectiveStyleSlug(doc)).toBe('zenn_v1');
+  });
+
+  it('infers zenn_v1 from zenn_v1_character_bank', () => {
+    const doc: ProductionDoc = {
+      ...baseDoc(),
+      zenn_v1_character_bank: {
+        narrator: { base_url: 'https://r2.example/z.png', first_seen_row_index: 0 },
+      },
+    };
+    expect(resolveEffectiveStyleSlug(doc)).toBe('zenn_v1');
+  });
+
+  it('infers zenn_v1 from zenn_v1_world', () => {
+    const doc: ProductionDoc = {
+      ...baseDoc(),
+      zenn_v1_world: { sky_color_hex: '#A8D8F0' },
+    };
+    expect(resolveEffectiveStyleSlug(doc)).toBe('zenn_v1');
+  });
+
+  it('infers zenn_v1 from zenn_v1_prop_cache', () => {
+    const doc: ProductionDoc = {
+      ...baseDoc(),
+      zenn_v1_prop_cache: { 'firewood-bundle': 'https://r2.example/p.png' },
+    };
+    expect(resolveEffectiveStyleSlug(doc)).toBe('zenn_v1');
+  });
+
   it('falls back to raw style_preset when no signal hits (legacy back-compat)', () => {
     const doc: ProductionDoc = {
       ...baseDoc(),

@@ -490,6 +490,58 @@ export interface DoodleExplainer2MotionCollageSettings {
   max_per_frame_ms?: number;
 }
 
+// ─── zenn_v1 settings (2026-06-10) ──────────────────────────────────
+//
+// Per-doc controls for the `zenn_v1` style (modelled on the YouTube
+// channel Zenn @Zenn0009). Lives in this file (the renderer's type
+// module) so VideoConfig can reference it without a circular import.
+// The constants (ZENN_V1_DEFAULTS, _BOUNDS) and the resolver function
+// live in `./utils` alongside the paint_explainer_v1 equivalents.
+// See `_plans/2026-06-10-zenn-v1-style.md` §8.
+
+export interface ZennV1Settings {
+  /** Per-shot default when the LLM does not pick a mode. Zenn videos
+   *  mix both modes; `'scene'` is the differentiator (flat-fill
+   *  character on a colored world) so that is the default. */
+  default_mode?: 'stick' | 'scene';
+  /** Hand-lettered emphasis text color. Zenn's bold red is `#D32F2F`. */
+  label_color_hex?: string;
+  /** When true (default), `<highlighter_stripe>` beats render. When
+   *  false, label-pop beats render with no underlying stripe. */
+  highlighter_enabled?: boolean;
+  /** Translucent highlighter stripe color. Stored as solid hex; the
+   *  renderer applies the canonical `0.65` opacity at composite time
+   *  so a stale doc value cannot accidentally produce an opaque
+   *  block over the word. */
+  highlighter_color_hex?: string;
+  /** Default ground baseline color for Mode A stick-figure shots.
+   *  Zenn uses a warm medium grey; brand variants may want a cool
+   *  grey or a tinted color. */
+  ground_color_hex?: string;
+  /** Target median shot length in seconds. Zenn Mode B cuts at ~2.8s
+   *  (measured); Mode A holds longer (~4.3s median, p90 = 11.2s).
+   *  This drives the LLM's pacing during doc generation — shorter
+   *  values produce more, shorter rows. Bounded `[2.0, 6.0]`. */
+  median_shot_seconds?: number;
+  /** Maximum sibling-frame layers a single `canvas_reveal` beat may
+   *  emit. Lower values reduce per-video Kie Edit cost (the largest
+   *  line item in section 11 of the plan). The `mixing_rules` block
+   *  surfaces this cap to the LLM so a stale value can't blow the
+   *  budget. Bounded `[1, 8]`. */
+  max_canvas_reveal_layers?: number;
+  /** When true (default), the per-doc character bank reuses the same
+   *  base + pose set across every row sharing a `zenn_character_id`.
+   *  Disabling this is a debugging aid — it forces every character
+   *  shot to a fresh generation. Burns budget; not a normal toggle. */
+  character_persistence_enabled?: boolean;
+  /** Hard cap on unique characters in the per-doc bank. Defensive
+   *  against a runaway LLM emitting twenty character ids when the
+   *  script only has three. When the LLM emits more, the pipeline
+   *  merges near-duplicates by name similarity rather than rejecting
+   *  rows (see plan §6). Bounded `[3, 20]`. */
+  max_unique_characters?: number;
+}
+
 // ─── Video Config ──────────────────────────────────────────────────────────────
 
 /** Per-segment voiceover slice — mirrors VoiceoverSegment in
@@ -517,6 +569,12 @@ export interface VideoConfig {
    *  beat.payload.propPromptHint to resolve a prop_slide beat's
    *  assetUrl when the LLM didn't supply one directly. */
   paintExplainerV1PropCache?: Record<string, string>;
+  /** zenn_v1 effective settings — the resolver-resolved shape with
+   *  every default applied. Populated by `productionDocToVideoConfig`
+   *  from `doc.zenn_v1_settings` so the renderer doesn't have to
+   *  re-resolve defaults at frame time. Undefined on non-zenn_v1
+   *  docs. See `_plans/2026-06-10-zenn-v1-style.md` §8. */
+  zennV1Settings?: Required<ZennV1Settings>;
   /** Composition width in pixels */
   width: number;
   /** Composition height in pixels */

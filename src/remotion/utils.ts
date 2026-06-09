@@ -1,9 +1,9 @@
-import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig, type PaintExplainerV1Settings, type DoodleExplainer2MotionCollageSettings } from './types';
+import { VideoShot, VideoConfig, inferSceneType, DEFAULT_BRAND_KIT, BrandKit, VideoThumbnail, ThumbnailTransitionConfig, type PaintExplainerV1Settings, type DoodleExplainer2MotionCollageSettings, type ZennV1Settings } from './types';
 // Re-export so callers can keep importing from `@/remotion/utils` —
 // the canonical interface lives in `./types` (next to VideoConfig)
 // but the constants + resolver below live here, so co-locating the
 // type re-export keeps the call surface single-import for consumers.
-export type { PaintExplainerV1Settings, DoodleExplainer2MotionCollageSettings };
+export type { PaintExplainerV1Settings, DoodleExplainer2MotionCollageSettings, ZennV1Settings };
 import { stripProductionMarkers } from '@/lib/script-markers';
 import {
   alignRowsToWords,
@@ -884,6 +884,62 @@ export interface ProductionRow {
    *  See _plans/2026-05-28-doodle-2-scene-cache.md. */
   scene_id?: string;
 
+  // ─── zenn_v1 (2026-06-10): mode + character + world ────────────────
+  //
+  // Additive, optional, only meaningful when the doc's `style_preset`
+  // is `zenn_v1`. All four fields are absent on every other style and
+  // on legacy docs. See `_plans/2026-06-10-zenn-v1-style.md`.
+
+  /** Which Zenn visual mode this row renders in. `'stick'` is the
+   *  white-canvas stick-figure look (Spotlight / Infantile-Amnesia
+   *  reference videos); `'scene'` is the flat-fill character on a
+   *  colored world (Calhoun / Ancient-Humans / Aliens reference
+   *  videos). Undefined ⇒ fall back to `zenn_v1_settings.default_mode`.
+   *  Set by the LLM during doc generation. */
+  zenn_mode?: 'stick' | 'scene';
+
+  /** Stable identifier for a recurring character in the zenn_v1
+   *  character bank. Two rows that share `zenn_character_id` reuse
+   *  the same generated base + pose set from
+   *  `ProductionDoc.zenn_v1_character_bank`. Character persistence
+   *  is the signature visual contract of Zenn — the same mouse
+   *  across all of Calhoun, the same curly-haired guy across all of
+   *  Ancient Humans. Hard cap on unique ids per doc:
+   *  `zenn_v1_settings.max_unique_characters` (default 12). */
+  zenn_character_id?: string;
+
+  /** Pose key to render for `zenn_character_id` on this row. Pulled
+   *  from `ProductionDoc.zenn_v1_character_bank[id].poses[pose]`.
+   *  Canonical poses: `'idle' | 'talking' | 'walking' | 'pointing' |
+   *  'surprised' | 'thinking'`. Unknown pose falls back to `'idle'`.
+   *  Undefined ⇒ `'idle'`. */
+  zenn_pose?: string;
+
+  /** Mode-B world background overlay for this row. Pulled from a
+   *  small controlled vocabulary so the doc-level world stays visually
+   *  coherent across shots:
+   *    - `'sky_only'`    — white sky band only, no ground strip.
+   *    - `'sky_ground'`  — colored sky + colored ground (outdoor).
+   *    - `'room'`        — two-tone interior (Calhoun mouse-cage).
+   *    - `'underwater'`  — depth gradient (Titanic).
+   *    - `null`          — explicit no-overlay (Mode B fallback to white).
+   *  Ignored when `zenn_mode === 'stick'`. */
+  zenn_world_overlay?: 'sky_only' | 'sky_ground' | 'room' | 'underwater' | null;
+
+  /** Per-row canvas-reveal layer set. Each entry is a sibling-frame
+   *  PNG (Kie i2i Edit from the base) that fades in at
+   *  `reveal_at_ms` over `duration_ms`. Used to evolve a held canvas
+   *  across a long Mode A shot instead of cutting. Populated by the
+   *  pipeline stage in PR 4; the renderer reads via
+   *  `<canvas_reveal>` (PR 4). Capped server-side at
+   *  `zenn_v1_settings.max_canvas_reveal_layers` (default 4) per row
+   *  to bound Kie Edit spend. */
+  zenn_canvas_reveal_layers?: Array<{
+    image_url: string;
+    reveal_at_ms: number;
+    duration_ms: number;
+  }>;
+
   // ─── doodle_explainer_2 motion_collage (2026-05-31) ────────────────
   //
   // Additive, optional, only meaningful when `shot_kind === 'motion_collage'`.
@@ -1557,6 +1613,73 @@ export interface ProductionDoc {
    *  on legacy / non-doodle_explainer_2 docs. See
    *  `_plans/2026-05-31-doodle-explainer-2-motion-collage.md`. */
   doodle_explainer_2_motion_collage_settings?: DoodleExplainer2MotionCollageSettings;
+
+  /** zenn_v1 (2026-06-10): per-doc settings overriding the canonical
+   *  defaults. Every field optional — `resolveZennV1Settings` fills
+   *  in the default for any field the user hasn't set. See plan §8. */
+  zenn_v1_settings?: ZennV1Settings;
+
+  /** zenn_v1 (2026-06-10): per-video cache of the recurring-character
+   *  bank, keyed by `ProductionRow.zenn_character_id`. Populated by
+   *  the pipeline stage the first time a character is generated in
+   *  this doc, then reused across every row sharing the same id.
+   *  Holds the canonical base PNG plus a set of pose siblings
+   *  (idle / talking / pointing / walking / surprised / thinking)
+   *  generated via Kie i2i Edit from the base. Character persistence
+   *  is the signature visual contract of Zenn — without this cache,
+   *  every character shot regenerates and identity drifts across the
+   *  video. Undefined on legacy / non-zenn_v1 docs. */
+  zenn_v1_character_bank?: Record<string, {
+    /** R2-mirrored URL of the canonical character base PNG. */
+    base_url: string;
+    /** Extracted dominant flat-fill colors. Used by the LLM prompt
+     *  builder so pose-sibling prompts can reference the character's
+     *  established palette ("the brown kangaroo from the base"). */
+    palette?: {
+      skin?: string;
+      hair?: string;
+      clothes?: string;
+      accent?: string;
+    };
+    /** Map of pose key → R2-mirrored sibling-frame PNG URL. The
+     *  renderer reads via `row.zenn_pose`; unknown pose keys fall
+     *  back to the base image. */
+    poses?: Record<string, string>;
+    /** 0-based row index where the character first appeared. Useful
+     *  for telemetry and any future "regenerate from row N" feature. */
+    first_seen_row_index: number;
+  }>;
+
+  /** zenn_v1 (2026-06-10): per-doc world definition. Picks the
+   *  visual world Mode B rows inhabit (sky color, ground color, the
+   *  recurring prop bank). Populated by the pipeline stage from a
+   *  combination of LLM-emitted hints and the renderer's controlled
+   *  vocabulary on `ProductionRow.zenn_world_overlay`. The single
+   *  defined world is what keeps the video visually coherent across
+   *  150-215 shots. Undefined on legacy / non-zenn_v1 docs. */
+  zenn_v1_world?: {
+    /** Hex color for the sky band in `sky_only` / `sky_ground`
+     *  overlays. Defaults to a soft cyan when unset. */
+    sky_color_hex?: string;
+    /** Hex color for the ground band in `sky_ground` overlay and the
+     *  floor in `room` overlay. Defaults to a warm tan / desert
+     *  yellow when unset. */
+    ground_color_hex?: string;
+    /** Hex color for the upper wall in `room` overlay. Defaults to a
+     *  light grey when unset. */
+    wall_color_hex?: string;
+    /** Recurring prop bank for Mode B rows. Each entry is a flat-fill
+     *  prop PNG that can be reused across multiple shots (the trophy
+     *  in Calhoun, the firewood bundle in Ancient Humans). */
+    recurring_props?: Array<{ name: string; image_url: string }>;
+  };
+
+  /** zenn_v1 (2026-06-10): per-doc cache of one-off prop PNGs keyed
+   *  by `propPromptHint`. Mirrors `paint_explainer_v1_prop_cache`.
+   *  Avoids re-generating the same prop across multiple beats when
+   *  the LLM names it identically in different shots. Undefined on
+   *  legacy / non-zenn_v1 docs. */
+  zenn_v1_prop_cache?: Record<string, string>;
   /** Ordered audio-track segments produced by the CapCut-style
    *  timeline editor (M6 of the timeline plan). When undefined the
    *  renderer falls back to playing the source voiceover URL straight
@@ -1747,6 +1870,94 @@ export function resolveDoodleExplainer2MotionCollageSettings(
       stored.max_per_frame_ms,
       DOODLE_EXPLAINER_2_MOTION_COLLAGE_BOUNDS.max_per_frame_ms,
       DOODLE_EXPLAINER_2_MOTION_COLLAGE_DEFAULTS.max_per_frame_ms,
+    ),
+  };
+}
+
+// ─── zenn_v1 settings (2026-06-10) ──────────────────────────────────
+//
+// Per-doc controls for the zenn_v1 style. Mirrors the
+// PAINT_EXPLAINER_V1_* defaults / bounds / resolver pattern exactly
+// so the settings panel (PR 6) can compose against the same primitives.
+// See `_plans/2026-06-10-zenn-v1-style.md` §8.
+
+/** Canonical defaults applied by `resolveZennV1Settings`. */
+export const ZENN_V1_DEFAULTS: Required<ZennV1Settings> = {
+  default_mode: 'scene',
+  // Bold red — the dominant emphasis color across every Zenn video.
+  label_color_hex: '#D32F2F',
+  highlighter_enabled: true,
+  // Saturated yellow. The renderer applies 0.65 alpha at composite
+  // time so a stale stored value can't accidentally render opaque.
+  highlighter_color_hex: '#FFE840',
+  // Warm medium grey matches the baseline strip in Zenn's stick-mode
+  // shots. Brand variants can override.
+  ground_color_hex: '#9E9E9E',
+  // Median is a weighted blend of measured Mode B (~2.8s) and Mode A
+  // (~4.3s); 3.2s lands the LLM at the right total row count for a
+  // 7-10 min video.
+  median_shot_seconds: 3.2,
+  max_canvas_reveal_layers: 4,
+  character_persistence_enabled: true,
+  max_unique_characters: 12,
+};
+
+/** Bounds applied by `resolveZennV1Settings` to keep a stale or
+ *  hand-edited doc value from breaking the renderer or blowing the
+ *  cost cap. Each entry is `[min, max]` inclusive. */
+export const ZENN_V1_BOUNDS = {
+  median_shot_seconds: [2.0, 6.0] as const,
+  max_canvas_reveal_layers: [1, 8] as const,
+  max_unique_characters: [3, 20] as const,
+};
+
+/** Resolve the effective zenn_v1 settings for a doc: layer the
+ *  stored values over the canonical defaults, clamping numeric
+ *  fields into their allowed bounds. Returns a fully-populated
+ *  shape so consumers (renderer, pipeline, LLM prompt builder)
+ *  don't have to handle undefined on every field.
+ *
+ *  Pure: no IO. Safe to call from both server and renderer. */
+export function resolveZennV1Settings(
+  doc: Pick<ProductionDoc, 'zenn_v1_settings'> | null | undefined,
+): Required<ZennV1Settings> {
+  const stored = doc?.zenn_v1_settings ?? {};
+  return {
+    default_mode:
+      stored.default_mode === 'stick' || stored.default_mode === 'scene'
+        ? stored.default_mode
+        : ZENN_V1_DEFAULTS.default_mode,
+    label_color_hex: isValidHexColor(stored.label_color_hex)
+      ? stored.label_color_hex
+      : ZENN_V1_DEFAULTS.label_color_hex,
+    highlighter_enabled:
+      typeof stored.highlighter_enabled === 'boolean'
+        ? stored.highlighter_enabled
+        : ZENN_V1_DEFAULTS.highlighter_enabled,
+    highlighter_color_hex: isValidHexColor(stored.highlighter_color_hex)
+      ? stored.highlighter_color_hex
+      : ZENN_V1_DEFAULTS.highlighter_color_hex,
+    ground_color_hex: isValidHexColor(stored.ground_color_hex)
+      ? stored.ground_color_hex
+      : ZENN_V1_DEFAULTS.ground_color_hex,
+    median_shot_seconds: clampPaintSetting(
+      stored.median_shot_seconds,
+      ZENN_V1_BOUNDS.median_shot_seconds,
+      ZENN_V1_DEFAULTS.median_shot_seconds,
+    ),
+    max_canvas_reveal_layers: clampPaintSetting(
+      stored.max_canvas_reveal_layers,
+      ZENN_V1_BOUNDS.max_canvas_reveal_layers,
+      ZENN_V1_DEFAULTS.max_canvas_reveal_layers,
+    ),
+    character_persistence_enabled:
+      typeof stored.character_persistence_enabled === 'boolean'
+        ? stored.character_persistence_enabled
+        : ZENN_V1_DEFAULTS.character_persistence_enabled,
+    max_unique_characters: clampPaintSetting(
+      stored.max_unique_characters,
+      ZENN_V1_BOUNDS.max_unique_characters,
+      ZENN_V1_DEFAULTS.max_unique_characters,
     ),
   };
 }
@@ -2114,6 +2325,19 @@ export function resolveEffectiveStyleSlug(
     doc.doodle_explainer_2_scene_cache
   ) {
     return 'doodle_explainer_2';
+  }
+
+  // zenn_v1 signals (2026-06-10). Mirrors the paint_explainer_v1
+  // pattern: ANY of these means the doc was edited or generated
+  // under zenn_v1 even when `style_preset` is a saved-style UUID
+  // derived from it.
+  if (
+    doc.zenn_v1_settings ||
+    doc.zenn_v1_character_bank ||
+    doc.zenn_v1_world ||
+    doc.zenn_v1_prop_cache
+  ) {
+    return 'zenn_v1';
   }
 
   return doc.style_preset;
@@ -2664,6 +2888,16 @@ export function productionDocToVideoConfig(
     paintExplainerV1PropCache:
       doc.paint_explainer_v1_prop_cache && Object.keys(doc.paint_explainer_v1_prop_cache).length > 0
         ? doc.paint_explainer_v1_prop_cache
+        : undefined,
+    // zenn_v1 (2026-06-10) — same resolve-once pattern as
+    // paint_explainer_v1 above. Only populated when the doc carries
+    // zenn_v1 settings (or `style_preset` resolves to `'zenn_v1'`);
+    // other docs leave this undefined and the renderer skips
+    // zenn_v1 code paths via existing shotKind / styleId guards.
+    zennV1Settings:
+      resolveEffectiveStyleSlug(doc, opts.effectiveStyleSlug) === 'zenn_v1' ||
+      doc.zenn_v1_settings
+        ? resolveZennV1Settings(doc)
         : undefined,
   };
 

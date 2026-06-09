@@ -1345,6 +1345,169 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     // it for free as long as default_on_screen_text_mode is 'overlay'.
     default_on_screen_text_mode: 'overlay',
   },
+  /**
+   * Zenn V1 — modelled on the YouTube channel Zenn (https://www.youtube.com/@Zenn0009).
+   *
+   * Zenn mixes TWO visual modes inside the same video. Each row picks
+   * one via the `zenn_mode` field on ProductionRow:
+   *
+   *   - 'stick'  — circle-head stick figure on a pure white canvas with
+   *                a medium-grey ground baseline strip. Bolder red hand-
+   *                lettered emphasis text than doodle_explainer_2, often
+   *                with a red wavy underline. Yellow highlighter stripe
+   *                under key words. Used for abstract / introspective /
+   *                chart-driven topics (Spotlight Effect, Infantile
+   *                Amnesia in the reference videos).
+   *   - 'scene'  — flat-fill illustrated characters on a colored staged
+   *                background (cyan sky + yellow desert, green grass
+   *                strip, two-tone room interior). Characters and props
+   *                are SHAPES with flat color fills, not outlines.
+   *                Smooth clean lines, not scribbly. The same character
+   *                + the same world persists across every shot in the
+   *                video. Used for concrete topical worlds (Calhoun
+   *                Effect mice, Ancient Humans Kalahari, Aliens animals,
+   *                Titanic ship).
+   *
+   * Distinct from doodle_explainer_2 on three axes:
+   *   1. Mode B (flat-fill scene worlds) — doodle_explainer_2 has no
+   *      equivalent.
+   *   2. Character / world persistence — the same drawn entity reused
+   *      across 200 shots is Zenn's signature visual contract.
+   *   3. Bold red hand-lettering as the primary emphasis treatment
+   *      (vs doodle_explainer_2's yellow bubble lower-third).
+   *
+   * Phased delivery — see `_plans/2026-06-10-zenn-v1-style.md` §12:
+   *   - PR 1 (this entry): style registration + schema + Mode A images
+   *     render through the existing static path. Mode A only; Mode B
+   *     scene composition is stubbed for PR 3.
+   *   - PR 2: pipeline stage generating the character bank + world
+   *     backgrounds via Kie gpt-image-2.
+   *   - PR 3: ZennScene renderer with Mode B branch.
+   *   - PR 4: canvas_reveal beat + canvas_layer_add beat.
+   *   - PR 5: LLM prompt picks zenn_mode + character bank per row.
+   *   - PR 6: settings panel + cost preview + zenn-red-label OST variant.
+   *   - PR 7: end-to-end QA against real Zenn reference clips.
+   *
+   * Image provider: Kie AI gpt-image-2 by user instruction 2026-06-10.
+   * Pricing accepted as-is.
+   */
+  {
+    id: 'zenn_v1',
+    label: 'Zenn V1',
+    description:
+      'Long-form explainer modelled on the YouTube channel Zenn. Mixes stick-figure-on-white scenes with flat-fill scene worlds inside one video, with character + world persistence across shots.',
+    ai_image_suffix: [
+      // PR 1 focuses on Mode A (stick figure on white). Mode B image
+      // suffix expansion lands in PR 3 alongside ZennScene's scene
+      // branch. The current suffix produces correct Mode A output and
+      // a reasonable approximation of Mode B until PR 3 swaps to a
+      // mode-aware suffix builder.
+      'Hand-drawn explainer illustration in the Zenn channel style.',
+      'STICK-FIGURE PRIMITIVE: large round white head, simple oval-shape',
+      'eyes filled black with pupils visible, eyebrows as thin angled lines',
+      'for emotion, small expressive mouth (closed line or small open shape),',
+      'stick-figure body with single-line limbs ending in rounded mitten hands',
+      'and oval feet. Smooth clean digital lines of uniform thickness — NOT',
+      'scribbly, NOT wobbly pen jitter, NOT crosshatched shading. The line',
+      'work is hand-feel but consistent.',
+      'CANVAS: pure white background with a single medium-grey horizontal',
+      'baseline strip across the bottom third representing the ground.',
+      'Character stands ON the baseline. Generous negative space above.',
+      'COLOR: predominantly black-and-white. Sparing color accents only:',
+      'red (#D32F2F) for hand-lettered emphasis text and date stamps,',
+      'goldenrod yellow as a translucent highlighter stripe behind key',
+      'words, and small flat-color fills when a SPECIFIC named object',
+      'requires it (a yellow shirt for the spotlight subject, a pink',
+      'brain for an anatomy reference). No gradients, no shadows on',
+      'characters, no textures.',
+      'COMPOSITION: single focal idea per frame, character roughly',
+      'centered horizontally, label or thought bubble positioned above',
+      'with clear space around it.',
+      'BAKED TYPOGRAPHY: when the prompt asks for hand-lettered text in',
+      'the scene, draw the EXACT characters supplied by the prompt — never',
+      'substitute, paraphrase, or add filler text the prompt did not',
+      'request. Render the requested characters as BOLD RED HAND-LETTERED',
+      "(saturated red #D32F2F fill, thick consistent hand-feel outline)",
+      'with a slight irregular baseline (not perfectly straight). Underline',
+      'with a red wavy line when the prompt explicitly asks for it. If the',
+      'prompt does NOT request baked text, the scene contains NO baked',
+      'words at all — speech bubbles for character dialogue are allowed;',
+      'freestanding label words invented by the model are NOT.',
+    ].join(' '),
+    // PR 1 ships with a single subject-neutral Mode A ref. The
+    // bundle expands in PR 3 with curated Mode B refs (character +
+    // world examples) once the pipeline can support them. Files
+    // live at public/style-refs/Zenn-v1/<filename>.
+    built_in_refs: [
+      { filename: '01-stick-figure-thought-bubble.jpg', mime_type: 'image/jpeg' },
+    ],
+    // Kie AI gpt-image-2 per user instruction 2026-06-10. Final
+    // decision, pricing accepted. The dispatcher reads this for the
+    // i2i path; the T2I path picks the matching Kie model the same
+    // way (see plan §11 for the live-verified per-call prices).
+    preferred_cloud_model: 'gpt-image-2-i2i',
+    mixing_rules: [
+      'This is the Zenn V1 style — a long-form explainer modelled on the YouTube channel Zenn (@Zenn0009). Two visual modes coexist inside one video. Pick the right mode per row.',
+      '',
+      'MODE PICK — set `zenn_mode` on every row:',
+      "  • `zenn_mode: 'stick'` — abstract, introspective, psychological, statistical, or chart-driven topics. The shot is a circle-head stick figure on pure white canvas with a medium-grey ground baseline strip. Use for opinions, feelings, hypotheticals, definitions, time-elapse charts, percentage callouts.",
+      "  • `zenn_mode: 'scene'` — concrete topical worlds with recurring characters. The shot is a flat-fill illustrated character (and optionally a prop) on a COLORED staged background. Use for any narrative that puts the same entity through multiple beats: a historical figure, an animal kingdom topic, a closed environment (a lab, a ship, a cave, an alien planet).",
+      '  • When in doubt, pick `stick`. PR 1 ships with Mode A rendering only — Mode B scene composition lands in PR 3, until then `scene` rows render approximately as flat-fill character on white. Set the mode correctly anyway so PR 3 picks them up.',
+      '',
+      'CHARACTER PERSISTENCE — Zenn\'s signature is reusing the same drawn entity across 200 shots. When the script names or implies a recurring character (a narrator-mascot, a named historical figure, a recurring species like "the mouse" or "the kangaroo"), pick a stable slug and set `zenn_character_id` on every row that shows them. The image-gen pipeline generates one base PNG plus a small pose set per unique `zenn_character_id` and reuses them across rows. Without a stable id, every shot regenerates the character from scratch and the entity drifts (different mouse each shot, different narrator each shot).',
+      '',
+      'CHARACTER CAP — Hard cap at 12 unique `zenn_character_id` slugs per video. Real Zenn videos use 3-7. If you find yourself emitting more than 7, you are inventing characters that the script does not need. The pipeline merges near-duplicate slug names silently rather than rejecting rows, but the merge is a defensive backstop — the LLM should emit the right number from the start.',
+      '',
+      'WORLD PERSISTENCE — Mode B rows inhabit a single visual world (one sky color, one ground color, one set of recurring props). Set `zenn_world_overlay` on each Mode B row from this controlled vocabulary:',
+      '  • `sky_only`     — white sky, no ground. Floating subjects or pure stick-figure rows that opted into a Mode B character anyway.',
+      '  • `sky_ground`   — colored sky band (top ~50%) + colored ground band (bottom ~50%). Outdoor scenes. The dominant pattern in Zenn\'s Ancient Humans and Aliens videos.',
+      '  • `room`         — two-tone grey wall above + grey floor below. Interior scenes (the Calhoun mouse-cage interior).',
+      '  • `underwater`   — gradient blue depth. Used for the Titanic descent scenes.',
+      'Pick ONE overlay per video where possible. Mixing more than 2 overlays in one video starts to feel like a different show.',
+      '',
+      'PACING — Target median shot length 2.8 seconds for Mode B (scene) rows, ~4.3 seconds for Mode A (stick) rows. Mode A holds longer because the canvas evolves on a single held base (canvas_reveal beat in PR 4); Mode B cuts harder. For a 7-10 minute video that means roughly 150-215 rows total.',
+      '',
+      'PACING SELF-CHECK — Before you finish: count your rows. A 7-minute video with under 120 rows is too slow for this style. A row that contains TWO ideas should be TWO rows. Mix shot lengths around the median: short punches (1.5-2s) on visual beats, longer holds (4-6s) on Mode A evolving-canvas reveals.',
+      '',
+      'HAND-LETTERED LABELS — Zenn uses BOLD RED hand-lettering as the primary emphasis treatment, not the yellow bubble used by doodle_explainer_2. When you want to call out a word or short phrase (a date, a category, a punchline word), populate `on_screen_text` with the exact text. The renderer composites a red hand-lettered overlay with an optional red wavy underline. Keep labels short — single words or 2-4 word phrases. Long labels lose the punch.',
+      '',
+      'YELLOW HIGHLIGHTER — Zenn also uses a translucent yellow stripe behind key words inside a phrase ("EVERYONE. ALL AT ONCE." with yellow under "EVERYONE"). For PR 1 this is encoded by wrapping the highlighted word in `[hl]` markers inside `on_screen_text` (e.g. "EVERYONE. [hl]ALL AT ONCE[/hl]."). The renderer will support this in PR 6; until then the markers are ignored and the text renders unstyled — emit them anyway as forward-compatible data.',
+      '',
+      'REAL-PHOTO MIX — Zenn videos use ZERO photographic content. Do NOT populate `overlay_stock_terms`. Do NOT emit `real_photo_punch` motion beats. Every visual in the video is illustrated. This is non-negotiable — a single real photo breaks the style.',
+      '',
+      'CANVAS REVEAL — For Mode A rows over 5 seconds, emit a `motion_beats` entry of kind `canvas_reveal` to evolve the canvas across the shot instead of holding a still. PR 4 wires this; until then the beat is forward-compatible data the renderer ignores gracefully. Cap canvas_reveal at 3 sibling layers per beat to keep per-video Kie Edit cost under the cap.',
+      '',
+      'CONCRETE EXAMPLE — narrator-mascot says "Every five seconds, someone in the world is born with this":',
+      '  {',
+      '    "timecode": "0:24",',
+      "    \"zenn_mode\": \"stick\",",
+      "    \"zenn_character_id\": \"narrator\",",
+      "    \"ai_image_prompt\": \"[narrator stick figure on white canvas with grey ground baseline, pointing at empty space, slight smile]\",",
+      "    \"on_screen_text\": \"every [hl]5 seconds[/hl]\"",
+      '  }',
+      '',
+      'CONCRETE EXAMPLE — historical scene with a recurring character in a Mode B world:',
+      '  {',
+      '    "timecode": "1:12",',
+      "    \"zenn_mode\": \"scene\",",
+      "    \"zenn_character_id\": \"ancient-hunter-curly\",",
+      "    \"zenn_world_overlay\": \"sky_ground\",",
+      "    \"ai_image_prompt\": \"[ancient hunter character carries a bundle of firewood, walking right, slight smile, three huts in the far background]\",",
+      "    \"on_screen_text\": \"KALAHARI\"",
+      '  }',
+      '',
+      'AI IMAGE PROMPT — The actual visual content of the scene goes in `ai_image_prompt`. The style suffix bakes in the line weight, canvas treatment, baseline strip, and typography rules — do NOT restate those in the prompt. Focus the prompt on the SUBJECT and ACTION and FRAMING. No labelled diagrams, no baked-in text the renderer will overlay separately (emphasis text goes in `on_screen_text`, not in the image prompt).',
+    ].join('\n'),
+    allow_overlay_stock: false,
+    origin: 'built-in',
+    // OST mode left at default ('bake') for PR 1. Zenn's emphasis
+    // text is hand-lettered red with optional wavy underline — NOT
+    // the doodle-yellow LowerThird that paint_explainer_v1 / doodle_explainer_2
+    // inherit. PR 6 adds a `variant='zenn-red-label'` branch in
+    // SceneRouter and flips this entry to 'overlay'. Until then,
+    // setting 'bake' produces the AI-image-rendered red label,
+    // which is acceptable as a PR 1 floor.
+  },
 ]);
 
 const BUILT_IN_BY_ID = new Map<string, ResolvedStyle>(BUILT_IN_STYLES.map((s) => [s.id, s]));
