@@ -22,13 +22,14 @@
  * focused on the three required choices.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { YOUTUBE_CATEGORIES, DEFAULT_YOUTUBE_CATEGORY_ID } from '@/lib/youtube-categories';
 import { TimezoneSelect } from './TimezoneSelect';
 import { VoicePicker } from './VoicePicker';
 import type { BatchIdeaInput } from '@/lib/shorts-batches';
 import type { ShortsBatchDefaults } from '@/lib/shorts-batches-types';
+import { BASE_T2I_MODELS, DEFAULT_BASE_T2I_MODEL_ID } from '@/lib/shorts-base-t2i-types';
 
 interface ChannelOption {
   id: string;
@@ -74,6 +75,37 @@ export function Step2BatchSetup({
   const activeChannel = channels.find((c) => c.id === channelId);
 
   const patch = (p: Partial<ShortsBatchDefaults>) => onChange({ ...defaults, ...p });
+
+  // Load the user's per-account image-model default on mount and seed
+  // `defaults.baseT2iModelId` if the batch doesn't have an explicit
+  // pick yet. Keeps the batch's recorded choice concrete (no implicit
+  // "use my account default" semantics for the orchestrator to handle
+  // later) while still respecting the per-user preference up front.
+  useEffect(() => {
+    if (defaults.baseT2iModelId) return; // user already picked, don't overwrite
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, seeds image-model picker default
+        const res = await fetch('/api/user/settings/shorts-base-t2i-model');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        const id = typeof data.shorts_base_t2i_model_id === 'string'
+          ? data.shorts_base_t2i_model_id
+          : DEFAULT_BASE_T2I_MODEL_ID;
+        // Only seed if the parent hasn't set anything in the meantime.
+        onChange({ ...defaults, baseT2iModelId: id });
+      } catch {
+        // Network error — fall through; the picker still works,
+        // it'll show DEFAULT_BASE_T2I_MODEL_ID as the visible default.
+      }
+    })();
+    return () => { cancelled = true; };
+    // Intentionally only on mount — re-running on every defaults change
+    // would loop with the onChange call inside.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const start = async () => {
     if (!activeChannel) {
@@ -282,6 +314,23 @@ export function Step2BatchSetup({
                   value={defaults.timezone ?? 'UTC'}
                   onChange={(tz) => patch({ timezone: tz })}
                 />
+              </div>
+
+              <div className="md:col-span-2">
+                <Label hint="Same model for every short in this batch. Per-short override available in step 3 if a model misbehaves.">
+                  Image model (base frame)
+                </Label>
+                <select
+                  value={defaults.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID}
+                  onChange={(e) => patch({ baseT2iModelId: e.target.value })}
+                  className={selectClass}
+                >
+                  {BASE_T2I_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label} — ${m.costUsd.toFixed(4)}/image · {m.hint}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

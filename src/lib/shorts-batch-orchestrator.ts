@@ -72,7 +72,7 @@ export {
 import { isShortTerminal, nextStageFor, allShortsAtTerminal } from './shorts-batch-stages';
 import type { BatchStage } from './shorts-batch-stages';
 import { retryTransient } from './shorts-batch-retry';
-import { DEFAULT_BASE_T2I_MODEL_ID } from './shorts-base-t2i-types';
+import { DEFAULT_BASE_T2I_MODEL_ID, resolveBaseT2iModelId } from './shorts-base-t2i-types';
 
 /** Concurrency cap per tick. Three is enough to keep wall-clock
  *  decent (3 voiceover calls in parallel ≈ 30s instead of 90s) while
@@ -352,6 +352,12 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
 
   const styleId = 'doodle_explainer_2_short';
   const now = new Date().toISOString();
+  // Honour the per-batch picker if set, otherwise fall back to the
+  // user's per-account default (resolved by the asset cron's model
+  // resolver further downstream), with the registry-level default as
+  // the floor. `resolveBaseT2iModelId` narrows + sanitises any stale
+  // model id stored on an old batch.
+  const baseT2iModelId = resolveBaseT2iModelId(batch.defaults.baseT2iModelId ?? DEFAULT_BASE_T2I_MODEL_ID);
   const queued = {
     phase: 'queued' as const,
     label: 'Queued — Doodle assets will start shortly…',
@@ -360,7 +366,7 @@ async function enqueueAssetGeneration(short: ShortRow, batch: ShortsBatchRow): P
     updated_at: now,
     job: {
       niche,
-      base_t2i_model_id: DEFAULT_BASE_T2I_MODEL_ID,
+      base_t2i_model_id: baseT2iModelId,
       variant_edit_primary: 'atlas' as const,
       max_variants: Math.max(4, Math.min(10, Math.round(seconds / 6))),
     },

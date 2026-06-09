@@ -135,6 +135,16 @@ export interface ShortsBatchDefaults {
    *  `scheduleCadence`. Absent ⇒ "publish immediately" for the whole
    *  batch (or per-short manual picks). */
   scheduleStartAt?: string;
+  /** Base T2I image model used to render each short's frames. When
+   *  absent the orchestrator falls back to the user's per-account
+   *  default (`user_settings.shorts_base_t2i_model_id`), which in turn
+   *  falls back to `DEFAULT_BASE_T2I_MODEL_ID`. Picker in
+   *  `Step2BatchSetup` writes this per-batch override.
+   *  Type stored as `string` here (not the union) so DB JSON parsing
+   *  doesn't reject a future newly-added model that the running
+   *  bundle hasn't been updated for yet — the consumer narrows via
+   *  `resolveBaseT2iModelId` so unknown ids fall back to the default. */
+  baseT2iModelId?: string;
 }
 
 /** Denormalised counters persisted on `shorts_batches.totals`. The

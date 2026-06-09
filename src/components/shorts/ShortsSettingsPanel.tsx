@@ -24,6 +24,12 @@ import {
   SHORTS_SETTINGS_DEFAULTS,
   type ShortsWorkspaceSettings,
 } from '@/lib/shorts-workspace-settings';
+import {
+  BASE_T2I_MODELS,
+  DEFAULT_BASE_T2I_MODEL_ID,
+  resolveBaseT2iModelId,
+  type ShortsBaseT2iModelId,
+} from '@/lib/shorts-base-t2i-types';
 
 export function ShortsSettingsPanel() {
   const [settings, setSettings] = useState<ShortsWorkspaceSettings>({
@@ -111,6 +117,8 @@ export function ShortsSettingsPanel() {
           />
         </Row>
       </div>
+
+      <BaseT2iDefaultPanel />
 
       <div className="glass rounded-xl p-5">
         <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
@@ -333,6 +341,111 @@ function SegmentedString<T extends string>({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/** Per-user default base T2I image model used by:
+ *  - the shorts asset cron when no per-batch override is set
+ *  - the editor's Shots panel "regen with new prompt" base-frame button
+ *  - the bulk-batch step 2 image-model picker as its initial value
+ *
+ *  Reads + writes via `/api/user/settings/shorts-base-t2i-model`. Shows
+ *  the full registry (BASE_T2I_MODELS) with cost + hint per option so
+ *  the lazy-user can pick informed without leaving the page. */
+function BaseT2iDefaultPanel() {
+  const [modelId, setModelId] = useState<ShortsBaseT2iModelId>(DEFAULT_BASE_T2I_MODEL_ID);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- GET, loads the image-model default
+        const res = await fetch('/api/user/settings/shorts-base-t2i-model');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
+        if (typeof data.shorts_base_t2i_model_id === 'string') {
+          setModelId(resolveBaseT2iModelId(data.shorts_base_t2i_model_id));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          toast.error(err instanceof Error ? err.message : 'Failed to load image-model default');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = useCallback(async (next: ShortsBaseT2iModelId) => {
+    setSaving(true);
+    const prev = modelId;
+    setModelId(next); // optimistic
+    try {
+      const res = await fetch('/api/user/settings/shorts-base-t2i-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shorts_base_t2i_model_id: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast.success('Image model default saved');
+    } catch (err) {
+      setModelId(prev); // rollback
+      toast.error(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  }, [modelId]);
+
+  return (
+    <div className="glass rounded-xl p-5">
+      <h2 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+        Base image model
+      </h2>
+      <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+        Default model used to generate the base frame for each Short. Applies
+        across bulk batches + the editor's Shots panel regen, unless you pick
+        a different model per-batch in step 2 or per-frame in the editor.
+      </p>
+      {loading ? (
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading…</div>
+      ) : (
+        <div className="space-y-2">
+          {BASE_T2I_MODELS.map((m) => {
+            const active = m.id === modelId;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                disabled={saving || active}
+                onClick={() => save(m.id)}
+                className={[
+                  'block w-full rounded-md border px-3 py-2 text-left transition-colors',
+                  active
+                    ? 'border-[var(--accent-purple-bright)] bg-[var(--accent-purple)]/15'
+                    : 'border-[var(--border)] bg-white/[0.02] hover:bg-white/[0.05]',
+                ].join(' ')}
+              >
+                <div className="flex items-center justify-between gap-2 text-sm">
+                  <span style={{ color: 'var(--text-primary)', fontWeight: active ? 600 : 500 }}>
+                    {m.label}
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                    ${m.costUsd.toFixed(4)}/image{active ? ' · current' : ''}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {m.hint}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
