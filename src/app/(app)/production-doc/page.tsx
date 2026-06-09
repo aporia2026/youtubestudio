@@ -66,6 +66,7 @@ import { ImageGenThrottleToast } from '@/components/editor/ImageGenThrottleToast
 import type { RowOverlayState } from '@/components/production-doc/overlay-types';
 import { SectionRowControls } from '@/components/production-doc/SectionRowControls';
 import { PaintExplainerV1SettingsPanel } from '@/components/production-doc/PaintExplainerV1SettingsPanel';
+import { ZennV1SettingsPanel } from '@/components/production-doc/ZennV1SettingsPanel';
 import { PacingProfilePanel } from '@/components/production-doc/PacingProfilePanel';
 import { TitleReviewPanel, type UserTitleSpec } from '@/components/production-doc/TitleReviewPanel';
 import { DoodleExplainer2MotionCollageSettingsPanel } from '@/components/production-doc/DoodleExplainer2MotionCollageSettingsPanel';
@@ -10887,6 +10888,26 @@ function ProductionDocPage() {
             }}
           />
 
+
+          {/* zenn_v1 doc-level settings panel — mounts whenever the
+              active style is zenn_v1 AND a doc has been generated.
+              Mirrors the paint_explainer_v1 mounting pattern below.
+              Settings flow through persistDoc so the change syncs
+              cross-tab + survives device switch. See
+              `_plans/2026-06-10-zenn-v1-style.md` §10. */}
+          {doc && stylePreset === 'zenn_v1' && (
+            <ZennV1SettingsPanel
+              value={doc.zenn_v1_settings}
+              onChange={(next) => {
+                setDoc((prev) => {
+                  if (!prev) return prev;
+                  const nextDoc = { ...prev, zenn_v1_settings: next };
+                  persistDoc(nextDoc);
+                  return nextDoc;
+                });
+              }}
+            />
+          )}
 
           {doc && stylePreset === 'paint_explainer_v1' && (
             <PaintExplainerV1SettingsPanel
