@@ -5778,87 +5778,91 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                 },
               );
               setBulkGenerateModal(null);
-              // Sequential dispatch — each motion-collage gen takes
-              // ~2 min wall-clock, can't safely parallelize without
-              // burning Atlas rate limits. Run them one at a time with
-              // toast progress. Per-row failure is non-fatal; the loop
-              // continues so a single bad row doesn't kill the batch.
+              // 2026-06-09 R3 — Phase 1 of
+              // `_plans/2026-06-09-motion-collage-async-bulk-regen.md`.
+              // Replaces the prior sequential per-row fetch loop. That
+              // loop ran from the browser, was bound by the Vercel 300 s
+              // function timeout per row + the browser tab staying open
+              // for the entire batch. The user reported clicking regen,
+              // walking away, coming back hours later to nothing changed
+              // — the in-flight fetches died when they navigated away.
+              //
+              // The /bulk-regen endpoint clears panel URLs server-side,
+              // re-activates the video's pipeline_run_videos.stage if
+              // it had terminally failed, and kicks the auto-pipeline
+              // tick so the work starts within seconds. Returns in <1 s
+              // with `{ queued, rejected }`. The tab can close
+              // immediately; results land on subsequent visits when the
+              // editor re-loads from the persisted doc.
               void (async () => {
-                let succeeded = 0;
-                let failed = 0;
-                for (const target of rows) {
-                  const row = state.doc.rows[target.rowIndex];
-                  if (!row) continue;
-                  if (!row.motion_collage_grid || !row.motion_collage_panel_prompts?.length) {
-                    failed += 1;
-                    continue;
-                  }
-                  toast.info(
-                    `Generating collage ${succeeded + failed + 1}/${rows.length} (shot #${target.rowIndex + 1})…`,
-                  );
-                  try {
-                    // eslint-disable-next-line no-restricted-syntax -- paid-gen RPC; awaits + reads response
-                    const res = await fetch('/api/generate/production-doc/motion-collage', {
+                try {
+                  // eslint-disable-next-line no-restricted-syntax -- POST RPC; awaits + reads response
+                  const res = await fetch(
+                    '/api/generate/production-doc/motion-collage/bulk-regen',
+                    {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
-                        grid: row.motion_collage_grid,
-                        panelPrompts: row.motion_collage_panel_prompts,
-                        stylePreset: state.doc.style_preset,
-                        motionCollageSettings: state.doc.doodle_explainer_2_motion_collage_settings,
-                        characterDescriptions: state.doc.doodle_explainer_2_character_descriptions,
-                        // 2026-06-09 — bulk forwards the effective
-                        // image-model tier (row > doc) so the server can
-                        // route panel 0 through the right vendor. Same
-                        // bug the single-row inspector flow had: without
-                        // this, `model` defaults to undefined, the
-                        // server falls through to style.preferred_cloud_model
-                        // (Atlas for doodle), and a 402 from Atlas kills
-                        // every row in the batch even though the doc
-                        // default is set to Kie.
-                        model: row.image_model || state.doc.image_model_default,
+                        projectId,
+                        rowIndices: rows.map((r) => r.rowIndex),
                       }),
+                    },
+                  );
+                  const data = (await res.json()) as {
+                    ok?: boolean;
+                    queued?: number;
+                    rejected?: Array<{ rowIndex: number; reason: string }>;
+                    estCostUsd?: number;
+                    kickedTick?: boolean;
+                    error?: string;
+                  };
+                  if (!res.ok || !data.ok) {
+                    const msg = data.error ?? `Queue failed (HTTP ${res.status})`;
+                    toast.error(msg);
+                    console.warn('[editor bulk-regen collages] queue failed', {
+                      status: res.status,
+                      error: msg,
+                      rejected: data.rejected,
                     });
-                    const data = (await res.json()) as {
-                      imageUrl?: string;
-                      panelUrls?: string[];
-                      collageImageUrl?: string;
-                      error?: string;
-                    };
-                    if (!res.ok || !data.imageUrl || !data.panelUrls?.length) {
-                      failed += 1;
-                      console.warn('[editor bulk-generate collages] row failed', {
-                        rowIndex: target.rowIndex,
-                        error: data.error,
-                      });
-                      continue;
-                    }
+                    return;
+                  }
+                  console.info('[editor bulk-regen collages] queued', {
+                    queued: data.queued,
+                    rejected: data.rejected,
+                    est_cost_usd: data.estCostUsd,
+                    kicked_tick: data.kickedTick,
+                  });
+                  // Local optimistic state: clear panel URLs on the
+                  // queued rows so the inspector + thumbnail strip show
+                  // "queued" (no panels) instead of the stale ones.
+                  // The server already cleared the same fields in the
+                  // persisted doc; this just keeps the local view in
+                  // sync so the user sees an immediate response.
+                  for (const target of rows) {
                     apply({
                       type: 'PATCH_ROW',
                       rowIndex: target.rowIndex,
                       patch: {
-                        image_url: data.imageUrl,
-                        motion_collage_image_url: data.collageImageUrl,
-                        motion_collage_panel_urls: data.panelUrls,
+                        image_url: undefined,
+                        motion_collage_image_url: undefined,
+                        motion_collage_panel_urls: undefined,
                       },
                     });
-                    succeeded += 1;
-                  } catch (err) {
-                    failed += 1;
-                    console.warn('[editor bulk-generate collages] threw', {
-                      rowIndex: target.rowIndex,
-                      error: err instanceof Error ? err.message : String(err),
-                    });
                   }
-                }
-                if (failed === 0) {
-                  toast.success(`All ${succeeded} motion collages generated.`);
-                } else if (succeeded === 0) {
-                  toast.error(`All ${failed} motion collages failed. Check Live tab for details.`);
-                } else {
+                  const rejectedNote = data.rejected && data.rejected.length > 0
+                    ? ` (${data.rejected.length} skipped — wrong shot kind or missing prompts)`
+                    : '';
                   toast.success(
-                    `${succeeded} collages generated · ${failed} failed.`,
+                    `Queued ${data.queued} motion collage${data.queued === 1 ? '' : 's'} for background regen${rejectedNote}. ` +
+                    `Feel free to close this tab — results appear when you reload.`,
+                    { duration: 8_000 },
                   );
+                } catch (err) {
+                  const msg = err instanceof Error ? err.message : 'Queue failed';
+                  toast.error(msg);
+                  console.warn('[editor bulk-regen collages] threw', {
+                    error: msg,
+                  });
                 }
               })();
             }}

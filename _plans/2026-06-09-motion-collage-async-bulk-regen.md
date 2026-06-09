@@ -1,7 +1,17 @@
 # Motion-collage: server-side async bulk regen
 
 Date: 2026-06-09
-Status: Drafted, not yet approved for implementation
+Status: Phase 1 shipped. Phase 2 (per-collage chunked progress) still pending.
+
+## Resolution of the prereq questions
+
+1. **Auto-pipeline kick endpoint:** EXISTS at `POST /api/auto-pipeline/tick`. Session-authenticated, single-flight guard via `withCronLock`, processes up to 3 videos per call. Reused as-is.
+2. **Polling cadence:** `ImageGenProgress.tsx:24` polls every 8 seconds against `/api/auto-pipeline/videos/[id]/image-progress`. Editor doesn't currently use it; left as a follow-up.
+3. **Per-uid rate limit:** kept at 5/min/uid (10/min/IP). Easily widened if observed traffic argues for it.
+4. **Per-call cost cap:** $10 default via `MOTION_COLLAGE_BULK_REGEN_CAP_USD` env var. ~12 max-grid Kie collages in one batch.
+5. **Partial-failure handling:** the existing `attempts` + `last_error` row fields are already populated by `generateMotionCollage` failures. The change-model endpoint pattern (re-activate `production_doc_images_failed` → `generating_production_doc_images`) ships in this PR too.
+
+## Phase 1 — what shipped (commit `<filled in at commit time>`)
 
 ## Problem
 
