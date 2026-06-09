@@ -70,8 +70,9 @@ export interface UserSettings {
    *  `ShortsBaseT2iModelId` string (see `shorts-base-t2i.ts`); the
    *  consumer narrows via `resolveBaseT2iModelId` so a stale or
    *  retired model id never crashes. `null` or absent ⇒
-   *  DEFAULT_BASE_T2I_MODEL_ID ('atlas-gpt-image-2', the cost-optimal
-   *  default). */
+   *  DEFAULT_BASE_T2I_MODEL_ID ('kie-gpt-image-2', user-confirmed
+   *  2026-06-09 — same OpenAI gpt-image-2 model as the Atlas route
+   *  but routed through Kie's gateway). */
   shorts_base_t2i_model_id?: string | null;
   /** Shorts content-QA composite threshold (0..100). Composite below
    *  this turns the editor tab badge red. `null` or absent ⇒
@@ -129,6 +130,35 @@ export interface UserSettings {
    *  or absent ⇒ true at the uploader (since this app generates
    *  with AI). User can flip per-short in the review queue. */
   shorts_batch_default_ai_content_disclosure?: boolean | null;
+  /** Number of thumbnail variants generated per "Generate" click on
+   *  the thumbnails page. Range [1..3]; values outside the range are
+   *  clamped at the API layer. `null` or absent ⇒
+   *  DEFAULT_VARIANT_COUNT (3) from `thumbnail-variants.ts`. Cost
+   *  scales linearly with this value, so users on tight budgets can
+   *  drop to 1 / 2. See
+   *  `_plans/2026-06-09-doodle-explainer-thumbnails-and-3-variants.md`. */
+  thumbnail_variant_count?: number | null;
+  /** Default image model id for the thumbnails page Generate flow.
+   *  Matches `MODEL_MAP` keys in
+   *  `src/app/api/thumbnails/image/route.ts`. `null` or absent ⇒
+   *  the picker defaults to `gpt-image-2-t2i` (Kie GPT Image 2).
+   *  Validated at the API layer against the live model registry; a
+   *  retired id falls back to the registry default rather than
+   *  crashing the route. */
+  thumbnail_default_image_model?: string | null;
+  /** Default thumbnail style id (from `THUMBNAIL_STYLES` in
+   *  `thumbnail-styles.ts`) preselected when the user opens the
+   *  Doodle Explainer panel — and reused as the seed for any future
+   *  style-aware format. `null` or absent ⇒ no style preselected
+   *  (panel uses its own first-style fallback). */
+  thumbnail_default_style?: string | null;
+  /** Phased rollout flag for the multi-variant thumbnail flow. When
+   *  `false` / unset, every format ships its legacy single-image
+   *  output and the `VariantPicker` is not mounted — so a regression
+   *  in the variants codepath is a one-toggle revert. Flip to `true`
+   *  after Phase 4 manual QA per the rollout plan. Stored per-user
+   *  so we can opt cohorts in gradually. */
+  thumbnail_variants_enabled?: boolean | null;
 }
 
 const DEFAULTS: UserSettings = { v: SETTINGS_VERSION };
@@ -284,6 +314,26 @@ export function parseUserSettings(encryptedBlob: string | null): UserSettings {
     out.shorts_batch_default_ai_content_disclosure = obj.shorts_batch_default_ai_content_disclosure;
   } else if (obj.shorts_batch_default_ai_content_disclosure === null) {
     out.shorts_batch_default_ai_content_disclosure = null;
+  }
+  if (typeof obj.thumbnail_variant_count === 'number' && Number.isFinite(obj.thumbnail_variant_count)) {
+    out.thumbnail_variant_count = obj.thumbnail_variant_count;
+  } else if (obj.thumbnail_variant_count === null) {
+    out.thumbnail_variant_count = null;
+  }
+  if (typeof obj.thumbnail_default_image_model === 'string') {
+    out.thumbnail_default_image_model = obj.thumbnail_default_image_model;
+  } else if (obj.thumbnail_default_image_model === null) {
+    out.thumbnail_default_image_model = null;
+  }
+  if (typeof obj.thumbnail_default_style === 'string') {
+    out.thumbnail_default_style = obj.thumbnail_default_style;
+  } else if (obj.thumbnail_default_style === null) {
+    out.thumbnail_default_style = null;
+  }
+  if (typeof obj.thumbnail_variants_enabled === 'boolean') {
+    out.thumbnail_variants_enabled = obj.thumbnail_variants_enabled;
+  } else if (obj.thumbnail_variants_enabled === null) {
+    out.thumbnail_variants_enabled = null;
   }
   return out;
 }

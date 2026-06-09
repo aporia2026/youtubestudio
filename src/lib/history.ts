@@ -36,6 +36,7 @@
  */
 
 import type { HistoryKind } from './user-history-types';
+import type { ThumbnailVariant } from './thumbnail-variants';
 
 /**
  * Typed error thrown by save paths when the server save genuinely
@@ -218,6 +219,18 @@ export interface ThumbnailHistoryEntry {
   generatedImageUrl?: string;
   result?: unknown;
   generatedImages?: Record<number, string>;
+  /** Free-form 3-variants payload — keyed by the same concept index as
+   *  `generatedImages`. Each entry holds the 3 variants generated for
+   *  that concept slot. When present, the UI shows a `VariantPicker`
+   *  in that slot; when absent, the legacy single-image `generatedImages`
+   *  entry renders. Old entries (pre-variants migration) leave this
+   *  undefined and render single-image. See
+   *  `_plans/2026-06-09-doodle-explainer-thumbnails-and-3-variants.md`. */
+  generatedImageVariants?: Record<number, ThumbnailVariant[]>;
+  /** Free-form per-concept selected variant index. Indexed by concept
+   *  slot, matching `generatedImageVariants`. Missing slot ⇒ defaults
+   *  to 0 (first variant) at read time via `getSelectedVariantUrl`. */
+  generatedImageSelectedVariantIndex?: Record<number, number>;
   script?: string;
   description?: string;
   imageModel?: string;
@@ -226,9 +239,13 @@ export interface ThumbnailHistoryEntry {
   /** Set when this entry came from a thumbnail format (Topic Card Grid, etc.)
    *  rather than the free-form 5-concept generator. Old entries leave this
    *  field undefined and render via the free-form code path. */
-  format?: 'topic-card-grid' | 'n-levels' | 'flex-icon-grid';
+  format?: 'topic-card-grid' | 'n-levels' | 'flex-icon-grid' | 'doodle-explainer';
   /** Format-specific payload, discriminated by `format`. */
-  formatPayload?: TopicCardGridHistoryPayload | NLevelsHistoryPayload | FlexIconGridHistoryPayload;
+  formatPayload?:
+    | TopicCardGridHistoryPayload
+    | NLevelsHistoryPayload
+    | FlexIconGridHistoryPayload
+    | DoodleExplainerHistoryPayload;
 }
 
 /** Stored alongside a `format: 'topic-card-grid'` thumbnail history entry.
@@ -253,6 +270,17 @@ export interface TopicCardGridHistoryPayload {
     secondary_accent: string;
   };
   imageUrl: string;
+  /** 3-variant array, populated by the fan-out image route as of
+   *  2026-06-09. `imageUrl` stays as the legacy single-image field for
+   *  entries saved before the migration; new writes always populate
+   *  `variants` and mirror the selected variant's url into `imageUrl`
+   *  so downstream consumers that haven't yet adopted
+   *  `getSelectedVariantUrl` still work. Resolution order at read time
+   *  is owned by `getSelectedVariantUrl` in `thumbnail-variants.ts`. */
+  variants?: ThumbnailVariant[];
+  /** Index into `variants` of the user's picked thumbnail. Missing /
+   *  undefined ⇒ first variant by convention. */
+  selectedVariantIndex?: number;
   /** Computed region rectangles for the rendered grid (intrinsic-image pixels). */
   regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
   /** The reference image URL that anchored the run, if the user provided one. */
@@ -296,6 +324,12 @@ export interface NLevelsHistoryPayload {
   /** Defaults to "EXPLAINED" or whatever the user chose; empty string = no tag. */
   titleTagline: string;
   imageUrl: string;
+  /** 3-variant array, populated by the fan-out image route as of
+   *  2026-06-09. See `TopicCardGridHistoryPayload.variants` for the
+   *  legacy / new-write resolution rules — same contract here. */
+  variants?: ThumbnailVariant[];
+  /** Index into `variants` of the user's picked thumbnail. */
+  selectedVariantIndex?: number;
   /** Computed region rectangles per slice (intrinsic-image pixels). */
   regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
   /** The reference image URL that anchored the run, if the user provided one. */
@@ -315,11 +349,52 @@ export interface NLevelsHistoryPayload {
  *  shape on hydrate via `parseConfig`. */
 export interface FlexIconGridHistoryPayload {
   imageUrl: string;
+  /** 3-variant array, populated by the fan-out image route as of
+   *  2026-06-09. See `TopicCardGridHistoryPayload.variants` for the
+   *  legacy / new-write resolution rules. */
+  variants?: ThumbnailVariant[];
+  /** Index into `variants` of the user's picked thumbnail. */
+  selectedVariantIndex?: number;
   /** Full FlexIconGridConfig — validated by parseConfig on restore. */
   config: unknown;
   regions: Array<{ id: string; label: string; x: number; y: number; w: number; h: number }>;
   outputWidth: number;
   outputHeight: number;
+}
+
+/** Stored alongside a `format: 'doodle-explainer'` thumbnail history
+ *  entry — the Paint Explainer doodle style introduced 2026-06-09.
+ *  Carries the structured input the user supplied (hook, expression,
+ *  background) plus the 3 generated variants and the user's pick. The
+ *  format is variant-only by design (no legacy single-image entries
+ *  pre-date it), so `variants` is required, not optional. */
+export interface DoodleExplainerHistoryPayload {
+  /** The big bold yellow phrase the LLM is told to render verbatim.
+   *  Capped at 60 chars at the API layer (hook text in this genre is
+   *  always a 1-3 word phrase). */
+  hookText: string;
+  /** One of `ThumbnailStyle.supported_character_expressions` for the
+   *  resolved style. Free-text accepted as a fallback when the user
+   *  picks "other". */
+  characterExpression: string;
+  /** One of `ThumbnailStyle.supported_background_scenes[].id`. The
+   *  literal `'custom'` flips on `customBackground` as the source. */
+  backgroundScene: string;
+  /** Free-text background description, used only when
+   *  `backgroundScene === 'custom'`. Capped at 200 chars at the API. */
+  customBackground?: string;
+  /** Style id from `THUMBNAIL_STYLES`. Currently always
+   *  `'paint_explainer_v1_doodle'` but persisted so future styles
+   *  reuse the panel and round-trip cleanly. */
+  styleId: string;
+  /** Image model id (matches `MODEL_MAP` keys). Defaults to the
+   *  style's `preferred_image_model` (`gpt-image-2-t2i`) but the
+   *  user can override per-generation. */
+  imageModel: string;
+  /** The 3 generated variants. Always populated for this format. */
+  variants: ThumbnailVariant[];
+  /** Index into `variants` of the user's pick. Defaults to 0. */
+  selectedVariantIndex: number;
 }
 
 export interface QAHistoryEntry {

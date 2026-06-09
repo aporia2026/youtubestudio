@@ -18,6 +18,16 @@ import { downloadHref } from '@/lib/download-file';
 import { TopicCardGridPanel, type FormatGenerationResult, type TopicCardGridDraftState } from '@/components/thumbnails/TopicCardGridPanel';
 import { NLevelsPanel, type NLevelsGenerationResult, type NLevelsDraftState } from '@/components/thumbnails/NLevelsPanel';
 import { FlexIconGridPanel, type FlexIconGridGenerationResult, type FlexIconGridDraftState } from '@/components/thumbnails/FlexIconGridPanel';
+import { VariantPicker } from '@/components/thumbnails/VariantPicker';
+import { fanOutImageVariants, regenerateSingleVariant } from '@/lib/thumbnail-variants-client';
+import {
+  type ThumbnailVariant,
+  clampVariantCount,
+  DEFAULT_VARIANT_COUNT,
+  MAX_VARIANT_COUNT,
+  MIN_VARIANT_COUNT,
+  getSelectedVariantUrl,
+} from '@/lib/thumbnail-variants';
 
 interface TextOverlaySettings {
   enabled: boolean;
@@ -348,6 +358,42 @@ function ThumbnailsPage() {
   const [deletingRef, setDeletingRef] = useState(false);
   const [generatingImages, setGeneratingImages] = useState<Record<number, boolean>>({});
   const [generatedImages, setGeneratedImages] = useState<Record<number, string>>({});
+  // 3-variant flow (Phase 1, 2026-06-09). When `variantsEnabled` is on,
+  // "Generate Image" fans out to `variantCount` parallel calls and the
+  // UI swaps the single <img> for a <VariantPicker>. Defaults to ON
+  // because the product spec is "user picks one of 3"; the user can
+  // drop to 1 here to cut image cost. Persisted to localStorage so the
+  // choice survives reloads — full user-settings sync lands in Phase 4.
+  // See _plans/2026-06-09-doodle-explainer-thumbnails-and-3-variants.md.
+  const [variantsEnabled, setVariantsEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const stored = localStorage.getItem('thumb_variants_enabled');
+      if (stored === 'false') return false;
+      if (stored === 'true') return true;
+    } catch { /* ignore */ }
+    return true;
+  });
+  const [variantCount, setVariantCount] = useState<number>(() => {
+    if (typeof window === 'undefined') return DEFAULT_VARIANT_COUNT;
+    try {
+      const stored = localStorage.getItem('thumb_variant_count');
+      if (stored) return clampVariantCount(Number(stored));
+    } catch { /* ignore */ }
+    return DEFAULT_VARIANT_COUNT;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('thumb_variants_enabled', String(variantsEnabled)); } catch { /* ignore */ }
+  }, [variantsEnabled]);
+  useEffect(() => {
+    try { localStorage.setItem('thumb_variant_count', String(variantCount)); } catch { /* ignore */ }
+  }, [variantCount]);
+  const [generatedImageVariants, setGeneratedImageVariants] = useState<Record<number, ThumbnailVariant[]>>({});
+  const [generatedImageSelectedVariantIndex, setGeneratedImageSelectedVariantIndex] = useState<Record<number, number>>({});
+  /** Tracks which variant slot is currently being regenerated, keyed by
+   *  `${conceptIdx}-${variantIdx}` so multiple in-flight regenerations
+   *  across different concepts don't shadow each other in the UI. */
+  const [regeneratingVariantSlot, setRegeneratingVariantSlot] = useState<Record<string, boolean>>({});
   const [uploadingRef, setUploadingRef] = useState(false);
   const [refPreviewUrl, setRefPreviewUrl] = useState('');
 
@@ -625,6 +671,9 @@ function ThumbnailsPage() {
     setImageGenEnabled(false);
     setShowImageSection(false);
     setGeneratedImages({});
+    setGeneratedImageVariants({});
+    setGeneratedImageSelectedVariantIndex({});
+    setRegeneratingVariantSlot({});
     setPickedLabels([]);
     setHistoryEntryId(null);
     setSavedFormatImageUrl(null);
@@ -717,6 +766,9 @@ function ThumbnailsPage() {
     setGenerating(true);
     setResult(null);
     setGeneratedImages({});
+    setGeneratedImageVariants({});
+    setGeneratedImageSelectedVariantIndex({});
+    setRegeneratingVariantSlot({});
     try {
       // eslint-disable-next-line no-restricted-syntax -- thumbnails-generate RPC: awaits and uses response
       const res = await fetch('/api/thumbnails/generate', {
@@ -927,6 +979,137 @@ function ThumbnailsPage() {
       toast.error('Image generation failed. The API may not be available yet.');
     } finally {
       setGeneratingImages(prev => ({ ...prev, [idx]: false }));
+    }
+  }
+
+  /**
+   * 3-variant entry point for the free-form flow. Phase 1: same prompt
+   * for all N variants, the image model's stochasticity produces the
+   * variation. Phase 2 (doodle format) + Phase 3 (other formats) use
+   * structured per-variant prompts via the same `fanOutImageVariants`
+   * helper. When `variantsEnabled` is off, the page calls `generateImage`
+   * instead and this function is unused.
+   *
+   * Plan: _plans/2026-06-09-doodle-explainer-thumbnails-and-3-variants.md.
+   */
+  async function generateImageVariants(idx: number, prompt: string) {
+    const count = clampVariantCount(variantCount);
+    setGeneratingImages(prev => ({ ...prev, [idx]: true }));
+    console.info('[thumbnails free-form variants] generate start', {
+      conceptIdx: idx, model: imageModel, count, hasRef: !!referenceImageUrl.trim(),
+    });
+    try {
+      const finalPrompt = buildImagePrompt(prompt);
+      const { variants, failedCount } = await fanOutImageVariants({
+        model: imageModel,
+        basePrompt: finalPrompt,
+        variantCount: count,
+        referenceImageUrl: referenceImageUrl.trim() || undefined,
+      });
+      if (failedCount === count) {
+        toast.error('All variants failed. Please try again.');
+        return;
+      }
+      setGeneratedImageVariants(prev => {
+        const next = { ...prev, [idx]: variants };
+        if (historyEntryId) {
+          updateThumbnailEntry(historyEntryId, { generatedImageVariants: next }).catch(() => {});
+          setHistoryItems(getThumbnailHistoryCached());
+        }
+        return next;
+      });
+      // Selected variant defaults to the first non-failed one so the
+      // downstream "Copy URL" / "Download" / "Set as YouTube Thumbnail"
+      // buttons always point at a real image.
+      const firstGood = variants.findIndex(v => v.imageUrl);
+      const initialSelected = firstGood >= 0 ? firstGood : 0;
+      setGeneratedImageSelectedVariantIndex(prev => {
+        const next = { ...prev, [idx]: initialSelected };
+        if (historyEntryId) {
+          updateThumbnailEntry(historyEntryId, { generatedImageSelectedVariantIndex: next }).catch(() => {});
+        }
+        return next;
+      });
+      // Mirror the selected variant URL into the legacy single-image
+      // map so downstream code (history sidebar previews, "Set as
+      // YouTube Thumbnail") works without changes.
+      setGeneratedImages(prev => {
+        const next = { ...prev, [idx]: variants[initialSelected]?.imageUrl ?? '' };
+        if (historyEntryId) {
+          updateThumbnailEntry(historyEntryId, { generatedImages: next }).catch(() => {});
+        }
+        return next;
+      });
+      if (failedCount > 0) {
+        toast.warning(`${count - failedCount} of ${count} variants generated — retry the failed slot if you want a third pick.`);
+      } else {
+        toast.success(`${count} variants generated — pick one.`);
+      }
+    } catch (err) {
+      console.warn('[thumbnails free-form variants] generate failed', err);
+      toast.error('Variant generation failed. The API may not be available yet.');
+    } finally {
+      setGeneratingImages(prev => ({ ...prev, [idx]: false }));
+    }
+  }
+
+  function selectVariant(conceptIdx: number, variantIdx: number) {
+    console.info('[thumbnails free-form variants] select', { conceptIdx, variantIdx });
+    setGeneratedImageSelectedVariantIndex(prev => {
+      const next = { ...prev, [conceptIdx]: variantIdx };
+      if (historyEntryId) {
+        updateThumbnailEntry(historyEntryId, { generatedImageSelectedVariantIndex: next }).catch(() => {});
+      }
+      return next;
+    });
+    const url = generatedImageVariants[conceptIdx]?.[variantIdx]?.imageUrl;
+    if (url) {
+      setGeneratedImages(prev => {
+        const next = { ...prev, [conceptIdx]: url };
+        if (historyEntryId) {
+          updateThumbnailEntry(historyEntryId, { generatedImages: next }).catch(() => {});
+        }
+        return next;
+      });
+    }
+  }
+
+  async function regenerateVariantSlot(conceptIdx: number, variantIdx: number, prompt: string) {
+    const slotKey = `${conceptIdx}-${variantIdx}`;
+    setRegeneratingVariantSlot(prev => ({ ...prev, [slotKey]: true }));
+    console.info('[thumbnails free-form variants] regenerate-slot start', { conceptIdx, variantIdx });
+    try {
+      const finalPrompt = buildImagePrompt(prompt);
+      const newVariant = await regenerateSingleVariant({
+        model: imageModel,
+        prompt: finalPrompt,
+        index: variantIdx,
+        referenceImageUrl: referenceImageUrl.trim() || undefined,
+      });
+      setGeneratedImageVariants(prev => {
+        const list = (prev[conceptIdx] || []).slice();
+        list[variantIdx] = newVariant;
+        const next = { ...prev, [conceptIdx]: list };
+        if (historyEntryId) {
+          updateThumbnailEntry(historyEntryId, { generatedImageVariants: next }).catch(() => {});
+        }
+        return next;
+      });
+      // If the user had no good variant selected before, select this one.
+      const currentSelected = generatedImageSelectedVariantIndex[conceptIdx] ?? 0;
+      const currentSelectedUrl = generatedImageVariants[conceptIdx]?.[currentSelected]?.imageUrl;
+      if (!currentSelectedUrl) {
+        selectVariant(conceptIdx, variantIdx);
+      }
+      toast.success('Variant regenerated');
+    } catch (err) {
+      console.warn('[thumbnails free-form variants] regenerate-slot failed', err);
+      toast.error('Regeneration failed');
+    } finally {
+      setRegeneratingVariantSlot(prev => {
+        const { [slotKey]: _drop, ...rest } = prev;
+        return rest;
+      });
     }
   }
 
@@ -1482,6 +1665,46 @@ function ThumbnailsPage() {
                           {IMAGE_MODELS.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
                         </select>
                       </div>
+                      {/* 3-variant flow controls. Persisted to localStorage; full
+                          user-settings sync lands in Phase 4 of the variants
+                          rollout. Defaults to 3 variants because the product
+                          spec is "user picks one of 3"; drop to 1 to cut image
+                          cost per generate by 3x. */}
+                      <div className="space-y-2 p-2.5 rounded-lg" style={{ background: 'rgba(251, 192, 45, 0.06)', border: '1px solid rgba(251, 192, 45, 0.18)' }}>
+                        <label className="flex items-center gap-2 cursor-pointer text-xs" style={{ color: 'var(--text-primary)' }}>
+                          <input
+                            type="checkbox"
+                            checked={variantsEnabled}
+                            onChange={e => setVariantsEnabled(e.target.checked)}
+                            style={{ accentColor: '#FBC02D' }}
+                          />
+                          <span className="font-medium">Generate multiple variants to pick from</span>
+                        </label>
+                        {variantsEnabled && (
+                          <div className="flex items-center gap-2 pl-6">
+                            <label className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>Variants per generate:</label>
+                            {Array.from({ length: MAX_VARIANT_COUNT - MIN_VARIANT_COUNT + 1 }, (_, i) => MIN_VARIANT_COUNT + i).map(n => (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() => setVariantCount(n)}
+                                className="text-[11px] px-2.5 py-0.5 rounded transition-all"
+                                style={{
+                                  background: variantCount === n ? '#FBC02D' : 'transparent',
+                                  color: variantCount === n ? '#000' : 'var(--text-secondary)',
+                                  border: variantCount === n ? '1px solid #FBC02D' : '1px solid var(--border)',
+                                  fontWeight: variantCount === n ? 600 : 400,
+                                }}
+                              >
+                                {n}
+                              </button>
+                            ))}
+                            <span className="text-[10px] ml-auto" style={{ color: 'var(--text-muted)' }}>
+                              {variantCount}× image cost per generate
+                            </span>
+                          </div>
+                        )}
+                      </div>
                       {isI2I && (
                         <div className="space-y-2">
                           <label className="block text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Reference Image</label>
@@ -1820,13 +2043,19 @@ function ThumbnailsPage() {
                       {imageGenEnabled && (
                         <div className="flex items-center gap-2">
                           <button className="btn-primary text-xs flex items-center gap-1.5" disabled={generatingImages[idx]}
-                            onClick={() => generateImage(idx, concept.image_generation_prompt)}>
+                            onClick={() => {
+                              if (variantsEnabled) {
+                                void generateImageVariants(idx, concept.image_generation_prompt);
+                              } else {
+                                void generateImage(idx, concept.image_generation_prompt);
+                              }
+                            }}>
                             {generatingImages[idx] ? (
                               <>
                                 <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" opacity="0.25" /><path d="M12 2a10 10 0 0 1 10 10" /></svg>
-                                Generating...
+                                Generating{variantsEnabled ? ` ${variantCount} variants` : ''}...
                               </>
-                            ) : 'Generate Image'}
+                            ) : (variantsEnabled ? `Generate ${variantCount} variants` : 'Generate Image')}
                           </button>
                           {textOverlay.enabled && (
                             <span className="text-[9px]" style={{ color: 'var(--accent-yellow)' }} title="AI image models may render text imperfectly. For pixel-perfect text, add it in post-processing.">
@@ -1837,35 +2066,73 @@ function ThumbnailsPage() {
                       )}
                     </div>
 
-                    {/* Generated image with actions */}
-                    {generatedImages[idx] && (
+                    {/* 3-variant picker (Phase 1). When variants exist for this
+                        concept slot the picker replaces the single-image preview;
+                        the selected variant's URL is mirrored into `generatedImages`
+                        so the "Copy URL" / "Download" / "Set as YouTube Thumbnail"
+                        buttons below keep working unchanged. */}
+                    {generatedImageVariants[idx] && generatedImageVariants[idx].length > 0 && (
+                      <div className="mt-3">
+                        <VariantPicker
+                          variants={generatedImageVariants[idx]}
+                          selectedIndex={generatedImageSelectedVariantIndex[idx] ?? 0}
+                          onSelect={(variantIdx) => selectVariant(idx, variantIdx)}
+                          onRegenerate={(variantIdx) => regenerateVariantSlot(idx, variantIdx, concept.image_generation_prompt)}
+                          regeneratingIndex={(() => {
+                            const entries = Object.entries(regeneratingVariantSlot)
+                              .filter(([k]) => k.startsWith(`${idx}-`));
+                            if (entries.length === 0) return null;
+                            const match = entries.find(([, v]) => v);
+                            if (!match) return null;
+                            const parsed = Number(match[0].split('-')[1]);
+                            return Number.isFinite(parsed) ? parsed : null;
+                          })()}
+                          heading="Pick your variant"
+                          subheading={`Click a thumbnail to mark it as the one you want for "${concept.concept_name}".`}
+                        />
+                      </div>
+                    )}
+
+                    {/* Single-image preview — only when the variants flow is off
+                        for this concept. When variants are present the VariantPicker
+                        above carries the visual; the action buttons below are
+                        shared between both paths via `generatedImages[idx]` which
+                        the variants flow mirrors with the selected variant URL. */}
+                    {generatedImages[idx] && !generatedImageVariants[idx] && (
                       <div className="mt-3 space-y-2">
                         <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
                           <img src={generatedImages[idx]} alt={concept.concept_name} className="w-full" style={{ maxHeight: 320, objectFit: 'cover' }} />
                         </div>
-                        <div className="flex gap-2 flex-wrap">
-                          <button onClick={() => { navigator.clipboard.writeText(generatedImages[idx]); toast.success('Image URL copied'); }}
-                            className="btn-secondary text-xs px-2 py-1">
-                            Copy URL
-                          </button>
-                          <a href={downloadHref(generatedImages[idx], `thumbnail-${idx + 1}.png`)} download={`thumbnail-${idx + 1}.png`} target="_blank" rel="noopener noreferrer"
-                            className="btn-secondary text-xs px-2 py-1 inline-flex items-center gap-1">
+                      </div>
+                    )}
+
+                    {/* Action buttons — shared between single-image and variants
+                        flows. `generatedImages[idx]` carries either the legacy
+                        single URL (variants off) or the selected-variant URL
+                        (variants on, mirrored by `selectVariant`). */}
+                    {generatedImages[idx] && (
+                      <div className="mt-3 flex gap-2 flex-wrap">
+                        <button onClick={() => { navigator.clipboard.writeText(generatedImages[idx]); toast.success('Image URL copied'); }}
+                          className="btn-secondary text-xs px-2 py-1">
+                          Copy URL
+                        </button>
+                        <a href={downloadHref(generatedImages[idx], `thumbnail-${idx + 1}.png`)} download={`thumbnail-${idx + 1}.png`} target="_blank" rel="noopener noreferrer"
+                          className="btn-secondary text-xs px-2 py-1 inline-flex items-center gap-1">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                          </svg>
+                          Download
+                        </a>
+                        {channels.length > 0 && (
+                          <button onClick={() => { setShowAttachDialog(idx); setChannelVideos([]); }}
+                            className="btn-secondary text-xs px-2 py-1 flex items-center gap-1"
+                            style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }}>
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                              <polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" />
                             </svg>
-                            Download
-                          </a>
-                          {channels.length > 0 && (
-                            <button onClick={() => { setShowAttachDialog(idx); setChannelVideos([]); }}
-                              className="btn-secondary text-xs px-2 py-1 flex items-center gap-1"
-                              style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)' }}>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" />
-                              </svg>
-                              Set as YouTube Thumbnail
-                            </button>
-                          )}
-                        </div>
+                            Set as YouTube Thumbnail
+                          </button>
+                        )}
                       </div>
                     )}
 
@@ -2084,6 +2351,10 @@ function ThumbnailsPage() {
           setSavedNLevelsImageUrl(null);
           setSavedFlexIconGridImageUrl(null);
           setGeneratedImages(entry.generatedImages || {});
+          // Variants restore. Old entries (pre-2026-06-09) leave these
+          // undefined and fall back to the single-image path above.
+          setGeneratedImageVariants(entry.generatedImageVariants || {});
+          setGeneratedImageSelectedVariantIndex(entry.generatedImageSelectedVariantIndex || {});
           if (entry.result) {
             setResult(entry.result as GenerateResult);
             setHistoryEntryId(entry.id); // future image generations patch this entry
