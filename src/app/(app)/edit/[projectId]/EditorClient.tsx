@@ -2763,6 +2763,136 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
     };
   }, [brollPollTargets, setRowVideoClip, projectId]);
 
+  // ─── Motion-collage progress polling ─────────────────────────────────
+  // Phase 3 of `_plans/2026-06-09-motion-collage-async-bulk-regen.md`.
+  //
+  // The bulk-regen flow queues motion-collage rows for the auto-pipeline
+  // to process server-side. Before this hook, the user had to reload
+  // the editor to see results land. This polling effect watches for any
+  // motion-collage row whose panel URLs aren't fully populated, polls
+  // the slim `/api/.../motion-collage/progress` endpoint every 8 s, and
+  // PATCH_ROW's any row whose server-side state differs from local.
+  //
+  // Memoized predicate so the effect doesn't restart on every render —
+  // only when transitioning between "rows in progress" and "no rows in
+  // progress." Once every motion-collage row's panel array is full, the
+  // effect cleans up the interval. When the user clicks bulk-regen (or
+  // any flow that clears panel URLs), the predicate flips back to true
+  // and the interval restarts.
+  //
+  // The polling endpoint is workspace-scoped + rate-limited (30/min/uid).
+  // 8 s × ~3 minutes per worst-case 9-panel collage = ~22 polls per
+  // active row — comfortably under the cap.
+  const hasMotionCollageInProgress = useMemo(() => {
+    return state.doc.rows.some((row) => {
+      if (row.shot_kind !== 'motion_collage') return false;
+      if (!row.motion_collage_grid) return false;
+      const N = row.motion_collage_grid.cols * row.motion_collage_grid.rows;
+      if (N <= 0) return false;
+      const urls = row.motion_collage_panel_urls ?? [];
+      // Filled = a string with non-empty content. Empty strings,
+      // undefined, null, whitespace-only all count as "still missing."
+      let filled = 0;
+      for (let j = 0; j < N; j++) {
+        const u = urls[j];
+        if (typeof u === 'string' && u.trim().length > 0) filled += 1;
+      }
+      // Only treat as "in progress" if the row has panel prompts set
+      // (it's meant to be generated). A row with no prompts is just
+      // misconfigured — not in flight.
+      const hasPrompts = Array.isArray(row.motion_collage_panel_prompts)
+        && row.motion_collage_panel_prompts.length === N
+        && row.motion_collage_panel_prompts.every((p) => typeof p === 'string' && p.trim().length > 0);
+      return hasPrompts && filled < N;
+    });
+  }, [state.doc.rows]);
+
+  useEffect(() => {
+    if (!hasMotionCollageInProgress) return;
+    let cancelled = false;
+    console.info('[editor motion-collage poll] starting', { projectId });
+    const tick = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- poll RPC; awaits + reads response
+        const res = await fetch(
+          `/api/generate/production-doc/motion-collage/progress?projectId=${encodeURIComponent(projectId)}`,
+          { credentials: 'same-origin' },
+        );
+        if (!res.ok) {
+          // 404 (no artefact yet) and 429 (rate limited) are both
+          // recoverable on the next tick. Log warn for visibility but
+          // don't bail the loop.
+          if (res.status !== 404 && res.status !== 429) {
+            console.warn('[editor motion-collage poll] non-ok', { status: res.status });
+          }
+          return;
+        }
+        const data = (await res.json()) as {
+          rows?: Array<{
+            rowIndex: number;
+            motionCollagePanelUrls: string[];
+            motionCollageImageUrl: string | null;
+            imageUrl: string | null;
+          }>;
+        };
+        if (!data.rows) return;
+        // Snapshot live state via the ref to avoid stale closures.
+        const live = stateRef.current.doc.rows;
+        let updatedCount = 0;
+        for (const r of data.rows) {
+          const local = live[r.rowIndex];
+          if (!local || local.shot_kind !== 'motion_collage') continue;
+          const localUrls = local.motion_collage_panel_urls ?? [];
+          let changed = localUrls.length !== r.motionCollagePanelUrls.length;
+          if (!changed) {
+            for (let i = 0; i < r.motionCollagePanelUrls.length; i++) {
+              if (localUrls[i] !== r.motionCollagePanelUrls[i]) {
+                changed = true;
+                break;
+              }
+            }
+          }
+          if (!changed && (local.image_url ?? null) !== r.imageUrl) changed = true;
+          if (!changed && (local.motion_collage_image_url ?? null) !== r.motionCollageImageUrl) {
+            changed = true;
+          }
+          if (!changed) continue;
+          // PATCH_ROW only touches the SERVER-derived URL fields.
+          // Local edits to grid + panel_prompts stay intact — the
+          // user can be mid-edit while the pipeline lands prior
+          // results.
+          apply({
+            type: 'PATCH_ROW',
+            rowIndex: r.rowIndex,
+            patch: {
+              motion_collage_panel_urls: r.motionCollagePanelUrls,
+              motion_collage_image_url: r.motionCollageImageUrl ?? undefined,
+              image_url: r.imageUrl ?? undefined,
+            },
+          });
+          updatedCount += 1;
+        }
+        if (updatedCount > 0) {
+          console.info('[editor motion-collage poll] applied updates', {
+            updated_count: updatedCount,
+          });
+        }
+      } catch (err) {
+        console.warn('[editor motion-collage poll] threw', {
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    const handle = setInterval(() => { void tick(); }, 8_000);
+    void tick(); // immediate first read so the user sees a fast first update
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+      console.info('[editor motion-collage poll] stopped', { projectId });
+    };
+  }, [hasMotionCollageInProgress, projectId, apply]);
+
   /** Thin adapter so the ported handlers below read like their
    *  production-doc counterparts. Routes through PATCH_ROW so the
    *  edit lands on the undo stack + auto-save fires. */
