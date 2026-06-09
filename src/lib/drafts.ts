@@ -76,7 +76,7 @@ export interface ThumbnailsDraftState {
   description?: string;
   showScript?: boolean;
   imageModel?: string;
-  format?: 'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid';
+  format?: 'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid' | 'doodle-explainer';
   imageGenEnabled?: boolean;
   showImageSection?: boolean;
   referenceImageUrl?: string;

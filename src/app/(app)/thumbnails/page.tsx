@@ -18,6 +18,7 @@ import { downloadHref } from '@/lib/download-file';
 import { TopicCardGridPanel, type FormatGenerationResult, type TopicCardGridDraftState } from '@/components/thumbnails/TopicCardGridPanel';
 import { NLevelsPanel, type NLevelsGenerationResult, type NLevelsDraftState } from '@/components/thumbnails/NLevelsPanel';
 import { FlexIconGridPanel, type FlexIconGridGenerationResult, type FlexIconGridDraftState } from '@/components/thumbnails/FlexIconGridPanel';
+import { DoodleExplainerPanel, type DoodleExplainerGenerationResult } from '@/components/thumbnails/DoodleExplainerPanel';
 import { VariantPicker } from '@/components/thumbnails/VariantPicker';
 import { fanOutImageVariants, regenerateSingleVariant } from '@/lib/thumbnail-variants-client';
 import {
@@ -296,7 +297,7 @@ function ThumbnailsPage() {
   // produces a single composite thumbnail via Step 1 (LLM card list) +
   // Step 2 (GPT Image 2). See
   // _plans/2026-05-19-thumbnail-format-topic-card-grid.md.
-  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid'>('topic-card-grid');
+  const [format, setFormat] = useState<'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid' | 'doodle-explainer'>('topic-card-grid');
   // Track how often Free-form drafts get opened post-deprecation. The
   // log fires once per format change to free-form (any path: history
   // restore, draft restore, user picking it from the grandfather option,
@@ -314,6 +315,12 @@ function ThumbnailsPage() {
   // Flex Icon Grid is deterministic — separate state slot so its result
   // and draft snapshot don't collide with the AI-generation formats.
   const [flexIconGridResult, setFlexIconGridResult] = useState<FlexIconGridGenerationResult | null>(null);
+  const [doodleExplainerResult, setDoodleExplainerResult] = useState<DoodleExplainerGenerationResult | null>(null);
+  // Tracks the last persisted variant-selected URL for the doodle
+  // format, mirroring the savedFormatImageUrl pattern. Lets the panel
+  // emit selection changes without re-saving the entire history entry
+  // every render.
+  const [savedDoodleSelectedUrl, setSavedDoodleSelectedUrl] = useState<string | null>(null);
   const [flexIconGridDraftSnapshot, setFlexIconGridDraftSnapshot] = useState<FlexIconGridDraftState | null>(null);
   const [hydratedFlexIconGridState, setHydratedFlexIconGridState] = useState<FlexIconGridDraftState | null>(null);
   const [nLevelsResult, setNLevelsResult] = useState<NLevelsGenerationResult | null>(null);
@@ -679,10 +686,12 @@ function ThumbnailsPage() {
     setSavedFormatImageUrl(null);
     setSavedNLevelsImageUrl(null);
     setSavedFlexIconGridImageUrl(null);
+    setSavedDoodleSelectedUrl(null);
     setNLevelsDraftSnapshot(null);
     setTopicCardGridDraftSnapshot(null);
     setFlexIconGridDraftSnapshot(null);
     setFlexIconGridResult(null);
+    setDoodleExplainerResult(null);
     setHydratedNLevelsState(null);
     setHydratedTopicCardGridState(null);
     setHydratedFlexIconGridState(null);
@@ -1256,6 +1265,53 @@ function ThumbnailsPage() {
       });
   }, [flexIconGridResult, savedFlexIconGridImageUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
 
+  // Doodle Explainer persistence (2026-06-09). Mirrors the flex-icon /
+  // n-levels pattern, keyed on the SELECTED variant's URL so picking a
+  // different variant just patches the entry (via updateThumbnailEntry)
+  // without re-saving the whole row. Initial save uses saveThumbnailEntry;
+  // subsequent variant-selection changes detect via the effect re-fire and
+  // patch the existing historyEntryId.
+  useEffect(() => {
+    if (!doodleExplainerResult) return;
+    const sel = doodleExplainerResult.variants[doodleExplainerResult.selectedVariantIndex]?.imageUrl;
+    if (!sel) return; // user picked an empty/failed variant; don't save until they pick a real one
+    if (savedDoodleSelectedUrl === sel) return;
+    const safeTitle = title.trim() || 'Doodle Explainer';
+    const safeNiche = niche || 'Unspecified';
+    void saveThumbnailEntry({
+      title: safeTitle,
+      niche: safeNiche,
+      modelId,
+      conceptsCount: doodleExplainerResult.variants.length,
+      bestConceptName: doodleExplainerResult.hookText,
+      bestScore: 0,
+      script: script.trim() || undefined,
+      description: description.trim() || undefined,
+      imageModel: doodleExplainerResult.imageModel,
+      videoTitle: scheduleItem?.title?.trim() || safeTitle,
+      scheduleItemId: scheduleItemId || undefined,
+      format: 'doodle-explainer',
+      formatPayload: {
+        hookText: doodleExplainerResult.hookText,
+        characterExpression: doodleExplainerResult.characterExpression,
+        backgroundScene: doodleExplainerResult.backgroundScene,
+        customBackground: doodleExplainerResult.customBackground,
+        styleId: doodleExplainerResult.styleId,
+        imageModel: doodleExplainerResult.imageModel,
+        variants: doodleExplainerResult.variants,
+        selectedVariantIndex: doodleExplainerResult.selectedVariantIndex,
+      },
+    })
+      .then((saved) => {
+        setSavedDoodleSelectedUrl(sel);
+        setHistoryEntryId(saved.id);
+        setHistoryItems((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+      })
+      .catch(() => {
+        /* non-fatal */
+      });
+  }, [doodleExplainerResult, savedDoodleSelectedUrl, title, niche, modelId, script, description, scheduleItem, scheduleItemId]);
+
   function resumeDraft(draft: WorkflowDraft) {
     // Make the resumed draft the active one so the auto-save effect writes
     // back to it rather than orphaning the snapshot under a different id.
@@ -1436,7 +1492,7 @@ function ThumbnailsPage() {
                 className="input-field w-full"
                 value={format}
                 onChange={(e) => {
-                  const next = e.target.value as 'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid';
+                  const next = e.target.value as 'free-form' | 'topic-card-grid' | 'n-levels' | 'flex-icon-grid' | 'doodle-explainer';
                   setFormat(next);
                   // Both formats require a reference image; auto-enable the
                   // image-generation section so the upload UI is visible
@@ -1458,6 +1514,7 @@ function ThumbnailsPage() {
                 <option value="topic-card-grid">Topic Card Grid</option>
                 <option value="n-levels">N Levels Explained</option>
                 <option value="flex-icon-grid">Flex Icon Grid (deterministic)</option>
+                <option value="doodle-explainer">Doodle Explainer (Paint Explainer style, 3 variants)</option>
               </select>
               {format === 'free-form' && (
                 <div
@@ -1499,6 +1556,11 @@ function ThumbnailsPage() {
               {format === 'flex-icon-grid' && (
                 <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
                   Bright flat icon grid — built deterministically from icons, uploads, emoji, and text. No reference image needed, no AI image-gen cost, instant render.
+                </p>
+              )}
+              {format === 'doodle-explainer' && (
+                <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                  Hand-drawn doodle character + big bold yellow hook on a clean background (Paint Explainer YouTube genre). Generates 3 distinct concept variations — pick one. No reference image needed.
                 </p>
               )}
             </div>
@@ -1943,6 +2005,20 @@ function ThumbnailsPage() {
               restoredDraftState={hydratedFlexIconGridState}
             />
           )}
+          {format === 'doodle-explainer' && (
+            <div className="glass p-5" style={{ borderColor: 'rgba(251, 192, 45, 0.2)' }}>
+              <DoodleExplainerPanel
+                key={`doodle-${sessionEpoch}`}
+                modelId={modelId}
+                title={title}
+                niche={niche}
+                script={script}
+                description={description}
+                onResultChange={setDoodleExplainerResult}
+                restoredResult={doodleExplainerResult}
+              />
+            </div>
+          )}
           {format === 'free-form' && (
           <AnimatePresence mode="wait">
             {generating && !result && (
@@ -2279,6 +2355,8 @@ function ThumbnailsPage() {
             setSavedFormatImageUrl(fp.imageUrl);
             setSavedNLevelsImageUrl(null);
             setSavedFlexIconGridImageUrl(null);
+            setSavedDoodleSelectedUrl(null);
+            setDoodleExplainerResult(null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});
@@ -2313,7 +2391,9 @@ function ThumbnailsPage() {
             setSavedNLevelsImageUrl(fp.imageUrl);
             setSavedFormatImageUrl(null);
             setSavedFlexIconGridImageUrl(null);
+            setSavedDoodleSelectedUrl(null);
             setFlexIconGridResult(null);
+            setDoodleExplainerResult(null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});
@@ -2335,6 +2415,8 @@ function ThumbnailsPage() {
             setSavedFlexIconGridImageUrl(fp.imageUrl);
             setSavedFormatImageUrl(null);
             setSavedNLevelsImageUrl(null);
+            setSavedDoodleSelectedUrl(null);
+            setDoodleExplainerResult(null);
             setHistoryEntryId(entry.id);
             setResult(null);
             setGeneratedImages({});
@@ -2342,14 +2424,48 @@ function ThumbnailsPage() {
             toast.success(`Restored Flex Icon Grid — ${cfg.rows ?? '?'}×${cfg.cols ?? '?'}.`);
             return;
           }
+          if (entry.format === 'doodle-explainer' && entry.formatPayload && 'hookText' in entry.formatPayload) {
+            const fp = entry.formatPayload;
+            setFormat('doodle-explainer');
+            // Drop unrelated format state so the right panel renders clean.
+            setFormatResult(null);
+            setNLevelsResult(null);
+            setFlexIconGridResult(null);
+            setSavedFormatImageUrl(null);
+            setSavedNLevelsImageUrl(null);
+            setSavedFlexIconGridImageUrl(null);
+            setDoodleExplainerResult({
+              hookText: fp.hookText,
+              characterExpression: fp.characterExpression,
+              backgroundScene: fp.backgroundScene,
+              customBackground: fp.customBackground,
+              styleId: fp.styleId,
+              imageModel: fp.imageModel,
+              // Concepts aren't persisted in older entries; default to [].
+              // The picker uses variants for display and conceptLabels
+              // come from each variant directly.
+              concepts: [],
+              variants: fp.variants,
+              selectedVariantIndex: fp.selectedVariantIndex,
+            });
+            const selectedUrl = fp.variants[fp.selectedVariantIndex]?.imageUrl;
+            setSavedDoodleSelectedUrl(selectedUrl ?? null);
+            setHistoryEntryId(entry.id);
+            setResult(null);
+            setGeneratedImages({});
+            toast.success(`Restored Doodle Explainer — "${fp.hookText}".`);
+            return;
+          }
           // Free-form path (existing behaviour).
           setFormat('free-form');
           setFormatResult(null);
           setNLevelsResult(null);
           setFlexIconGridResult(null);
+          setDoodleExplainerResult(null);
           setSavedFormatImageUrl(null);
           setSavedNLevelsImageUrl(null);
           setSavedFlexIconGridImageUrl(null);
+          setSavedDoodleSelectedUrl(null);
           setGeneratedImages(entry.generatedImages || {});
           // Variants restore. Old entries (pre-2026-06-09) leave these
           // undefined and fall back to the single-image path above.

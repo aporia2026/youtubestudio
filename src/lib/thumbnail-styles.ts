@@ -78,12 +78,18 @@ export const THUMBNAIL_STYLES: ThumbnailStyle[] = [
     label: 'Doodle Explainer',
     description: 'Hand-drawn doodle character + big bold yellow hook word on a clean background. Modelled on the Paint Explainer YouTube genre (high-contrast curiosity-gap thumbnails like @Zenn0009).',
     ai_image_suffix: PAINT_EXPLAINER_V1_DOODLE_SUFFIX,
-    // T2i-only today — Kie GPT Image 2 t2i doesn't take refs. The fresh
-    // bundle the user curates from the Zenn0009 channel will live at
-    // public/style-refs/Paint-explainer-thumbnails/ and feed an i2i
-    // fallback when one is added (Phase 2 follow-up). Until then the
-    // suffix above carries the full visual contract.
+    // T2i-only today — Kie GPT Image 2 t2i doesn't take refs. Bundle
+    // curated 2026-06-09 from the Zenn0009 channel (4 keepers covering
+    // the white-bg / cave-bg / typography / character-anatomy pillars).
+    // Refs are persisted for future i2i fallback; the t2i path leans on
+    // the prompt suffix above.
     refs_folder: 'Paint-explainer-thumbnails',
+    built_in_refs: [
+      { filename: '01-typography-comparison-split.jpg', mime_type: 'image/jpeg' },
+      { filename: '02-character-on-white-bg-with-arrow.jpg', mime_type: 'image/jpeg' },
+      { filename: '03-character-yellow-spotlight-minimal.jpg', mime_type: 'image/jpeg' },
+      { filename: '04-character-cave-background-yellow-hook.jpg', mime_type: 'image/jpeg' },
+    ],
     preferred_image_model: 'gpt-image-2-t2i',
     preferred_text_style_preset: 'bold-impact',
     supported_character_expressions: [
