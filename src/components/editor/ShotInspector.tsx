@@ -728,7 +728,11 @@ export function ShotInspector({
             className="p-3 border-b"
             style={{ borderColor: 'var(--card-border)' }}
           >
+            {/* key={shotIndex} — ShotInspector itself isn't keyed by
+                shot, so without this the panel's local gen/lightbox/
+                busy state would persist across shot switches. */}
             <InspectorMotionCollagePanel
+              key={shotIndex}
               row={row}
               shotIndex={shotIndex}
               doc={doc}
