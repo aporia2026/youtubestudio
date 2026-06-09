@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "setup-hooks": "git config core.hooksPath .githooks && echo 'git hooks now point at .githooks/ — see .githooks/pre-push for what runs'",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

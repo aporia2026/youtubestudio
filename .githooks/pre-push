@@ -1,0 +1,39 @@
+#!/usr/bin/env sh
+#
+# Pre-push hook: blocks the push when typecheck fails on the WHOLE
+# branch (not just the files in this push). Mirrors the failure mode
+# that hit 2026-06-09 when three motion-collage commits got pushed
+# on top of a branch that already had broken imports — typecheck
+# would have caught it locally, the Vercel deployments wouldn't have
+# errored, and the historical "Error" rows in the deployments dashboard
+# would never have existed.
+#
+# Opt-in: this lives in `.githooks/` rather than `.git/hooks/`. Run
+# `npm run setup-hooks` once per clone to point git at this directory.
+#
+# Fast by design: typecheck only (~5-15 s on a warm cache). The full
+# Next.js build catches more issues but is too slow for a per-push
+# gate; that runs in CI instead (.github/workflows/ci.yml `build` job).
+#
+# To bypass for an intentional WIP push (e.g. asking a teammate to look
+# at a half-done branch), use `git push --no-verify`.
+
+set -e
+
+echo "[pre-push] running typecheck (branch-wide)..."
+
+# Use Node's resolution so we pick up the workspace-pinned TypeScript
+# version, not whatever's on PATH.
+if ! npx --no-install tsc --noEmit -p . ; then
+  echo ""
+  echo "[pre-push] BLOCKED — typecheck failed."
+  echo "[pre-push] Errors above are anywhere on the branch, not just"
+  echo "[pre-push] in your commits. Investigate before pushing — they"
+  echo "[pre-push] will fail the CI build and the Vercel deployment."
+  echo ""
+  echo "[pre-push] To push anyway (intentional WIP):"
+  echo "[pre-push]   git push --no-verify"
+  exit 1
+fi
+
+echo "[pre-push] typecheck clean — pushing."
