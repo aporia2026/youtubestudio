@@ -386,10 +386,14 @@ function BaseT2iDefaultPanel() {
     const prev = modelId;
     setModelId(next); // optimistic
     try {
+      // Endpoint contract is { model_id }, NOT { shorts_base_t2i_model_id }.
+      // The previous shape silently wiped the user's setting because the
+      // route's `body.model_id` lookup returned undefined → null branch.
+      // See `src/app/api/user/settings/shorts-base-t2i-model/route.ts:44`.
       const res = await fetch('/api/user/settings/shorts-base-t2i-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shorts_base_t2i_model_id: next }),
+        body: JSON.stringify({ model_id: next }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       toast.success('Image model default saved');
