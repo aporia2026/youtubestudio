@@ -129,6 +129,115 @@ describe('nextStageFor', () => {
   it('returns terminal for failed shorts (orchestrator does not retry)', () => {
     expect(nextStageFor(shortAt('failed'))).toBe('terminal');
   });
+
+  // Bug A regression suite (2026-06-10): the asset cron writes the base
+  // frame URL onto style_assets.doodle.base_url DURING the 'base' phase,
+  // before any variants exist. The old check fired render the moment
+  // the doodle block appeared, sending half-baked inputs to Lambda that
+  // hung or crashed. The new gate requires either:
+  //   (a) cron has cleared its progress (finalizeDone runs `= '{}'`),
+  //       AND at least one variant landed; OR
+  //   (b) bypass via the legacy `phase === 'done'` marker (dead in
+  //       practice today — cron never writes it — but kept for forward-
+  //       compat with a future explicit-done finalize).
+  // Anything in-flight (queued/planning/base/variant/error) stays
+  // 'awaiting_render' so the cron can finish.
+  describe('asset-cron handoff gating (Bug A regression)', () => {
+    const seoReady = {
+      ...shortAt('render'), // has script + voiceover + seo, no render
+    };
+
+    it("stays awaiting_render while cron is 'queued'", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: { phase: 'queued' },
+      })).toBe('awaiting_render');
+    });
+
+    it("stays awaiting_render while cron is 'planning'", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: { phase: 'planning' },
+      })).toBe('awaiting_render');
+    });
+
+    it("stays awaiting_render during 'base' phase even when base_url lands", () => {
+      // This is the canary for the bug: base URL exists but no variants
+      // yet. Pre-fix this returned 'trigger_render' and we shipped a
+      // doomed render to Lambda.
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: { phase: 'base' },
+        style_assets: { doodle: { base_url: 'https://r2/base.png', variants: [] } },
+      })).toBe('awaiting_render');
+    });
+
+    it("stays awaiting_render during 'variant' phase with partial variants", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: { phase: 'variant', current: 2, total: 8 },
+        style_assets: {
+          doodle: {
+            base_url: 'https://r2/base.png',
+            variants: [
+              { url: 'https://r2/v1.png', caption_chunk_start_index: 0 },
+              { url: 'https://r2/v2.png', caption_chunk_start_index: 1 },
+            ],
+          },
+        },
+      })).toBe('awaiting_render');
+    });
+
+    it("does NOT trigger render when only base_url exists with no variants (post-finalize edge)", () => {
+      // After finalizeDone the cron sets generation_progress = '{}', but
+      // if for any reason a row landed in that state without variants
+      // (e.g. legacy data, partial finalize), we still must NOT trigger.
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: {},
+        style_assets: { doodle: { base_url: 'https://r2/base.png', variants: [] } },
+      })).toBe('awaiting_render');
+    });
+
+    it("triggers render when cron has finalized (progress cleared) AND variants exist", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: {}, // cron's finalizeDone clears to {}
+        style_assets: {
+          doodle: {
+            base_url: 'https://r2/base.png',
+            variants: [{ url: 'https://r2/v1.png', caption_chunk_start_index: 0 }],
+          },
+        },
+      })).toBe('trigger_render');
+    });
+
+    it("triggers render for the paint style block too", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: {},
+        style_assets: {
+          paint: {
+            base_url: 'https://r2/p-base.png',
+            variants: [{ url: 'https://r2/p-v1.png', caption_chunk_start_index: 0 }],
+          },
+        },
+      })).toBe('trigger_render');
+    });
+
+    it("returns awaiting_render once render kickoff has set phase='rendering'", () => {
+      expect(nextStageFor({
+        ...seoReady,
+        generation_progress: { phase: 'rendering' },
+        style_assets: {
+          doodle: {
+            base_url: 'https://r2/base.png',
+            variants: [{ url: 'https://r2/v1.png', caption_chunk_start_index: 0 }],
+          },
+        },
+      })).toBe('awaiting_render');
+    });
+  });
 });
 
 describe('pickShortsToAdvance', () => {

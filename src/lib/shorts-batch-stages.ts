@@ -41,24 +41,46 @@ export function isShortTerminal(short: ShortRow): boolean {
 
 /** Derive the next stage from observable columns. The orchestrator
  *  picks shorts whose stage is `extract` | `voiceover` | `seo` |
- *  `trigger_render` and skips the rest. */
+ *  `trigger_render` and skips the rest.
+ *
+ *  ⚠ Asset-readiness check is load-bearing — it gates when the
+ *  orchestrator hands off to the render route. Two real bugs were
+ *  fixed 2026-06-10:
+ *    1. The cron writes the base frame URL onto
+ *       `style_assets.doodle.base_url` BEFORE any variants are
+ *       generated (the 'base' phase). The old check fired render the
+ *       moment the doodle block existed, triggering Lambda renders
+ *       against half-baked assets that hung or crashed.
+ *    2. `finalizeDone` in the asset cron clears
+ *       `generation_progress = '{}'` instead of setting
+ *       `phase: 'done'`, so the `phase === 'done'` branch never
+ *       actually fired in practice. The new check ignores that branch
+ *       and uses observable post-finalize state instead: cron has
+ *       released the lease (phase missing) AND at least one variant
+ *       landed on `style_assets[styleKey].variants`. The phase guard
+ *       prevents triggering while the cron is still mid-flight in
+ *       'queued' / 'planning' / 'base' / 'variant' / 'error'.
+ */
 export function nextStageFor(short: ShortRow): BatchStage {
   if (isShortTerminal(short)) return 'terminal';
   if (!short.short_script) return 'extract';
   if (!short.voiceover_audio_url) return 'voiceover';
   if (!short.seo_result) return 'seo';
   if (short.rendered_video_url) return 'terminal';
-  // Assets are produced by the existing shorts asset cron. We track
-  // its progress via `generation_progress.phase`. Once the cron
-  // reports 'done' (or the short row carries `style_assets` for the
-  // resolved style) we hand off to the render route. `rendering` is
-  // the marker the trigger sets to prevent re-firing on the next
-  // tick before rendered_video_url shows up.
   const phase = short.generation_progress?.phase;
-  const assetsReady =
-    phase === 'done' ||
-    !!(short.style_assets && (short.style_assets.doodle ?? short.style_assets.paint));
-  if (assetsReady && phase !== 'rendering') return 'trigger_render';
+  // 'rendering' is the marker the trigger sets to prevent re-firing
+  // on the next tick before rendered_video_url shows up.
+  if (phase === 'rendering') return 'awaiting_render';
+  // Cron is mid-flight or errored — wait, don't trigger.
+  if (phase === 'queued' || phase === 'planning' || phase === 'base' || phase === 'variant') {
+    return 'awaiting_render';
+  }
+  // Cron has cleared its progress (finalizeDone). Now require at least
+  // one rendered-into-style_assets variant to exist before we hand off
+  // to the Lambda renderer — a bare base_url is not a renderable Short.
+  const doodleVariants = short.style_assets?.doodle?.variants?.length ?? 0;
+  const paintVariants = short.style_assets?.paint?.variants?.length ?? 0;
+  if (doodleVariants > 0 || paintVariants > 0) return 'trigger_render';
   return 'awaiting_render';
 }
 
