@@ -252,6 +252,15 @@ export interface PipelineImageDoc {
    *  model (e.g. Grok Imagine is failing → switch to Flux 2 Pro).
    *  2026-06-08. */
   image_model_override?: string;
+  /** Doc-level DEFAULT for the per-shot Regenerate image model. Set
+   *  by the editor's doc-defaults panel and the inspector's "Save as
+   *  default for this doc" button. Distinct from `image_model_override`
+   *  above — `_override` forces every row even when a row pick exists;
+   *  `_default` only fills in when nothing else is set. Resolution
+   *  tier the helper applies: `row.image_model_override` >
+   *  `doc.image_model_default` > style preset > server default.
+   *  Server-only mirror of ProductionDoc.image_model_default. */
+  image_model_default?: string;
 }
 
 /** Synthesize StyleReferenceImage records from a channel-clone

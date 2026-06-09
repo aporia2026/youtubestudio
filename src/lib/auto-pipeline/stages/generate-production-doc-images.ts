@@ -690,6 +690,14 @@ export async function handleGenerateProductionDocImages(
         doc,
         workspaceId: video.workspace_id,
         panel0SourceUrl,
+        // 2026-06-09 — feed the row's per-shot override OR the doc's
+        // image_model_default so the auto-pipeline picks the same
+        // vendor (Atlas vs Kie) the editor would. Without this,
+        // server-driven motion-collage rows always hit Atlas even
+        // when the user's doc default is Kie — a 402 from Atlas
+        // would then silently fail every motion-collage row in the
+        // batch despite the user having flipped the doc default.
+        pickedModel: row.image_model_override || doc.image_model_default,
       });
       tickCostUsd += mc.costUsd;
       if (mc.panelUrls && mc.panelUrls.length > 0) {

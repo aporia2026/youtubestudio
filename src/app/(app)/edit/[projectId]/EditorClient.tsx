@@ -5807,6 +5807,16 @@ export default function EditorClient({ projectId, version, payload }: EditorClie
                         stylePreset: state.doc.style_preset,
                         motionCollageSettings: state.doc.doodle_explainer_2_motion_collage_settings,
                         characterDescriptions: state.doc.doodle_explainer_2_character_descriptions,
+                        // 2026-06-09 — bulk forwards the effective
+                        // image-model tier (row > doc) so the server can
+                        // route panel 0 through the right vendor. Same
+                        // bug the single-row inspector flow had: without
+                        // this, `model` defaults to undefined, the
+                        // server falls through to style.preferred_cloud_model
+                        // (Atlas for doodle), and a 402 from Atlas kills
+                        // every row in the batch even though the doc
+                        // default is set to Kie.
+                        model: row.image_model || state.doc.image_model_default,
                       }),
                     });
                     const data = (await res.json()) as {

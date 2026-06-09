@@ -8405,6 +8405,14 @@ function ProductionDocPage() {
             motionCollageSettings:
               doc?.doodle_explainer_2_motion_collage_settings ?? pendingMotionCollageSettings,
             characterDescriptions: doc?.doodle_explainer_2_character_descriptions,
+            // 2026-06-09 — forward the effective image-model tier
+            // (doc default > page-level picker) so the server routes
+            // panel 0 through the right vendor (Atlas vs Kie). The
+            // production-doc page predates the per-row picker (it lives
+            // in the editor's inspector), so there's no row-level
+            // override to consider here yet — fresh docs only carry
+            // the page-level pick.
+            model: doc?.image_model_default || imageModel,
           }),
         }),
       );
@@ -9399,6 +9407,14 @@ function ProductionDocPage() {
                       stylePreset,
                       motionCollageSettings: mcSettings,
                       characterDescriptions,
+                      // 2026-06-09 — page-level image-model pick. The
+                      // doc-creation flow runs before any row override
+                      // exists, so the picker on this page (`imageModel`)
+                      // is the only signal we have. Mirrors what the
+                      // page stamps into `doc.image_model_default` so
+                      // the auto-generated motion collages use the same
+                      // vendor as the fresh doc's default.
+                      model: imageModel,
                     }),
                   }),
                 );
