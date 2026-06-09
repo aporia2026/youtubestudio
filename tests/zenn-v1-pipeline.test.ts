@@ -89,6 +89,55 @@ describe('buildCharacterBankPrompt', () => {
     const out = buildCharacterBankPrompt('', 'hint');
     expect(out).toContain('"character"');
   });
+
+  // ─── PR 6.5: description-aware bank prompt ────────────────────────
+  //
+  // When the LLM emits a doc-level `zenn_v1_character_descriptions`
+  // entry, the bank prompt should prefer it over the first-row
+  // ai_image_prompt hint. The description is a deliberate appearance
+  // anchor; the hint is a context-specific guess.
+
+  it('prefers the description-from-bible over the first-row hint when both are present', () => {
+    const out = buildCharacterBankPrompt(
+      'mouse',
+      'context-specific running pose',
+      'tall grey field mouse with whiskers and pink ears',
+    );
+    expect(out).toContain('tall grey field mouse with whiskers and pink ears');
+    // Hint should NOT also show up — only one anchor block per prompt.
+    expect(out).not.toContain('context-specific running pose');
+    // The description block uses the canonical "Visual description"
+    // language so the LLM treats it as the load-bearing instruction.
+    expect(out).toContain('Visual description');
+  });
+
+  it('falls back to the first-row hint when description is undefined', () => {
+    const out = buildCharacterBankPrompt(
+      'mouse',
+      'a grey field mouse',
+      undefined,
+    );
+    expect(out).toContain('a grey field mouse');
+    // Hint blocks use the canonical "Appearance hint" language.
+    expect(out).toContain('Appearance hint');
+  });
+
+  it('falls back to the first-row hint when description is empty / whitespace', () => {
+    expect(
+      buildCharacterBankPrompt('mouse', 'a grey field mouse', ''),
+    ).toContain('a grey field mouse');
+    expect(
+      buildCharacterBankPrompt('mouse', 'a grey field mouse', '   '),
+    ).toContain('a grey field mouse');
+  });
+
+  it('omits both anchor blocks when description AND hint are absent', () => {
+    const out = buildCharacterBankPrompt('mouse', '', undefined);
+    expect(out).not.toContain('Visual description');
+    expect(out).not.toContain('Appearance hint');
+    // The slug still anchors the generation via the style refs.
+    expect(out).toContain('"mouse"');
+  });
 });
 
 // ─── planCharacterBankWork ──────────────────────────────────────────

@@ -1715,6 +1715,22 @@ export interface ProductionDoc {
    *  the LLM names it identically in different shots. Undefined on
    *  legacy / non-zenn_v1 docs. */
   zenn_v1_prop_cache?: Record<string, string>;
+
+  /** zenn_v1 (2026-06-10): per-doc map from `zenn_character_id` slug
+   *  to a 1-2 sentence visual description of distinctive features
+   *  (silhouette, palette, clothing, accessories). LLM-emitted at
+   *  doc-gen time so the character-bank pipeline stage can prepend
+   *  the description to the bank-generation prompt for each
+   *  character — without this, the pipeline only has the LLM's
+   *  first-row `ai_image_prompt` to anchor on, which is often
+   *  context-specific (e.g. "running" rather than "tall grey hair").
+   *
+   *  Functionally parallel to
+   *  `doodle_explainer_2_character_descriptions` and consumed by the
+   *  same kind of "pre-pend the bible to every prompt" mechanism.
+   *  See PR 6.5 of `_plans/2026-06-10-zenn-v1-style.md` and plan
+   *  §13 open question 2. */
+  zenn_v1_character_descriptions?: Record<string, string>;
   /** Ordered audio-track segments produced by the CapCut-style
    *  timeline editor (M6 of the timeline plan). When undefined the
    *  renderer falls back to playing the source voiceover URL straight

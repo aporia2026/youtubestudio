@@ -33,6 +33,7 @@ import {
 } from '@/components/editor/inspector/InspectorVariantsPanel';
 import { OstModeControl } from '@/components/production-doc/OstModeControl';
 import { InspectorMotionCollagePanel } from '@/components/editor/inspector/InspectorMotionCollagePanel';
+import { InspectorZennV1Panel } from '@/components/editor/inspector/InspectorZennV1Panel';
 import { InspectorTextBlocksPanel } from '@/components/editor/inspector/InspectorTextBlocksPanel';
 import { ConvertToMotionCollageButton } from '@/components/editor/inspector/ConvertToMotionCollageButton';
 import {
@@ -740,6 +741,20 @@ export function ShotInspector({
               onSetDocImageModelDefault={onSetDocImageModelDefault}
             />
           </div>
+        )}
+
+        {/* PR 6.5 of `_plans/2026-06-10-zenn-v1-style.md` — per-row
+            zenn_v1 inspector controls. Mounts on EVERY zenn_v1 row
+            (regardless of mode) so the user can fix a misclassified
+            mode pick or seed a recurring-character slug without
+            hand-editing the doc JSON. */}
+        {effectiveStyleSlug === 'zenn_v1' && onUpdateRow && (
+          <InspectorZennV1Panel
+            key={shotIndex}
+            row={row}
+            shotIndex={shotIndex}
+            onUpdateRow={onUpdateRow}
+          />
         )}
         {/* PR 4 of `_plans/2026-06-02-editor-motion-collage-support.md`:
             explicit "Convert to motion collage" button — replaces the

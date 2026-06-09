@@ -695,6 +695,7 @@ interface ProductionDoc {
     recurring_props?: Array<{ name: string; image_url: string }>;
   };
   zenn_v1_prop_cache?: Record<string, string>;
+  zenn_v1_character_descriptions?: Record<string, string>;
 }
 
 interface RowImageState {

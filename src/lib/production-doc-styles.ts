@@ -1458,6 +1458,8 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       '',
       'CHARACTER PERSISTENCE — Zenn\'s signature is reusing the same drawn entity across 200 shots. When the script names or implies a recurring character (a narrator-mascot, a named historical figure, a recurring species like "the mouse" or "the kangaroo"), pick a stable slug and set `zenn_character_id` on every row that shows them. The image-gen pipeline generates one base PNG plus a small pose set per unique `zenn_character_id` and reuses them across rows. Without a stable id, every shot regenerates the character from scratch and the entity drifts (different mouse each shot, different narrator each shot).',
       '',
+      'CHARACTER DESCRIPTIONS — For every `zenn_character_id` you emit, also add an entry to the DOC-LEVEL `zenn_v1_character_descriptions` map: `{ "<slug>": "1-2 sentence visual description" }`. The pipeline prepends this description to the character-bank generation prompt so the model has a deliberate appearance anchor (silhouette, palette, clothing, distinctive features) instead of guessing from the first row\'s context. Keep descriptions LITERAL and STYLE-NEUTRAL — describe what the character LOOKS like, not what they DO. Examples: `"narrator": "round white face, big black dot eyes, no hair, gentle smile, stick-figure body, no clothes"` or `"ancient-hunter-curly": "young man with short curly black hair, light skin, multi-color beaded necklace, no shirt, stick-figure body"`. The map lives at the top level of the doc next to `rows`, NOT inside any row.',
+      '',
       'CHARACTER CAP — Hard cap at 12 unique `zenn_character_id` slugs per video. Real Zenn videos use 3-7. If you find yourself emitting more than 7, you are inventing characters that the script does not need. The pipeline merges near-duplicate slug names silently rather than rejecting rows, but the merge is a defensive backstop — the LLM should emit the right number from the start.',
       '',
       'WORLD PERSISTENCE — Mode B rows inhabit a single visual world (one sky color, one ground color, one set of recurring props). Set `zenn_world_overlay` on each Mode B row from this controlled vocabulary:',
@@ -1494,7 +1496,12 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
       "    \"on_screen_text\": \"every [hl]5 seconds[/hl]\"",
       '  }',
       '',
-      'CONCRETE EXAMPLE — historical scene with a recurring character in a Mode B world:',
+      'CONCRETE EXAMPLE — historical scene with a recurring character in a Mode B world (the doc-level character descriptions live alongside `rows`):',
+      '  // doc-level top-level field (sibling of `rows`):',
+      '  "zenn_v1_character_descriptions": {',
+      "    \"ancient-hunter-curly\": \"young man with short curly black hair, light brown skin, multi-color beaded necklace, no shirt, stick-figure body\"",
+      '  }',
+      '  // row inside `rows[]`:',
       '  {',
       '    "timecode": "1:12",',
       "    \"zenn_mode\": \"scene\",",
@@ -1522,13 +1529,15 @@ export const BUILT_IN_STYLES: readonly ResolvedStyle[] = Object.freeze([
     ].join('\n'),
     allow_overlay_stock: false,
     origin: 'built-in',
-    // OST mode left at default ('bake') for PR 1. Zenn's emphasis
-    // text is hand-lettered red with optional wavy underline — NOT
-    // the doodle-yellow LowerThird that paint_explainer_v1 / doodle_explainer_2
-    // inherit. PR 6 adds a `variant='zenn-red-label'` branch in
-    // SceneRouter and flips this entry to 'overlay'. Until then,
-    // setting 'bake' produces the AI-image-rendered red label,
-    // which is acceptable as a PR 1 floor.
+    // OST mode flipped to 'overlay' in PR 6.5. ZennScene owns the
+    // label rendering (red hand-lettered top-center text with
+    // optional [hl] yellow highlighter spans) instead of going
+    // through the doodle-yellow LowerThird variant that
+    // paint_explainer_v1 / doodle_explainer_2 inherit. The
+    // RoutingMiddleware in YouTubeVideo.tsx steers zenn_v1 rows to
+    // ZennScene, so the LowerThird never mounts and the doodle-
+    // yellow bubble never shows up alongside the new red label.
+    default_on_screen_text_mode: 'overlay',
   },
 ]);
 

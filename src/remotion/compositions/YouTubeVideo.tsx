@@ -584,14 +584,17 @@ const SceneRouter: React.FC<SceneRouterProps> = ({
   }
   // zenn_v1 routing — runs BEFORE the sceneType switch for the same
   // additive-routing reason as paint_explainer_v1 above. PR 3 only
-  // routed Mode B ('scene'); PR 4 widens to both modes so canvas_reveal
-  // layers render in Mode A too. The mode branch lives inside
-  // ZennScene: Mode B composes from the world palette + character
-  // bank, Mode A renders the AI-generated `shot.imageUrl` as the
-  // base. Both modes layer canvas_reveal siblings on top. Rows with
-  // no `zennMode` set fall through to the default sceneType switch.
+  // routed Mode B ('scene'); PR 4 widened to Mode A so canvas_reveal
+  // layers render in either mode; PR 6.5 widens further to ALL
+  // zenn_v1 rows (ZennScene defaults undefined zennMode to 'stick'
+  // internally) so the new red hand-lettered label overlay owns
+  // every zenn shot — the dark default LowerThird never gets a
+  // chance to render through BRollScene. The mode branch lives
+  // inside ZennScene: Mode B composes from the world palette +
+  // character bank, Mode A renders the AI-generated `shot.imageUrl`
+  // as the base. Both modes layer canvas_reveal siblings on top.
   // See `_plans/2026-06-10-zenn-v1-style.md` §4.2 / §5.5.
-  if (config.styleId === 'zenn_v1' && shot.zennMode) {
+  if (config.styleId === 'zenn_v1') {
     return (
       <ZennScene
         {...props}

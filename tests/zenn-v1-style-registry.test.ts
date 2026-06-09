@@ -53,14 +53,15 @@ describe('zenn_v1 registry entry', () => {
     expect(entry?.allow_overlay_stock).toBe(false);
   });
 
-  it('does not opt into the doodle-yellow LowerThird variant', () => {
-    // Zenn's emphasis text is bold red hand-lettered with optional
-    // wavy underline — NOT the yellow comic-bold bubble that
-    // doodle_explainer_2 / paint_explainer_v1 use. PR 6 will add a
-    // `variant='zenn-red-label'` branch in SceneRouter and flip
-    // this. Until then it stays undefined (or 'bake') so we don't
-    // accidentally render the wrong-looking yellow bubble.
-    expect(entry?.default_on_screen_text_mode).not.toBe('overlay');
+  it('opts into overlay OST mode so ZennScene renders the red label overlay', () => {
+    // PR 6.5 flipped this from undefined (the PR 1 floor) to
+    // 'overlay'. Zenn rows route through ZennScene which renders
+    // its OWN red hand-lettered overlay — the doodle-yellow
+    // LowerThird never mounts because BRollScene is never reached
+    // for zenn_v1 rows. Setting 'overlay' here tells the LLM to
+    // emit `on_screen_text_mode: 'overlay'` on every row so the
+    // text doesn't get baked into the AI image as a fallback.
+    expect(entry?.default_on_screen_text_mode).toBe('overlay');
   });
 
   it('has a non-empty ai_image_suffix that teaches Mode A anatomy + typography', () => {

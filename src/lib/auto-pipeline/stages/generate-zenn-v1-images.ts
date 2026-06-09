@@ -177,6 +177,11 @@ interface ZennPipelineDoc extends PipelineImageDoc {
   rows: ZennPipelineRow[];
   zenn_v1_character_bank?: Record<string, ZennCharacterBankEntry>;
   zenn_v1_world?: ZennWorldDef;
+  /** PR 6.5 — doc-level character_id → 1-2 sentence visual
+   *  description map. Consumed by `buildCharacterBankPrompt` as a
+   *  deliberate appearance anchor instead of falling back to the
+   *  first row's ai_image_prompt. */
+  zenn_v1_character_descriptions?: Record<string, string>;
 }
 
 // ─── canonical world palette defaults ───────────────────────────────
@@ -229,35 +234,38 @@ export function normalizeZennCharacterId(raw: string): string {
 }
 
 /** Build the canonical character-bank prompt for a given character.
- *  In PR 2 the only data we have is the character_id slug and the
- *  first row's `ai_image_prompt` (which describes the character in
- *  that row's specific context). We feed the slug into the prompt
- *  envelope and append the row's prompt as an "appearance hint" so
- *  the model has something to anchor on beyond the style refs.
- *
- *  PR 5 will add a doc-level `zenn_v1_character_descriptions` field
- *  (mirroring `doodle_explainer_2_character_descriptions`) so the
- *  LLM can emit a deliberate appearance description per character.
- *  Until then this prompt is the floor — the bundled style refs do
- *  the heavy lifting on the look.
+ *  When the LLM emitted a doc-level `zenn_v1_character_descriptions`
+ *  entry for this slug (PR 6.5), we prepend it as the load-bearing
+ *  appearance anchor. Otherwise we fall back to the first row's
+ *  `ai_image_prompt` as a hint — that prompt usually describes the
+ *  character in some specific context ("running", "carrying
+ *  firewood") which gives the model SOMETHING to anchor on, but
+ *  drift is more likely than with a deliberate description.
  *
  *  Exported for testing. */
 export function buildCharacterBankPrompt(
   characterId: string,
   appearanceHint: string,
+  descriptionFromBible?: string,
 ): string {
   const slug = characterId.trim() || 'character';
+  const description = (descriptionFromBible ?? '').trim();
   const hint = appearanceHint.trim();
-  const hintBlock = hint
-    ? `Appearance hint from the script: ${hint}.`
-    : '';
+  // Prefer the doc-level description (deliberate appearance anchor)
+  // over the first-row prompt (context-specific hint). Both can be
+  // empty — in which case the style refs do the heavy lifting alone.
+  const anchorBlock = description
+    ? `Visual description for this character: ${description}.`
+    : hint
+      ? `Appearance hint from the script: ${hint}.`
+      : '';
   return [
     `Character bank entry for "${slug}".`,
     'Draw a single full-body character standing centered on a pure white canvas',
     'with a thin medium-grey horizontal ground baseline strip at the bottom.',
     'Front-facing, neutral idle pose, neutral expression, arms relaxed at sides.',
     'No props in the hands, no background scenery, no labels, no speech bubbles.',
-    hintBlock,
+    anchorBlock,
     'This image will be the canonical reference for every shot featuring this',
     "character in the video — keep the silhouette, palette, and face anatomy",
     'consistent enough that downstream pose siblings can be generated from',
@@ -582,7 +590,18 @@ export async function handleGenerateZennV1Images(
       continue;
     }
 
-    const bankPrompt = buildCharacterBankPrompt(entry.canonicalId, entry.appearanceHint);
+    // Look up the doc-level appearance description for this slug.
+    // The descriptions map is keyed by the SAME slug the row emits
+    // — when the LLM is doing its job, both fields use the
+    // canonical id verbatim and the lookup hits. We don't try to
+    // normalize keys here (the description map is the LLM's
+    // authoritative shape, not a derived one).
+    const descriptionFromBible = doc.zenn_v1_character_descriptions?.[entry.canonicalId];
+    const bankPrompt = buildCharacterBankPrompt(
+      entry.canonicalId,
+      entry.appearanceHint,
+      descriptionFromBible,
+    );
     // Synthetic row carries only the fields generateBaseImage reads.
     // The dispatcher resolves the style (zenn_v1) from doc.style_preset
     // and picks Kie gpt-image-2-i2i via preferred_cloud_model.

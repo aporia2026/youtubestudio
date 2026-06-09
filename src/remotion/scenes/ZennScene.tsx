@@ -43,6 +43,7 @@ import {
   revealLayerOpacityAt,
   type CanvasRevealLayerInput,
 } from '../canvas-reveal-math';
+import { highlighterRgba, parseZennLabel } from '../zenn-label-parse';
 
 // ─── canonical world palette defaults ───────────────────────────────
 //
@@ -210,6 +211,7 @@ export const ZennScene: React.FC<ZennSceneProps> = ({
   fadeEnabled = true,
   characterBank,
   world,
+  zennSettings,
 }) => {
   const isSceneMode = shot.zennMode === 'scene';
   const palette = resolveWorldPalette(shot.zennWorldOverlay, world);
@@ -255,7 +257,23 @@ export const ZennScene: React.FC<ZennSceneProps> = ({
         shotDurationFrames={durationInFrames}
       />
 
-      {/* Layer 5: scene transition (cross-fade across shot boundaries).
+      {/* Layer 5: red hand-lettered label overlay. Replaces the
+          default doodle-yellow LowerThird for zenn_v1 rows. Honors
+          settings (label color, highlighter on/off, highlighter
+          color) and parses [hl]word[/hl] markers from the row's
+          on_screen_text into highlighted spans. Skipped when the
+          row has no on_screen_text. See plan §4.2 typography
+          and §8 settings. */}
+      {shot.onScreenText ? (
+        <ZennLabelOverlay
+          text={shot.onScreenText}
+          labelColorHex={zennSettings?.label_color_hex ?? '#D32F2F'}
+          highlighterColorHex={zennSettings?.highlighter_color_hex ?? '#FFE840'}
+          highlighterEnabled={zennSettings?.highlighter_enabled ?? true}
+        />
+      ) : null}
+
+      {/* Layer 6: scene transition (cross-fade across shot boundaries).
           Matches BRollScene / MotionScene exactly so Mode B shots
           inherit the same shot-edge feel as the rest of the project. */}
       <SceneTransition
@@ -415,6 +433,72 @@ const CharacterLayer: React.FC<{
             objectFit: 'contain',
           }}
         />
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+// ─── Red hand-lettered label overlay ────────────────────────────────
+//
+// Replaces the default LowerThird for zenn_v1 rows. Renders the
+// row's `on_screen_text` as bold red hand-lettered text at the top
+// of the frame, with optional yellow highlighter spans where the
+// LLM emits `[hl]word[/hl]` markers.
+//
+// Visual contract derived from the reference frames at
+// `refs/zenn/_analysis/hires/` — labels are large, top-center, with
+// the yellow highlighter painting a translucent stripe BEHIND the
+// word. Slight rotation gives the hand-lettered feel without
+// requiring a custom font file.
+
+const ZennLabelOverlay: React.FC<{
+  text: string;
+  labelColorHex: string;
+  highlighterColorHex: string;
+  highlighterEnabled: boolean;
+}> = ({ text, labelColorHex, highlighterColorHex, highlighterEnabled }) => {
+  const segments = parseZennLabel(text);
+  const highlighterBg = highlighterEnabled ? highlighterRgba(highlighterColorHex) : 'transparent';
+  return (
+    <AbsoluteFill
+      style={{
+        pointerEvents: 'none',
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          top: '6%',
+          left: '10%',
+          right: '10%',
+          textAlign: 'center',
+          fontFamily: '"Caveat", "Patrick Hand", "Comic Sans MS", system-ui, sans-serif',
+          fontSize: 96,
+          fontWeight: 900,
+          color: labelColorHex,
+          lineHeight: 1.0,
+          letterSpacing: 1,
+          transform: 'rotate(-1deg)',
+          textShadow: '0 0 0 transparent',
+        }}
+      >
+        {segments.map((segment, i) =>
+          segment.highlighted ? (
+            <span
+              key={`zenn-label-seg-${i}`}
+              style={{
+                background: highlighterBg,
+                padding: '0 0.15em',
+                boxDecorationBreak: 'clone',
+                WebkitBoxDecorationBreak: 'clone',
+              }}
+            >
+              {segment.text}
+            </span>
+          ) : (
+            <span key={`zenn-label-seg-${i}`}>{segment.text}</span>
+          ),
+        )}
       </div>
     </AbsoluteFill>
   );
