@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_CLOUD_I2I_MODEL,
   getI2IModelSpec,
+  resolveI2iModelForRow,
 } from '@/lib/image-models-i2i';
 import { computeImageSaliency } from '@/lib/image-saliency';
 import { createKieTask, pollKieResultThenUpscale } from '@/lib/kie-poll';
@@ -202,13 +203,31 @@ export const POST = apiRoute.authed(async (session, req: NextRequest) => {
           workspaceId: session.ws,
         });
         if (refs.length > 0) {
-          const i2iModel = style.preferred_cloud_model ?? DEFAULT_CLOUD_I2I_MODEL;
+          // 2026-06-09 — honor the row's per-shot image-model pick over
+          // the style's `preferred_cloud_model`. Before this fix, the
+          // inspector's "Image model" picker was silently ignored on
+          // any ref-bearing generation (i.e. every doodle / saved-style
+          // doc), so picking "GPT Image 2 (Kie)" still hit Atlas. The
+          // pickier shows t2i models; `resolveI2iModelForRow` maps the
+          // pick to its i2i counterpart when one exists (Kie t2i → Kie
+          // i2i, Atlas t2i → Atlas i2i, NanoBanana → NanoBanana i2i,
+          // Flux Pro → Flux Pro i2i). Falls back to `style.preferred_cloud_model`
+          // when the pick has no i2i counterpart (Ideogram / Flux Flex)
+          // or when nothing was picked.
+          const resolved = resolveI2iModelForRow({
+            rowPickedModel: model,
+            stylePreferred: style.preferred_cloud_model,
+          });
+          const i2iModel = resolved.i2iModel;
           const i2iSpec = getI2IModelSpec(i2iModel);
           logger.info('[prodoc image-gen i2i submit]', {
             style_id: style.id,
             style_version: style.version,
             model: i2iModel,
             provider: i2iSpec?.provider ?? 'unknown',
+            model_source: resolved.source,
+            row_picked_model: model ?? null,
+            style_preferred_model: style.preferred_cloud_model ?? null,
             refs_loaded: refs.length,
             prompt_slice: augmentedPrompt.slice(0, 80),
           });

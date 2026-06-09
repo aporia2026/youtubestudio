@@ -284,6 +284,89 @@ export function getI2IModelSpec(value: string): I2IModelSpec | undefined {
   return undefined;
 }
 
+/** Map a t2i model id (what the inspector's "Image model" picker shows
+ *  via `IMAGE_MODELS`) to the matching i2i model id from `I2I_MODELS`
+ *  when one exists.
+ *
+ *  Why this map exists: the per-row picker lists t2i models (because
+ *  that's what the legacy non-ref T2I path uses), but production-doc
+ *  generations with a styleId+refs route through the i2i dispatcher —
+ *  which needs an i2i model id, not a t2i one. Before this map, the
+ *  route silently dropped the user's pick and used `style.preferred_cloud_model`
+ *  unconditionally, which is what caused 2026-06-09's "I picked Kie
+ *  but it still hit Atlas" bug.
+ *
+ *  Pairing rule: same vendor + same model family. e.g.
+ *  `gpt-image-2-t2i` (Kie) pairs with `gpt-image-2-i2i` (Kie); the
+ *  Atlas siblings pair separately. Models with no i2i counterpart
+ *  (Ideogram — text-only; Flux 2 Flex — only Pro has i2i) return
+ *  undefined and the caller falls back to the style's preference.
+ *
+ *  Returns the i2i model id, or undefined when no pair exists. The
+ *  returned id is guaranteed to be in `I2I_MODEL_VALUES`. */
+export function getI2iCounterpartForT2i(t2iModelValue: string): string | undefined {
+  const pair = T2I_TO_I2I_PAIRS[t2iModelValue];
+  if (pair && I2I_MODEL_VALUES.includes(pair)) return pair;
+  return undefined;
+}
+
+const T2I_TO_I2I_PAIRS: Readonly<Record<string, string>> = Object.freeze({
+  // Kie GPT Image 2 family.
+  'gpt-image-2-t2i': 'gpt-image-2-i2i',
+  // Atlas GPT Image 2 family (cheaper). Pairs separately so an "Atlas
+  // pick" stays on Atlas across t2i ↔ i2i transitions, and a "Kie pick"
+  // stays on Kie.
+  'gpt-image-2-atlas-t2i': 'gpt-image-2-atlas-i2i',
+  // Google NanoBanana (Gemini 3.1 Flash Image). Picker value is the
+  // legacy `'nano-banana'`; i2i registry value is the explicit
+  // `'nano-banana-2-i2i'`. Both wrap the same Kie nano-banana-2 model.
+  'nano-banana': 'nano-banana-2-i2i',
+  // Flux 2 Pro. Flex has no i2i sibling in the registry; if you pick
+  // Flex on a ref-bearing row the route falls back to the style's
+  // preference rather than silently swapping you to Pro (which is
+  // pricier and a quality-different model).
+  'flux2-pro-t2i': 'flux2-pro-i2i',
+});
+
+/**
+ * Resolve the i2i model id to use for a ref-bearing generation, given
+ * the row's picked model id (from the inspector's t2i picker) and the
+ * style's `preferred_cloud_model`.
+ *
+ * Resolution order:
+ *   1. `rowPickedModel` is itself a known i2i id → use it. (Defensive:
+ *      not currently reachable through the inspector, but supports a
+ *      future i2i-aware picker without re-wiring the route.)
+ *   2. `rowPickedModel` is a known t2i id with an i2i counterpart
+ *      (see `T2I_TO_I2I_PAIRS`) → use the counterpart. **This is the
+ *      branch that fixes the 2026-06-09 bug where picking Kie still
+ *      hit Atlas.**
+ *   3. Fall back to `stylePreferred` if it's a known i2i id.
+ *   4. Fall back to `DEFAULT_CLOUD_I2I_MODEL`.
+ *
+ * The return shape carries the resolved id and `source` for logging so
+ * production logs make it trivial to grep which path won.
+ */
+export function resolveI2iModelForRow(args: {
+  rowPickedModel: string | undefined;
+  stylePreferred: string | undefined | null;
+}): { i2iModel: string; source: 'row-pick-direct' | 'row-pick-mapped-from-t2i' | 'style-preferred' | 'default' } {
+  const { rowPickedModel, stylePreferred } = args;
+  if (rowPickedModel) {
+    if (I2I_MODEL_VALUES.includes(rowPickedModel)) {
+      return { i2iModel: rowPickedModel, source: 'row-pick-direct' };
+    }
+    const mapped = getI2iCounterpartForT2i(rowPickedModel);
+    if (mapped) {
+      return { i2iModel: mapped, source: 'row-pick-mapped-from-t2i' };
+    }
+  }
+  if (stylePreferred && I2I_MODEL_VALUES.includes(stylePreferred)) {
+    return { i2iModel: stylePreferred, source: 'style-preferred' };
+  }
+  return { i2iModel: DEFAULT_CLOUD_I2I_MODEL, source: 'default' };
+}
+
 /** Type guard for cloud-Kie i2i specs. Narrows the optional fields
  *  `kieModel` and `refsField` to non-undefined so the dispatcher can
  *  call into the Kie path without `!` non-null assertions. Catches
