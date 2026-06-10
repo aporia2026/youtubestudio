@@ -106,3 +106,9 @@ export async function POST(req: NextRequest) {
   });
   return NextResponse.json({ ran: true, ...outcome.result });
 }
+
+// Vercel cron invokes the scheduled path with a GET request
+// (https://vercel.com/docs/cron-jobs); a POST-only route 405s that GET
+// and the cron never runs. Alias GET to POST so this minute-cron is
+// actually wired up in production. Reads headers only, so GET is safe.
+export const GET = POST;

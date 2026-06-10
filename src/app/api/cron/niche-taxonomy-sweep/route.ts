@@ -151,3 +151,7 @@ async function findCategoryHint(node: TaxonomyNodeRow): Promise<string> {
   `;
   return grandRows[0]?.name ?? '';
 }
+
+// Vercel cron invokes the scheduled path with GET; alias to POST so this
+// cron actually runs in production. Reads no body, so GET is safe.
+export const GET = POST;

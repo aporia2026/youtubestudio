@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { triggerShortsAssetDrain } from '@/lib/shorts-asset-cron';
+import { triggerShortsAssetDrain, pollPendingShortRenders } from '@/lib/shorts-asset-cron';
 import { logger } from '@/lib/logger';
 
 /**
@@ -39,14 +39,34 @@ export async function POST(req: NextRequest) {
 
   const outcome = await triggerShortsAssetDrain('cron');
 
+  // Finalize any Lambda renders AWS has completed — independent of the
+  // asset drain (claims nothing, so it runs even when the drain is busy).
+  // This is what lets a render that finished after the user's tab closed
+  // get its rendered_video_url written back without a manual poke.
+  const renders = await pollPendingShortRenders().catch((err) => {
+    logger.warn('cron run-shorts-assets: render-poll failed', {
+      detail: err instanceof Error ? err.message : String(err),
+    });
+    return { polled: 0, done: 0, errored: 0 };
+  });
+
   if (!outcome.ran) {
-    logger.info('cron run-shorts-assets: skipped (another tick in flight)');
-    return NextResponse.json({ ran: false, reason: 'busy' });
+    logger.info('cron run-shorts-assets: drain skipped (another tick in flight)', { renders });
+    return NextResponse.json({ ran: false, reason: 'busy', renders });
   }
 
   logger.info('cron run-shorts-assets: done', {
     duration_ms: Date.now() - startedAt,
     ...outcome.result,
+    renders,
   });
-  return NextResponse.json({ ran: true, ...outcome.result });
+  return NextResponse.json({ ran: true, ...outcome.result, renders });
 }
+
+// Vercel cron ALWAYS invokes the scheduled path with a GET request
+// (https://vercel.com/docs/cron-jobs). A POST-only route returns 405 to
+// that GET, so the cron silently never runs. Aliasing GET to the POST
+// handler is what actually wires this minute-cron up in production — it
+// reads only headers, never a body, so a GET is safe. Same CRON_SECRET
+// auth gate applies.
+export const GET = POST;

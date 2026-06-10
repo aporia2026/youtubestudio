@@ -3,6 +3,13 @@ import { apiRoute } from '@/lib/route-helpers';
 import { SESSION_COOKIE_NAME } from '@/lib/session';
 import { processBatchTick } from '@/lib/shorts-batch-orchestrator';
 
+// processBatchTick can host a bounded asset-drain slice
+// (BATCH_TICK_ASSET_DRAIN_BUDGET_MS) when the batch has shorts parked in
+// an asset phase — that drives asset generation on deploys where the
+// Vercel cron isn't running. Give the route headroom over that budget so
+// the slice finishes instead of being hard-killed mid-step.
+export const maxDuration = 120;
+
 /**
  * POST /api/shorts/batches/[id]/run-tick
  *

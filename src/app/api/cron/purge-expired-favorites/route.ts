@@ -52,3 +52,7 @@ export async function POST(req: NextRequest) {
   logger.info('cron purge-expired-favorites: done', { duration_ms, purged });
   return NextResponse.json({ purged, duration_ms });
 }
+
+// Vercel cron invokes the scheduled path with GET; alias to POST so this
+// cron actually runs in production. Reads no body, so GET is safe.
+export const GET = POST;
