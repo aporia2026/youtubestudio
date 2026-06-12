@@ -88,6 +88,14 @@ export const MAX_PER_TICK = 3;
  *  claims at end-of-tick; this lease is a backstop. */
 const BATCH_TICK_LEASE_SECONDS = 180;
 
+/** Budget for the asset drain when it's kicked from inside a batch tick
+ *  (see processBatchTick). Kept well under the run-tick route's
+ *  maxDuration so the tick-hosted slice returns cleanly instead of being
+ *  hard-killed by Vercel; the asset cron uses its own full ~280 s budget.
+ *  Work persists incrementally, so a short that needs more than one slice
+ *  just resumes on the next tick. */
+const BATCH_TICK_ASSET_DRAIN_BUDGET_MS = 45_000;
+
 /** Pick up to `MAX_PER_TICK` shorts from the batch that the
  *  orchestrator can actually advance this tick. 'awaiting_render'
  *  shorts are intentionally skipped — they're owned by the existing
@@ -732,6 +740,32 @@ export async function processBatchTick(args: {
   }
   await recomputeBatchTotals(batchId, workspaceId);
 
+  // Drive the asset drain from the tick itself when the batch still has
+  // shorts sitting in an asset phase. WHY this is load-bearing: once every
+  // short has cleared SEO, `pickShortsToAdvance` claims 0 (asset-phase
+  // shorts are owned by the asset cron, not this orchestrator) and the
+  // per-SEO drain kick never fires again — so on any deploy where the
+  // Vercel cron isn't running (localhost dev, preview deploys), the shorts
+  // would sit "Queued — Doodle assets will start shortly…" forever. Since
+  // the step-3 UI polls run-tick every 4s, kicking the drain here keeps
+  // assets flowing for as long as the tab is open, independent of the cron.
+  // The drain is single-flight-locked, so when the production cron IS
+  // running this returns 'busy' instantly and costs nothing. The bounded
+  // budget keeps a tick-hosted slice inside run-tick's maxDuration; work
+  // persists incrementally so the next tick (or the cron) resumes anything
+  // left. Best-effort — a drain failure never fails the tick.
+  if (!done && after && hasAssetPhaseWork(after.shorts)) {
+    try {
+      const { triggerShortsAssetDrain } = await import('./shorts-asset-cron');
+      await triggerShortsAssetDrain('batch-tick', BATCH_TICK_ASSET_DRAIN_BUDGET_MS);
+    } catch (err) {
+      console.info('[shorts-batch tick asset-drain-failed]', {
+        batch_id: batchId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   return {
     batch_id: batchId,
     claimed: claimed.length,
@@ -740,6 +774,19 @@ export async function processBatchTick(args: {
     done,
     duration_ms: Date.now() - t0,
   };
+}
+
+/** Phases the asset cron owns. A short sitting in any of these is waiting
+ *  on the asset drain, not on this orchestrator. */
+const ASSET_PHASES = new Set(['queued', 'planning', 'base', 'variant']);
+
+/** True when at least one short in the cohort is parked in an asset phase
+ *  — i.e. the asset drain has work to do for this batch. */
+function hasAssetPhaseWork(shorts: readonly ShortRow[]): boolean {
+  return shorts.some((s) => {
+    const phase = s.generation_progress?.phase;
+    return phase !== undefined && ASSET_PHASES.has(phase);
+  });
 }
 
 /** Poll Lambda for every in-flight render in this batch + update the

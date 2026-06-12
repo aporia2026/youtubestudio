@@ -4,6 +4,12 @@ import { apiRoute } from '@/lib/route-helpers';
 import { triggerShortsAssetDrain } from '@/lib/shorts-asset-cron';
 import { getBatchWithShorts } from '@/lib/shorts-batches';
 
+// Bound the manual kick so it returns a prompt toast and can't be
+// hard-killed mid-step; the cron + the step-3 run-tick keep draining
+// after it. Headroom over the slice budget so the slice finishes clean.
+export const maxDuration = 60;
+const MANUAL_KICK_DRAIN_BUDGET_MS = 45_000;
+
 /**
  * POST /api/shorts/batches/[id]/kick-assets
  *
@@ -65,7 +71,7 @@ export const POST = apiRoute.authed(
       stuck_count: stuckIds.length,
     });
 
-    const outcome = await triggerShortsAssetDrain('manual-batch-kick');
+    const outcome = await triggerShortsAssetDrain('manual-batch-kick', MANUAL_KICK_DRAIN_BUDGET_MS);
     return NextResponse.json({
       stuck_count: stuckIds.length,
       drain: outcome.ran ? { ran: true, ...outcome.result } : { ran: false, reason: 'busy' },

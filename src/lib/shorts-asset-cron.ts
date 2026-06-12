@@ -268,6 +268,7 @@ async function processClaimedShort(
   short: ClaimedShort,
   tickId: string,
   tickStartMs: number,
+  budgetMs: number = TICK_BUDGET_MS,
 ): Promise<TickOutcome> {
   const styleId = short.generation_progress?.style_id ?? short.style_id ?? null;
   const styleKey = styleKeyFor(styleId);
@@ -333,7 +334,7 @@ async function processClaimedShort(
   // the variants branch already absorbs per-variant failures; this guard
   // is for the plan + base steps that use plain `await`.
   try {
-  while (Date.now() - tickStartMs < TICK_BUDGET_MS) {
+  while (Date.now() - tickStartMs < budgetMs) {
     const view: JobView = {
       job,
       baseUrl: block()?.base_url ?? null,
@@ -412,7 +413,7 @@ async function processClaimedShort(
       // a slow / rate-limited vendor, which is the failure mode that wedged
       // the old synchronous pipeline.
       for (let off = 0; off < action.pending.length; off += MAX_VARIANTS_PER_BATCH) {
-        if (Date.now() - tickStartMs >= TICK_BUDGET_MS) break;
+        if (Date.now() - tickStartMs >= budgetMs) break;
         const batch = action.pending.slice(off, off + MAX_VARIANTS_PER_BATCH);
         const results = await Promise.allSettled(
           batch.map((item: VariantPlanItem) =>
@@ -478,7 +479,7 @@ async function processClaimedShort(
       if (selectNextAction(after).kind === 'finalize') {
         return doFinalize();
       }
-      if (Date.now() - tickStartMs >= TICK_BUDGET_MS) {
+      if (Date.now() - tickStartMs >= budgetMs) {
         // Out of time mid-variants — release so the NEXT tick resumes
         // promptly, and stop this tick (budget spent).
         await releaseClaim(short);
@@ -545,19 +546,22 @@ export interface ShortsAssetDrainResult {
  * anything unfinished is left for the next tick (the lease guarantees it
  * gets picked back up — even if THIS function dies).
  */
-export async function runShortsAssetDrain(tickId: string): Promise<ShortsAssetDrainResult> {
+export async function runShortsAssetDrain(
+  tickId: string,
+  budgetMs: number = TICK_BUDGET_MS,
+): Promise<ShortsAssetDrainResult> {
   const tickStartMs = Date.now();
   const result: ShortsAssetDrainResult = {
     claimed: 0, done: 0, errored: 0, yielded: 0, deferred: 0, skipped: 0,
   };
 
-  while (Date.now() - tickStartMs < TICK_BUDGET_MS) {
+  while (Date.now() - tickStartMs < budgetMs) {
     const short = await claimNextShort(tickId);
     if (!short) break;
     result.claimed++;
     let outcome: TickOutcome;
     try {
-      outcome = await processClaimedShort(short, tickId, tickStartMs);
+      outcome = await processClaimedShort(short, tickId, tickStartMs, budgetMs);
     } catch (err) {
       // Unhandled failure inside a step (DB blip, programming bug). Don't
       // let it strand the row claimed forever — release so a later tick
@@ -603,9 +607,10 @@ let tickSeq = 0;
  */
 export async function triggerShortsAssetDrain(
   reason: string,
+  budgetMs: number = TICK_BUDGET_MS,
 ): Promise<CronLockOutcome<ShortsAssetDrainResult>> {
   const tickId = `sa_${reason}_${Date.now()}_${(tickSeq++).toString(36)}`;
-  return withCronLock(CRON_LOCK_KEYS.shortsAssetRunner, () => runShortsAssetDrain(tickId));
+  return withCronLock(CRON_LOCK_KEYS.shortsAssetRunner, () => runShortsAssetDrain(tickId, budgetMs));
 }
 
 /**
@@ -627,4 +632,119 @@ export async function runShortsAssetTickForShort(
     const outcome = await processClaimedShort(short, tickId, Date.now());
     return { claimed: true, outcome };
   });
+}
+
+/**
+ * Poll every in-flight Short Lambda render and finalize the ones AWS has
+ * finished — server-side, so a render that completes after the user closed
+ * their tab still gets `rendered_video_url` written back.
+ *
+ * Why this exists: the per-short editor's GET poll and the batch
+ * orchestrator's `pollInFlightRenders` both bridge Lambda → DB, but BOTH
+ * require an open browser tab. With no tab, a Lambda render finishes and
+ * nothing updates the row — "Working on Render…" forever. This runs from
+ * the asset cron (every minute in production), so renders heal regardless
+ * of any tab being open. It claims nothing, so it runs outside the cron's
+ * single-flight lock — safe to call even while a drain is in flight.
+ *
+ * Scoped to `short_…` render jobs (identified by a non-null `short_id`)
+ * that carry Lambda ids and aren't yet terminal. The short's
+ * `generation_progress` is only touched when it still shows the batch
+ * render marker (`phase='rendering'`), so a non-batch short's asset state
+ * is never clobbered.
+ */
+export async function pollPendingShortRenders(): Promise<{ polled: number; done: number; errored: number }> {
+  const { rows: jobs } = await sql<{
+    job_id: string;
+    short_id: string;
+    workspace_id: string;
+    lambda_render_id: string;
+    lambda_bucket: string;
+  }>`
+    SELECT DISTINCT ON (rj.short_id)
+           rj.id AS job_id,
+           rj.short_id,
+           rj.workspace_id,
+           rj.lambda_render_id,
+           rj.lambda_bucket
+      FROM render_jobs rj
+     WHERE rj.short_id IS NOT NULL
+       AND rj.workspace_id IS NOT NULL
+       AND rj.lambda_render_id IS NOT NULL
+       AND rj.lambda_bucket IS NOT NULL
+       AND rj.status NOT IN ('done', 'error')
+     ORDER BY rj.short_id, rj.started_at DESC
+  `;
+  const out = { polled: 0, done: 0, errored: 0 };
+  if (jobs.length === 0) return out;
+
+  const { pollLambdaProgress } = await import('./remotion-lambda');
+
+  await Promise.all(jobs.map(async (job) => {
+    out.polled++;
+    try {
+      const snap = await pollLambdaProgress({
+        lambdaRenderId: job.lambda_render_id,
+        bucketName: job.lambda_bucket,
+      });
+      if (snap.fatalError) {
+        await sql`
+          UPDATE render_jobs
+             SET status = 'error', error = ${snap.fatalError},
+                 finished_at = ${Date.now()}, progress = ${snap.overallProgress}
+           WHERE id = ${job.job_id}
+        `;
+        await sql`
+          UPDATE shorts
+             SET generation_progress = jsonb_set(
+                   COALESCE(generation_progress, '{}'::jsonb),
+                   '{phase}', '"error"'::jsonb
+                 ) || jsonb_build_object(
+                   'label', 'Render failed',
+                   'error_message', ${snap.fatalError.slice(0, 500)},
+                   'updated_at', ${new Date().toISOString()}::text
+                 ),
+                 updated_at = NOW()
+           WHERE id = ${job.short_id}::uuid
+             AND workspace_id = ${job.workspace_id}::uuid
+             AND generation_progress->>'phase' = 'rendering'
+        `;
+        out.errored++;
+        logger.warn('[shorts asset cron] render-poll fatal', {
+          shortId: job.short_id,
+          detail: snap.fatalError.slice(0, 200),
+        });
+      } else if (snap.done && snap.outputFile) {
+        await sql`
+          UPDATE render_jobs
+             SET status = 'done', progress = 1,
+                 output_url = ${snap.outputFile}, finished_at = ${Date.now()}
+           WHERE id = ${job.job_id}
+        `;
+        await sql`
+          UPDATE shorts
+             SET rendered_video_url = ${snap.outputFile},
+                 generation_progress = CASE
+                   WHEN generation_progress->>'phase' = 'rendering' THEN '{}'::jsonb
+                   ELSE generation_progress
+                 END,
+                 updated_at = NOW()
+           WHERE id = ${job.short_id}::uuid AND workspace_id = ${job.workspace_id}::uuid
+        `;
+        out.done++;
+        logger.info('[shorts asset cron] render-poll done', { shortId: job.short_id });
+      } else {
+        // Still rendering — refresh progress so a later poll / the UI sees movement.
+        await sql`UPDATE render_jobs SET progress = ${snap.overallProgress} WHERE id = ${job.job_id}`;
+      }
+    } catch (err) {
+      logger.warn('[shorts asset cron] render-poll failed', {
+        shortId: job.short_id,
+        jobId: job.job_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }));
+
+  return out;
 }
