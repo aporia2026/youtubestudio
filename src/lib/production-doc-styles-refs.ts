@@ -70,25 +70,41 @@ function getPublicBaseUrl(): string {
   );
 }
 
+/**
+ * Style id → public/style-refs subdirectory name.
+ *
+ * The directory under public/ uses the friendly capitalized name —
+ * e.g. `Doodle-explainer` for id `doodle_explainer`. We hardcode the
+ * mapping here rather than munging the id at the callsites so a
+ * future built-in with refs in a non-conventional subdirectory still
+ * works.
+ *
+ * 2026-05-28 paint_explainer_v1: borrows doodle_explainer_2's refs
+ * until a dedicated Paint-Explainer-v1 bundle is curated. Mapping
+ * both ids to the same folder is exactly what this map is for —
+ * change just the entry when paint_explainer_v1 gets its own bundle.
+ *
+ * 2026-06-12 zenn_v1: lives under `Zenn-v1/` on disk. Underscore in
+ * the style id vs hyphen on disk means the default-to-id fallback
+ * silently breaks, so every built-in with refs MUST have an entry
+ * here. New built-in styles with bundled refs are required to add a
+ * line — the unit test in `tests/production-doc-styles-refs-dirmap.test.ts`
+ * fails closed if the entry is missing.
+ *
+ * Single source of truth — exported so the test can pin the
+ * filesystem contract.
+ */
+export const BUILT_IN_REF_DIR_MAP: Readonly<Record<string, string>> = {
+  doodle_explainer: 'Doodle-explainer',
+  doodle_explainer_2: 'Doodle-explainer-2',
+  paint_explainer_v1: 'Doodle-explainer-2',
+  zenn_v1: 'Zenn-v1',
+};
+
 function synthesizeBuiltInRefs(styleId: string): StyleReferenceImage[] {
   const builtIn = getBuiltInStyle(styleId);
   if (!builtIn?.built_in_refs?.length) return [];
-  // The directory under public/ uses the friendly capitalized name —
-  // e.g. `Doodle-explainer` for id `doodle_explainer`. We hardcode the
-  // mapping at the built-in registration site rather than munging the
-  // id here so a future built-in with refs in a non-conventional
-  // subdirectory still works.
-  //
-  // 2026-05-28 paint_explainer_v1: borrows doodle_explainer_2's refs
-  // until a dedicated Paint-Explainer-v1 bundle is curated. Mapping
-  // both ids to the same folder is exactly what this dirMap is for —
-  // change just this line when paint_explainer_v1 gets its own bundle.
-  const dirMap: Record<string, string> = {
-    doodle_explainer: 'Doodle-explainer',
-    doodle_explainer_2: 'Doodle-explainer-2',
-    paint_explainer_v1: 'Doodle-explainer-2',
-  };
-  const dir = dirMap[builtIn.id] ?? builtIn.id;
+  const dir = BUILT_IN_REF_DIR_MAP[builtIn.id] ?? builtIn.id;
   const base = getPublicBaseUrl();
   const now = new Date().toISOString();
   return builtIn.built_in_refs.map((ref, i) => {
@@ -176,19 +192,9 @@ export async function mirrorBuiltInRefToR2(input: {
 
   // Resolve the bundled file on the Vercel function filesystem.
   // public/ is included in the function package and accessible at
-  // `process.cwd()/public/style-refs/<Dir>/<filename>`. The dir name
-  // mapping mirrors `synthesizeBuiltInRefs` above.
+  // `process.cwd()/public/style-refs/<Dir>/<filename>`.
   const builtIn = getBuiltInStyle(input.styleId);
-  // Mirror of the dirMap in `synthesizeBuiltInRefs` — kept in sync so a
-  // style's public path AND its R2-mirror path resolve to the same
-  // underlying bytes on disk. Update both when a built-in's ref folder
-  // changes.
-  const dirMap: Record<string, string> = {
-    doodle_explainer: 'Doodle-explainer',
-    doodle_explainer_2: 'Doodle-explainer-2',
-    paint_explainer_v1: 'Doodle-explainer-2',
-  };
-  const dir = dirMap[input.styleId] ?? builtIn?.id ?? input.styleId;
+  const dir = BUILT_IN_REF_DIR_MAP[input.styleId] ?? builtIn?.id ?? input.styleId;
   const filePath = path.join(process.cwd(), 'public', 'style-refs', dir, input.filename);
 
   let buffer: Buffer;
