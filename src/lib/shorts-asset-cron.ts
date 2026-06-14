@@ -653,34 +653,88 @@ export async function runShortsAssetTickForShort(
  * render marker (`phase='rendering'`), so a non-batch short's asset state
  * is never clobbered.
  */
-export async function pollPendingShortRenders(): Promise<{ polled: number; done: number; errored: number }> {
+export async function pollPendingShortRenders(): Promise<{ polled: number; done: number; errored: number; reaped: number }> {
+  // Poll EVERY pending render row, not `DISTINCT ON (short_id)`. The
+  // DISTINCT-ON form looked sensible — "only care about the latest
+  // attempt per short" — but it had a nasty failure mode: when a short
+  // retried, all older `rendering` rows stayed `rendering` forever
+  // because nothing ever polled them. They accumulated against the
+  // Lambda concurrency cap (`LAMBDA_MAX_CONCURRENT_RENDERS`) until the
+  // user couldn't render anything. Polling every row idempotently
+  // finalises duplicates as well as the newest attempt.
   const { rows: jobs } = await sql<{
     job_id: string;
     short_id: string;
     workspace_id: string;
     lambda_render_id: string;
     lambda_bucket: string;
+    age_ms: string;
   }>`
-    SELECT DISTINCT ON (rj.short_id)
-           rj.id AS job_id,
+    SELECT rj.id AS job_id,
            rj.short_id,
            rj.workspace_id,
            rj.lambda_render_id,
-           rj.lambda_bucket
+           rj.lambda_bucket,
+           ((extract(epoch from now()) * 1000)::bigint - rj.started_at)::text AS age_ms
       FROM render_jobs rj
      WHERE rj.short_id IS NOT NULL
        AND rj.workspace_id IS NOT NULL
        AND rj.lambda_render_id IS NOT NULL
        AND rj.lambda_bucket IS NOT NULL
        AND rj.status NOT IN ('done', 'error')
-     ORDER BY rj.short_id, rj.started_at DESC
+     ORDER BY rj.started_at DESC
   `;
-  const out = { polled: 0, done: 0, errored: 0 };
+  const out = { polled: 0, done: 0, errored: 0, reaped: 0 };
   if (jobs.length === 0) return out;
+
+  // Stuck-row reaper: any row whose `started_at` is older than the
+  // quota's `inFlightMaxAgeMinutes` (default 30) is treated as dead.
+  // Lambda itself caps a single render at ~15 min, so anything past
+  // that bound is leaking — either the S3 progress file has expired
+  // (poll throws) or Lambda silently terminated. Mark them as error
+  // here so the slot is freed immediately and the UI can surface the
+  // failure. Mirrors the fatalError branch below.
+  const { getLambdaQuotas } = await import('./remotion-lambda-quotas');
+  const stuckCutoffMs = getLambdaQuotas().inFlightMaxAgeMinutes * 60 * 1000;
+  const stuckJobs = jobs.filter(j => Number(j.age_ms) > stuckCutoffMs);
+  const liveJobs = jobs.filter(j => Number(j.age_ms) <= stuckCutoffMs);
+  for (const job of stuckJobs) {
+    const reapReason = `Render stuck for >${getLambdaQuotas().inFlightMaxAgeMinutes} min — reaped to free the concurrency slot. Retry to start a fresh render.`;
+    await sql`
+      UPDATE render_jobs
+         SET status = 'error', error = ${reapReason}::text,
+             finished_at = ${Date.now()}
+       WHERE id = ${job.job_id} AND status = 'rendering'
+    `;
+    await sql`
+      UPDATE shorts
+         SET generation_progress = jsonb_set(
+               COALESCE(generation_progress, '{}'::jsonb),
+               '{phase}', '"error"'::jsonb
+             ) || jsonb_build_object(
+               'label', 'Render timed out',
+               'error_message', ${reapReason}::text,
+               'updated_at', ${new Date().toISOString()}::text
+             ),
+             updated_at = NOW()
+       WHERE id = ${job.short_id}::uuid
+         AND workspace_id = ${job.workspace_id}::uuid
+         AND generation_progress->>'phase' = 'rendering'
+    `;
+    out.reaped++;
+    logger.warn('[shorts asset cron] render-poll reaped stuck row', {
+      shortId: job.short_id, jobId: job.job_id, ageMs: job.age_ms,
+    });
+  }
+
+  // Replace the working set with just the live rows so the existing
+  // `jobs.map` polling loop below operates on what's actually pollable.
+  const pollableJobs = liveJobs;
+  if (pollableJobs.length === 0) return out;
 
   const { pollLambdaProgress } = await import('./remotion-lambda');
 
-  await Promise.all(jobs.map(async (job) => {
+  await Promise.all(pollableJobs.map(async (job) => {
     out.polled++;
     try {
       const snap = await pollLambdaProgress({

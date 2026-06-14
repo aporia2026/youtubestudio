@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     logger.warn('cron run-shorts-assets: render-poll failed', {
       detail: err instanceof Error ? err.message : String(err),
     });
-    return { polled: 0, done: 0, errored: 0 };
+    return { polled: 0, done: 0, errored: 0, reaped: 0 };
   });
 
   if (!outcome.ran) {

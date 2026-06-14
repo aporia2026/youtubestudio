@@ -34,12 +34,21 @@ const DEFAULTS = {
   maxSpendUsdPerDay: 5,
   maxSpendUsdPerRender: 1,
   maxConcurrentRenders: 5,
+  /** Maximum age (minutes) of a `rendering` row that still counts toward
+   *  the concurrency cap. Self-heals from the historical leak where rows
+   *  stayed `rendering` forever after Lambda silently expired its S3
+   *  progress file — without this, the cap stays hit until a manual
+   *  reaper script runs. Set well above the longest real render (Lambda
+   *  itself caps at 15 min) so legitimate slow renders never get ignored
+   *  and accidentally allow over-cap launches. */
+  inFlightMaxAgeMinutes: 30,
 } as const;
 
 export interface LambdaQuotas {
   maxSpendUsdPerDay: number;
   maxSpendUsdPerRender: number;
   maxConcurrentRenders: number;
+  inFlightMaxAgeMinutes: number;
 }
 
 function parsePositiveNumber(raw: string | undefined, fallback: number): number {
@@ -68,6 +77,10 @@ export function getLambdaQuotas(): LambdaQuotas {
       process.env.LAMBDA_MAX_CONCURRENT_RENDERS,
       DEFAULTS.maxConcurrentRenders,
     ),
+    inFlightMaxAgeMinutes: parsePositiveInt(
+      process.env.LAMBDA_IN_FLIGHT_MAX_AGE_MINUTES,
+      DEFAULTS.inFlightMaxAgeMinutes,
+    ),
   };
 }
 
@@ -90,6 +103,12 @@ export type PreflightDecision =
 export async function preflightLambdaQuota(): Promise<PreflightDecision> {
   const quotas = getLambdaQuotas();
   const dayAgoMs = Date.now() - 24 * 60 * 60 * 1000;
+  // Age gate on the concurrent count: a row whose `started_at` is older
+  // than `inFlightMaxAgeMinutes` is treated as dead even if its status
+  // is still 'rendering'. Lambda itself caps a single render at ~15 min,
+  // so anything older is the leak case (poll loop stopped touching it).
+  // Without this gate, a single dead poll permanently consumes a slot.
+  const inFlightCutoffMs = Date.now() - quotas.inFlightMaxAgeMinutes * 60 * 1000;
 
   let spendRows: { sum: number | null }[];
   let concurrentRows: { count: string }[];
@@ -106,6 +125,7 @@ export async function preflightLambdaQuota(): Promise<PreflightDecision> {
         FROM render_jobs
         WHERE lambda_render_id IS NOT NULL
           AND status = 'rendering'
+          AND started_at >= ${inFlightCutoffMs}
       `,
     ]);
     spendRows = spendResult.rows;
