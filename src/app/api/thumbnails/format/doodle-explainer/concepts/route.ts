@@ -20,8 +20,10 @@ import { logger } from '@/lib/logger';
 import {
   buildDoodleConceptsSystemPrompt,
   buildDoodleConceptsUserPrompt,
+  isAutoField,
   parseDoodleConceptsResponse,
   validateDoodleInput,
+  type ChosenBrief,
   type DoodleConcept,
 } from '@/lib/thumbnail-formats/doodle-explainer-prompts';
 import { resolveThumbnailStyle, DEFAULT_THUMBNAIL_STYLE_ID } from '@/lib/thumbnail-styles';
@@ -78,6 +80,12 @@ interface OkResponse {
   styleId: string;
   variantCount: number;
   concepts: DoodleConcept[];
+  /** Hook / expression / background the panel should use for the
+   *  subsequent image call. For fields the user supplied, this echoes
+   *  the user's values. For fields the user left on auto, this carries
+   *  the LLM's pick — the panel populates the UI inputs with these so
+   *  the user can see + edit the choice. */
+  chosenBrief: ChosenBrief;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, modelName: string): Promise<T> {
@@ -151,8 +159,11 @@ export async function POST(req: NextRequest) {
       styleId,
       variantCount: input.variantCount,
       hookLength: input.hookText.length,
+      hookAuto: isAutoField(input.hookText),
       expression: input.characterExpression,
+      expressionAuto: isAutoField(input.characterExpression),
       backgroundScene: input.backgroundScene,
+      backgroundAuto: isAutoField(input.backgroundScene),
       hasCustomBackground: !!input.customBackground,
       videoContextLength: input.videoContext?.length ?? 0,
     });
@@ -193,7 +204,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const conceptsResult = parseDoodleConceptsResponse(parsed, input.variantCount);
+    const conceptsResult = parseDoodleConceptsResponse(parsed, input.variantCount, input, style);
     if (!conceptsResult.ok) {
       logger.warn('[thumb-doodle concepts] concepts schema validation failed', {
         modelId,
@@ -211,6 +222,7 @@ export async function POST(req: NextRequest) {
       styleId,
       variantCount: input.variantCount,
       concepts: conceptsResult.variants,
+      chosenBrief: conceptsResult.chosenBrief,
     };
 
     logger.info('[thumb-doodle concepts] done', {
@@ -220,6 +232,9 @@ export async function POST(req: NextRequest) {
       llmDurationMs: Date.now() - llmStart,
       totalDurationMs: Date.now() - startedAt,
       conceptLabels: conceptsResult.variants.map(v => v.conceptLabel),
+      chosenHookLength: conceptsResult.chosenBrief.hookText.length,
+      chosenExpression: conceptsResult.chosenBrief.characterExpression,
+      chosenBackgroundScene: conceptsResult.chosenBrief.backgroundScene,
     });
 
     return NextResponse.json(response);

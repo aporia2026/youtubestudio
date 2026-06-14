@@ -36,8 +36,11 @@ import {
   type ThumbnailVariant,
 } from '@/lib/thumbnail-variants';
 import {
+  AUTO_FIELD_SENTINEL,
+  isAutoField,
   HOOK_TEXT_MAX_LENGTH as HOOK_MAX,
   CUSTOM_BACKGROUND_MAX_LENGTH as BG_MAX,
+  type ChosenBrief,
 } from '@/lib/thumbnail-formats/doodle-explainer-prompts';
 
 interface DoodleConceptFromApi {
@@ -140,12 +143,17 @@ export function DoodleExplainerPanel({
   // the user's in-progress hook + scene choices — same pattern as the
   // sibling panels' draft-snapshot persistence (lighter-weight here
   // because the form is tiny).
+  //
+  // Defaults are intentionally the `AUTO_FIELD_SENTINEL` so a brand-new
+  // user can click Generate immediately and the LLM invents the brief
+  // from the video context. Returning users keep whatever they had
+  // selected (localStorage wins over the default).
   const [hookText, setHookText] = useState<string>(() => loadPersisted('doodle_hook_text', ''));
   const [characterExpression, setCharacterExpression] = useState<string>(() =>
-    loadPersisted('doodle_character_expression', expressionOptions[0] ?? 'worried')
+    loadPersisted('doodle_character_expression', AUTO_FIELD_SENTINEL)
   );
   const [backgroundScene, setBackgroundScene] = useState<string>(() =>
-    loadPersisted('doodle_background_scene', backgroundOptions[0]?.id ?? 'plain-white')
+    loadPersisted('doodle_background_scene', AUTO_FIELD_SENTINEL)
   );
   const [customBackground, setCustomBackground] = useState<string>(() => loadPersisted('doodle_custom_background', ''));
   const [imageModel, setImageModel] = useState<string>(() => loadPersisted('doodle_image_model', style.preferred_image_model));
@@ -237,17 +245,42 @@ export function DoodleExplainerPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [variants, selectedVariantIndex, concepts]);
 
-  const canGenerate = hookText.trim().length > 0
-    && hookText.trim().length <= HOOK_MAX
-    && (backgroundScene !== 'custom' || customBackground.trim().length > 0)
-    && generatingStep === 'idle';
-
   const buildVideoContext = () => {
     const parts = [title, niche, script, description]
       .map(s => (s || '').trim())
       .filter(s => s.length > 0);
     return parts.length ? parts.join('\n\n').slice(0, 2000) : undefined;
   };
+
+  const hookAuto = isAutoField(hookText);
+  const expressionAuto = isAutoField(characterExpression);
+  const backgroundAuto = isAutoField(backgroundScene);
+  const anyAuto = hookAuto || expressionAuto || backgroundAuto;
+  const hasVideoContext = !!buildVideoContext();
+
+  // Generate is enabled whenever the user-supplied state is internally
+  // consistent. The hook is no longer required — if it (or emotion or
+  // background) is left on auto, the LLM picks it from videoContext.
+  // The only hard blocks are:
+  //   - mid-generation: don't double-fire
+  //   - custom background picked but no text typed (the LLM never fills
+  //     a custom-text scene; that's a user-only field)
+  //   - hook over the length cap
+  //   - any auto field with no video context (the LLM has nothing to
+  //     work from — match the server-side gate so the user sees this
+  //     before the round-trip)
+  const canGenerate = generatingStep === 'idle'
+    && hookText.trim().length <= HOOK_MAX
+    && (backgroundScene !== 'custom' || customBackground.trim().length > 0)
+    && (!anyAuto || hasVideoContext);
+
+  const disabledReason = generatingStep !== 'idle'
+    ? null
+    : (backgroundScene === 'custom' && !customBackground.trim()
+        ? 'Type the custom scene to enable.'
+        : (anyAuto && !hasVideoContext
+            ? 'Fill in the Video Title (or Script) so the LLM can auto-pick the blank fields.'
+            : null));
 
   async function handleGenerate() {
     if (!canGenerate) return;
@@ -256,10 +289,19 @@ export function DoodleExplainerPanel({
     setConcepts([]);
     setVariants([]);
     console.info('[doodle-panel generate] start', {
-      modelId, imageModel, variantCount: safeVariantCount, hookText: hookText.trim(), characterExpression, backgroundScene,
+      modelId, imageModel, variantCount: safeVariantCount,
+      hookText: hookText.trim(),
+      hookAuto: isAutoField(hookText),
+      characterExpression,
+      expressionAuto: isAutoField(characterExpression),
+      backgroundScene,
+      backgroundAuto: isAutoField(backgroundScene),
     });
     try {
-      // Step 1 — concepts.
+      // Step 1 — concepts. The route resolves any auto fields and
+      // returns the final values on `chosenBrief`; we hand those to the
+      // image call AND mirror them back into the form so the user sees
+      // (and can edit) what the LLM picked.
       const conceptsRes = await fetch('/api/thumbnails/format/doodle-explainer/concepts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -278,14 +320,32 @@ export function DoodleExplainerPanel({
         const errBody = await conceptsRes.json().catch(() => ({ error: 'concepts call failed' }));
         throw new Error(errBody?.error || `concepts HTTP ${conceptsRes.status}`);
       }
-      const conceptsData = await conceptsRes.json() as { concepts: DoodleConceptFromApi[] };
+      const conceptsData = await conceptsRes.json() as { concepts: DoodleConceptFromApi[]; chosenBrief: ChosenBrief };
       setConcepts(conceptsData.concepts);
+
+      // Echo the resolved brief back into the form. setState is async,
+      // so the local `chosenBrief` is also what we hand to the image
+      // call below — we can't rely on `hookText` / etc. having updated
+      // by the time we POST to /image.
+      const chosenBrief = conceptsData.chosenBrief;
+      setHookText(chosenBrief.hookText);
+      setCharacterExpression(chosenBrief.characterExpression);
+      setBackgroundScene(chosenBrief.backgroundScene);
+      if (chosenBrief.backgroundScene === 'custom') {
+        setCustomBackground(chosenBrief.customBackground ?? '');
+      }
       console.info('[doodle-panel generate] concepts ok', {
         count: conceptsData.concepts.length,
         labels: conceptsData.concepts.map(c => c.conceptLabel),
+        chosenHook: chosenBrief.hookText,
+        chosenExpression: chosenBrief.characterExpression,
+        chosenBackground: chosenBrief.backgroundScene,
       });
 
-      // Step 2 — fan-out image generation.
+      // Step 2 — fan-out image generation. Uses the resolved brief, NOT
+      // the form state, since the form-state setters above are queued
+      // for the next render and `hookText` etc. still hold the auto
+      // sentinel here.
       setGeneratingStep('images');
       const imageRes = await fetch('/api/thumbnails/format/doodle-explainer/image', {
         method: 'POST',
@@ -293,10 +353,10 @@ export function DoodleExplainerPanel({
         body: JSON.stringify({
           imageModel,
           styleId: style.id,
-          hookText: hookText.trim(),
-          characterExpression,
-          backgroundScene,
-          customBackground: backgroundScene === 'custom' ? customBackground.trim() : undefined,
+          hookText: chosenBrief.hookText,
+          characterExpression: chosenBrief.characterExpression,
+          backgroundScene: chosenBrief.backgroundScene,
+          customBackground: chosenBrief.backgroundScene === 'custom' ? chosenBrief.customBackground : undefined,
           concepts: conceptsData.concepts,
           variantCount: safeVariantCount,
         }),
@@ -403,16 +463,24 @@ export function DoodleExplainerPanel({
           <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
             {hookText.length}/{HOOK_MAX}
           </span>
+          {hookAuto && (
+            <span
+              className="ml-2 text-[10px] px-1.5 py-0.5 rounded"
+              style={{ background: '#FBC02D', color: '#000', fontWeight: 600 }}
+            >
+              Auto
+            </span>
+          )}
         </label>
         <input
           className="input-field w-full text-sm"
-          placeholder='e.g. "ROTTEN MEAT?" or "2 SLEEPS?" — the big yellow bold word'
-          value={hookText}
+          placeholder='Leave blank and the LLM picks one from your video context'
+          value={hookAuto ? '' : hookText}
           onChange={e => setHookText(e.target.value.slice(0, HOOK_MAX))}
           maxLength={HOOK_MAX}
         />
         <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
-          This is the focal yellow phrase the image model renders verbatim. Short and provocative reads strongest at thumbnail size.
+          Focal yellow phrase the image model renders verbatim. Leave blank to let the LLM invent one from the video title / script — it lands back in this field after generation so you can edit + re-roll.
         </p>
       </div>
 
@@ -422,6 +490,11 @@ export function DoodleExplainerPanel({
           Character emotion
         </label>
         <div className="flex flex-wrap gap-1.5">
+          <AutoChip
+            selected={expressionAuto}
+            onClick={() => setCharacterExpression(AUTO_FIELD_SENTINEL)}
+            title="Let the LLM pick an emotion that matches the video topic"
+          />
           {expressionOptions.map(opt => (
             <button
               key={opt}
@@ -447,6 +520,11 @@ export function DoodleExplainerPanel({
           Background scene
         </label>
         <div className="flex flex-wrap gap-1.5">
+          <AutoChip
+            selected={backgroundAuto}
+            onClick={() => setBackgroundScene(AUTO_FIELD_SENTINEL)}
+            title="Let the LLM pick a scene preset that matches the video topic"
+          />
           {backgroundOptions.map(opt => (
             <button
               key={opt.id}
@@ -544,9 +622,14 @@ export function DoodleExplainerPanel({
           )}
           {generatingStep === 'idle' && `Generate ${clampVariantCount(variantCount)} doodle variants`}
         </button>
-        {!hookText.trim() && (
+        {disabledReason && (
           <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            Type the hook phrase to enable.
+            {disabledReason}
+          </span>
+        )}
+        {!disabledReason && anyAuto && generatingStep === 'idle' && (
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            LLM will pick the {[hookAuto && 'hook', expressionAuto && 'emotion', backgroundAuto && 'scene'].filter(Boolean).join(' + ')} from your video context.
           </span>
         )}
       </div>
@@ -614,6 +697,31 @@ export function DoodleExplainerPanel({
         </details>
       )}
     </div>
+  );
+}
+
+/** Small leading chip shared by the emotion + background pickers. Lets
+ *  the user opt into LLM auto-pick without leaving the chip metaphor —
+ *  picked chip = "this value", picked Auto = "LLM, you pick". Styled
+ *  with a yellow accent + ✨ glyph to read as visually distinct from
+ *  the concrete-value chips. */
+function AutoChip({ selected, onClick, title }: { selected: boolean; onClick: () => void; title: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="text-[11px] px-2.5 py-1 rounded transition-all inline-flex items-center gap-1"
+      style={{
+        background: selected ? '#FBC02D' : 'transparent',
+        color: selected ? '#000' : 'var(--text-secondary)',
+        border: selected ? '1px solid #FBC02D' : '1px dashed var(--border)',
+        fontWeight: selected ? 600 : 500,
+      }}
+    >
+      <span aria-hidden>✨</span>
+      <span>Auto</span>
+    </button>
   );
 }
 
