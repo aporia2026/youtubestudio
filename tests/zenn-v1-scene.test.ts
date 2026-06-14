@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolveBackdropKind,
   resolveCharacterUrl,
   resolveWorldPalette,
   worldBandLayout,
@@ -254,5 +255,48 @@ describe('resolveCharacterUrl', () => {
     expect(resolveCharacterUrl(rawKeyedBank, 'Knight', undefined)).toBe(
       'https://r2.example/knight.jpg',
     );
+  });
+});
+
+// ─── resolveBackdropKind ────────────────────────────────────────────
+//
+// Bug fix 2026-06-14: Mode B previews used to render bare bands
+// whenever the bank entry hadn't been generated yet, even though
+// the row carried its own AI image. Operators reported the editor
+// preview looked broken. The fallback now picks the row image when
+// the bank is missing. Pinning every branch prevents the regression.
+
+describe('resolveBackdropKind', () => {
+  it('Mode B with bank character URL → bands', () => {
+    expect(resolveBackdropKind(true, 'https://r2.example/character.png', undefined)).toBe('bands');
+    expect(
+      resolveBackdropKind(true, 'https://r2.example/character.png', 'https://r2.example/img.jpg'),
+    ).toBe('bands');
+  });
+
+  it('Mode B without bank URL but with row image → image (fallback)', () => {
+    // The reported bug: Mode B with no bank entry and a populated
+    // row image previously rendered bare bands. New behavior: render
+    // the row image as the base.
+    expect(resolveBackdropKind(true, undefined, 'https://r2.example/scene.jpg')).toBe('image');
+  });
+
+  it('Mode B without bank URL AND without row image → empty (bare bands)', () => {
+    expect(resolveBackdropKind(true, undefined, undefined)).toBe('empty');
+    expect(resolveBackdropKind(true, undefined, '')).toBe('empty');
+  });
+
+  it('Mode A with row image → image', () => {
+    expect(resolveBackdropKind(false, undefined, 'https://r2.example/stick.jpg')).toBe('image');
+    // Mode A ignores the bank URL even if one resolved — the bank
+    // is a Mode B composition primitive.
+    expect(
+      resolveBackdropKind(false, 'https://r2.example/character.png', 'https://r2.example/stick.jpg'),
+    ).toBe('image');
+  });
+
+  it('Mode A without row image → empty (white fill)', () => {
+    expect(resolveBackdropKind(false, undefined, undefined)).toBe('empty');
+    expect(resolveBackdropKind(false, 'https://r2.example/character.png', undefined)).toBe('empty');
   });
 });

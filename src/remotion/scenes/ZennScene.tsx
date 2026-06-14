@@ -158,6 +158,40 @@ export function worldBandLayout(
   return { kind: 'solid', color: palette.sky_color_hex };
 }
 
+/** Pure helper: decide which backdrop layer to render given the
+ *  resolved Mode A / Mode B flag, the bank character URL, and the
+ *  row's own AI image URL.
+ *
+ *  Returns one of:
+ *    - `'bands'`  — CSS world bands (canonical Mode B look). Picked
+ *      when Mode B AND a bank character URL resolved.
+ *    - `'image'` — render the row's `imageUrl` as the base.
+ *      Picked for Mode A whenever `imageUrl` exists, AND as a
+ *      fallback for Mode B when no bank character URL has been
+ *      generated yet but the row's pipeline-generated image is
+ *      available. The fallback is what keeps the editor preview
+ *      useful while the `generating_zenn_v1_images` stage is still
+ *      populating the bank (reported 2026-06-14 — operators saw
+ *      empty band scenes and assumed the renderer was broken).
+ *    - `'empty'` — white fill for Mode A with no image; bare bands
+ *      for Mode B with no image AND no bank entry.
+ *
+ *  Exported for testing. */
+export function resolveBackdropKind(
+  isSceneMode: boolean,
+  characterUrl: string | undefined,
+  imageUrl: string | undefined,
+): 'bands' | 'image' | 'empty' {
+  if (isSceneMode) {
+    if (characterUrl) return 'bands';
+    if (imageUrl) return 'image';
+    return 'empty';
+  }
+  // Mode A — render the AI-generated base image when present.
+  if (imageUrl) return 'image';
+  return 'empty';
+}
+
 /** Resolve the character image URL for a Mode B shot. Looks up the
  *  bank entry by `characterId`, prefers a pose-specific sibling if
  *  one is registered under `zennPose`, falls back to the canonical
@@ -228,24 +262,29 @@ export const ZennScene: React.FC<ZennSceneProps> = ({
   const palette = resolveWorldPalette(shot.zennWorldOverlay, world);
   const layout = worldBandLayout(shot.zennWorldOverlay, palette);
   const characterUrl = resolveCharacterUrl(characterBank, shot.zennCharacterId, shot.zennPose);
+  const backdropKind = resolveBackdropKind(isSceneMode, characterUrl, shot.imageUrl);
   const revealLayers = shot.zennCanvasRevealLayers ?? [];
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#FFFFFF', overflow: 'hidden' }}>
-      {/* Layer 1: backdrop. Mode B paints CSS color bands from the
-          doc-level world palette. Mode A renders the AI-generated
-          base image (which already includes the stick-figure-on-
-          white canvas + grey ground baseline baked by the PR 1 ai
-          image suffix). */}
-      {isSceneMode ? (
+      {/* Layer 1: backdrop. `resolveBackdropKind` picks one of three
+       *   options based on mode + bank + row image:
+       *     - 'bands' (canonical Mode B): CSS world bands.
+       *     - 'image' (Mode A, OR Mode B fallback when bank is still
+       *       pending): render the row's AI-generated image.
+       *     - 'empty': white fill (Mode A no-image) or bare bands
+       *       (Mode B no-image-no-bank). */}
+      {backdropKind === 'bands' ? (
         <WorldBackground layout={layout} />
-      ) : shot.imageUrl ? (
+      ) : backdropKind === 'image' && shot.imageUrl ? (
         <AbsoluteFill>
           <Img
             src={shot.imageUrl}
             style={{ width: '100%', height: '100%', objectFit: 'contain' }}
           />
         </AbsoluteFill>
+      ) : isSceneMode ? (
+        <WorldBackground layout={layout} />
       ) : (
         <AbsoluteFill style={{ backgroundColor: '#FFFFFF' }} />
       )}

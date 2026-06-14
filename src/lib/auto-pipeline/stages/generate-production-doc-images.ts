@@ -283,6 +283,7 @@ export async function handleGenerateProductionDocImages(
   //    rather than parse motion_beats here — conservative for the cap.
   const isPaintExplainerV1 = doc.style_preset === 'paint_explainer_v1';
   const isDoodleExplainer2 = doc.style_preset === 'doodle_explainer_2';
+  const isZennV1 = doc.style_preset === 'zenn_v1';
   const COST_PER_BASE = isPaintExplainerV1 ? 0.05 : 0.04;
   const COST_PER_VARIANT = 0.011;
   const remainingCostUsd =
@@ -535,6 +536,12 @@ export async function handleGenerateProductionDocImages(
   let sceneCacheHits = 0;
   let sceneCacheMisses = 0;
   let sceneCacheEditFailures = 0;
+  // 2026-06-14 — zenn_v1 character cache counters. Same shape as the
+  // doodle_explainer_2 character-cache counters. All zero on docs
+  // that are not zenn_v1 OR carry no rows with `zenn_character_id`.
+  let zennCharCacheHits = 0;
+  let zennCharCacheMisses = 0;
+  let zennCharCacheEditFailures = 0;
   // 2026-05-31 — motion_collage counters. All zero on docs that don't
   // contain any motion_collage rows. Surfaced in the per-tick summary
   // log so cost attribution is visible at a glance. Deferred rows (the
@@ -1067,6 +1074,70 @@ export async function handleGenerateProductionDocImages(
       }
     }
 
+    // ─── zenn_v1 character continuation (2026-06-14) ───────────────
+    // Parallel to the doodle_explainer_2 character branch above but
+    // keyed by `zenn_character_id` (the field the LLM emits on zenn_v1
+    // rows; doodle uses the generic `character_id`). When the per-doc
+    // cache already knows this character, call Atlas Edit on the
+    // cached base with this row's ai_image_prompt as the edit
+    // instruction — preserves face/hair/clothing while changing the
+    // scene around them. Cache miss with a non-empty zenn_character_id:
+    // the row goes through normal generation, and the result is
+    // written into the cache AFTER success so subsequent rows can
+    // reuse it. Only runs when neither cache branch above produced a
+    // result (the precedence rule is unchanged; zenn_v1 rows never
+    // also carry a doodle_explainer_2 cache key, so this is a
+    // mutually-exclusive branch in practice).
+    // Plan: _plans/2026-06-14-zenn-v1-mode-b-fallback-and-character-cache.md.
+    const useZennCharCache =
+      !result
+      && isZennV1
+      && item.kind === 'base'
+      && typeof row.zenn_character_id === 'string'
+      && row.zenn_character_id.trim().length > 0;
+    const zennCharCache = doc.zenn_v1_character_cache ?? {};
+    const cachedZennChar = useZennCharCache
+      ? zennCharCache[row.zenn_character_id as string]
+      : undefined;
+    if (
+      useZennCharCache
+      && cachedZennChar?.base_url
+      && typeof row.ai_image_prompt === 'string'
+      && row.ai_image_prompt.trim().length > 0
+    ) {
+      const editResult = await generateCharacterContinuationImage({
+        baseImageUrl: cachedZennChar.base_url,
+        characterId: row.zenn_character_id as string,
+        newScenePrompt: row.ai_image_prompt,
+        characterDescriptions: doc.zenn_v1_character_descriptions,
+        workspaceId: video.workspace_id,
+      });
+      if (editResult.imageUrl) {
+        zennCharCacheHits += 1;
+        logger.info('[zenn-v1 character-cache] hit-and-edit', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          character_id: row.zenn_character_id,
+          first_seen_row_index: cachedZennChar.first_seen_row_index,
+          cost_usd: editResult.costUsd,
+          duration_ms: editResult.durationMs,
+        });
+        result = editResult;
+      } else {
+        // Atlas Edit failed (network, model error, etc.). Fall back to
+        // fresh i2i below — better to ship a drifted character image
+        // than fail the row entirely. The cache stays populated so the
+        // next row with this character_id will try Edit again.
+        zennCharCacheEditFailures += 1;
+        logger.warn('[zenn-v1 character-cache] hit but edit failed, falling back to i2i', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          character_id: row.zenn_character_id,
+          error: editResult.error,
+        });
+      }
+    }
+
     // Normal generation path — runs when we didn't hit the cache (or
     // hit it but the Edit call failed and we're falling back).
     if (!result) {
@@ -1118,6 +1189,34 @@ export async function handleGenerateProductionDocImages(
           pipeline_video_id: video.id,
           row_index: item.index,
           character_id: row.character_id,
+        });
+      }
+
+      // ─── zenn_v1 character cache write-back (2026-06-14) ──────────
+      // Cache miss case: this row had a zenn_character_id but no
+      // cached base existed. Now that the fresh generation succeeded,
+      // store the result so the NEXT row with the same id can skip
+      // generation and use Atlas Edit on this base instead. Skip if
+      // `cachedZennChar` was set (we either hit + reused above, or
+      // hit + edit-failed and fell back — either way the cache entry
+      // already exists and we don't want to overwrite the canonical
+      // character image with a fallback drift).
+      if (
+        useZennCharCache
+        && !cachedZennChar
+        && typeof row.zenn_character_id === 'string'
+        && row.zenn_character_id.length > 0
+      ) {
+        zennCharCache[row.zenn_character_id] = {
+          base_url: result.imageUrl,
+          first_seen_row_index: item.index,
+        };
+        doc.zenn_v1_character_cache = zennCharCache;
+        zennCharCacheMisses += 1;
+        logger.info('[zenn-v1 character-cache] miss-and-store', {
+          pipeline_video_id: video.id,
+          row_index: item.index,
+          character_id: row.zenn_character_id,
         });
       }
 
@@ -1521,6 +1620,12 @@ export async function handleGenerateProductionDocImages(
     scene_cache_hits: sceneCacheHits,
     scene_cache_misses_stored: sceneCacheMisses,
     scene_cache_edit_failures: sceneCacheEditFailures,
+    // 2026-06-14 zenn_v1 character-cache telemetry. Same semantics as
+    // the doodle_explainer_2 character counters above; all zero on
+    // non-zenn_v1 docs.
+    zenn_char_cache_hits: zennCharCacheHits,
+    zenn_char_cache_misses_stored: zennCharCacheMisses,
+    zenn_char_cache_edit_failures: zennCharCacheEditFailures,
     // 2026-05-28 collage-port telemetry. All zero when collage is OFF
     // (paint_explainer_v1 docs or `doc.collage_mode === false`).
     //

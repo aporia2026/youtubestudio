@@ -138,6 +138,13 @@ export interface PipelineImageRow {
   motion_collage_panel_prompts?: string[];
   motion_collage_image_url?: string;
   motion_collage_panel_urls?: string[];
+  // ─── zenn_v1 character continuation (2026-06-14) ──────────────────
+  // Server-only mirror of ProductionRow.zenn_character_id. Used as
+  // the cache key when `doc.style_preset === 'zenn_v1'` — zenn_v1
+  // emits a style-specific slug field instead of the generic
+  // `character_id` doodle_explainer_2 / paint_explainer_v1 share.
+  // See `_plans/2026-06-14-zenn-v1-mode-b-fallback-and-character-cache.md`.
+  zenn_character_id?: string;
   // ─── PR2 reliability (2026-06-03) ────────────────────────────────
   // Server-only mirror of ProductionRow.{attempts, last_error} in
   // src/remotion/utils.ts. The stage handler writes these on every
@@ -206,6 +213,26 @@ export interface PipelineImageDoc {
     base_url: string;
     first_seen_row_index: number;
   }>;
+  // ─── zenn_v1 character cache (2026-06-14) ───────────────────────────
+  // Per-doc cache of recurring-character base IMAGES (full-scene PNG)
+  // keyed by `PipelineImageRow.zenn_character_id`. Functionally
+  // parallel to `doodle_explainer_2_character_cache` but lives under
+  // its own field because (a) the lookup key field differs
+  // (`zenn_character_id` vs `character_id`) and (b) keeping the two
+  // caches separate avoids cross-style key collisions on docs that
+  // somehow carry both ids. Same shape as the canonical field on
+  // ProductionDoc — re-stated here for the same reason as above
+  // (no React imports in server code). See
+  // `_plans/2026-06-14-zenn-v1-mode-b-fallback-and-character-cache.md`.
+  zenn_v1_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
+  // ─── zenn_v1 character bible (2026-06-10) ───────────────────────────
+  // Server-only mirror of ProductionDoc.zenn_v1_character_descriptions.
+  // Used by the character-continuation Atlas Edit prompt so secondary
+  // characters in a row have consistent reference language.
+  zenn_v1_character_descriptions?: Record<string, string>;
   // ─── paint_explainer_v1 prop cache (2026-05-30) ───────────────────
   // Per-doc cache of transparent-prop PNGs generated for PropSlideIn
   // motion beats. Same shape as
@@ -2448,6 +2475,17 @@ export function isCollageEligibleRow(
   }
   if (row.character_id) {
     const cached = doc.doodle_explainer_2_character_cache?.[row.character_id];
+    if (cached?.base_url) {
+      return { eligible: false, reason: 'character_cache' };
+    }
+  }
+  // 2026-06-14 — zenn_v1 character cache. Mirrors the doodle_explainer_2
+  // gate above but keyed on `zenn_character_id`. A row whose character
+  // is already cached must route through Atlas Edit to preserve
+  // identity; a sliced collage quadrant would re-draw the character
+  // and defeat the cache.
+  if (row.zenn_character_id) {
+    const cached = doc.zenn_v1_character_cache?.[row.zenn_character_id];
     if (cached?.base_url) {
       return { eligible: false, reason: 'character_cache' };
     }

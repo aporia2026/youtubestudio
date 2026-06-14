@@ -135,6 +135,53 @@ describe('isCollageEligibleRow — cache-hit exclusions', () => {
     expect(verdict.eligible).toBe(false);
     expect(verdict.reason).toBe('character_cache');
   });
+
+  // ─── zenn_v1 character cache (2026-06-14) ──────────────────────────
+  // Parallel to the doodle gate above but keyed on `zenn_character_id`.
+  // A row whose zenn character is already cached must route through
+  // Atlas Edit so the cached base anchors identity; a sliced collage
+  // quadrant would defeat the cache.
+  it('excludes when zenn_character_id has a cache hit with populated base_url', () => {
+    const verdict = isCollageEligibleRow(
+      baseRow({ zenn_character_id: 'sergey-korolev' }),
+      {
+        rows: [],
+        zenn_v1_character_cache: {
+          'sergey-korolev': { base_url: 'https://r2/korolev.png', first_seen_row_index: 2 },
+        },
+      },
+      false,
+    );
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.reason).toBe('character_cache');
+  });
+
+  it('admits a zenn row whose zenn_character_id is first-seen (cache miss)', () => {
+    // First occurrence of the character has no cache entry yet — the
+    // row should flow through collage so it CAN populate the cache via
+    // the regular generation path. Mirrors the doodle "first-seen
+    // character is collage-eligible" semantics.
+    const verdict = isCollageEligibleRow(
+      baseRow({ zenn_character_id: 'sergey-korolev' }),
+      { rows: [], zenn_v1_character_cache: {} },
+      false,
+    );
+    expect(verdict.eligible).toBe(true);
+  });
+
+  it('admits a zenn row whose cache entry has empty base_url (defensive)', () => {
+    const verdict = isCollageEligibleRow(
+      baseRow({ zenn_character_id: 'sergey-korolev' }),
+      {
+        rows: [],
+        zenn_v1_character_cache: {
+          'sergey-korolev': { base_url: '', first_seen_row_index: 0 },
+        },
+      },
+      false,
+    );
+    expect(verdict.eligible).toBe(true);
+  });
 });
 
 describe('isCollageEligibleRow — paint_explainer_v1 exclusions', () => {

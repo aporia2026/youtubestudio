@@ -696,6 +696,14 @@ interface ProductionDoc {
   };
   zenn_v1_prop_cache?: Record<string, string>;
   zenn_v1_character_descriptions?: Record<string, string>;
+  /** zenn_v1 (2026-06-14) — per-row character cache for Mode A
+   *  continuation via Atlas Edit. Mirrors the canonical field on
+   *  the remotion-side ProductionDoc. See
+   *  `_plans/2026-06-14-zenn-v1-mode-b-fallback-and-character-cache.md`. */
+  zenn_v1_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
 }
 
 interface RowImageState {

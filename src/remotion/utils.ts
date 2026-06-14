@@ -1716,6 +1716,27 @@ export interface ProductionDoc {
    *  legacy / non-zenn_v1 docs. */
   zenn_v1_prop_cache?: Record<string, string>;
 
+  /** zenn_v1 (2026-06-14): per-doc cache of recurring-character base
+   *  IMAGES (full-scene PNG, not bank PNG) keyed by
+   *  `ProductionRow.zenn_character_id`. Different shape and purpose
+   *  from `zenn_v1_character_bank` — the bank holds a standalone
+   *  character on a neutral canvas for Mode B composition; this
+   *  cache holds the FIRST full-scene generation of a character so
+   *  every subsequent row with the same id reuses it via Atlas Edit
+   *  (~$0.011 / call) instead of regenerating from scratch (~$0.04
+   *  / call) and drifting the face / hair / clothing across shots.
+   *
+   *  Functionally parallel to
+   *  `doodle_explainer_2_character_cache`. The Mode A pipeline path
+   *  reads / writes this; Mode B doesn't (Mode B composes from the
+   *  bank instead). Undefined on legacy / non-zenn_v1 docs.
+   *
+   *  See `_plans/2026-06-14-zenn-v1-mode-b-fallback-and-character-cache.md`. */
+  zenn_v1_character_cache?: Record<string, {
+    base_url: string;
+    first_seen_row_index: number;
+  }>;
+
   /** zenn_v1 (2026-06-10): per-doc map from `zenn_character_id` slug
    *  to a 1-2 sentence visual description of distinctive features
    *  (silhouette, palette, clothing, accessories). LLM-emitted at
