@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, ensureCompetitorSchema } from '@/lib/db';
 import { fetchChannelVideosRich, fetchChannelData, fetchVideoComments, parseDurationSeconds } from '@/lib/youtube';
-import { checkRateLimit, getClientIP } from '@/lib/rate-limit';
+import { checkRateLimit } from '@/lib/rate-limit';
 import { apiRoute, domainErrorResponse } from '@/lib/route-helpers';
 
 export const maxDuration = 180;
@@ -12,8 +12,17 @@ export const maxDuration = 180;
 export const POST = apiRoute.authed(async (session, req: NextRequest, { params }: { params: Promise<{ id: string }> }) => {
   const { id } = await params;
 
-  const { limited } = checkRateLimit(`sync:${getClientIP(req)}`, 5, 60_000);
-  if (limited) return NextResponse.json({ error: 'Rate limited' }, { status: 429 });
+  // Keyed per user (not per IP) — this is an authed route, every
+  // user owns their own sync budget rather than sharing one with
+  // anyone else on the same NAT'd network.
+  const { limited, resetIn } = checkRateLimit(`competitor-sync:${session.uid}`, 30, 60_000);
+  if (limited) {
+    const retryAfter = Math.max(1, Math.ceil(resetIn / 1000));
+    return NextResponse.json(
+      { error: 'Rate limited — too many sync requests. Try again shortly.', retryAfter },
+      { status: 429, headers: { 'Retry-After': String(retryAfter) } },
+    );
+  }
 
   try {
     await ensureCompetitorSchema();

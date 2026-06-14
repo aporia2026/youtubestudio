@@ -277,12 +277,26 @@ export default function CompetitorsPage() {
     try {
       // eslint-disable-next-line no-restricted-syntax -- awaited sync POST — RPC
       const res = await fetch(`/api/competitors/${id}/sync`, { method: 'POST' });
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      toast.success(`Synced ${data.synced} videos (${data.new ?? 0} new). Median: ${formatNumber(data.medianViews ?? 0)}`);
+      // Parse body unconditionally so error responses surface their reason
+      // ("Rate limited — ...", "YouTube API quota exhausted", etc.) instead
+      // of collapsing every failure to a generic "Sync failed" toast.
+      const data = await res.json().catch(() => null) as
+        | { error?: string; retryAfter?: number; synced?: number; new?: number; medianViews?: number }
+        | null;
+      if (!res.ok) {
+        const message = data?.error || `Sync failed (HTTP ${res.status})`;
+        const suffix = res.status === 429 && data?.retryAfter ? ` Wait ${data.retryAfter}s.` : '';
+        console.warn('[competitors sync] failed', { id, status: res.status, error: data?.error });
+        toast.error(`${message}${suffix}`);
+        return;
+      }
+      toast.success(`Synced ${data?.synced ?? 0} videos (${data?.new ?? 0} new). Median: ${formatNumber(data?.medianViews ?? 0)}`);
       fetchCompetitors();
       if (selectedId === id) openDetail(id);
-    } catch { toast.error('Sync failed'); }
+    } catch (err) {
+      console.warn('[competitors sync] network error', { id, error: err instanceof Error ? err.message : String(err) });
+      toast.error('Sync failed — network error');
+    }
     finally { setSyncingId(null); }
   }
 
@@ -295,16 +309,31 @@ export default function CompetitorsPage() {
     setSyncAllProgress({ done: 0, total: snapshot.length });
     let okCount = 0;
     let failCount = 0;
+    let rateLimited = false;
     for (let i = 0; i < snapshot.length; i++) {
       const c = snapshot[i];
       setSyncingId(c.id);
       try {
         // eslint-disable-next-line no-restricted-syntax -- awaited sync POST — RPC
         const res = await fetch(`/api/competitors/${c.id}/sync`, { method: 'POST' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await res.json().catch(() => null) as
+          | { error?: string; retryAfter?: number; synced?: number; new?: number }
+          | null;
+        if (!res.ok) {
+          // On 429, every subsequent call will fail the same way until the
+          // window resets — bail early so the user sees a clear cause rather
+          // than N identical failures.
+          if (res.status === 429) {
+            rateLimited = true;
+            failCount++;
+            console.warn('[competitors sync-all] rate limited', { id: c.id, title: c.title, retryAfter: data?.retryAfter });
+            setSyncAllProgress({ done: i + 1, total: snapshot.length });
+            break;
+          }
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
         okCount++;
-        console.info('[competitors sync-all] synced', { id: c.id, title: c.title, synced: data.synced, new: data.new });
+        console.info('[competitors sync-all] synced', { id: c.id, title: c.title, synced: data?.synced, new: data?.new });
       } catch (err) {
         failCount++;
         console.warn('[competitors sync-all] failed', { id: c.id, title: c.title, error: err instanceof Error ? err.message : String(err) });
@@ -315,12 +344,14 @@ export default function CompetitorsPage() {
     setSyncingId(null);
     setSyncAllProgress(null);
     await fetchCompetitors();
-    if (failCount === 0) {
+    if (rateLimited) {
+      toast.error(`Synced ${okCount}/${snapshot.length} — rate limited. Wait a minute and run again.`);
+    } else if (failCount === 0) {
       toast.success(`Synced all ${okCount} competitors`);
     } else {
       toast.error(`Synced ${okCount}/${snapshot.length} · ${failCount} failed (check console)`);
     }
-    console.info('[competitors sync-all] done', { ok: okCount, fail: failCount });
+    console.info('[competitors sync-all] done', { ok: okCount, fail: failCount, rateLimited });
   }
 
   async function deleteCompetitor(id: string) {
